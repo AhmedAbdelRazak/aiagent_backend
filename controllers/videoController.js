@@ -162,6 +162,38 @@ const escTxt = (t) =>
 		.replace(/:/g, "\\:")
 		.replace(/,/g, "\\,");
 
+/* ────────────★ NEW HELPER FOR SMOOTHER TTS ★──────────── */
+const NUM_WORD = {
+	1: "one",
+	2: "two",
+	3: "three",
+	4: "four",
+	5: "five",
+	6: "six",
+	7: "seven",
+	8: "eight",
+	9: "nine",
+	10: "ten",
+	11: "eleven",
+	12: "twelve",
+	13: "thirteen",
+	14: "fourteen",
+	15: "fifteen",
+	16: "sixteen",
+	17: "seventeen",
+	18: "eighteen",
+	19: "nineteen",
+	20: "twenty",
+};
+function improveTTSPronunciation(text) {
+	/* 1️⃣  Turn “#5:” → “Number five:” */
+	text = text.replace(/#\s*([1-5])\s*:/g, (_, n) => `Number ${NUM_WORD[n]}:`);
+
+	/* 2️⃣  Spell out any solitary digit 1‑20 to avoid awkward pauses */
+	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
+}
+/* ───────────────────────────────────────────────────────────── */
+
 function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
@@ -793,7 +825,11 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 			const draw = [];
 			for (let i = 1; i < segCnt; i++) {
 				const d = segLens[i];
-				const label = segments[i].scriptText.split(/[.!?\n]/)[0].trim();
+				/* ★ CLEANER LABEL – stop at first dash before description */
+				const label = segments[i].scriptText
+					.split(/\s[-–—]\s/)[0]
+					.split(/[.!?\n]/)[0]
+					.trim();
 				const spoken = +(label.split(/\s+/).length / WORDS_PER_SEC).toFixed(2);
 				const showFrom = t.toFixed(2);
 				const showTo = Math.min(t + spoken + 0.05, t + d - 0.1).toFixed(2);
@@ -1026,14 +1062,19 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 		/* ---------- TTS ---------- */
 		const ttsPath = tmpFile("tts", ".mp3");
 		try {
-			await elevenLabsTTS(fullScript, language, ttsPath);
+			/* ★ Use pronunciation‑improved script */
+			await elevenLabsTTS(
+				improveTTSPronunciation(fullScript),
+				language,
+				ttsPath
+			);
 			console.log("[TTS] ElevenLabs");
 		} catch (e) {
 			console.warn("[TTS] ElevenLabs failed – OpenAI fallback:", e.message);
 			const opts = { model: "tts-1-hd", voice: "shimmer", speed: 1.0 };
 			const tts = await openai.audio.speech.create({
 				...opts,
-				input: fullScript,
+				input: improveTTSPronunciation(fullScript),
 				format: "mp3",
 			});
 			fs.writeFileSync(ttsPath, Buffer.from(await tts.arrayBuffer()));
