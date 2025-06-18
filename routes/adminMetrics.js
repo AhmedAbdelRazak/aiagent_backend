@@ -6,8 +6,10 @@ const { authorize } = require("../middlewares/roleMiddleware");
 
 const User = require("../models/User");
 const Video = require("../models/Video");
-const Subscription = require("../models/Subscription");
 
+// ──────────────────────────────────────────────────────────────
+// 1.  Admin‑only overview  →  global numbers
+// ──────────────────────────────────────────────────────────────
 router.get(
 	"/admin/metrics/overview",
 	protect,
@@ -18,7 +20,7 @@ router.get(
 				User.countDocuments(),
 				User.countDocuments({ subscription: { $ne: null } }),
 				Video.countDocuments({
-					createdAt: { $gte: new Date(Date.now() - 864e5) },
+					createdAt: { $gte: new Date(Date.now() - 86_400_000) },
 				}),
 			]);
 			res.json({ users, subscriptions: subs, videosToday });
@@ -27,5 +29,34 @@ router.get(
 		}
 	}
 );
+
+// ──────────────────────────────────────────────────────────────
+// 2.  User overview  →  metrics for *that* user only
+// ──────────────────────────────────────────────────────────────
+router.get("/user/metrics/overview", protect, async (req, res, next) => {
+	try {
+		const userId = req.user._id;
+
+		const [totalVideos, videosToday] = await Promise.all([
+			Video.countDocuments({ user: userId }),
+			Video.countDocuments({
+				user: userId,
+				createdAt: { $gte: new Date(Date.now() - 86_400_000) },
+			}),
+		]);
+
+		const hasSubscription = Boolean(req.user.subscription);
+
+		/* The response mirrors the admin keys but is user‑scoped */
+		res.json({
+			users: 1, // the signed‑in user himself
+			subscriptions: hasSubscription ? 1 : 0,
+			videosToday,
+			totalVideos, // extra helpful metric
+		});
+	} catch (err) {
+		next(err);
+	}
+});
 
 module.exports = router;

@@ -78,6 +78,10 @@ const userSchema = new mongoose.Schema(
 			type: Boolean,
 			default: true,
 		},
+		acceptedTermsAndConditions: {
+			type: Boolean,
+			default: false,
+		},
 	},
 	{ timestamps: true }
 );
