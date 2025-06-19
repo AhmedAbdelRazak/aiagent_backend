@@ -27,6 +27,7 @@ router.get("/auth", protect, (req, res) => {
 	const url = oauth2Client.generateAuthUrl({
 		access_type: "offline", // forces Google to return a refresh_token
 		prompt: "consent", // forces the account chooser + refresh_token on every consent
+		include_granted_scopes: false,
 		scope: scopes,
 	});
 

@@ -185,6 +185,11 @@ const NUM_WORD = {
 	19: "nineteen",
 	20: "twenty",
 };
+
+/* ––– BRAND CONSTANTS ––– */
+const BRAND_TAG = "AiVideomatic";
+const BRAND_CREDIT = "Powered by AiVideomatic";
+
 function improveTTSPronunciation(text) {
 	/* 1️⃣  Turn “#5:” → “Number five:” */
 	text = text.replace(/#\s*([1-5])\s*:/g, (_, n) => `Number ${NUM_WORD[n]}:`);
@@ -464,37 +469,81 @@ async function retry(fn, max, seg, lbl) {
 /* ───────────────────────────────────────────────────────────── */
 /*  YouTube + Jamendo + Eleven Labs helpers                      */
 /* ───────────────────────────────────────────────────────────── */
-function buildYouTubeOAuth2Client(u) {
-	if (!u.youtubeRefreshToken) return null;
+
+function resolveYouTubeTokens(req, user) {
+	const bodyTok = {
+		access_token: req.body.youtubeAccessToken,
+		refresh_token: req.body.youtubeRefreshToken,
+		expiry_date: req.body.youtubeTokenExpiresAt
+			? new Date(req.body.youtubeTokenExpiresAt).getTime()
+			: undefined,
+	};
+
+	const userTok = {
+		access_token: user.youtubeAccessToken,
+		refresh_token: user.youtubeRefreshToken,
+		expiry_date: user.youtubeTokenExpiresAt
+			? new Date(user.youtubeTokenExpiresAt).getTime()
+			: undefined,
+	};
+
+	/* choose the one that has a refresh‑token; if both, take the newest expiry */
+	const pick =
+		bodyTok.refresh_token &&
+		(!userTok.refresh_token ||
+			(userTok.expiry_date || 0) < (bodyTok.expiry_date || 0))
+			? bodyTok
+			: userTok;
+
+	return pick;
+}
+
+function buildYouTubeOAuth2Client(source) {
+	const creds =
+		source && source.access_token !== undefined
+			? source // plain tokens object
+			: resolveYouTubeTokens({ body: {} }, source); // user doc
+
+	if (!creds.refresh_token) return null;
+
 	const o = new google.auth.OAuth2(
 		process.env.YOUTUBE_CLIENT_ID,
 		process.env.YOUTUBE_CLIENT_SECRET,
 		process.env.YOUTUBE_REDIRECT_URI
 	);
-	o.setCredentials({
-		access_token: u.youtubeAccessToken,
-		refresh_token: u.youtubeRefreshToken,
-		expiry_date: u.youtubeTokenExpiresAt,
-	});
+	o.setCredentials(creds);
 	return o;
 }
-async function refreshYouTubeTokensIfNeeded(u) {
-	const o = buildYouTubeOAuth2Client(u);
-	if (!o) return u;
+
+async function refreshYouTubeTokensIfNeeded(user, req) {
+	const tokens = resolveYouTubeTokens(req, user);
+	const o = buildYouTubeOAuth2Client(tokens);
+	if (!o) return tokens;
+
 	try {
-		const { token } = await o.getAccessToken();
-		if (token && u.role !== "admin") {
-			const c = o.credentials;
-			u.youtubeAccessToken = c.access_token;
-			u.youtubeTokenExpiresAt = c.expiry_date;
-			if (c.refresh_token) u.youtubeRefreshToken = c.refresh_token;
-			await u.save();
+		const { token } = await o.getAccessToken(); // triggers refresh if needed
+		if (token) {
+			const fresh = {
+				access_token: o.credentials.access_token,
+				refresh_token: o.credentials.refresh_token || tokens.refresh_token,
+				expiry_date: o.credentials.expiry_date,
+			};
+
+			/* persist on user doc unless you deliberately want admin untouched */
+			user.youtubeAccessToken = fresh.access_token;
+			user.youtubeRefreshToken = fresh.refresh_token;
+			user.youtubeTokenExpiresAt = fresh.expiry_date;
+
+			if (user.isModified() && user.role !== "admin") await user.save(); // keep old behaviour
+
+			return fresh;
 		}
 	} catch (e) {
-		console.warn("[YouTube] refresh", e.message);
+		console.warn("[YouTube] refresh error:", e.message);
 	}
-	return u;
+	return tokens; // fall back to current (might still work)
 }
+
 async function uploadToYouTube(u, fp, { title, description, tags, category }) {
 	const o = buildYouTubeOAuth2Client(u);
 	if (!o) throw new Error("YouTube OAuth missing");
@@ -751,7 +800,9 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 			model: "gpt-4o-mini",
 			messages: [{ role: "user", content: descPrompt }],
 		});
-		const seoDescription = descResp.choices[0].message.content.trim();
+		const seoDescription = `${descResp.choices[0].message.content.trim()}\n\n${BRAND_CREDIT}`;
+
+		/* BRAND CREDIT */
 
 		let tags = ["shorts"];
 		try {
@@ -775,6 +826,9 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 		if (tags.length < 5)
 			tags.push(...topic.split(" ").slice(0, 5 - tags.length));
 		if (category === "Top5") tags.unshift("Top5");
+
+		/* BRAND TAG */
+		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
 		console.log("[SEO] title:", seoTitle);
 		console.log("[SEO] tags :", tags.join(","));
 
@@ -1176,17 +1230,42 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 
 		/* ---------- YouTube upload ---------- */
 		let youtubeLink = "";
+		let tokens = {};
 		try {
-			const u = await refreshYouTubeTokensIfNeeded(user);
-			if (buildYouTubeOAuth2Client(u)) {
-				youtubeLink = await uploadToYouTube(u, finalPath, {
-					title: seoTitle,
-					description: seoDescription,
-					tags: [...new Set(tags)].slice(0, 15),
-					category,
-				});
+			tokens = await refreshYouTubeTokensIfNeeded(user, req);
+			const oauth2 = buildYouTubeOAuth2Client(tokens);
+
+			if (oauth2) {
+				const yt = google.youtube({ version: "v3", auth: oauth2 });
+
+				const { data } = await yt.videos.insert(
+					{
+						part: ["snippet", "status"],
+						requestBody: {
+							snippet: {
+								title: seoTitle,
+								description: seoDescription,
+								tags: [...new Set(tags)].slice(0, 15),
+								categoryId:
+									YT_CATEGORY_MAP[category] === "0"
+										? "22"
+										: YT_CATEGORY_MAP[category],
+							},
+							status: {
+								privacyStatus: "public",
+								selfDeclaredMadeForKids: false,
+							},
+						},
+						media: { body: fs.createReadStream(finalPath) },
+					},
+					{ maxContentLength: Infinity, maxBodyLength: Infinity }
+				);
+
+				youtubeLink = `https://www.youtube.com/watch?v=${data.id}`;
 				console.log("[YouTube]", youtubeLink);
 				sendPhase("VIDEO_UPLOADED", { msg: youtubeLink, youtubeLink });
+			} else {
+				console.warn("[YouTube] No valid refresh_token – skipped upload");
 			}
 		} catch (e) {
 			console.warn("[YouTube] upload", e.message);
@@ -1211,9 +1290,9 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 			customPrompt,
 			refinedRunwayStub: customPrompt,
 			videoImage,
-			youtubeAccessToken,
-			youtubeRefreshToken,
-			youtubeTokenExpiresAt,
+			youtubeAccessToken: tokens?.access_token || null,
+			youtubeRefreshToken: tokens?.refresh_token || null,
+			youtubeTokenExpiresAt: tokens?.expiry_date || null,
 			youtubeEmail,
 		});
 		console.log("[Mongo] saved", doc._id);
