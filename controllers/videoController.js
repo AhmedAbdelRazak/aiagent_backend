@@ -5,6 +5,15 @@
 /* ───────────────────────────────────────────────────────────── */
 /*  MODULE IMPORTS                                               */
 /* ───────────────────────────────────────────────────────────── */
+/*  ────────────────────────────────────────────────────────────
+    AiVideomatic – controller (v2 ‑ 2025‑06‑20)
+    * Adds high‑precision Runway prompts
+    * Category‑aware ElevenLabs voice‑over tone
+    * GPT tone‑hinting for script generation
+    * Strong negative prompt to reduce artefacts
+    * Unused helpers/constants removed
+    ──────────────────────────────────────────────────────────── */
+
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -57,9 +66,9 @@ assertExists(
 );
 ffmpeg.setFfmpegPath(ffmpegPath);
 
-const ffprobePath = process.env.FFPROBE_PATH || "ffprobe"; // ← **NEW**
-ffmpeg.setFfprobePath(ffprobePath); // ← **NEW**
-console.log(`[FFprobe] binary: ${ffprobePath}`); // ← **NEW**
+const ffprobePath = process.env.FFPROBE_PATH || "ffprobe";
+ffmpeg.setFfprobePath(ffprobePath);
+console.log(`[FFprobe] binary: ${ffprobePath}`);
 
 function ffmpegSupportsLavfi() {
 	try {
@@ -77,12 +86,11 @@ console.log(`[FFmpeg] binary: ${ffmpegPath}`);
 console.log(`[FFmpeg] lavfi available → ${hasLavfi}`);
 
 /* ───────────────────────────────────────────────────────────── */
-/*  FONT discovery (for drawtext)                                */
+/*  FONT discovery                                               */
 /* ───────────────────────────────────────────────────────────── */
 function resolveFontPath() {
 	const env = process.env.FFMPEG_FONT_PATH;
 	if (env && fs.existsSync(env)) return env;
-
 	const candidates = [
 		path.join(__dirname, "../assets/fonts/DejaVuSans.ttf"),
 		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -111,6 +119,7 @@ const JAMENDO_ID = process.env.JAMENDO_CLIENT_ID;
 const RUNWAY_ADMIN_KEY = process.env.RUNWAYML_API_SECRET;
 const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY;
 
+/* video */
 const VALID_RATIOS = [
 	"1280:720",
 	"720:1280",
@@ -119,13 +128,15 @@ const VALID_RATIOS = [
 	"960:960",
 	"1584:672",
 ];
-
 const WORDS_PER_SEC = 2.3;
+/* prompt quality */
 const QUALITY_BONUS =
 	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, bokeh, volumetric fog";
+const RUNWAY_NEGATIVE_PROMPT =
+	"duplicate, extra limbs, multiple heads, distorted, blurry, watermark, text, logo, lowres, malformed";
 const HUMAN_SAFETY =
 	"anatomically correct, two eyes, one head, normal limbs, realistic proportions, natural waist";
-
+/* ElevenLabs */
 const ELEVEN_VOICES = {
 	English: "21m00Tcm4TlvDq8ikWAM",
 	العربية: "CYw3kZ02Hs0563khs1Fj",
@@ -133,9 +144,34 @@ const ELEVEN_VOICES = {
 	Deutsch: "IFHEeWG1IGkfXpxmB1vN",
 	हिंदी: "ykoxtvL6VZTyas23mE9F",
 };
-const ELEVEN_STYLE = 0.65;
+const ELEVEN_STYLE_BY_CATEGORY = {
+	Sports: 0.85,
+	Politics: 0.35,
+	Finance: 0.5,
+	Entertainment: 0.75,
+	Technology: 0.6,
+	Health: 0.55,
+	World: 0.55,
+	Lifestyle: 0.7,
+	Science: 0.6,
+	Top5: 0.8,
+	Other: 0.6,
+};
 const DEFAULT_LANGUAGE = "English";
-
+/* GPT tone hints */
+const TONE_HINTS = {
+	Sports: "Use an energetic, motivational tone and sprinkle light humour.",
+	Politics: "Maintain an authoritative yet neutral tone.",
+	Finance: "Speak in a confident, analytical tone.",
+	Entertainment: "Keep it upbeat and engaging.",
+	Technology: "Adopt a forward‑looking, curious tone.",
+	Health: "Stay reassuring and informative.",
+	Lifestyle: "Be friendly and encouraging.",
+	Science: "Convey wonder and clarity.",
+	World: "Maintain an objective, international outlook.",
+	Top5: "Keep each item snappy and exciting.",
+};
+/* YouTube category map */
 const YT_CATEGORY_MAP = {
 	Sports: "17",
 	Politics: "25",
@@ -149,9 +185,12 @@ const YT_CATEGORY_MAP = {
 	Other: "0",
 	Top5: "0",
 };
+/* brand */
+const BRAND_TAG = "AiVideomatic";
+const BRAND_CREDIT = "Powered by AiVideomatic";
 
 /* ───────────────────────────────────────────────────────────── */
-/*  UTILS                                                        */
+/*  UTILITIES                                                    */
 /* ───────────────────────────────────────────────────────────── */
 const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
@@ -166,7 +205,7 @@ const escTxt = (t) =>
 		.replace(/:/g, "\\:")
 		.replace(/,/g, "\\,");
 
-/* ────────────★ NEW HELPER FOR SMOOTHER TTS ★──────────── */
+/* pronunciation smoother */
 const NUM_WORD = {
 	1: "one",
 	2: "two",
@@ -189,24 +228,17 @@ const NUM_WORD = {
 	19: "nineteen",
 	20: "twenty",
 };
-
-/* ––– BRAND CONSTANTS ––– */
-const BRAND_TAG = "AiVideomatic";
-const BRAND_CREDIT = "Powered by AiVideomatic";
-
 function improveTTSPronunciation(text) {
-	/* 1️⃣  Turn “#5:” → “Number five:” */
 	text = text.replace(/#\s*([1-5])\s*:/g, (_, n) => `Number ${NUM_WORD[n]}:`);
-
-	/* 2️⃣  Spell out any solitary digit 1‑20 to avoid awkward pauses */
 	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
 }
-/* ───────────────────────────────────────────────────────────── */
-
 function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
+/* ───────────────────────────────────────────────────────────── */
+/*  FFmpeg helpers                                               */
+/* ───────────────────────────────────────────────────────────── */
 function ffmpegPromise(cfg) {
 	return new Promise((res, rej) => {
 		const proc = cfg(ffmpeg()) || ffmpeg();
@@ -221,8 +253,6 @@ function ffmpegPromise(cfg) {
 			});
 	});
 }
-
-/* exact‑length helpers */
 async function exactLen(src, target, out) {
 	const meta = await new Promise((r, j) =>
 		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
@@ -259,8 +289,6 @@ async function exactLenAudio(src, target, out) {
 		return c.outputOptions("-y").save(norm(out));
 	});
 }
-
-/* overlay plausibility check */
 async function checkOverlay(filter, w, h, d) {
 	if (!hasLavfi) return;
 	const vf = filter.replace(/\[vout\]$/, "");
@@ -280,30 +308,39 @@ async function checkOverlay(filter, w, h, d) {
 /* ───────────────────────────────────────────────────────────── */
 /*  GPT helpers                                                  */
 /* ───────────────────────────────────────────────────────────── */
-async function refineCustomPrompt(raw, language = DEFAULT_LANGUAGE) {
+async function refineRunwayPrompt(
+	initialPrompt,
+	scriptText,
+	category,
+	language
+) {
 	const ask = `
-You are an expert prompt engineer.
+You are an elite prompt engineer for Runway Gen‑4 video.
+Refine the INITIAL prompt below so the resulting clip faithfully depicts the DESCRIPTION.
+Rules:
+1. ≤25 words, lowercase, no quotes.
+2. Preserve brand / model / person names verbatim if present.
+3. Describe main action and setting: "acer predator helios 300 laptop on office desk, user typing, thumbs up".
+4. Append camera or mood terms if helpful.
+Return ONLY the revised prompt.
 
-Task 1 – Rewrite the following user text into one vivid Runway Gen‑4 image prompt (≤15 words, no first‑person, no quotes).
+INITIAL:
+<<<${initialPrompt}>>>
 
-Task 2 – Provide one short SEO keyword phrase (≤60 chars, no "#").
+DESCRIPTION:
+<<<${scriptText}>>>`.trim();
 
-Respond with ONLY this JSON structure:
-{ "runway": "<prompt>", "seo": "<seo‑fragment>" }
-
-Input:
-<<<${raw}>>>`.trim();
-
-	const { choices } = await openai.chat.completions.create({
-		model: "gpt-4o-mini",
-		messages: [{ role: "user", content: ask }],
-	});
-	const obj = JSON.parse(strip(choices[0].message.content.trim()) || "{}");
-	if (!obj.runway) obj.runway = raw;
-	if (!obj.seo) obj.seo = "";
-	return { runway: obj.runway.trim(), seo: obj.seo.trim() };
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: "gpt-4o-mini",
+			messages: [{ role: "user", content: ask }],
+		});
+		return choices[0].message.content.trim();
+	} catch (e) {
+		console.warn("[refineRunwayPrompt] fallback", e.message);
+		return initialPrompt;
+	}
 }
-
 async function describeHuman(language, country) {
 	const locale =
 		country && country !== "all countries" ? `from ${country}` : "western";
@@ -318,7 +355,6 @@ Use the language "${language}". Return ONLY the description.`.trim();
 	});
 	return choices[0].message.content.trim();
 }
-
 async function describePerson(name, language) {
 	const prompt = `
 Write ONE vivid description (≤15 words) of a person who resembles ${name}.
@@ -331,7 +367,6 @@ Use the language "${language}". Return ONLY the description.`.trim();
 	});
 	return choices[0].message.content.trim();
 }
-
 async function injectHumanIfNeeded(
 	runwayPrompt,
 	scriptText,
@@ -360,7 +395,6 @@ async function injectHumanIfNeeded(
 		cache.humanDesc = await describeHuman(language, country);
 	return `${cache.humanDesc}, ${HUMAN_SAFETY}, ${runwayPrompt}`;
 }
-
 function fitScriptToTiming(segments, segLens) {
 	return segments.map((seg, i) => {
 		const maxWords = Math.floor(segLens[i] * WORDS_PER_SEC);
@@ -372,11 +406,10 @@ function fitScriptToTiming(segments, segLens) {
 }
 
 /* ───────────────────────────────────────────────────────────── */
-/*  TOPIC HELPERS  (dynamic month / year)                        */
+/*  TOPIC helpers                                                */
 /* ───────────────────────────────────────────────────────────── */
 const CURRENT_MONTH_YEAR = dayjs().format("MMMM YYYY");
 const CURRENT_YEAR = dayjs().year();
-
 async function topicFromCustomPrompt(text, language) {
 	const basePrompt = (attempt) =>
 		`
@@ -390,21 +423,16 @@ Titles must NOT mention any year earlier than ${CURRENT_YEAR}.
 <<<${text}>>>`.trim();
 
 	for (let a = 1; a <= 2; a++) {
-		try {
-			const { choices } = await openai.chat.completions.create({
-				model: "gpt-4o-mini",
-				messages: [{ role: "user", content: basePrompt(a) }],
-			});
-			const t = choices[0].message.content.replace(/["“”]/g, "").trim();
-			if (!/20\d{2}/.test(t) || new RegExp(`\\b${CURRENT_YEAR}\\b`).test(t))
-				return t;
-		} catch (e) {
-			console.warn("[topicFromCustomPrompt]", e.message);
-		}
+		const { choices } = await openai.chat.completions.create({
+			model: "gpt-4o-mini",
+			messages: [{ role: "user", content: basePrompt(a) }],
+		});
+		const t = choices[0].message.content.replace(/["“”]/g, "").trim();
+		if (!/20\d{2}/.test(t) || new RegExp(`\\b${CURRENT_YEAR}\\b`).test(t))
+			return t;
 	}
 	throw new Error("Cannot distil topic from custom prompt");
 }
-
 async function pickTrendingTopicFresh(category, language, country) {
 	const loc =
 		country && country.toLowerCase() !== "all countries"
@@ -412,7 +440,6 @@ async function pickTrendingTopicFresh(category, language, country) {
 			: "";
 	const langLn =
 		language && language !== DEFAULT_LANGUAGE ? ` Respond in ${language}.` : "";
-
 	const basePrompt = (attempt) =>
 		`
 Attempt ${attempt}:
@@ -439,7 +466,7 @@ They must NOT mention years earlier than ${CURRENT_YEAR}.${langLn}`.trim();
 }
 
 /* ───────────────────────────────────────────────────────────── */
-/*  Runway + polling helpers                                     */
+/*  Runway polling + retry helpers                               */
 /* ───────────────────────────────────────────────────────────── */
 async function pollRunway(id, tk, seg, lbl) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${id}`;
@@ -471,9 +498,8 @@ async function retry(fn, max, seg, lbl) {
 }
 
 /* ───────────────────────────────────────────────────────────── */
-/*  YouTube + Jamendo + Eleven Labs helpers                      */
+/*  YouTube + Jamendo helpers                                    */
 /* ───────────────────────────────────────────────────────────── */
-
 function resolveYouTubeTokens(req, user) {
 	const bodyTok = {
 		access_token: req.body.youtubeAccessToken,
@@ -482,7 +508,6 @@ function resolveYouTubeTokens(req, user) {
 			? new Date(req.body.youtubeTokenExpiresAt).getTime()
 			: undefined,
 	};
-
 	const userTok = {
 		access_token: user.youtubeAccessToken,
 		refresh_token: user.youtubeRefreshToken,
@@ -490,26 +515,20 @@ function resolveYouTubeTokens(req, user) {
 			? new Date(user.youtubeTokenExpiresAt).getTime()
 			: undefined,
 	};
-
-	/* choose the one that has a refresh‑token; if both, take the newest expiry */
 	const pick =
 		bodyTok.refresh_token &&
 		(!userTok.refresh_token ||
 			(userTok.expiry_date || 0) < (bodyTok.expiry_date || 0))
 			? bodyTok
 			: userTok;
-
 	return pick;
 }
-
 function buildYouTubeOAuth2Client(source) {
 	const creds =
 		source && source.access_token !== undefined
-			? source // plain tokens object
-			: resolveYouTubeTokens({ body: {} }, source); // user doc
-
+			? source
+			: resolveYouTubeTokens({ body: {} }, source);
 	if (!creds.refresh_token) return null;
-
 	const o = new google.auth.OAuth2(
 		process.env.YOUTUBE_CLIENT_ID,
 		process.env.YOUTUBE_CLIENT_SECRET,
@@ -518,36 +537,29 @@ function buildYouTubeOAuth2Client(source) {
 	o.setCredentials(creds);
 	return o;
 }
-
 async function refreshYouTubeTokensIfNeeded(user, req) {
 	const tokens = resolveYouTubeTokens(req, user);
 	const o = buildYouTubeOAuth2Client(tokens);
 	if (!o) return tokens;
-
 	try {
-		const { token } = await o.getAccessToken(); // triggers refresh if needed
+		const { token } = await o.getAccessToken();
 		if (token) {
 			const fresh = {
 				access_token: o.credentials.access_token,
 				refresh_token: o.credentials.refresh_token || tokens.refresh_token,
 				expiry_date: o.credentials.expiry_date,
 			};
-
-			/* persist on user doc unless you deliberately want admin untouched */
 			user.youtubeAccessToken = fresh.access_token;
 			user.youtubeRefreshToken = fresh.refresh_token;
 			user.youtubeTokenExpiresAt = fresh.expiry_date;
-
-			if (user.isModified() && user.role !== "admin") await user.save(); // keep old behaviour
-
+			if (user.isModified() && user.role !== "admin") await user.save();
 			return fresh;
 		}
 	} catch (e) {
 		console.warn("[YouTube] refresh error:", e.message);
 	}
-	return tokens; // fall back to current (might still work)
+	return tokens;
 }
-
 async function uploadToYouTube(u, fp, { title, description, tags, category }) {
 	const o = buildYouTubeOAuth2Client(u);
 	if (!o) throw new Error("YouTube OAuth missing");
@@ -573,7 +585,6 @@ async function uploadToYouTube(u, fp, { title, description, tags, category }) {
 	);
 	return `https://www.youtube.com/watch?v=${data.id}`;
 }
-
 async function jamendo(term) {
 	try {
 		const { data } = await axios.get("https://api.jamendo.com/v3.0/tracks", {
@@ -584,23 +595,26 @@ async function jamendo(term) {
 		return null;
 	}
 }
-async function elevenLabsTTS(text, language, outPath) {
-	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
-	const voiceId = ELEVEN_VOICES[language] || ELEVEN_VOICES[DEFAULT_LANGUAGE];
 
-	/* Shared request payload */
+/* ───────────────────────────────────────────────────────────── */
+/*  ElevenLabs TTS (style varies by category)                    */
+/* ───────────────────────────────────────────────────────────── */
+async function elevenLabsTTS(text, language, outPath, category = "Other") {
+	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
+
+	const voiceId = ELEVEN_VOICES[language] || ELEVEN_VOICES[DEFAULT_LANGUAGE];
+	const style = ELEVEN_STYLE_BY_CATEGORY[category] ?? 0.6;
+
 	const payload = {
 		text,
 		model_id: "eleven_multilingual_v2",
 		voice_settings: {
 			stability: 0.1,
 			similarity_boost: 0.9,
-			style: ELEVEN_STYLE, // numeric 0‑1
+			style,
 			use_speaker_boost: true,
 		},
 	};
-
-	/* Axios opts reused across attempts */
 	const opts = {
 		headers: {
 			"xi-api-key": ELEVEN_API_KEY,
@@ -608,32 +622,24 @@ async function elevenLabsTTS(text, language, outPath) {
 			accept: "audio/mpeg",
 		},
 		responseType: "stream",
-		validateStatus: (s) => s < 500, // capture 4xx for manual handling
+		validateStatus: (s) => s < 500,
 	};
-
 	const baseURL = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`;
-
-	/* Attempt #1 – preferred settings */
 	let res = await axios.post(baseURL, payload, opts);
-
-	/* Handle 422 – often caused by an unsupported style setting */
 	if (res.status === 422) {
 		console.warn("[TTS] ElevenLabs 422 – retrying without style");
 		delete payload.voice_settings.style;
 		res = await axios.post(baseURL, payload, opts);
 	}
-
-	if (res.status >= 300) {
+	if (res.status >= 300)
 		throw new Error(`ElevenLabs TTS failed (${res.status})`);
-	}
 
 	const ws = fs.createWriteStream(outPath);
 	await new Promise((resolve, reject) =>
 		res.data.pipe(ws).on("finish", resolve).on("error", reject)
 	);
-
 	console.log(
-		`[TTS] ElevenLabs voice (${language}, style=${ELEVEN_STYLE}) → ${path.basename(
+		`[TTS] ElevenLabs voice (${language}, style=${style}) → ${path.basename(
 			outPath
 		)}`
 	);
@@ -655,9 +661,6 @@ exports.createVideo = async (req, res) => {
 	res.setTimeout(0);
 
 	try {
-		console.log("▶️  body:", JSON.stringify(req.body));
-
-		/* ---------- input parsing ---------- */
 		const {
 			category,
 			ratio: ratioIn,
@@ -689,11 +692,6 @@ exports.createVideo = async (req, res) => {
 		const duration = +durIn;
 		const [w, h] = ratio.split(":").map(Number);
 
-		console.log(
-			`[Input] cat=${category} ratio=${ratio} dur=${duration}s lang=${language} country=${country}` +
-				(seedImageUrl ? " (seed image provided)" : "")
-		);
-
 		/* ---------- TOPIC ---------- */
 		let topic = "";
 		if (customPrompt) {
@@ -722,9 +720,8 @@ exports.createVideo = async (req, res) => {
 				topic = list.find((t) => !used.has(t)) || list[0];
 			}
 		}
-		console.log("[Topic]", topic);
 
-		/* ---------- SEGMENT lengths ---------- */
+		/* ---------- SEGMENTS ---------- */
 		const intro = 3;
 		const segLens = (() => {
 			if (category === "Top5") {
@@ -746,9 +743,8 @@ exports.createVideo = async (req, res) => {
 			];
 		})();
 		const segCnt = segLens.length;
-		console.log("[Segments]", segCnt, segLens);
 
-		/* ---------- GPT SEGMENTS ---------- */
+		/* ---------- GPT SEGMENT CONTENT ---------- */
 		const langHint =
 			language !== DEFAULT_LANGUAGE ? `Respond ONLY in ${language}.` : "";
 		const segPrompt = `Current date: ${dayjs().format("YYYY-MM-DD")}
@@ -761,6 +757,7 @@ Segment 1 is an intro (${segLens[0]}s). ${
 			category === "Top5" ? 'Segments 2‑6 start with "#5:" … "#1:".' : ""
 		}
 For each segment return "runwayPrompt" and "scriptText". ${langHint}
+${TONE_HINTS[category] || ""}
 If a custom Runway directive exists, blend its mood & setting: "${customPrompt}".
 Return ONLY a JSON array of ${segCnt} objects.`;
 
@@ -789,9 +786,8 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 				.replace(/^[-–•\s]+/, "")
 				.trim();
 		} catch {}
-		console.log("[Style]", globalStyle);
 
-		/* ---------- SEO ---------- */
+		/* ---------- SEO TITLE & DESCRIPTION ---------- */
 		const alreadyTop5 = /^top\s*5/i.test(topic);
 		const seoTitle =
 			category === "Top5"
@@ -805,8 +801,6 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 			messages: [{ role: "user", content: descPrompt }],
 		});
 		const seoDescription = `${descResp.choices[0].message.content.trim()}\n\n${BRAND_CREDIT}`;
-
-		/* BRAND CREDIT */
 
 		let tags = ["shorts"];
 		try {
@@ -830,15 +824,13 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 		if (tags.length < 5)
 			tags.push(...topic.split(" ").slice(0, 5 - tags.length));
 		if (category === "Top5") tags.unshift("Top5");
-
-		/* BRAND TAG */
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
-		console.log("[SEO] title:", seoTitle);
-		console.log("[SEO] tags :", tags.join(","));
 
 		/* ---------- PROMPT ENHANCEMENT ---------- */
 		const humanCache = {};
 		const prependCustom = (p) => (customPrompt ? `${customPrompt}, ${p}` : p);
+		const neg = RUNWAY_NEGATIVE_PROMPT;
+
 		if (category === "Top5") {
 			for (let i = 1; i < 6; i++) {
 				const subj = segments[i].scriptText.split(/[.!?\n]/)[0];
@@ -850,16 +842,32 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 					country,
 					humanCache
 				);
-				segments[i].runwayPrompt = prependCustom(prompt);
+				prompt = await refineRunwayPrompt(
+					prompt,
+					segments[i].scriptText,
+					category,
+					language
+				);
+				segments[i].runwayPrompt = prependCustom(
+					`${prompt}, ${neg}`.replace(/^,\s*/, "")
+				);
 			}
+			let p0 = `${globalStyle}, ${QUALITY_BONUS}`.replace(/^,\s*/, "");
+			p0 = await injectHumanIfNeeded(
+				p0,
+				segments[0].scriptText,
+				language,
+				country,
+				humanCache
+			);
+			p0 = await refineRunwayPrompt(
+				p0,
+				segments[0].scriptText,
+				category,
+				language
+			);
 			segments[0].runwayPrompt = prependCustom(
-				await injectHumanIfNeeded(
-					`${globalStyle}, ${QUALITY_BONUS}`.replace(/^,\s*/, ""),
-					segments[0].scriptText,
-					language,
-					country,
-					humanCache
-				)
+				`${p0}, ${neg}`.replace(/^,\s*/, "")
 			);
 		} else {
 			for (const s of segments) {
@@ -871,19 +879,26 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 					country,
 					humanCache
 				);
-				s.runwayPrompt = prependCustom(prompt);
+				prompt = await refineRunwayPrompt(
+					prompt,
+					s.scriptText,
+					category,
+					language
+				);
+				s.runwayPrompt = prependCustom(
+					`${prompt}, ${neg}`.replace(/^,\s*/, "")
+				);
 			}
 		}
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 
-		/* ---------- OVERLAY (Top‑5) ---------- */
+		/* ---------- OVERLAY (Top‑5 number labels) ---------- */
 		let overlay = "";
 		if (category === "Top5") {
 			let t = segLens[0];
 			const draw = [];
 			for (let i = 1; i < segCnt; i++) {
 				const d = segLens[i];
-				/* ★ CLEANER LABEL – stop at first dash before description */
 				const label = segments[i].scriptText
 					.split(/\s[-–—]\s/)[0]
 					.split(/[.!?\n]/)[0]
@@ -916,7 +931,6 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 				await new Promise((r, j) =>
 					data.pipe(ws).on("finish", r).on("error", j)
 				);
-				console.log("[Jamendo] track fetched");
 			}
 		} catch {
 			console.warn("[Jamendo] no track");
@@ -935,7 +949,6 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 			});
 			const d = segLens[i];
 			const rw = Math.abs(5 - d) <= Math.abs(10 - d) ? 5 : 10;
-
 			let clip;
 			try {
 				if (seedImageUrl) {
@@ -988,9 +1001,7 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 						console.warn(`[S${i + 1}] seed failed → fallback`);
 					}
 				}
-
 				if (!clip) {
-					/* fallback text‑to‑image route */
 					const idImg = await retry(
 						async () => {
 							const { data } = await axios.post(
@@ -1113,20 +1124,18 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 		);
 		fs.unlinkSync(listFile);
 		clips.forEach((p) => fs.unlinkSync(p));
-		console.log("[Concat] silent track ready");
 
 		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
 
 		/* ---------- TTS ---------- */
 		const ttsPath = tmpFile("tts", ".mp3");
 		try {
-			/* ★ Use pronunciation‑improved script */
 			await elevenLabsTTS(
 				improveTTSPronunciation(fullScript),
 				language,
-				ttsPath
+				ttsPath,
+				category
 			);
-			console.log("[TTS] ElevenLabs");
 		} catch (e) {
 			console.warn("[TTS] ElevenLabs failed – OpenAI fallback:", e.message);
 			const opts = { model: "tts-1-hd", voice: "shimmer", speed: 1.0 };
@@ -1141,7 +1150,6 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 		/* ---------- MIX ---------- */
 		const mixedRaw = tmpFile("mix_raw", ".wav");
 		const mixed = tmpFile("mix_fix", ".wav");
-
 		if (music) {
 			const trim = tmpFile("trim", ".mp3");
 			await ffmpegPromise((c) =>
@@ -1151,7 +1159,6 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 					.save(norm(trim))
 			);
 			fs.unlinkSync(music);
-
 			await ffmpegPromise((c) =>
 				c
 					.input(norm(ttsPath))
@@ -1176,7 +1183,6 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 		fs.unlinkSync(ttsPath);
 		await exactLenAudio(mixedRaw, duration, mixed);
 		fs.unlinkSync(mixedRaw);
-		console.log("[Audio] mix ready");
 
 		sendPhase("SYNCING_VOICE_MUSIC", { msg: "Muxing final video" });
 
@@ -1186,7 +1192,6 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 			.replace(/[^\w\d]+/g, "_")
 			.replace(/^_+|_+$/g, "");
 		const finalPath = tmpFile(safeTitle, ".mp4");
-
 		await ffmpegPromise((c) => {
 			c.input(norm(silent)).input(norm(mixed));
 			if (category === "Top5") {
@@ -1230,7 +1235,6 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 		try {
 			fs.unlinkSync(mixed);
 		} catch {}
-		console.log("[Final] video at", finalPath);
 
 		/* ---------- YouTube upload ---------- */
 		let youtubeLink = "";
@@ -1238,10 +1242,8 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 		try {
 			tokens = await refreshYouTubeTokensIfNeeded(user, req);
 			const oauth2 = buildYouTubeOAuth2Client(tokens);
-
 			if (oauth2) {
 				const yt = google.youtube({ version: "v3", auth: oauth2 });
-
 				const { data } = await yt.videos.insert(
 					{
 						part: ["snippet", "status"],
@@ -1264,12 +1266,8 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 					},
 					{ maxContentLength: Infinity, maxBodyLength: Infinity }
 				);
-
 				youtubeLink = `https://www.youtube.com/watch?v=${data.id}`;
-				console.log("[YouTube]", youtubeLink);
 				sendPhase("VIDEO_UPLOADED", { msg: youtubeLink, youtubeLink });
-			} else {
-				console.warn("[YouTube] No valid refresh_token – skipped upload");
 			}
 		} catch (e) {
 			console.warn("[YouTube] upload", e.message);
@@ -1299,8 +1297,6 @@ Return ONLY a JSON array of ${segCnt} objects.`;
 			youtubeTokenExpiresAt: tokens?.expiry_date || null,
 			youtubeEmail,
 		});
-		console.log("[Mongo] saved", doc._id);
-
 		if (schedule) {
 			const { type, timeOfDay, startDate, endDate } = schedule;
 			let next = dayjs(startDate)
