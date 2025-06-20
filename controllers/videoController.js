@@ -145,6 +145,8 @@ const ELEVEN_STYLE_BY_CATEGORY = {
 	Top5: 0.8,
 	Other: 0.6,
 };
+const CHAT_MODEL = "gpt-4o"; // single source of truth
+
 function spokenSeconds(words) {
 	return +(words / WORDS_PER_SEC).toFixed(2);
 }
@@ -240,15 +242,19 @@ function ffmpegPromise(cfg) {
 			.on("error", (e) => rej(e));
 	});
 }
+
+/* 🟢 FIX #1 – removed  -accurate_seek */
 async function exactLen(src, target, out) {
 	const meta = await new Promise((r, j) =>
 		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
 	);
 	const diff = +(target - meta.format.duration).toFixed(3);
+
 	await ffmpegPromise((c) => {
 		c.input(norm(src));
-		if (diff < -0.05) c.outputOptions("-accurate_seek", "-t", String(target));
+		if (diff < -0.05) c.outputOptions("-t", String(target));
 		else if (diff > 0.05) c.videoFilters(`tpad=stop_duration=${diff}`);
+
 		return c
 			.outputOptions(
 				"-c:v",
@@ -264,6 +270,8 @@ async function exactLen(src, target, out) {
 			.save(norm(out));
 	});
 }
+
+/* 🟢 FIX #2 – removed  -accurate_seek */
 async function exactLenAudio(src, target, out) {
 	const meta = await new Promise((r, j) =>
 		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
@@ -273,24 +281,26 @@ async function exactLenAudio(src, target, out) {
 
 	await ffmpegPromise((c) => {
 		c.input(norm(src));
+
 		if (Math.abs(diff) <= 0.05) {
-			/* on point */
+			/* already on point */
 		} else if (diff > 0.05) {
 			c.audioFilters(`apad=pad_dur=${diff}`);
 		} else {
-			const ratio = inDur / target;
+			const ratio = inDur / target; // >1 → speed‑up
 			if (ratio <= 2.0) {
 				c.audioFilters(`atempo=${ratio.toFixed(3)}`);
 			} else if (ratio <= 4.0) {
 				const r = Math.sqrt(ratio).toFixed(3);
 				c.audioFilters(`atempo=${r},atempo=${r}`);
 			} else {
-				c.outputOptions("-accurate_seek", "-t", String(target));
+				c.outputOptions("-t", String(target));
 			}
 		}
 		return c.outputOptions("-y").save(norm(out));
 	});
 }
+
 async function checkOverlay(filter, w, h, d) {
 	if (!hasLavfi) return;
 	const vf = filter.replace(/\[vout\]$/, "");
@@ -313,7 +323,7 @@ async function refineRunwayPrompt(initialPrompt, scriptText) {
 	const ask = `Refine to ≤25 words, no quotes:\n${initialPrompt}\n---\n${scriptText}`;
 	try {
 		const { choices } = await openai.chat.completions.create({
-			model: "gpt‑4o",
+			model: CHAT_MODEL,
 			messages: [{ role: "user", content: ask }],
 		});
 		return choices[0].message.content.trim();
@@ -326,7 +336,7 @@ async function describeHuman(language, country) {
 		country && country !== "all countries" ? `from ${country}` : "western";
 	const prompt = `Describe a real human ${locale} in ≤15 words; include attire, mood, lens, lighting.`;
 	const { choices } = await openai.chat.completions.create({
-		model: "gpt‑4o",
+		model: CHAT_MODEL,
 		messages: [{ role: "user", content: prompt }],
 	});
 	return choices[0].message.content.trim();
@@ -334,7 +344,7 @@ async function describeHuman(language, country) {
 async function describePerson(name, language) {
 	const prompt = `Describe a person similar to ${name} in ≤15 words; build, hair, eyes, ethnicity, attire, lens, lighting.`;
 	const { choices } = await openai.chat.completions.create({
-		model: "gpt‑4o",
+		model: CHAT_MODEL,
 		messages: [{ role: "user", content: prompt }],
 	});
 	return choices[0].message.content.trim();
@@ -366,12 +376,12 @@ async function injectHumanIfNeeded(
 	return runwayPrompt;
 }
 
-/*  🆕  – Vision helper to describe a user‑supplied image */
+/*  Vision helper to describe a user‑supplied image */
 async function describeSeedImage(imageUrl) {
 	const ask = "Describe this photo in ≤15 vivid words, no names.";
 	try {
 		const { choices } = await openai.chat.completions.create({
-			model: "gpt‑4o",
+			model: CHAT_MODEL,
 			messages: [
 				{
 					role: "user",
@@ -390,7 +400,7 @@ async function describeSeedImage(imageUrl) {
 }
 
 /* ───────────────────────────────────────────────────────────── */
-/*  TOPIC helpers (unchanged)                                    */
+/*  TOPIC helpers                                                */
 /* ───────────────────────────────────────────────────────────── */
 const CURRENT_MONTH_YEAR = dayjs().format("MMMM YYYY");
 const CURRENT_YEAR = dayjs().year();
@@ -404,7 +414,7 @@ Do NOT mention years before ${CURRENT_YEAR}.
 <<<${text}>>>`.trim();
 	for (let a = 1; a <= 2; a++) {
 		const { choices } = await openai.chat.completions.create({
-			model: "gpt‑4o",
+			model: CHAT_MODEL,
 			messages: [{ role: "user", content: basePrompt(a) }],
 		});
 		const t = choices[0].message.content.replace(/["“”]/g, "").trim();
@@ -427,7 +437,7 @@ Return JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${loc}
 	for (let attempt = 1; attempt <= 2; attempt++) {
 		try {
 			const g = await openai.chat.completions.create({
-				model: "gpt‑4o",
+				model: CHAT_MODEL,
 				messages: [{ role: "user", content: basePrompt(attempt) }],
 			});
 			const list = JSON.parse(
@@ -440,7 +450,7 @@ Return JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${loc}
 }
 
 /* ───────────────────────────────────────────────────────────── */
-/*  Runway poll + retry helpers (unchanged)                      */
+/*  Runway poll + retry helpers                                  */
 /* ───────────────────────────────────────────────────────────── */
 async function pollRunway(id, tk, seg, lbl) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${id}`;
@@ -470,7 +480,7 @@ async function retry(fn, max, seg, lbl) {
 }
 
 /* ───────────────────────────────────────────────────────────── */
-/*  YouTube + Jamendo helpers (unchanged)                        */
+/*  YouTube + Jamendo helpers                                    */
 /* ───────────────────────────────────────────────────────────── */
 function resolveYouTubeTokens(req, user) {
 	const bodyTok = {
@@ -565,7 +575,7 @@ async function jamendo(term) {
 }
 
 /* ───────────────────────────────────────────────────────────── */
-/*  ElevenLabs TTS (unchanged)                                   */
+/*  ElevenLabs TTS                                               */
 /* ───────────────────────────────────────────────────────────── */
 async function elevenLabsTTS(text, language, outPath, category = "Other") {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
@@ -716,17 +726,31 @@ Return array of { "runwayPrompt", "scriptText" }. Do not exceed caps. ${
 		}`.trim();
 
 		const segResp = await openai.chat.completions.create({
-			model: "gpt-4o",
+			model: CHAT_MODEL,
 			messages: [{ role: "user", content: segPrompt }],
 		});
-		let segments = JSON.parse(strip(segResp.choices[0].message.content.trim()));
+
+		let raw = strip(segResp.choices[0].message.content.trim());
+		let segments;
+		try {
+			segments = JSON.parse(raw);
+		} catch {
+			throw new Error("GPT segment JSON malformed");
+		}
+		if (!Array.isArray(segments)) {
+			if (segments && typeof segments === "object")
+				segments = Object.values(segments);
+			else throw new Error("GPT segment JSON was not an array");
+		}
+		if (segments.length !== segCnt)
+			throw new Error(`Expected ${segCnt} segments, got ${segments.length}`);
 
 		/* shrink any over‑long lines */
 		const shorten = async (seg, cap) => {
 			if (seg.scriptText.trim().split(/\s+/).length <= cap) return seg;
 			const ask = `Shorten to ≤${cap} words:\n"${seg.scriptText}"`;
 			const { choices } = await openai.chat.completions.create({
-				model: "gpt‑4o",
+				model: CHAT_MODEL,
 				messages: [{ role: "user", content: ask }],
 			});
 			seg.scriptText = choices[0].message.content.trim();
@@ -740,7 +764,7 @@ Return array of { "runwayPrompt", "scriptText" }. Do not exceed caps. ${
 		let globalStyle = "";
 		try {
 			const s = await openai.chat.completions.create({
-				model: "gpt‑4o",
+				model: CHAT_MODEL,
 				messages: [
 					{
 						role: "user",
@@ -761,7 +785,7 @@ Return array of { "runwayPrompt", "scriptText" }. Do not exceed caps. ${
 					: `Top 5: ${topic}`
 				: `${category} Highlights: ${topic}`;
 		const descResp = await openai.chat.completions.create({
-			model: "gpt‑4o",
+			model: CHAT_MODEL,
 			messages: [
 				{
 					role: "user",
@@ -773,7 +797,7 @@ Return array of { "runwayPrompt", "scriptText" }. Do not exceed caps. ${
 		let tags = ["shorts"];
 		try {
 			const tagResp = await openai.chat.completions.create({
-				model: "gpt‑4o",
+				model: CHAT_MODEL,
 				messages: [
 					{
 						role: "user",
