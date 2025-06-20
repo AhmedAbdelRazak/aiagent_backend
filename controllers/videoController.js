@@ -57,6 +57,10 @@ assertExists(
 );
 ffmpeg.setFfmpegPath(ffmpegPath);
 
+const ffprobePath = process.env.FFPROBE_PATH || "ffprobe"; // ← **NEW**
+ffmpeg.setFfprobePath(ffprobePath); // ← **NEW**
+console.log(`[FFprobe] binary: ${ffprobePath}`); // ← **NEW**
+
 function ffmpegSupportsLavfi() {
 	try {
 		child_process.execSync(
