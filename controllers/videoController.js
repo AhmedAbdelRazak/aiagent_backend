@@ -2,6 +2,11 @@
 /* eslint-disable no-await-in-loop, camelcase, max-len */
 "use strict";
 
+/*  ──────────────────────────────────────────────────────────────────────────
+    NOTE: Full backend module with Top‑5 enhancements, louder/excited
+          ElevenLabs voice, and improved segment‑sync. Ready to paste.
+    ────────────────────────────────────────────────────────────────────────── */
+
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -134,17 +139,17 @@ const ELEVEN_VOICES = {
 	हिंदी: "ykoxtvL6VZTyas23mE9F",
 };
 const ELEVEN_STYLE_BY_CATEGORY = {
-	Sports: 0.85,
-	Politics: 0.35,
-	Finance: 0.5,
-	Entertainment: 0.75,
-	Technology: 0.6,
-	Health: 0.55,
-	World: 0.55,
-	Lifestyle: 0.7,
-	Science: 0.6,
-	Top5: 0.8,
-	Other: 0.6,
+	Sports: 1.0,
+	Politics: 0.6,
+	Finance: 0.7,
+	Entertainment: 0.9,
+	Technology: 0.8,
+	Health: 0.7,
+	World: 0.7,
+	Lifestyle: 0.9,
+	Science: 0.8,
+	Top5: 1.0,
+	Other: 0.7,
 };
 
 const CHAT_MODEL = "gpt-4o";
@@ -164,7 +169,7 @@ const TONE_HINTS = {
 	Lifestyle: "Be friendly and encouraging.",
 	Science: "Convey wonder and clarity.",
 	World: "Maintain an objective, international outlook.",
-	Top5: "Keep each item snappy and exciting.",
+	Top5: "Keep each item snappy, thrilling, and hype‑driven.",
 };
 const YT_CATEGORY_MAP = {
 	Sports: "17",
@@ -234,15 +239,12 @@ function improveTTSPronunciation(text) {
 /*  ★ Robust parser for GPT segment JSON                                     */
 /* ────────────────────────────────────────────────────────────────────────── */
 function parseSegmentsSafe(raw, expectedCount) {
-	/* remove code‑block fences & any leading text */
 	raw = strip(raw.trim());
-	/* some users forget outer array but give one object per line; try to detect */
 	if (!raw.trim().startsWith("[")) raw = `[${raw}]`;
 	try {
 		const j = JSON.parse(raw);
 		return Array.isArray(j) ? j : Object.values(j);
 	} catch {}
-	/* try to replace single quotes with double */
 	try {
 		const j = JSON.parse(
 			raw.replace(/(['`])([^'`]*?)\1/g, (m, q, s) => `"${s}"`)
@@ -337,7 +339,6 @@ async function exactLenAudio(src, target, out) {
 	await ffmpegPromise((c) => {
 		c.input(norm(src));
 		if (Math.abs(diff) <= 0.05) {
-			/* ok */
 		} else if (diff > 0.05) {
 			c.audioFilters(`apad=pad_dur=${diff}`);
 		} else {
@@ -369,7 +370,7 @@ async function checkOverlay(filter, w, h, d) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  GPT helpers (unchanged logic, extra logs)                                */
+/*  GPT helpers                                                              */
 /* ────────────────────────────────────────────────────────────────────────── */
 async function refineRunwayPrompt(initialPrompt, scriptText) {
 	const ask = `Refine to ≤25 words, no quotes:\n${initialPrompt}\n---\n${scriptText}`;
@@ -453,7 +454,7 @@ async function describeSeedImage(imageUrl) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  TOPIC helpers (unchanged)                                                */
+/*  TOPIC helpers                                                            */
 /* ────────────────────────────────────────────────────────────────────────── */
 const CURRENT_MONTH_YEAR = dayjs().format("MMMM YYYY");
 const CURRENT_YEAR = dayjs().year();
@@ -536,7 +537,7 @@ async function retry(fn, max, seg, lbl) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  YouTube + Jamendo helpers (unchanged)                                    */
+/*  YouTube + Jamendo helpers                                                */
 /* ────────────────────────────────────────────────────────────────────────── */
 function resolveYouTubeTokens(req, user) {
 	const bodyTok = {
@@ -630,19 +631,19 @@ async function jamendo(term) {
 	}
 }
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  ElevenLabs TTS (unchanged)                                               */
-/* ────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────── */
+/*  ElevenLabs TTS                                               */
+/* ───────────────────────────────────────────────────────────── */
 async function elevenLabsTTS(text, language, outPath, category = "Other") {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
 	const voiceId = ELEVEN_VOICES[language] || ELEVEN_VOICES[DEFAULT_LANGUAGE];
-	const style = ELEVEN_STYLE_BY_CATEGORY[category] ?? 0.6;
+	const style = ELEVEN_STYLE_BY_CATEGORY[category] ?? 0.7;
 	const payload = {
 		text,
 		model_id: "eleven_multilingual_v2",
 		voice_settings: {
-			stability: 0.1,
-			similarity_boost: 0.9,
+			stability: 0.15,
+			similarity_boost: 0.92,
 			style,
 			use_speaker_boost: true,
 		},
@@ -752,8 +753,13 @@ exports.createVideo = async (req, res) => {
 
 		/* ─── Duration plan ──────────────────────────────────── */
 		const intro = 3;
-		const segLens = (() => {
+		const segCnt =
+			category === "Top5" ? 6 : Math.ceil((duration - intro) / 10) + 1;
+
+		/*   initial rough split  */
+		let segLens = (() => {
 			if (category === "Top5") {
+				/* start with equal share, will refine later */
 				const r = duration - intro;
 				const base = Math.floor(r / 5);
 				const extra = r % 5;
@@ -771,10 +777,11 @@ exports.createVideo = async (req, res) => {
 				),
 			];
 		})();
-		const segCnt = segLens.length;
-		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+		let segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 
 		/* ─── Ask GPT for segment scripts ───────────────────── */
+		const allowExplain = duration >= 25; // explanation only on longer videos
+
 		const capTable = segWordCaps
 			.map((w, i) => `Segment ${i + 1} ≤ ${w} words`)
 			.join("  •  ");
@@ -784,31 +791,21 @@ We need a ${duration}s ${category} video titled "${topic}" split into ${segCnt} 
 			"/"
 		)}). 
 ${capTable}
-${category === "Top5" ? 'Segments 2‑6 must start with "#5:" … "#1:".' : ""}
+${
+	category === "Top5"
+		? `Segments 2‑6 must start with "#5:" … "#1:"${
+				allowExplain
+					? " followed by ≤6 extra words on why it ranks there."
+					: " and contain only the concise label."
+		  }`
+		: ""
+}
 Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and "scriptText". Do not wrap the JSON in markdown. ${
 			TONE_HINTS[category] || ""
 		}`.trim();
 
 		console.log("[GPT] requesting segments …");
-		const segResp = await openai.chat.completions.create({
-			model: CHAT_MODEL,
-			messages: [{ role: "user", content: segPrompt }],
-		});
-
-		let raw = strip(segResp.choices[0].message.content.trim());
-		let segments;
-		try {
-			segments = JSON.parse(raw);
-		} catch {
-			throw new Error("GPT segment JSON malformed");
-		}
-		if (!Array.isArray(segments)) {
-			if (segments && typeof segments === "object")
-				segments = Object.values(segments);
-			else throw new Error("GPT segment JSON was not an array");
-		}
-		if (segments.length !== segCnt)
-			throw new Error(`Expected ${segCnt} segments, got ${segments.length}`);
+		const segments = await getSegments(segPrompt, segCnt);
 
 		/* shrink any over‑long lines */
 		const shorten = async (seg, cap) => {
@@ -821,9 +818,33 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			seg.scriptText = choices[0].message.content.trim();
 			return seg;
 		};
-		segments = await Promise.all(
-			segments.map((s, i) => shorten(s, segWordCaps[i]))
-		);
+		await Promise.all(segments.map((s, i) => shorten(s, segWordCaps[i])));
+
+		/* ─── Top‑5: refine segment lengths so audio fits       */
+		if (category === "Top5") {
+			const introLen = segLens[0];
+			const newLens = [introLen];
+			let totalNeeded = introLen;
+			for (let i = 1; i < segCnt; i++) {
+				const words = segments[i].scriptText.trim().split(/\s+/).length;
+				const minimum = Math.ceil(spokenSeconds(words) + 0.6); // 0.6s breathing room
+				newLens.push(Math.max(segLens[i], minimum));
+				totalNeeded += newLens[i];
+			}
+			if (totalNeeded > duration) {
+				/* scale back proportionally but keep ≥ minimum */
+				const extra = totalNeeded - duration;
+				const scale = (duration - introLen) / (totalNeeded - introLen + 0.0001);
+				for (let i = 1; i < segCnt; i++) {
+					newLens[i] = Math.max(
+						Math.ceil(newLens[i] * scale),
+						Math.ceil(spokenSeconds(segments[i].scriptText.split(/\s+/).length))
+					);
+				}
+			}
+			segLens = newLens;
+			segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+		}
 
 		/* ─── Style helper ──────────────────────────────────── */
 		let globalStyle = "";
@@ -906,14 +927,15 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			const draw = [];
 			for (let i = 1; i < segCnt; i++) {
 				const d = segLens[i];
-				const label = segments[i].scriptText
+				const labelRaw = segments[i].scriptText
 					.replace(/…$/, "")
-					.split(/\s[-–—]\s/)[0]
 					.split(/[.!?\n]/)[0]
 					.trim();
+				const label =
+					labelRaw.length > 60 ? labelRaw.slice(0, 57) + "…" : labelRaw;
 				const spoken = spokenSeconds(label.split(/\s+/).length);
 				const showFrom = t.toFixed(2);
-				const showTo = Math.min(t + spoken + 0.05, t + d - 0.1).toFixed(2);
+				const showTo = Math.min(t + spoken + 0.25, t + d - 0.1).toFixed(2);
 				draw.push(
 					`drawtext=fontfile='${FONT_PATH_FFMPEG}':text='${escTxt(
 						label
@@ -1163,7 +1185,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 					.input(norm(ttsPath))
 					.input(norm(trim))
 					.complexFilter([
-						"[0:a]volume=1[a0]",
+						"[0:a]volume=1.4[a0]", // louder, more energetic voiceover
 						"[1:a]volume=0.12[a1]",
 						"[a0][a1]amix=inputs=2:duration=first[aout]",
 					])
@@ -1175,6 +1197,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			await ffmpegPromise((c) =>
 				c
 					.input(norm(ttsPath))
+					.audioFilters("volume=1.4")
 					.outputOptions("-c:a", "pcm_s16le", "-y")
 					.save(norm(mixedRaw))
 			);
