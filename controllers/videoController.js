@@ -480,6 +480,23 @@ function resolveTrendsCategoryId(label) {
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
 
+async function generateSeoTitle(headlines, category, language) {
+	try {
+		const ask =
+			`
+Give ONE catchy YouTube title in Title Case, ≤70 characters, no hashtags, no quotes.
+It must summarise these headlines: ${headlines.join(" | ")}` +
+			(language !== DEFAULT_LANGUAGE ? `\nRespond in ${language}.` : "");
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask.trim() }],
+		});
+		return choices[0].message.content.replace(/["“”]/g, "").trim();
+	} catch {
+		return null;
+	}
+}
+
 async function fetchTrendingStory(categoryLabel, geo = "US") {
 	const categoryId = resolveTrendsCategoryId(categoryLabel);
 	const url =
@@ -499,6 +516,9 @@ async function fetchTrendingStory(categoryLabel, geo = "US") {
 				title: String(s.title).trim(),
 				image: s.image || firstArticle?.image || null,
 				articleUrl: firstArticle?.url || null,
+				articleTitles: (s.articles || [])
+					.slice(0, 3)
+					.map((a) => String(a.title).trim()),
 			};
 		}
 		throw new Error("empty trends payload");
@@ -790,6 +810,7 @@ exports.createVideo = async (req, res) => {
 		let topic = "";
 		let trendImage = null;
 		let trendArticleUrl = null;
+		let trendArticleTitles = null; // ← new
 
 		if (!customPrompt && category !== "Top5") {
 			const story = await fetchTrendingStory(category, country);
@@ -797,6 +818,7 @@ exports.createVideo = async (req, res) => {
 				topic = story.title;
 				trendImage = story.image;
 				trendArticleUrl = story.articleUrl;
+				trendArticleTitles = story.articleTitles;
 				console.log(`[Trending] candidate topic="${topic}"`);
 			}
 		}
@@ -894,6 +916,11 @@ exports.createVideo = async (req, res) => {
 			? `\n---\nReference article (verbatim, may truncate):\n${articleText}`
 			: "";
 
+		const segLangLine =
+			language !== DEFAULT_LANGUAGE
+				? `\nAll output must be in ${language}.`
+				: ""; // ← new
+
 		const segPrompt = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
 We need a ${duration}s ${category} video titled "${topic}" split into ${segCnt} segments (${segLens.join(
@@ -911,7 +938,7 @@ ${
 }
 Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and "scriptText". Do not wrap the JSON in markdown. ${
 			TONE_HINTS[category] || ""
-		}${articleSection}`.trim();
+		}${segLangLine}${articleSection}`.trim();
 
 		console.log("[GPT] requesting segments …");
 		const segments = await getSegments(segPrompt, segCnt);
@@ -971,12 +998,20 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 		} catch {}
 
 		/* ─── SEO helpers ───────────────────────────────────── */
-		const seoTitle =
-			category === "Top5"
-				? /^top\s*5/i.test(topic)
-					? topic
-					: `Top 5: ${topic}`
-				: `${category} Highlights: ${topic}`;
+		let seoTitle = "";
+		if (trendArticleTitles?.length) {
+			seoTitle =
+				(await generateSeoTitle(trendArticleTitles, category, language)) || "";
+		}
+		if (!seoTitle) {
+			seoTitle =
+				category === "Top5"
+					? /^top\s*5/i.test(topic)
+						? topic
+						: `Top 5: ${topic}`
+					: `${category} Highlights: ${topic}`;
+		}
+
 		const descResp = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [
