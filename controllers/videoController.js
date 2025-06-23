@@ -800,6 +800,9 @@ exports.createVideo = async (req, res) => {
 	res.setHeader("Content-Type", "text/event-stream");
 	res.setHeader("Cache-Control", "no-cache");
 	res.setHeader("Connection", "keep-alive");
+	res.setHeader("X-Accel-Buffering", "no"); // disable buffering on Nginx/Cloudflare
+	if (typeof res.flushHeaders === "function") res.flushHeaders(); // send headers now
+
 	const phaseHistory = [];
 	const sendPhase = (p, extra = {}) => {
 		/* break any accidental circular refs */
@@ -809,7 +812,8 @@ exports.createVideo = async (req, res) => {
 				: extra;
 
 		/* 1️⃣  stream update first */
-		res.write(`data:${JSON.stringify({ phase: p, extra: safeExtra })}\n\n`);
+		res.write(`data: ${JSON.stringify({ phase: p, extra: safeExtra })}\n\n`);
+		if (typeof res.flush === "function") res.flush(); // <── force chunk out
 		/* 2️⃣  then remember it */
 		phaseHistory.push({ phase: p, ts: Date.now(), extra: safeExtra });
 	};
