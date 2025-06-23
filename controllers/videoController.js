@@ -175,28 +175,31 @@ const TONE_HINTS = {
 	World: "Maintain an objective, international outlook.",
 	Top5: "Keep each item snappy, thrilling, and hype‑driven.",
 };
+
 const YT_CATEGORY_MAP = {
 	Sports: "17",
-	Politics: "14",
-	Finance: "3",
-	Entertainment: "4",
-	Technology: "18",
-	Health: "7",
-	World: "19",
-	Lifestyle: "2",
-	Science: "15",
+	Politics: "25",
+	Finance: "25",
+	Entertainment: "24",
+	Technology: "28",
+	Health: "0",
+	World: "0",
+	Lifestyle: "0",
+	Science: "0",
 	Other: "0",
 	Top5: "0",
-	Gaming: "6",
-	Business: "3",
+	Gaming: "20",
+	PetsAndAnimals: "15",
+	Business: "21",
 	Travel: "19",
-	FoodDrink: "5",
-	CelebrityNews: "2",
-	Climate: "20",
-	SocialIssues: "11",
-	Education: "11",
-	Fashion: "2",
+	FoodDrink: "0",
+	CelebrityNews: "25",
+	Climate: "0",
+	SocialIssues: "22",
+	Education: "27",
+	Fashion: "22",
 };
+
 const BRAND_TAG = "AiVideomatic";
 const BRAND_CREDIT = "Powered by AiVideomatic";
 

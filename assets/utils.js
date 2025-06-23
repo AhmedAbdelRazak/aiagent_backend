@@ -278,6 +278,7 @@ const googleTrendingCategoriesId = [
 	{ category: "SocialIssues", ids: [11] },
 	{ category: "Education", ids: [11] },
 	{ category: "Fashion", ids: [2] },
+	{ category: "Pets and Animals", ids: [13] },
 ];
 
 module.exports = { ALL_TOP5_TOPICS, googleTrendingCategoriesId };
