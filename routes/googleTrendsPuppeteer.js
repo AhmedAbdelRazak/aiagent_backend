@@ -8,22 +8,22 @@ const Stealth = require("puppeteer-extra-plugin-stealth");
 puppeteer.use(Stealth());
 
 const router = express.Router();
-const ROW_LIMIT = 5; // number of keywords to scrape
-const ROW_TIMEOUT_MS = 12_000; // per‑keyword hard cap
-const PROTOCOL_TIMEOUT = 120_000; // global timeout for the browser
+const ROW_LIMIT = 5; // how many rising‑search rows we scrape
+const ROW_TIMEOUT_MS = 12_000; // per‑row timeout (ms)
+const PROTOCOL_TIMEOUT = 120_000; // whole‑browser cap (ms)
 const log = (...m) => console.log("[Trends]", ...m);
 
-/* ------------------------------------------------ helpers --------- */
+/* ────────────────────────────────────────────────────────────────── helpers */
 const urlFor = ({ geo, hours, category }) => {
 	const hrs = Math.min(Math.max(+hours || 168, 1), 168);
 	return (
-		`https://trends.google.com/trending?geo=${geo}&hl=en&hours=${hrs}&sort=search-volume` +
+		`https://trends.google.com/trending?geo=${geo}&hl=en&hours=48&sort=search-volume` +
 		(category ? `&category=${category}` : "")
 	);
 };
 
-/* ------------------------------------------------ browser cache ---- */
-let browser; // single instance per container / PM2 worker
+/* ─────────────────────────────────────────────────────────── cached browser */
+let browser; // one instance per container / PM2 worker
 async function getBrowser() {
 	if (browser) return browser;
 
@@ -31,8 +31,8 @@ async function getBrowser() {
 		headless: true,
 		protocolTimeout: PROTOCOL_TIMEOUT,
 		executablePath:
-			process.env.CHROME_BIN || // ← production
-			puppeteer.executablePath(), // ← dev fallback
+			process.env.CHROME_BIN || // production path
+			puppeteer.executablePath(), // dev fallback
 		args: [
 			"--no-sandbox",
 			"--disable-setuid-sandbox",
@@ -44,15 +44,15 @@ async function getBrowser() {
 	return browser;
 }
 
-/* ------------------------------------------------ scraper ---------- */
+/* ──────────────────────────────────────────────────────────────── scraper */
 async function scrape({ geo, hours, category }) {
 	const page = await (await getBrowser()).newPage();
 	page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
 
-	/* relay browser console messages for debugging ------------------- */
+	/* relay browser console messages for debugging */
 	page.on("console", (msg) => log("Page>", msg.text()));
 
-	/* block heavy resources for speed -------------------------------- */
+	/* block heavy resources for speed */
 	await page.setRequestInterception(true);
 	page.on("request", (r) =>
 		["font", "media", "stylesheet"].includes(r.resourceType())
@@ -68,6 +68,7 @@ async function scrape({ geo, hours, category }) {
 		timeout: 60_000,
 	});
 
+	/* extract the first ROW_LIMIT keywords */
 	const rows = await page.$$eval(
 		'tr[role="row"][data-row-id]',
 		(trs, LIM) =>
@@ -85,10 +86,12 @@ async function scrape({ geo, hours, category }) {
 		if (!term) continue;
 
 		const result = await page.evaluate(
+			/* eslint-disable no-undef */
 			async (rowId, rowTerm, rowMs) => {
 				const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 				const deadline = Date.now() + rowMs;
 
+				/* click the keyword cell ------------------------------------------------*/
 				const clickRow = () => {
 					const tr = document.querySelector(`tr[data-row-id="${rowId}"]`);
 					const cell = tr?.querySelector("td:nth-child(2)");
@@ -98,9 +101,9 @@ async function scrape({ geo, hours, category }) {
 					console.log(`Clicked ${rowTerm}`);
 					return true;
 				};
-
 				if (!clickRow()) return { status: "row-not-found" };
 
+				/* wait for the details dialog to appear --------------------------------*/
 				while (Date.now() < deadline) {
 					const dialog = document.querySelector(
 						'div[aria-modal="true"][role="dialog"][aria-label]'
@@ -111,7 +114,7 @@ async function scrape({ geo, hours, category }) {
 						dialog.getAttribute("aria-label").trim().toLowerCase() ===
 							rowTerm.toLowerCase()
 					) {
-						/* let news cards render (≤1 s) -------------------- */
+						/* allow ≤1 s for news cards to render */
 						let anchors = [];
 						const t2 = Date.now() + 1_000;
 						while (Date.now() < t2) {
@@ -131,7 +134,7 @@ async function scrape({ geo, hours, category }) {
 							image: a.querySelector("img")?.src || null,
 						}));
 
-						/* close the dialog -------------------------------- */
+						/* close the dialog (all layout variants) */
 						(
 							dialog.querySelector(
 								'div[aria-label="Close search"], div[aria-label="Close"], button.pYTkkf-Bz112c-LgbsSe'
@@ -148,7 +151,7 @@ async function scrape({ geo, hours, category }) {
 						};
 					}
 
-					/* dialog vanished (virtual scroll) ➜ reclick ------- */
+					/* if dialog vanished (virtual scroll) → reclick */
 					if (!dialog) clickRow();
 					await sleep(200);
 				}
@@ -157,6 +160,7 @@ async function scrape({ geo, hours, category }) {
 			id,
 			term,
 			ROW_TIMEOUT_MS
+			/* eslint-enable no-undef */
 		);
 
 		log(`Result for "${term}":`, result.status);
@@ -170,7 +174,7 @@ async function scrape({ geo, hours, category }) {
 			});
 		}
 
-		/* ensure dialog really closed before next loop --------------- */
+		/* wait until dialog truly closed before next loop */
 		try {
 			await page.waitForFunction(
 				() => !document.querySelector('div[aria-modal="true"][role="dialog"]'),
@@ -178,7 +182,7 @@ async function scrape({ geo, hours, category }) {
 			);
 			await page.waitForTimeout(250);
 		} catch {
-			/* ignore */
+			/* ignored */
 		}
 	}
 
@@ -186,7 +190,7 @@ async function scrape({ geo, hours, category }) {
 	return stories;
 }
 
-/* ------------------------------------------------ express route --- */
+/* ───────────────────────────────────────────────────────────── express API */
 router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
 	if (!/^[A-Z]{2}$/.test(geo))
@@ -204,7 +208,7 @@ router.get("/google-trends", async (req, res) => {
 		res.json({
 			generatedAt: new Date().toISOString(),
 			requestedGeo: geo,
-			effectiveGeo: geo,
+			effectiveGeo: geo, // Trends may redirect, but we fix geo
 			hours: +req.query.hours || 168,
 			category: req.query.category ?? null,
 			stories,
