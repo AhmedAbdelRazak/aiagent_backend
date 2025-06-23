@@ -766,20 +766,26 @@ async function elevenLabsTTS(text, language, outPath, category = "Other") {
 /*  MAIN CONTROLLER                                              */
 /* ───────────────────────────────────────────────────────────── */
 exports.createVideo = async (req, res) => {
+	const { category, ratio: ratioIn, duration: durIn } = req.body;
+
+	if (!category || !YT_CATEGORY_MAP[category])
+		return res.status(400).json({ error: "Bad category" });
+	if (!VALID_RATIOS.includes(ratioIn))
+		return res.status(400).json({ error: "Bad ratio" });
+	if (!goodDur(durIn)) return res.status(400).json({ error: "Bad duration" });
+
+	/* ── OPEN SSE STREAM ──────────────────────────────── */
 	res.setHeader("Content-Type", "text/event-stream");
 	res.setHeader("Cache-Control", "no-cache");
 	res.setHeader("Connection", "keep-alive");
-	const sendPhase = (phase, extra = {}) =>
-		res.write(`data:${JSON.stringify({ phase, extra })}\n\n`);
+	const sendPhase = (p, extra = {}) =>
+		res.write(`data:${JSON.stringify({ phase: p, extra })}\n\n`);
 	sendPhase("INIT");
 	res.setTimeout(0);
 
 	try {
-		/* ─── Parse & validate input ─────────────────────────── */
+		/* pull the remaining fields (they were NOT declared yet) */
 		const {
-			category,
-			ratio: ratioIn,
-			duration: durIn,
 			language: langIn,
 			country: countryIn,
 			customPrompt: customPromptRaw = "",
@@ -787,6 +793,7 @@ exports.createVideo = async (req, res) => {
 			schedule,
 			youtubeEmail,
 		} = req.body;
+
 		const user = req.user;
 		const language = langIn?.trim() || DEFAULT_LANGUAGE;
 		const country = countryIn?.trim() || "US";
