@@ -255,4 +255,29 @@ const ALL_TOP5_TOPICS = [
 	"Top 5 Electoral System Reforms",
 ];
 
-module.exports = { ALL_TOP5_TOPICS };
+const googleTrendingCategoriesId = [
+	{ category: "Top5", ids: [0] },
+	{ category: "Sports", ids: [17] },
+	{ category: "Politics", ids: [14] },
+	{ category: "Finance", ids: [3] },
+	{ category: "Entertainment", ids: [4] },
+	{ category: "Technology", ids: [18] },
+	{ category: "Health", ids: [7] },
+	{ category: "World", ids: [19] },
+	{ category: "Lifestyle", ids: [2] },
+	{ category: "Science", ids: [15] },
+	{ category: "Other", ids: [0] },
+
+	// new additions
+	{ category: "Gaming", ids: [6] },
+	{ category: "Business", ids: [3] },
+	{ category: "Travel", ids: [19] },
+	{ category: "FoodDrink", ids: [5] },
+	{ category: "CelebrityNews", ids: [2] },
+	{ category: "Climate", ids: [20] },
+	{ category: "SocialIssues", ids: [11] },
+	{ category: "Education", ids: [11] },
+	{ category: "Fashion", ids: [2] },
+];
+
+module.exports = { ALL_TOP5_TOPICS, googleTrendingCategoriesId };
