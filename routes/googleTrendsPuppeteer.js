@@ -1,4 +1,5 @@
 /* routes/googleTrendsPuppeteer.js — bullet‑proof, tested 2025‑06‑23 */
+/* eslint-disable no-console, max-len */
 
 require("dotenv").config();
 const express = require("express");
@@ -7,41 +8,51 @@ const Stealth = require("puppeteer-extra-plugin-stealth");
 puppeteer.use(Stealth());
 
 const router = express.Router();
-const ROW_LIMIT = 5; // change to 5, 10 … if you wish
-const ROW_TIMEOUT_MS = 12_000; // per‑row hard limit
-const PROTOCOL_TIMEOUT = 120_000; // whole‑browser cap
+const ROW_LIMIT = 5; // number of keywords to scrape
+const ROW_TIMEOUT_MS = 12_000; // per‑keyword hard cap
+const PROTOCOL_TIMEOUT = 120_000; // global timeout for the browser
 const log = (...m) => console.log("[Trends]", ...m);
 
 /* ------------------------------------------------ helpers --------- */
 const urlFor = ({ geo, hours, category }) => {
 	const hrs = Math.min(Math.max(+hours || 168, 1), 168);
 	return (
-		// `https://trends.google.com/trending?geo=${geo}&hl=en&hours=${hrs}&sort=search-volume` +
-		`https://trends.google.com/trending?geo=${geo}&hl=en&hours=48&sort=search-volume` +
+		`https://trends.google.com/trending?geo=${geo}&hl=en&hours=${hrs}&sort=search-volume` +
 		(category ? `&category=${category}` : "")
 	);
 };
 
-let browser; // single instance per container
+/* ------------------------------------------------ browser cache ---- */
+let browser; // single instance per container / PM2 worker
 async function getBrowser() {
 	if (browser) return browser;
+
 	browser = await puppeteer.launch({
 		headless: true,
 		protocolTimeout: PROTOCOL_TIMEOUT,
-		args: ["--no-sandbox", "--disable-setuid-sandbox"],
+		executablePath:
+			process.env.CHROME_BIN || // ← production
+			puppeteer.executablePath(), // ← dev fallback
+		args: [
+			"--no-sandbox",
+			"--disable-setuid-sandbox",
+			"--disable-gpu",
+			"--disable-dev-shm-usage",
+		],
 	});
+
 	return browser;
 }
 
-/* ------------------------------------------------ scraper --------- */
+/* ------------------------------------------------ scraper ---------- */
 async function scrape({ geo, hours, category }) {
 	const page = await (await getBrowser()).newPage();
 	page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
 
-	/* relay console messages from the browser for debugging -------- */
+	/* relay browser console messages for debugging ------------------- */
 	page.on("console", (msg) => log("Page>", msg.text()));
 
-	/* kill heavy resources for speed ------------------------------- */
+	/* block heavy resources for speed -------------------------------- */
 	await page.setRequestInterception(true);
 	page.on("request", (r) =>
 		["font", "media", "stylesheet"].includes(r.resourceType())
@@ -78,7 +89,6 @@ async function scrape({ geo, hours, category }) {
 				const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 				const deadline = Date.now() + rowMs;
 
-				/* helper: click the keyword cell ------------------------ */
 				const clickRow = () => {
 					const tr = document.querySelector(`tr[data-row-id="${rowId}"]`);
 					const cell = tr?.querySelector("td:nth-child(2)");
@@ -92,7 +102,6 @@ async function scrape({ geo, hours, category }) {
 				if (!clickRow()) return { status: "row-not-found" };
 
 				while (Date.now() < deadline) {
-					/* the dialog element is consistent across layouts ---- */
 					const dialog = document.querySelector(
 						'div[aria-modal="true"][role="dialog"][aria-label]'
 					);
@@ -102,7 +111,7 @@ async function scrape({ geo, hours, category }) {
 						dialog.getAttribute("aria-label").trim().toLowerCase() ===
 							rowTerm.toLowerCase()
 					) {
-						/* allow up to 1 s for news cards to materialise --- */
+						/* let news cards render (≤1 s) -------------------- */
 						let anchors = [];
 						const t2 = Date.now() + 1_000;
 						while (Date.now() < t2) {
@@ -122,7 +131,7 @@ async function scrape({ geo, hours, category }) {
 							image: a.querySelector("img")?.src || null,
 						}));
 
-						/* -------- close the dialog (all variants) -------- */
+						/* close the dialog -------------------------------- */
 						(
 							dialog.querySelector(
 								'div[aria-label="Close search"], div[aria-label="Close"], button.pYTkkf-Bz112c-LgbsSe'
@@ -135,11 +144,11 @@ async function scrape({ geo, hours, category }) {
 						return {
 							status: "ok",
 							image: arts[0]?.image || null,
-							articles: arts, // may be empty
+							articles: arts,
 						};
 					}
 
-					/* if the dialog vanished (virtual scroll) ➜ reclick */
+					/* dialog vanished (virtual scroll) ➜ reclick ------- */
 					if (!dialog) clickRow();
 					await sleep(200);
 				}
@@ -161,7 +170,7 @@ async function scrape({ geo, hours, category }) {
 			});
 		}
 
-		/* wait till dialog truly closed before continuing ---------- */
+		/* ensure dialog really closed before next loop --------------- */
 		try {
 			await page.waitForFunction(
 				() => !document.querySelector('div[aria-modal="true"][role="dialog"]'),
@@ -169,7 +178,7 @@ async function scrape({ geo, hours, category }) {
 			);
 			await page.waitForTimeout(250);
 		} catch {
-			/* swallow */
+			/* ignore */
 		}
 	}
 
@@ -181,7 +190,9 @@ async function scrape({ geo, hours, category }) {
 router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
 	if (!/^[A-Z]{2}$/.test(geo))
-		return res.status(400).json({ error: "`geo` must be ISO‑3166 alpha‑2" });
+		return res
+			.status(400)
+			.json({ error: "`geo` must be an ISO‑3166 alpha‑2 country code" });
 
 	try {
 		const stories = await scrape({
@@ -189,6 +200,7 @@ router.get("/google-trends", async (req, res) => {
 			hours: req.query.hours,
 			category: req.query.category,
 		});
+
 		res.json({
 			generatedAt: new Date().toISOString(),
 			requestedGeo: geo,
@@ -200,7 +212,7 @@ router.get("/google-trends", async (req, res) => {
 	} catch (err) {
 		console.error(err);
 		res.status(500).json({
-			error: "Google Trends scraping failed",
+			error: "Google Trends scraping failed",
 			detail: err.message,
 		});
 	}
