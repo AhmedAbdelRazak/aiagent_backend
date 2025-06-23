@@ -177,16 +177,25 @@ const TONE_HINTS = {
 };
 const YT_CATEGORY_MAP = {
 	Sports: "17",
-	Politics: "25",
-	Finance: "25",
-	Entertainment: "24",
-	Technology: "28",
-	Health: "22",
-	World: "0",
-	Lifestyle: "0",
-	Science: "0",
+	Politics: "14",
+	Finance: "3",
+	Entertainment: "4",
+	Technology: "18",
+	Health: "7",
+	World: "19",
+	Lifestyle: "2",
+	Science: "15",
 	Other: "0",
 	Top5: "0",
+	Gaming: "6",
+	Business: "3",
+	Travel: "19",
+	FoodDrink: "5",
+	CelebrityNews: "2",
+	Climate: "20",
+	SocialIssues: "11",
+	Education: "11",
+	Fashion: "2",
 };
 const BRAND_TAG = "AiVideomatic";
 const BRAND_CREDIT = "Powered by AiVideomatic";
@@ -798,13 +807,6 @@ exports.createVideo = async (req, res) => {
 		const language = langIn?.trim() || DEFAULT_LANGUAGE;
 		const country = countryIn?.trim() || "US";
 		const customPrompt = customPromptRaw.trim();
-
-		if (!category || !YT_CATEGORY_MAP[category])
-			return res.status(400).json({ error: "Bad category" });
-		if (!VALID_RATIOS.includes(ratioIn))
-			return res.status(400).json({ error: "Bad ratio" });
-		if (!goodDur(durIn)) return res.status(400).json({ error: "Bad duration" });
-
 		const ratio = ratioIn;
 		const duration = +durIn;
 		const [w, h] = ratio.split(":").map(Number);
