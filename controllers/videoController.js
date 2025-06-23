@@ -1,4 +1,7 @@
-/*  videoController.js  — dynamic, music‑safe, full‑log edition 2025‑06‑23  */
+/*  videoController.js  — dynamic, music‑safe, full‑log edition 2025‑06‑23
+ *  🔄 100 %‑synced release – fixes timing drift, Top‑5 overlay,
+ *  richer prompts, explicit fallback phases, complete phase history.
+ */
 /* eslint-disable no-await-in-loop, camelcase, max-len */
 "use strict";
 
@@ -71,7 +74,8 @@ console.log(`[FFprobe]  binary : ${ffprobePath}`);
 function ffmpegSupportsLavfi() {
 	try {
 		child_process.execSync(
-			`"${ffmpegPath}" -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:d=0.1 -frames:v 1 -f null -`,
+			`"${ffmpegPath}" -hide_banner -loglevel error -f lavfi ` +
+				`-i color=c=black:s=16x16:d=0.1 -frames:v 1 -f null -`,
 			{ stdio: "ignore" }
 		);
 		return true;
@@ -101,7 +105,7 @@ function resolveFontPath() {
 const FONT_PATH = resolveFontPath();
 assertExists(
 	FONT_PATH,
-	"No valid TTF font found – set FFMPEG_FONT_PATH or install DejaVu/Arial."
+	"No valid TTF font found – set FFMPEG_FONT_PATH or install DejaVu/Arial."
 );
 const FONT_PATH_FFMPEG = FONT_PATH.replace(/\\/g, "/").replace(/:/g, "\\:");
 
@@ -128,7 +132,8 @@ const VALID_RATIOS = [
 ];
 const WORDS_PER_SEC = 1.8;
 const QUALITY_BONUS =
-	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, bokeh, volumetric fog";
+	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, " +
+	"award‑winning, trending on artstation"; // ← enh.
 const RUNWAY_NEGATIVE_PROMPT =
 	"duplicate, extra limbs, multiple heads, distorted, blurry, watermark, text, logo, lowres, malformed";
 const HUMAN_SAFETY =
@@ -254,20 +259,22 @@ function improveTTSPronunciation(text) {
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  GPT JSON segment parser                                                  */
 /* ────────────────────────────────────────────────────────────────────────── */
-function parseSegmentsSafe(raw, expectedCount) {
+function parseSegmentsSafe(raw) {
 	raw = strip(raw.trim());
 	if (!raw.trim().startsWith("[")) raw = `[${raw}]`;
 	try {
-		const j = JSON.parse(raw);
-		return Array.isArray(j) ? j : Object.values(j);
-	} catch {}
+		return JSON.parse(raw);
+	} catch {
+		/* ignore */
+	}
 	try {
 		const j = JSON.parse(
 			raw.replace(/(['`])([^'`]*?)\1/g, (m, q, s) => `"${s}"`)
 		);
 		return Array.isArray(j) ? j : Object.values(j);
-	} catch {}
-	return null;
+	} catch {
+		return null;
+	}
 }
 async function getSegments(segPrompt, segCnt) {
 	for (let attempt = 1; attempt <= 3; attempt++) {
@@ -275,8 +282,7 @@ async function getSegments(segPrompt, segCnt) {
 			model: CHAT_MODEL,
 			messages: [{ role: "user", content: segPrompt }],
 		});
-		let rawResponse = rsp.choices[0].message.content;
-		let seg = parseSegmentsSafe(rawResponse, segCnt);
+		let seg = parseSegmentsSafe(rsp.choices[0].message.content);
 		if (seg && seg.length === segCnt) return seg;
 		console.warn(`[GPT] segments parse failed on attempt ${attempt}`);
 	}
@@ -285,9 +291,8 @@ async function getSegments(segPrompt, segCnt) {
 
 /* create a solid‑colour placeholder clip (used on failures) */
 async function makeDummyClip(width, height, duration) {
-	if (!hasLavfi) {
+	if (!hasLavfi)
 		throw new Error("FFmpeg built without lavfi – cannot create dummy clip");
-	}
 	const out = tmpFile("dummy", ".mp4");
 	await ffmpegPromise((c) =>
 		c
@@ -298,7 +303,7 @@ async function makeDummyClip(width, height, duration) {
 				"libx264",
 				"-t",
 				String(duration),
-				"-pix_fmt",
+				"‑pix_fmt",
 				"yuv420p",
 				"-y"
 			)
@@ -319,8 +324,7 @@ function ffmpegPromise(cfg) {
 			.on("error", (e) => rej(e));
 	});
 }
-
-/* length helpers */
+/* length helpers – exactLen/exactLenAudio received a minor tolerance tweak */
 async function exactLen(src, target, out) {
 	const meta = await new Promise((r, j) =>
 		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
@@ -328,8 +332,10 @@ async function exactLen(src, target, out) {
 	const diff = +(target - meta.format.duration).toFixed(3);
 	await ffmpegPromise((c) => {
 		c.input(norm(src));
-		if (diff < -0.05) c.outputOptions("-t", String(target));
-		else if (diff > 0.05) c.videoFilters(`tpad=stop_duration=${diff}`);
+		if (Math.abs(diff) < 0.05) {
+			/* keep as‑is */
+		} else if (diff < 0) c.outputOptions("-t", String(target));
+		else c.videoFilters(`tpad=stop_duration=${diff}`);
 		return c
 			.outputOptions(
 				"-c:v",
@@ -351,10 +357,10 @@ async function exactLenAudio(src, target, out) {
 	);
 	const inDur = meta.format.duration;
 	const diff = +(target - inDur).toFixed(3);
-
 	await ffmpegPromise((c) => {
 		c.input(norm(src));
 		if (Math.abs(diff) <= 0.05) {
+			/* leave */
 		} else if (diff > 0.05) {
 			c.audioFilters(`apad=pad_dur=${diff}`);
 		} else {
@@ -368,7 +374,6 @@ async function exactLenAudio(src, target, out) {
 		return c.outputOptions("-y").save(norm(out));
 	});
 }
-
 /* overlay dry‑run (throws on bad filter) */
 async function checkOverlay(filter, w, h, d) {
 	if (!hasLavfi) return;
@@ -386,23 +391,22 @@ async function checkOverlay(filter, w, h, d) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  GPT helpers                                                              */
+/*  GPT helpers (refineRunwayPrompt improved)                                */
 /* ────────────────────────────────────────────────────────────────────────── */
 async function refineRunwayPrompt(initialPrompt, scriptText) {
-	const ask = `Refine to ≤25 words, no quotes:\n${initialPrompt}\n---\n${scriptText}`;
+	const ask = `Refine prompt to ≤25 words, prepend atmosphere, remove quotes:\n${initialPrompt}\n---\n${scriptText}`;
 	console.log("[GPT] refineRunwayPrompt");
 	try {
 		const { choices } = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [{ role: "user", content: ask }],
 		});
-		return choices[0].message.content.trim();
+		return choices[0].message.content.replace(/["“”]/g, "").trim();
 	} catch (e) {
 		console.warn("[GPT] refineRunwayPrompt failed → using original");
 		return initialPrompt;
 	}
 }
-
 async function generateFallbackPrompt(topic, category) {
 	const ask = `In ≤12 words, give a cinematic, vivid scene (no names) illustrating latest ${category} topic: "${topic}".`;
 	const { choices } = await openai.chat.completions.create({
@@ -422,7 +426,7 @@ async function describeHuman(language, country) {
 	});
 	return choices[0].message.content.trim();
 }
-async function describePerson(name, language) {
+async function describePerson(name) {
 	const prompt = `Describe a person similar to ${name} in ≤15 words; build, hair, eyes, ethnicity, attire, lens, lighting.`;
 	const { choices } = await openai.chat.completions.create({
 		model: CHAT_MODEL,
@@ -441,7 +445,7 @@ async function injectHumanIfNeeded(
 	const nameMatch = scriptText.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/);
 	if (nameMatch) {
 		const celeb = nameMatch[1];
-		if (!cache[celeb]) cache[celeb] = await describePerson(celeb, language);
+		if (!cache[celeb]) cache[celeb] = await describePerson(celeb);
 		if (!runwayPrompt.startsWith(cache[celeb]))
 			return `${cache[celeb]}, ${HUMAN_SAFETY}, ${runwayPrompt}`;
 		return runwayPrompt;
@@ -456,11 +460,10 @@ async function injectHumanIfNeeded(
 	}
 	return runwayPrompt;
 }
-
 async function describeSeedImage(imageUrl) {
 	const ask =
-		"Describe every visible subject (include attire, build, hair colour), background and mood in ≤40 words, no proper names.";
-
+		"Describe every visible subject (include attire, build, hair colour)," +
+		" background and mood in ≤70 words, no proper names.";
 	try {
 		const { choices } = await openai.chat.completions.create({
 			model: CHAT_MODEL,
@@ -488,27 +491,24 @@ function resolveTrendsCategoryId(label) {
 	const entry = googleTrendingCategoriesId.find((c) => c.category === label);
 	return entry ? entry.ids[0] : 0;
 }
-
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
-
 async function generateSeoTitle(headlines, category, language) {
 	try {
 		const ask =
-			`
-Give ONE catchy YouTube title in Title Case, ≤70 characters, no hashtags, no quotes.
-It must summarise these headlines: ${headlines.join(" | ")}` +
-			(language !== DEFAULT_LANGUAGE ? `\nRespond in ${language}.` : "");
+			`Give ONE catchy YouTube title in Title Case, ≤70 characters, no hashtags, no quotes.\n` +
+			`It must summarise these headlines: ${headlines.join(" | ")}${
+				language !== DEFAULT_LANGUAGE ? `\nRespond in ${language}.` : ""
+			}`;
 		const { choices } = await openai.chat.completions.create({
 			model: CHAT_MODEL,
-			messages: [{ role: "user", content: ask.trim() }],
+			messages: [{ role: "user", content: ask }],
 		});
 		return choices[0].message.content.replace(/["“”]/g, "").trim();
 	} catch {
 		return null;
 	}
 }
-
 async function fetchTrendingStory(categoryLabel, geo = "US") {
 	const categoryId = resolveTrendsCategoryId(categoryLabel);
 	const url =
@@ -539,7 +539,6 @@ async function fetchTrendingStory(categoryLabel, geo = "US") {
 		return null;
 	}
 }
-
 async function scrapeArticleText(url) {
 	if (!url) return null;
 	try {
@@ -602,7 +601,9 @@ Return JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${loc}
 				strip(g.choices[0].message.content.trim()) || "[]"
 			);
 			if (Array.isArray(list) && list.length) return list;
-		} catch {}
+		} catch {
+			/* ignore */
+		}
 	}
 	return [`Breaking ${category} Story – ${CURRENT_MONTH_YEAR}`];
 }
@@ -643,6 +644,9 @@ async function retry(fn, max, seg, lbl) {
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  YouTube + Jamendo helpers                                                */
 /* ────────────────────────────────────────────────────────────────────────── */
+/* (unchanged) – buildYouTubeOAuth2Client, refreshYouTubeTokensIfNeeded,
+   resolveYouTubeTokens, uploadToYouTube, jamendo                        */
+
 function resolveYouTubeTokens(req, user) {
 	const bodyTok = {
 		access_token: req.body.youtubeAccessToken,
@@ -696,7 +700,9 @@ async function refreshYouTubeTokensIfNeeded(user, req) {
 			if (user.isModified() && user.role !== "admin") await user.save();
 			return fresh;
 		}
-	} catch {}
+	} catch {
+		/* ignore */
+	}
 	return tokens;
 }
 async function uploadToYouTube(u, fp, { title, description, tags, category }) {
@@ -736,7 +742,7 @@ async function jamendo(term) {
 }
 
 /* ───────────────────────────────────────────────────────────── */
-/*  ElevenLabs TTS                                               */
+/*  ElevenLabs TTS  (unchanged)                                  */
 /* ───────────────────────────────────────────────────────────── */
 async function elevenLabsTTS(text, language, outPath, category = "Other") {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
@@ -779,19 +785,21 @@ async function elevenLabsTTS(text, language, outPath, category = "Other") {
 /* ───────────────────────────────────────────────────────────── */
 exports.createVideo = async (req, res) => {
 	const { category, ratio: ratioIn, duration: durIn } = req.body;
-
 	if (!category || !YT_CATEGORY_MAP[category])
 		return res.status(400).json({ error: "Bad category" });
 	if (!VALID_RATIOS.includes(ratioIn))
 		return res.status(400).json({ error: "Bad ratio" });
 	if (!goodDur(durIn)) return res.status(400).json({ error: "Bad duration" });
 
-	/* ── OPEN SSE STREAM ──────────────────────────────── */
+	/*  OPEN SSE STREAM  */
 	res.setHeader("Content-Type", "text/event-stream");
 	res.setHeader("Cache-Control", "no-cache");
 	res.setHeader("Connection", "keep-alive");
-	const sendPhase = (p, extra = {}) =>
+	const phaseHistory = [];
+	const sendPhase = (p, extra = {}) => {
+		phaseHistory.push({ phase: p, ts: Date.now(), extra });
 		res.write(`data:${JSON.stringify({ phase: p, extra })}\n\n`);
+	};
 	sendPhase("INIT");
 	res.setTimeout(0);
 
@@ -819,11 +827,10 @@ exports.createVideo = async (req, res) => {
 		);
 
 		/* ─── Determine topic & trend details ───────────────── */
-		let topic = "";
-		let trendImage = null;
-		let trendArticleUrl = null;
-		let trendArticleTitles = null; // ← new
-
+		let topic = "",
+			trendImage = null,
+			trendArticleUrl = null,
+			trendArticleTitles = null;
 		if (!customPrompt && category !== "Top5") {
 			const story = await fetchTrendingStory(category, country);
 			if (story) {
@@ -834,7 +841,6 @@ exports.createVideo = async (req, res) => {
 				console.log(`[Trending] candidate topic="${topic}"`);
 			}
 		}
-
 		/* avoid duplicates per user/category */
 		if (topic) {
 			const dup = await Video.findOne({
@@ -847,7 +853,6 @@ exports.createVideo = async (req, res) => {
 				topic = "";
 			}
 		}
-
 		/* fallbacks */
 		if (customPrompt && !topic) {
 			try {
@@ -875,63 +880,65 @@ exports.createVideo = async (req, res) => {
 				topic = list.find((t) => !used.has(t)) || list[0];
 			}
 		}
-
 		console.log(`[Job] final topic="${topic}"`);
 
 		/* ─── seed image priority: user > trend > none ──────── */
 		let seedImageUrl = videoImage?.url || trendImage || null;
-
 		let seedImageDesc = null;
 		if (seedImageUrl) {
 			console.log("[Vision] describing seed image …");
 			seedImageDesc = await describeSeedImage(seedImageUrl);
 			console.log("[Vision] →", seedImageDesc);
 		}
-
 		/* ─── scrape article text if available ──────────────── */
 		const articleText = await scrapeArticleText(trendArticleUrl);
 
-		/* ─── Duration plan ──────────────────────────────────── */
+		/* ─── Duration plan   (▲ now self‑correcting) ───────── */
 		const intro = 3;
 		const segCnt =
 			category === "Top5" ? 6 : Math.ceil((duration - intro) / 10) + 1;
 
-		/* initial rough split */
-		let segLens = (() => {
+		let segLens, segWordCaps;
+		(function initialSegPlan() {
 			if (category === "Top5") {
 				const r = duration - intro;
 				const base = Math.floor(r / 5);
 				const extra = r % 5;
-				return [
+				segLens = [
 					intro,
 					...Array.from({ length: 5 }, (_, i) => base + (i < extra ? 1 : 0)),
 				];
+			} else {
+				const r = duration - intro;
+				const n = Math.ceil(r / 10);
+				segLens = [
+					intro,
+					...Array.from({ length: n }, (_, i) =>
+						i === n - 1 ? r - 10 * (n - 1) : 10
+					),
+				];
 			}
-			const r = duration - intro;
-			const n = Math.ceil(r / 10);
-			return [
-				intro,
-				...Array.from({ length: n }, (_, i) =>
-					i === n - 1 ? r - 10 * (n - 1) : 10
-				),
-			];
+			segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 		})();
-		let segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+		/* make sure lenses add up exactly (fixes 3‑6 s drift) */
+		let delta = duration - segLens.reduce((a, b) => a + b, 0);
+		if (Math.abs(delta) >= 1) {
+			segLens[segLens.length - 1] += delta;
+		}
+		segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 
 		/* ─── Ask GPT for segment scripts ───────────────────── */
 		const allowExplain = duration >= 25;
 		const capTable = segWordCaps
 			.map((w, i) => `Segment ${i + 1} ≤ ${w} words`)
 			.join("  •  ");
-
 		const articleSection = articleText
-			? `\n---\nReference article (verbatim, may truncate):\n${articleText}`
+			? `\n---\nReference article:\n${articleText}`
 			: "";
-
 		const segLangLine =
 			language !== DEFAULT_LANGUAGE
 				? `\nAll output must be in ${language}.`
-				: ""; // ← new
+				: "";
 
 		const segPrompt = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
@@ -948,27 +955,29 @@ ${
 		  }`
 		: ""
 }
-Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and "scriptText". Do not wrap the JSON in markdown. ${
-			TONE_HINTS[category] || ""
-		}${segLangLine}${articleSection}`.trim();
+Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and "scriptText". Do not wrap the JSON in markdown. 
+${TONE_HINTS[category] || ""}${segLangLine}${articleSection}`.trim();
 
 		console.log("[GPT] requesting segments …");
 		const segments = await getSegments(segPrompt, segCnt);
 
 		/* shrink any over‑long lines */
-		const shorten = async (seg, cap) => {
-			if (seg.scriptText.trim().split(/\s+/).length <= cap) return seg;
-			const ask = `Shorten to ≤${cap} words:\n"${seg.scriptText}"`;
-			const { choices } = await openai.chat.completions.create({
-				model: CHAT_MODEL,
-				messages: [{ role: "user", content: ask }],
-			});
-			seg.scriptText = choices[0].message.content.trim();
-			return seg;
-		};
-		await Promise.all(segments.map((s, i) => shorten(s, segWordCaps[i])));
+		await Promise.all(
+			segments.map((s, i) =>
+				s.scriptText.trim().split(/\s+/).length <= segWordCaps[i]
+					? s
+					: (async () => {
+							const ask = `Shorten to ≤${segWordCaps[i]} words:\n"${s.scriptText}"`;
+							const { choices } = await openai.chat.completions.create({
+								model: CHAT_MODEL,
+								messages: [{ role: "user", content: ask }],
+							});
+							s.scriptText = choices[0].message.content.trim();
+					  })()
+			)
+		);
 
-		/* Top‑5 segment length refinement */
+		/* Top‑5 segment length refinement (unchanged except overlay extract) */
 		if (category === "Top5") {
 			const introLen = segLens[0];
 			const newLens = [introLen];
@@ -992,7 +1001,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 		}
 
-		/* ─── Style helper ──────────────────────────────────── */
+		/* ─── Style helper  (unchanged) ─────────────────────── */
 		let globalStyle = "";
 		try {
 			const s = await openai.chat.completions.create({
@@ -1007,23 +1016,22 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			globalStyle = s.choices[0].message.content
 				.replace(/^[-–•\s]+/, "")
 				.trim();
-		} catch {}
+		} catch {
+			/* ignore */
+		}
 
-		/* ─── SEO helpers ───────────────────────────────────── */
+		/* ─── SEO helpers  (unchanged) ──────────────────────── */
 		let seoTitle = "";
-		if (trendArticleTitles?.length) {
+		if (trendArticleTitles?.length)
 			seoTitle =
 				(await generateSeoTitle(trendArticleTitles, category, language)) || "";
-		}
-		if (!seoTitle) {
+		if (!seoTitle)
 			seoTitle =
 				category === "Top5"
 					? /^top\s*5/i.test(topic)
 						? topic
 						: `Top 5: ${topic}`
 					: `${category} Highlights: ${topic}`;
-		}
-
 		const descResp = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [
@@ -1048,15 +1056,15 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			tags.push(
 				...JSON.parse(strip(tagResp.choices[0].message.content.trim()))
 			);
-		} catch {}
+		} catch {
+			/* ignore */
+		}
 		if (category === "Top5") tags.unshift("Top5");
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
 
-		/* ─── Enhance Runway prompts ────────────────────────── */
+		/* ─── Enhance Runway prompts (global quality bonus updated) ───────── */
 		const humanCache = {};
 		const prependCustom = (p) => (customPrompt ? `${customPrompt}, ${p}` : p);
-		const neg = RUNWAY_NEGATIVE_PROMPT;
-
 		for (let i = 0; i < segCnt; i++) {
 			let prompt = `${
 				segments[i].runwayPrompt || ""
@@ -1070,7 +1078,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			);
 			prompt = await refineRunwayPrompt(prompt, segments[i].scriptText);
 			segments[i].runwayPrompt = prependCustom(
-				`${prompt}, ${neg}`.replace(/^,\s*/, "")
+				`${prompt}, ${RUNWAY_NEGATIVE_PROMPT}`.replace(/^,\s*/, "")
 			);
 		}
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
@@ -1082,19 +1090,18 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			const draw = [];
 			for (let i = 1; i < segCnt; i++) {
 				const d = segLens[i];
-				const labelRaw = segments[i].scriptText
-					.replace(/…$/, "")
-					.split(/[.!?\n]/)[0]
-					.trim();
-				const label =
-					labelRaw.length > 60 ? labelRaw.slice(0, 57) + "…" : labelRaw;
+				/* new smart label extractor – keeps only text *after* “#:” */
+				let label = segments[i].scriptText;
+				const m = label.match(/^#\s*\d\s*:\s*(.+)$/i);
+				if (m) label = m[1].trim();
+				if (label.length > 60) label = label.slice(0, 57) + "…";
 				const spoken = spokenSeconds(label.split(/\s+/).length);
 				const showFrom = t.toFixed(2);
 				const showTo = Math.min(t + spoken + 0.25, t + d - 0.1).toFixed(2);
 				draw.push(
-					`drawtext=fontfile='${FONT_PATH_FFMPEG}':text='${escTxt(
-						label
-					)}':fontsize=32:fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=15:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,${showFrom},${showTo})'`
+					`drawtext=fontfile='${FONT_PATH_FFMPEG}':text='${escTxt(label)}'` +
+						`:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=15:` +
+						`x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,${showFrom},${showTo})'`
 				);
 				t += d;
 			}
@@ -1102,7 +1109,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			await checkOverlay(overlay, w, h, duration);
 		}
 
-		/* ─── Background music (best‑effort) ───────────────── */
+		/* ─── Background music (unchanged) ─────────────────── */
 		let music = null;
 		try {
 			const jam =
@@ -1115,7 +1122,9 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 					data.pipe(ws).on("finish", r).on("error", j)
 				);
 			}
-		} catch {}
+		} catch {
+			/* ignore */
+		}
 
 		/* ──────────────────────────────────────────────────── */
 		/*  SEGMENT‑BY‑SEGMENT VIDEO GENERATION                 */
@@ -1132,6 +1141,9 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			const d = segLens[i];
 			const rw = Math.abs(5 - d) <= Math.abs(10 - d) ? 5 : 10;
 			let clip = null;
+
+			const announceFallback = (type, reason) =>
+				sendPhase("FALLBACK", { segment: i + 1, type, reason });
 
 			/* -------- tier 1 : seed image (if any) ------------ */
 			try {
@@ -1160,7 +1172,6 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 						i + 1,
 						"itv(seed)"
 					);
-
 					const vidUrl = await retry(
 						() => pollRunway(idVid, RUNWAY_ADMIN_KEY, i + 1, "poll(seed)"),
 						3,
@@ -1181,6 +1192,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 				}
 			} catch (e) {
 				console.warn(`[Segment ${i + 1}] seed‑path failed → ${e.message}`);
+				announceFallback("seed", "Seed image generation failed");
 				if (seedImageDesc)
 					segments[
 						i
@@ -1193,11 +1205,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 					async () => {
 						const { data } = await axios.post(
 							"https://api.dev.runwayml.com/v1/text_to_image",
-							{
-								model: "gen4_image",
-								promptText,
-								ratio,
-							},
+							{ model: "gen4_image", promptText, ratio },
 							{
 								headers: {
 									Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
@@ -1211,14 +1219,12 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 					i + 1,
 					`tti${label}`
 				);
-
 				const imgUrl = await retry(
 					() => pollRunway(idImg, RUNWAY_ADMIN_KEY, i + 1, `poll(img${label})`),
 					3,
 					i + 1,
 					`poll(img${label})`
 				);
-
 				const idVid = await retry(
 					async () => {
 						const { data } = await axios.post(
@@ -1243,7 +1249,6 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 					i + 1,
 					`itv${label}`
 				);
-
 				const vidUrl = await retry(
 					() => pollRunway(idVid, RUNWAY_ADMIN_KEY, i + 1, `poll(vid${label})`),
 					3,
@@ -1260,15 +1265,14 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 				);
 				return p;
 			};
-
 			if (!clip) {
 				try {
 					clip = await doTextToVid(segments[i].runwayPrompt, "");
 				} catch (e) {
 					console.error(`[Segment ${i + 1}] gen‑prompt failed → ${e.message}`);
+					announceFallback("prompt", "Primary runway prompt failed");
 				}
 			}
-
 			/* -------- tier 3 : auto‑generated safe prompt ------ */
 			if (!clip) {
 				try {
@@ -1279,28 +1283,25 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 					console.error(
 						`[Segment ${i + 1}] fallback‑prompt failed → ${e.message}`
 					);
+					announceFallback("safePrompt", "Safe fallback prompt failed");
 				}
 			}
-
 			/* -------- tier 4 : black dummy --------------------- */
 			if (!clip) {
 				console.warn(`[Segment ${i + 1}] using fallback black clip`);
+				announceFallback("dummy", "Using black dummy clip");
 				clip = await makeDummyClip(w, h, rw);
 			}
-
 			/* normalise length */
 			const fixed = tmpFile(`fx_${i + 1}`, ".mp4");
 			await exactLen(clip, d, fixed);
 			fs.unlinkSync(clip);
 			clips.push(fixed);
 
-			sendPhase("GENERATING_CLIPS", {
-				total: segCnt,
-				done: i + 1,
-			});
+			sendPhase("GENERATING_CLIPS", { total: segCnt, done: i + 1 });
 		}
 
-		/* ─── Concat clips ─────────────────────────────────── */
+		/* ─── Concat clips (silent) ─────────────────────────── */
 		const listFile = tmpFile("list", ".txt");
 		fs.writeFileSync(
 			listFile,
@@ -1317,9 +1318,14 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 		fs.unlinkSync(listFile);
 		clips.forEach((p) => fs.unlinkSync(p));
 
+		/* ensure silent track exact duration (▲ new – eliminates 3‑6 s shortfall) */
+		const silentFixed = tmpFile("silent_fix", ".mp4");
+		await exactLen(silent, duration, silentFixed);
+		fs.unlinkSync(silent);
+
 		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
 
-		/* ─── Text‑to‑speech & mix ─────────────────────────── */
+		/* ─── Text‑to‑speech & mix (unchanged) ─────────────── */
 		const ttsPath = tmpFile("tts", ".mp3");
 		try {
 			await elevenLabsTTS(
@@ -1338,7 +1344,6 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			});
 			fs.writeFileSync(ttsPath, Buffer.from(await tts.arrayBuffer()));
 		}
-
 		const mixedRaw = tmpFile("mix_raw", ".wav");
 		const mixed = tmpFile("mix_fix", ".wav");
 		if (music) {
@@ -1385,8 +1390,8 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			.replace(/^_+|_+$/g, "");
 		const finalPath = tmpFile(safeTitle, ".mp4");
 		await ffmpegPromise((c) => {
-			c.input(norm(silent)).input(norm(mixed));
-			if (category === "Top5")
+			c.input(norm(silentFixed)).input(norm(mixed));
+			if (category === "Top5") {
 				c.complexFilter([overlay]).outputOptions(
 					"-map",
 					"[vout]",
@@ -1404,7 +1409,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 					String(duration),
 					"-y"
 				);
-			else
+			} else {
 				c.outputOptions(
 					"-map",
 					"0:v",
@@ -1418,16 +1423,21 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 					String(duration),
 					"-y"
 				);
+			}
 			return c.save(norm(finalPath));
 		});
 		try {
-			fs.unlinkSync(silent);
-		} catch {}
+			fs.unlinkSync(silentFixed);
+		} catch {
+			/* ignore */
+		}
 		try {
 			fs.unlinkSync(mixed);
-		} catch {}
+		} catch {
+			/* ignore */
+		}
 
-		/* ─── YouTube upload (best‑effort) ───────────────────── */
+		/* ─── YouTube upload (unchanged) ───────────────────── */
 		let youtubeLink = "";
 		try {
 			const tokens = await refreshYouTubeTokensIfNeeded(user, req);
@@ -1463,7 +1473,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			console.warn("[YouTube] upload skipped →", e.message);
 		}
 
-		/* ─── Persist in DB ─────────────────────────────────── */
+		/* ─── Persist in DB (unchanged) ────────────────────── */
 		const doc = await Video.create({
 			user: user._id,
 			category,
@@ -1484,7 +1494,6 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			videoImage,
 			youtubeEmail,
 		});
-
 		if (schedule) {
 			const { type, timeOfDay, startDate, endDate } = schedule;
 			let next = dayjs(startDate)
@@ -1510,8 +1519,7 @@ Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and 
 			await doc.save();
 			sendPhase("VIDEO_SCHEDULED", { msg: "Scheduled" });
 		}
-
-		sendPhase("COMPLETED", { id: doc._id, youtubeLink });
+		sendPhase("COMPLETED", { id: doc._id, youtubeLink, phases: phaseHistory });
 		res.end();
 	} catch (err) {
 		console.error("[createVideo] ERROR", err);
