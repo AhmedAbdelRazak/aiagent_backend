@@ -802,9 +802,18 @@ exports.createVideo = async (req, res) => {
 	res.setHeader("Connection", "keep-alive");
 	const phaseHistory = [];
 	const sendPhase = (p, extra = {}) => {
-		phaseHistory.push({ phase: p, ts: Date.now(), extra });
-		res.write(`data:${JSON.stringify({ phase: p, extra })}\n\n`);
+		/* break any accidental circular refs */
+		const safeExtra =
+			p === "COMPLETED" && extra.phases
+				? { ...extra, phases: JSON.parse(JSON.stringify(extra.phases)) }
+				: extra;
+
+		/* 1️⃣  stream update first */
+		res.write(`data:${JSON.stringify({ phase: p, extra: safeExtra })}\n\n`);
+		/* 2️⃣  then remember it */
+		phaseHistory.push({ phase: p, ts: Date.now(), extra: safeExtra });
 	};
+
 	const sendError = (msg) => {
 		sendPhase("ERROR", { msg });
 		if (!res.headersSent) res.status(500).json({ error: msg });
@@ -1619,11 +1628,18 @@ ${TONE_HINTS[category] || ""}${segLangLine}${articleSect}`.trim();
 		/* -----------------------------------------------------------------
 		 * 19. DONE
 		 * ---------------------------------------------------------------- */
-		sendPhase("COMPLETED", { id: doc._id, youtubeLink, phases: phaseHistory });
+		/* deep‑copy the history to avoid circular refs */
+		sendPhase("COMPLETED", {
+			id: doc._id,
+			youtubeLink,
+			phases: JSON.parse(JSON.stringify(phaseHistory)),
+		});
 		res.end();
 	} catch (err) {
 		console.error("[createVideo] ERROR", err);
-		sendError(err.message);
+		/* guarantee a terminal event so the frontend can react */
+		sendPhase("ERROR", { msg: err.message });
+		if (!res.headersSent) res.status(500).json({ error: err.message });
 	}
 };
 
