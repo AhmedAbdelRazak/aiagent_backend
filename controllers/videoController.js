@@ -135,7 +135,9 @@ const QUALITY_BONUS =
 	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, " +
 	"award‑winning, trending on artstation"; // ← enh.
 const RUNWAY_NEGATIVE_PROMPT =
-	"duplicate, extra limbs, multiple heads, distorted, blurry, watermark, text, logo, lowres, malformed";
+	"duplicate, extra limbs, multiple heads, distorted, blurry, watermark, text, logo, " +
+	"lowres, malformed, backward motion, reversed walk, unnatural gait, physics‑defying";
+
 const HUMAN_SAFETY =
 	"anatomically correct, two eyes, one head, normal limbs, realistic proportions, natural waist";
 
@@ -207,6 +209,24 @@ const YT_CATEGORY_MAP = {
 
 const BRAND_TAG = "AiVideomatic";
 const BRAND_CREDIT = "Powered by AiVideomatic";
+
+const EMOTIONS = [
+	"smiling",
+	"laughing",
+	"serious",
+	"angry",
+	"sad",
+	"surprised",
+];
+function pickEmotion(t) {
+	const l = t.toLowerCase();
+	if (/laugh|celebrat|cheer|joy|win/.test(l)) return "laughing";
+	if (/angry|rage|furious|protest/.test(l)) return "angry";
+	if (/sad|mourn|grief|tear/.test(l)) return "sad";
+	if (/shock|wow|astonish|surpris/.test(l)) return "surprised";
+	if (/happy|delight|smile/.test(l)) return "smiling";
+	return "serious";
+}
 
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  UTILS                                                                    */
@@ -442,24 +462,31 @@ async function injectHumanIfNeeded(
 	cache
 ) {
 	const hasHuman = /\b(man|woman|person|portrait)\b/i.test(runwayPrompt);
-	const nameMatch = scriptText.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/);
-	if (nameMatch) {
-		const celeb = nameMatch[1];
+	const name = scriptText.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/);
+
+	/* celebrity path (unchanged) */
+	if (name) {
+		const celeb = name[1];
 		if (!cache[celeb]) cache[celeb] = await describePerson(celeb);
 		if (!runwayPrompt.startsWith(cache[celeb]))
 			return `${cache[celeb]}, ${HUMAN_SAFETY}, ${runwayPrompt}`;
 		return runwayPrompt;
 	}
+
+	/* generic human we inject ourselves */
 	if (
 		!hasHuman &&
 		/\b(he|she|they|man|woman|person|people)\b/i.test(scriptText)
 	) {
 		if (!cache.humanDesc)
 			cache.humanDesc = await describeHuman(language, country);
-		return `${cache.humanDesc}, ${HUMAN_SAFETY}, ${runwayPrompt}`;
+		const emo = pickEmotion(scriptText);
+		return `${emo} ${cache.humanDesc}, ${HUMAN_SAFETY}, ${runwayPrompt}`;
 	}
+
 	return runwayPrompt;
 }
+
 async function describeSeedImage(imageUrl) {
 	const ask =
 		"Describe every visible subject (include attire, build, hair colour)," +
@@ -859,7 +886,10 @@ exports.createVideo = async (req, res) => {
 			trendArticleUrl = null,
 			trendArticleTitles = null;
 
-		if (!customPrompt && category !== "Top5") {
+		const userOverrides = Boolean(videoImage) || customPrompt.length > 0; // NEW
+
+		if (!userOverrides && category !== "Top5") {
+			// CHANGED
 			const story = await fetchTrendingStory(category, country);
 			if (story) {
 				topic = story.title;
@@ -1417,25 +1447,46 @@ ${TONE_HINTS[category] || ""}${segLangLine}${articleSect}`.trim();
 		 * ---------------------------------------------------------------- */
 		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
 
-		const ttsPath = tmpFile("tts", ".mp3");
-		try {
-			await elevenLabsTTS(
-				improveTTSPronunciation(fullScript),
-				language,
-				ttsPath,
-				category
-			);
-		} catch {
-			const tts = await openai.audio.speech.create({
-				model: "tts-1-hd",
-				voice: "shimmer",
-				speed: 1.0,
-				input: improveTTSPronunciation(fullScript),
-				format: "mp3",
-			});
-			fs.writeFileSync(ttsPath, Buffer.from(await tts.arrayBuffer()));
+		/* one TTS file per segment, then fix to exact seg length */
+		const fixedPieces = [];
+		for (let i = 0; i < segCnt; i++) {
+			const raw = tmpFile(`tts_raw_${i + 1}`, ".mp3");
+			const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
+			const txt = improveTTSPronunciation(segments[i].scriptText);
+			try {
+				await elevenLabsTTS(txt, language, raw, category);
+			} catch {
+				const tts = await openai.audio.speech.create({
+					model: "tts-1-hd",
+					voice: "shimmer",
+					speed: 1.0,
+					input: txt,
+					format: "mp3",
+				});
+				fs.writeFileSync(raw, Buffer.from(await tts.arrayBuffer()));
+			}
+			await exactLenAudio(raw, segLens[i], fixed); // stretch / pad
+			fs.unlinkSync(raw);
+			fixedPieces.push(fixed);
 		}
 
+		/* concatenate all fixed pieces */
+		fs.writeFileSync(
+			listFile,
+			fixedPieces.map((p) => `file '${norm(p)}'`).join("\n")
+		);
+		const ttsPath = tmpFile("tts_join", ".wav");
+		await ffmpegPromise((c) =>
+			c
+				.input(norm(listFile))
+				.inputOptions("-f", "concat", "-safe", "0")
+				.outputOptions("-c", "copy", "-y")
+				.save(norm(ttsPath))
+		);
+		fs.unlinkSync(listFile);
+		fixedPieces.forEach((p) => fs.unlinkSync(p));
+
+		/* mix optional music */
 		const mixedRaw = tmpFile("mix_raw", ".wav");
 		const mixed = tmpFile("mix_fix", ".wav");
 
