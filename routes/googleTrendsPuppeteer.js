@@ -17,7 +17,7 @@ const log = (...m) => console.log("[Trends]", ...m);
 const urlFor = ({ geo, hours, category }) => {
 	const hrs = Math.min(Math.max(+hours || 168, 1), 168);
 	return (
-		`https://trends.google.com/trending?geo=${geo}&hl=en&hours=48&sort=search-volume` +
+		`https://trends.google.com/trending?geo=${geo}&hl=en&hours=168&sort=recency` +
 		(category ? `&category=${category}` : "")
 	);
 };
