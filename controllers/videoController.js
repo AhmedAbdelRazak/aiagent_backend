@@ -3,13 +3,19 @@
  *  richer prompts, explicit fallback phases, complete phase history.
  */
 /* eslint-disable no-await-in-loop, camelcase, max-len */
-"use strict";
+/**
+ * controllers/videoController.js
+ * Last updated: 2025‑06‑25
+ *
+ * – Gen‑2 text‑to‑video first, then image pipeline fallback
+ * – Up‑level prompt engineering & negative prompts
+ * – Fully hoisted function declarations (no ReferenceErrors)
+ * – All original console logs / sendPhase events kept for debugging
+ */
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  DEPENDENCIES                                                             */
-/* ────────────────────────────────────────────────────────────────────────── */
-"use strict";
-
+/* ─────────────────────────────────────────────────────────────── */
+/*  BASIC DEPENDENCIES                                             */
+/* ─────────────────────────────────────────────────────────────── */
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -21,11 +27,13 @@ const dayjs = require("dayjs");
 const cheerio = require("cheerio");
 const qs = require("querystring");
 
-const { OpenAI } = require("openai");
 const { google } = require("googleapis");
+const { OpenAI } = require("openai");
 const ffmpeg = require("fluent-ffmpeg");
 
-/* Mongoose models ------------------------------------------------ */
+/* ───────────────────────────────────────────────────────────────
+ *  1. Mongoose models & shared utils
+ * ───────────────────────────────────────────────────────────── */
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
 const {
@@ -33,16 +41,17 @@ const {
 	googleTrendingCategoriesId,
 } = require("../assets/utils");
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  RUNTIME GUARDS + FFMPEG BOOTSTRAP                              */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ *  2.  Runtime guards + ffmpeg bootstrap
+ * ───────────────────────────────────────────────────────────── */
 function assertExists(cond, msg) {
 	if (!cond) {
-		console.error(`[Startup] FATAL – ${msg}`);
+		console.error(`[Startup] FATAL – ${msg}`);
 		process.exit(1);
 	}
 }
 
+/* ffmpeg / ffprobe discovery */
 function resolveFfmpegPath() {
 	if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
 	try {
@@ -62,7 +71,7 @@ assertExists(
 			return false;
 		}
 	})(),
-	"FFmpeg binary not found – install ffmpeg or set FFMPEG_PATH."
+	"FFmpeg binary not found – install ffmpeg or set FFMPEG_PATH."
 );
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -85,17 +94,17 @@ const hasLavfi = ffmpegSupportsLavfi();
 console.log(`[FFmpeg]   binary : ${ffmpegPath}`);
 console.log(`[FFmpeg]   lavfi  → ${hasLavfi}`);
 
-/* font discovery ------------------------------------------------- */
+/* font discovery (for Top‑5 overlays) */
 function resolveFontPath() {
 	const env = process.env.FFMPEG_FONT_PATH;
 	if (env && fs.existsSync(env)) return env;
-	const cands = [
+	const candidates = [
 		path.join(__dirname, "../assets/fonts/DejaVuSans.ttf"),
 		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 		"/usr/share/fonts/dejavu/DejaVuSans.ttf",
 		"C:\\Windows\\Fonts\\arial.ttf",
 	];
-	for (const c of cands) if (fs.existsSync(c)) return c;
+	for (const c of candidates) if (fs.existsSync(c)) return c;
 	return null;
 }
 const FONT_PATH = resolveFontPath();
@@ -105,9 +114,9 @@ assertExists(
 );
 const FONT_PATH_FFMPEG = FONT_PATH.replace(/\\/g, "/").replace(/:/g, "\\:");
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  GLOBAL CONSTANTS & CONFIG                                      */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ *  3.  Global constants
+ * ───────────────────────────────────────────────────────────── */
 const RUNWAY_VERSION = "2024-11-06";
 const POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_ATTEMPTS = 180;
@@ -117,7 +126,7 @@ const JAMENDO_ID = process.env.JAMENDO_CLIENT_ID;
 const RUNWAY_ADMIN_KEY = process.env.RUNWAYML_API_SECRET;
 const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY;
 
-/* ratios, timing, model IDs ------------------------------------- */
+/* generation models */
 const VALID_RATIOS = [
 	"1280:720",
 	"720:1280",
@@ -128,11 +137,11 @@ const VALID_RATIOS = [
 ];
 const WORDS_PER_SEC = 1.8;
 
-const T2V_MODEL = "gen2_turbo"; // motion
+const T2V_MODEL = "gen2_turbo"; // realistic motion
 const ITV_MODEL = "gen4_turbo"; // image‑to‑video
 const TTI_MODEL = "gen4_image"; // text‑to‑image
 
-/* Prompt tuning -------------------------------------------------- */
+/* prompt tuning */
 const QUALITY_BONUS =
 	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, award‑winning, trending on artstation";
 const RUNWAY_NEGATIVE_PROMPT = [
@@ -172,7 +181,7 @@ const HUMAN_SAFETY =
 
 const CHAT_MODEL = "gpt-4o";
 
-/* ElevenLabs ----------------------------------------------------- */
+/* ElevenLabs voices + style‑by‑category */
 const ELEVEN_VOICES = {
 	English: "21m00Tcm4TlvDq8ikWAM",
 	العربية: "CYw3kZ02Hs0563khs1Fj",
@@ -193,11 +202,6 @@ const ELEVEN_STYLE_BY_CATEGORY = {
 	Top5: 1.0,
 	Other: 0.7,
 };
-
-/* misc ----------------------------------------------------------- */
-function spokenSeconds(words) {
-	return +(words / WORDS_PER_SEC).toFixed(2);
-}
 
 const DEFAULT_LANGUAGE = "English";
 const TONE_HINTS = {
@@ -249,19 +253,9 @@ const EMOTIONS = [
 	"surprised",
 ];
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  UTILITY HELPERS                                               */
-/* ─────────────────────────────────────────────────────────────── */
-function pickEmotion(t) {
-	const l = t.toLowerCase();
-	if (/laugh|celebrat|cheer|joy|win/.test(l)) return "laughing";
-	if (/angry|rage|furious|protest/.test(l)) return "angry";
-	if (/sad|mourn|grief|tear/.test(l)) return "sad";
-	if (/shock|wow|astonish|surpris/.test(l)) return "surprised";
-	if (/happy|delight|smile/.test(l)) return "smiling";
-	return "serious";
-}
-
+/* ───────────────────────────────────────────────────────────────
+ *  4.  Helper utilities
+ * ───────────────────────────────────────────────────────────── */
 const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
 const strip = (s) =>
@@ -279,7 +273,21 @@ function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
-/* pronunciation smoother for TTS -------------------------------- */
+function pickEmotion(t) {
+	const l = t.toLowerCase();
+	if (/laugh|celebrat|cheer|joy|win/.test(l)) return "laughing";
+	if (/angry|rage|furious|protest/.test(l)) return "angry";
+	if (/sad|mourn|grief|tear/.test(l)) return "sad";
+	if (/shock|wow|astonish|surpris/.test(l)) return "surprised";
+	if (/happy|delight|smile/.test(l)) return "smiling";
+	return "serious";
+}
+
+function spokenSeconds(words) {
+	return +(words / WORDS_PER_SEC).toFixed(2);
+}
+
+/* smoother numbers for TTS */
 const NUM_WORD = Object.freeze({
 	1: "one",
 	2: "two",
@@ -307,9 +315,9 @@ function improveTTSPronunciation(text) {
 	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
 }
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  JSON‑SAFE SEGMENT PARSER                                      */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ *  5.  JSON‑safe segment parser
+ * ───────────────────────────────────────────────────────────── */
 function parseSegmentsSafe(raw) {
 	raw = strip(raw.trim());
 	if (!raw.trim().startsWith("[")) raw = `[${raw}]`;
@@ -325,27 +333,27 @@ function parseSegmentsSafe(raw) {
 		return null;
 	}
 }
-async function getSegments(segPrompt, segCnt) {
-	for (let attempt = 1; attempt <= 3; attempt++) {
+
+async function getSegments(prompt, cnt) {
+	for (let a = 1; a <= 3; a++) {
 		const rsp = await openai.chat.completions.create({
 			model: CHAT_MODEL,
-			messages: [{ role: "user", content: segPrompt }],
+			messages: [{ role: "user", content: prompt }],
 		});
 		const seg = parseSegmentsSafe(rsp.choices[0].message.content);
-		if (seg && seg.length === segCnt) return seg;
-		console.warn(`[GPT] segments parse failed on attempt ${attempt}`);
+		if (seg && seg.length === cnt) return seg;
+		console.warn(`[GPT] segments parse failed on attempt ${a}`);
 	}
 	throw new Error("GPT segment JSON malformed after 3 attempts");
 }
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  FFMPEG HELPERS                                                */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ *  6.  ffmpeg helpers
+ * ───────────────────────────────────────────────────────────── */
 function ffmpegPromise(cfg) {
 	return new Promise((res, rej) => {
-		const proc = cfg(ffmpeg()) || ffmpeg();
-		proc
-			.on("start", (cmd) => console.log(`[FFmpeg] ${cmd}`))
+		const p = cfg(ffmpeg()) || ffmpeg();
+		p.on("start", (cmd) => console.log(`[FFmpeg] ${cmd}`))
 			.on("end", () => res())
 			.on("error", (e) => rej(e));
 	});
@@ -358,7 +366,7 @@ async function exactLen(src, target, out) {
 	await ffmpegPromise((c) => {
 		c.input(norm(src));
 		if (Math.abs(diff) < 0.05) {
-			/* keep */
+			/* keep length */
 		} else if (diff < 0) c.outputOptions("-t", String(target));
 		else c.videoFilters(`tpad=stop_duration=${diff}`);
 		return c
@@ -388,11 +396,11 @@ async function exactLenAudio(src, target, out) {
 			/* leave */
 		} else if (diff > 0.05) c.audioFilters(`apad=pad_dur=${diff}`);
 		else {
-			const r = inDur / target;
-			if (r <= 2) c.audioFilters(`atempo=${r.toFixed(3)}`);
-			else if (r <= 4) {
-				const s = Math.sqrt(r).toFixed(3);
-				c.audioFilters(`atempo=${s},atempo=${s}`);
+			const ratio = inDur / target;
+			if (ratio <= 2.0) c.audioFilters(`atempo=${ratio.toFixed(3)}`);
+			else if (ratio <= 4.0) {
+				const r = Math.sqrt(ratio).toFixed(3);
+				c.audioFilters(`atempo=${r},atempo=${r}`);
 			} else c.outputOptions("-t", String(target));
 		}
 		return c.outputOptions("-y").save(norm(out));
@@ -412,11 +420,9 @@ async function checkOverlay(filter, w, h, d) {
 	);
 	fs.unlinkSync(tmp);
 }
-
-/* create black dummy clip --------------------------------------- */
 async function makeDummyClip(w, h, d) {
 	if (!hasLavfi)
-		throw new Error("FFmpeg built without lavfi – cannot create dummy clip");
+		throw new Error("FFmpeg without lavfi – cannot create dummy clip");
 	const out = tmpFile("dummy", ".mp4");
 	await ffmpegPromise((c) =>
 		c
@@ -436,9 +442,9 @@ async function makeDummyClip(w, h, d) {
 	return out;
 }
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  GPT PROMPT HELPERS (HOISTED)                                  */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ *  7.  GPT prompt helpers
+ * ───────────────────────────────────────────────────────────── */
 async function refineRunwayPrompt(initialPrompt, scriptText) {
 	const ask = `
 Rewrite the following as a *production‑ready* text‑to‑video prompt.
@@ -458,15 +464,14 @@ Input
 Context
 ${scriptText}`.trim();
 
-	console.log("[GPT] refineRunwayPrompt");
 	try {
 		const { choices } = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [{ role: "user", content: ask }],
 		});
 		return choices[0].message.content.replace(/["“”]/g, "").trim();
-	} catch {
-		console.warn("[GPT] refineRunwayPrompt failed → using original");
+	} catch (e) {
+		console.warn("[GPT] refineRunwayPrompt failed – using original");
 		return initialPrompt;
 	}
 }
@@ -476,6 +481,7 @@ async function generateFallbackPrompt(topic, category) {
 In ≤ 12 words craft a TOP‑TIER, film‑grade scene (no names, no brands) that visually
 captures today’s hottest ${category} topic: “${topic}”.
 Start with a mood adjective, use concrete nouns & active verbs.`.trim();
+
 	const { choices } = await openai.chat.completions.create({
 		model: CHAT_MODEL,
 		messages: [{ role: "user", content: ask }],
@@ -487,6 +493,7 @@ async function describeHuman(language, country) {
 	const locale =
 		country && country !== "all countries" ? `from ${country}` : "western";
 	const prompt = `Describe a real human ${locale} in ≤15 words; include attire, mood, lens, lighting.`;
+
 	const { choices } = await openai.chat.completions.create({
 		model: CHAT_MODEL,
 		messages: [{ role: "user", content: prompt }],
@@ -517,6 +524,7 @@ async function injectHumanIfNeeded(
 	const hasHuman = /\b(man|woman|person|portrait)\b/i.test(runwayPrompt);
 	const name = scriptText.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/);
 
+	/* celebrity path */
 	if (name) {
 		const celeb = name[1];
 		if (!cache[celeb]) cache[celeb] = await describePerson(celeb);
@@ -525,6 +533,7 @@ async function injectHumanIfNeeded(
 		return runwayPrompt;
 	}
 
+	/* inject generic */
 	if (
 		!hasHuman &&
 		/\b(he|she|they|man|woman|person|people)\b/i.test(scriptText)
@@ -537,7 +546,7 @@ async function injectHumanIfNeeded(
 	return runwayPrompt;
 }
 
-async function describeSeedImage(imageUrl) {
+async function describeSeedImage(url) {
 	const ask = `
 Describe *everything* visible in a single sentence (≤ 70 words).
 
@@ -557,7 +566,7 @@ Use present tense. No names, no brands, no guessing unseen parts.`.trim();
 					role: "user",
 					content: [
 						{ type: "text", text: ask },
-						{ type: "image_url", image_url: { url: imageUrl } },
+						{ type: "image_url", image_url: { url } },
 					],
 				},
 			],
@@ -569,12 +578,12 @@ Use present tense. No names, no brands, no guessing unseen parts.`.trim();
 	}
 }
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  GOOGLE TRENDS & SEO TITLE HELPERS                              */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ *  8.  Google‑Trends helpers & SEO title
+ * ───────────────────────────────────────────────────────────── */
 function resolveTrendsCategoryId(label) {
-	const entry = googleTrendingCategoriesId.find((c) => c.category === label);
-	return entry ? entry.ids[0] : 0;
+	const e = googleTrendingCategoriesId.find((c) => c.category === label);
+	return e ? e.ids[0] : 0;
 }
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
@@ -597,11 +606,10 @@ Must summarise: ${headlines.join(" | ")}${
 	}
 }
 
-async function fetchTrendingStory(categoryLabel, geo = "US") {
-	const categoryId = resolveTrendsCategoryId(categoryLabel);
+async function fetchTrendingStory(category, geo = "US") {
+	const id = resolveTrendsCategoryId(category);
 	const url =
-		`${TRENDS_API_URL}?` +
-		qs.stringify({ geo, category: categoryId, hours: 24 });
+		`${TRENDS_API_URL}?` + qs.stringify({ geo, category: id, hours: 24 });
 
 	try {
 		const { data } = await axios.get(url, { timeout: 12_000 });
@@ -646,12 +654,12 @@ async function scrapeArticleText(url) {
 	}
 }
 
-/* Topic helpers -------------------------------------------------- */
+/* fresh topic list via GPT */
 const CURRENT_MONTH_YEAR = dayjs().format("MMMM YYYY");
 const CURRENT_YEAR = dayjs().year();
 
 async function topicFromCustomPrompt(text) {
-	const base = (a) =>
+	const make = (a) =>
 		`
 Attempt ${a}:
 Give one click‑worthy title (≤70 chars, no hashtags, no quotes) set in ${CURRENT_MONTH_YEAR}.
@@ -661,7 +669,7 @@ Do NOT mention years before ${CURRENT_YEAR}.
 	for (let a = 1; a <= 2; a++) {
 		const { choices } = await openai.chat.completions.create({
 			model: CHAT_MODEL,
-			messages: [{ role: "user", content: base(a) }],
+			messages: [{ role: "user", content: make(a) }],
 		});
 		const t = choices[0].message.content.replace(/["“”]/g, "").trim();
 		if (!/20\d{2}/.test(t) || new RegExp(`\\b${CURRENT_YEAR}\\b`).test(t))
@@ -675,12 +683,12 @@ async function pickTrendingTopicFresh(category, language, country) {
 		country && country.toLowerCase() !== "all countries"
 			? ` in ${country}`
 			: "";
-	const langLine =
+	const langLn =
 		language !== DEFAULT_LANGUAGE ? ` Respond in ${language}.` : "";
 	const base = (a) =>
 		`
 Attempt ${a}:
-Return JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${loc}), no hashtags, ≤70 chars.${langLine}`.trim();
+Return JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${loc}), no hashtags, ≤70 chars.${langLn}`.trim();
 
 	for (let a = 1; a <= 2; a++) {
 		try {
@@ -699,9 +707,9 @@ Return JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${loc}
 	return [`Breaking ${category} Story – ${CURRENT_MONTH_YEAR}`];
 }
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  RUNWAY POLL + RETRY WRAPPER                                   */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ *  9.  Runway poll + retry
+ * ───────────────────────────────────────────────────────────── */
 async function pollRunway(id, tk, seg, lbl) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${id}`;
 	for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
@@ -733,9 +741,9 @@ async function retry(fn, max, seg, lbl) {
 	throw last;
 }
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  YOUTUBE + JAMENDO (UNCHANGED)                                 */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ * 10.  YouTube & Jamendo helpers  (unchanged)
+ * ───────────────────────────────────────────────────────────── */
 function resolveYouTubeTokens(req, user) {
 	const bodyTok = {
 		access_token: req.body.youtubeAccessToken,
@@ -789,9 +797,7 @@ async function refreshYouTubeTokensIfNeeded(user, req) {
 			if (user.isModified() && user.role !== "admin") await user.save();
 			return fresh;
 		}
-	} catch {
-		/* ignore */
-	}
+	} catch {}
 	return tokens;
 }
 async function uploadToYouTube(u, fp, { title, description, tags, category }) {
@@ -830,9 +836,9 @@ async function jamendo(term) {
 	}
 }
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  ELEVENLABS TTS (UNCHANGED)                                    */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ * 11.  ElevenLabs TTS helper  (unchanged)
+ * ───────────────────────────────────────────────────────────── */
 async function elevenLabsTTS(text, language, outPath, category = "Other") {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
 	const voiceId = ELEVEN_VOICES[language] || ELEVEN_VOICES[DEFAULT_LANGUAGE];
@@ -869,46 +875,46 @@ async function elevenLabsTTS(text, language, outPath, category = "Other") {
 	);
 }
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  MAIN CONTROLLER – createVideo                                 */
-/* ─────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────
+ * 12.  Main controller – createVideo
+ * ───────────────────────────────────────────────────────────── */
 exports.createVideo = async (req, res) => {
 	const { category, ratio: ratioIn, duration: durIn } = req.body;
 
-	/* Sanity checks ------------------------------------------------ */
+	/* quick validation */
 	if (!category || !YT_CATEGORY_MAP[category])
 		return res.status(400).json({ error: "Bad category" });
 	if (!VALID_RATIOS.includes(ratioIn))
 		return res.status(400).json({ error: "Bad ratio" });
 	if (!goodDur(durIn)) return res.status(400).json({ error: "Bad duration" });
 
-	/* SSE headers -------------------------------------------------- */
+	/* SSE bootstrap */
 	res.setHeader("Content-Type", "text/event-stream");
 	res.setHeader("Cache-Control", "no-cache");
 	res.setHeader("Connection", "keep-alive");
 	res.setHeader("X-Accel-Buffering", "no");
 	if (typeof res.flushHeaders === "function") res.flushHeaders();
 
-	const phaseHistory = [];
-	function sendPhase(p, extra = {}) {
-		const safeExtra =
-			p === "COMPLETED" && extra.phases
+	const history = [];
+	const sendPhase = (phase, extra = {}) => {
+		const safe =
+			phase === "COMPLETED" && extra.phases
 				? { ...extra, phases: JSON.parse(JSON.stringify(extra.phases)) }
 				: extra;
-		res.write(`data: ${JSON.stringify({ phase: p, extra: safeExtra })}\n\n`);
+		res.write(`data:${JSON.stringify({ phase, extra: safe })}\n\n`);
 		if (typeof res.flush === "function") res.flush();
-		phaseHistory.push({ phase: p, ts: Date.now(), extra: safeExtra });
-	}
-	function sendError(msg) {
-		sendPhase("ERROR", { msg });
-		if (!res.headersSent) res.status(500).json({ error: msg });
-	}
+		history.push({ phase, ts: Date.now(), extra: safe });
+	};
+	const sendErr = (m) => {
+		sendPhase("ERROR", { msg: m });
+		if (!res.headersSent) res.status(500).json({ error: m });
+	};
 
 	sendPhase("INIT");
 	res.setTimeout(0);
 
 	try {
-		/* Request fields --------------------------------------------- */
+		/* pull fields */
 		const {
 			language: langIn,
 			country: countryIn,
@@ -919,24 +925,28 @@ exports.createVideo = async (req, res) => {
 		} = req.body;
 
 		const user = req.user;
-		const language = langIn?.trim() || DEFAULT_LANGUAGE;
-		const country = countryIn?.trim() || "US";
+		const language = (langIn || DEFAULT_LANGUAGE).trim();
+		const country = (countryIn || "US").trim();
 		const customPrompt = customPromptRaw.trim();
 		const ratio = ratioIn;
 		const duration = +durIn;
 		const [w, h] = ratio.split(":").map(Number);
 
 		console.log(
-			`[Job] user=${user.email} cat=${category} dur=${duration}s geo=${country}`
+			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}`
 		);
 
-		/* Topic resolution ------------------------------------------- */
+		/* ─────────────────────────────────────────────────────────
+		 *  1.  Topic resolution
+		 * ───────────────────────────────────────────────────────── */
 		let topic = "",
 			trendImage = null,
 			trendArticleUrl = null,
 			trendArticleTitles = null;
+
 		const userOverrides = Boolean(videoImage) || customPrompt.length > 0;
 
+		/* try Google‑Trends first if allowed */
 		if (!userOverrides && category !== "Top5") {
 			const story = await fetchTrendingStory(category, country);
 			if (story) {
@@ -947,6 +957,8 @@ exports.createVideo = async (req, res) => {
 				console.log(`[Trending] candidate topic="${topic}"`);
 			}
 		}
+
+		/* avoid per‑user duplicates */
 		if (topic) {
 			const dup = await Video.findOne({
 				user: user._id,
@@ -954,17 +966,21 @@ exports.createVideo = async (req, res) => {
 				topic,
 			}).select("_id");
 			if (dup) {
-				console.warn("[Duplicate] topic already used for this user");
+				console.warn("[Duplicate] topic already used – picking new one");
 				topic = "";
+				trendImage = trendArticleUrl = trendArticleTitles = null;
 			}
 		}
+
+		/* custom prompt path */
 		if (customPrompt && !topic) {
 			try {
 				topic = await topicFromCustomPrompt(customPrompt);
-			} catch {
-				/* ignore */
-			}
+			} catch {}
+			trendArticleTitles = null; // prevent mismatch
 		}
+
+		/* fallback topic list */
 		if (!topic) {
 			if (category === "Top5") {
 				const used = new Set(
@@ -985,10 +1001,13 @@ exports.createVideo = async (req, res) => {
 				);
 				topic = list.find((t) => !used.has(t)) || list[0];
 			}
+			trendArticleTitles = null; // ensure coherence
 		}
 		console.log(`[Job] final topic="${topic}"`);
 
-		/* Seed image + article --------------------------------------- */
+		/* ─────────────────────────────────────────────────────────
+		 *  2.  Vision seed + article scrape
+		 * ───────────────────────────────────────────────────────── */
 		let seedImageUrl = videoImage?.url || trendImage || null;
 		let seedImageDesc = null;
 		if (seedImageUrl) {
@@ -996,24 +1015,28 @@ exports.createVideo = async (req, res) => {
 			seedImageDesc = await describeSeedImage(seedImageUrl);
 			console.log("[Vision] →", seedImageDesc);
 		}
+
 		const articleText = await scrapeArticleText(trendArticleUrl);
 
-		/* Segment plan ------------------------------------------------ */
+		/* ─────────────────────────────────────────────────────────
+		 *  3.  Segment plan & GPT scripts
+		 * ───────────────────────────────────────────────────────── */
 		const INTRO = 3;
-		const segCnt =
+		let segCnt =
 			category === "Top5" ? 6 : Math.ceil((duration - INTRO) / 10) + 1;
+
 		let segLens;
 		if (category === "Top5") {
-			const r = duration - INTRO,
-				base = Math.floor(r / 5),
-				extra = r % 5;
+			const r = duration - INTRO;
+			const base = Math.floor(r / 5);
+			const extra = r % 5;
 			segLens = [
 				INTRO,
 				...Array.from({ length: 5 }, (_, i) => base + (i < extra ? 1 : 0)),
 			];
 		} else {
-			const r = duration - INTRO,
-				n = Math.ceil(r / 10);
+			const r = duration - INTRO;
+			const n = Math.ceil(r / 10);
 			segLens = [
 				INTRO,
 				...Array.from({ length: n }, (_, i) =>
@@ -1021,22 +1044,18 @@ exports.createVideo = async (req, res) => {
 				),
 			];
 		}
+
+		/* ensure exact sum */
 		const delta = duration - segLens.reduce((a, b) => a + b, 0);
 		if (Math.abs(delta) >= 1) segLens[segLens.length - 1] += delta;
-		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 
-		/* Ask GPT for segment scripts -------------------------------- */
+		let segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+
+		/* GPT segment prompt */
 		const allowExplain = duration >= 25;
 		const capTable = segWordCaps
 			.map((w, i) => `Segment ${i + 1} ≤ ${w} words`)
 			.join("  •  ");
-		const articleSect = articleText
-			? `\n---\nReference article:\n${articleText}`
-			: "";
-		const segLangLine =
-			language !== DEFAULT_LANGUAGE
-				? `\nAll output must be in ${language}.`
-				: "";
 
 		const segPrompt = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
@@ -1053,11 +1072,17 @@ ${
 		  }`
 		: ""
 }
-Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and "scriptText". Do not wrap the JSON in markdown. 
-${TONE_HINTS[category] || ""}${segLangLine}${articleSect}`.trim();
+Return *strict* JSON array of objects with exactly two keys: "runwayPrompt" and "scriptText". Do NOT wrap the JSON in markdown. 
+${TONE_HINTS[category] || ""}${
+			language !== DEFAULT_LANGUAGE
+				? `\nAll output must be in ${language}.`
+				: ""
+		}${articleText ? `\n---\nReference article:\n${articleText}` : ""}`.trim();
 
 		console.log("[GPT] requesting segments …");
 		const segments = await getSegments(segPrompt, segCnt);
+
+		/* normalise possible plain‑string returns */
 		for (let i = 0; i < segments.length; i++) {
 			const s = segments[i];
 			if (typeof s === "string")
@@ -1068,14 +1093,14 @@ ${TONE_HINTS[category] || ""}${segLangLine}${articleSect}`.trim();
 			}
 		}
 
-		/* shrink long lines ----------------------------------------- */
+		/* shrink overlong lines */
 		await Promise.all(
 			segments.map((s, i) =>
 				s.scriptText.trim().split(/\s+/).length <= segWordCaps[i]
 					? s
 					: (async () => {
 							const ask = `
-Rewrite in active voice, keep all facts, ≤ ${segWordCaps[i]} words.
+Rewrite in active voice, keep all facts, ≤ ${segWordCaps[i]} words.
 One sentence only. No filler words.
 
 “${s.scriptText}”`.trim();
@@ -1088,33 +1113,38 @@ One sentence only. No filler words.
 			)
 		);
 
-		/* top‑5 adjustment ------------------------------------------ */
+		/* fine‑tune Top‑5 segment durations */
 		if (category === "Top5") {
 			const introLen = segLens[0];
 			const newLens = [introLen];
-			let totalNeeded = introLen;
+			let total = introLen;
 			for (let i = 1; i < segCnt; i++) {
 				const words = segments[i].scriptText.trim().split(/\s+/).length;
 				const min = Math.ceil(spokenSeconds(words) + 0.6);
 				newLens.push(Math.max(segLens[i], min));
-				totalNeeded += newLens[i];
+				total += newLens[i];
 			}
-			if (totalNeeded > duration) {
-				const scale = (duration - introLen) / (totalNeeded - introLen + 1e-3);
+			if (total > duration) {
+				const scale = (duration - introLen) / (total - introLen + 1e-3);
 				for (let i = 1; i < segCnt; i++) {
 					newLens[i] = Math.max(
 						Math.ceil(newLens[i] * scale),
-						Math.ceil(spokenSeconds(segments[i].scriptText.split(/\s+/).length))
+						Math.ceil(
+							spokenSeconds(segments[i].scriptText.trim().split(/\s+/).length)
+						)
 					);
 				}
 			}
 			segLens = newLens;
+			segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 		}
 
-		/* global style ---------------------------------------------- */
+		/* ─────────────────────────────────────────────────────────
+		 *  4.  Global style, SEO title, tags
+		 * ───────────────────────────────────────────────────────── */
 		let globalStyle = "";
 		try {
-			const s = await openai.chat.completions.create({
+			const g = await openai.chat.completions.create({
 				model: CHAT_MODEL,
 				messages: [
 					{
@@ -1123,14 +1153,20 @@ One sentence only. No filler words.
 					},
 				],
 			});
-			globalStyle = s.choices[0].message.content
+			globalStyle = g.choices[0].message.content
 				.replace(/^[-–•\s]+/, "")
 				.trim();
-		} catch {
-			/* ignore */
-		}
+		} catch {}
 
-		/* SEO title / desc / tags ----------------------------------- */
+		/* If article titles don't match the final topic, discard them */
+		if (
+			trendArticleTitles?.length &&
+			!trendArticleTitles.some((t) =>
+				t.toLowerCase().includes(topic.toLowerCase().slice(0, 8))
+			)
+		)
+			trendArticleTitles = null;
+
 		let seoTitle = "";
 		if (trendArticleTitles?.length) {
 			seoTitle =
@@ -1169,13 +1205,13 @@ One sentence only. No filler words.
 			tags.push(
 				...JSON.parse(strip(tagResp.choices[0].message.content.trim()))
 			);
-		} catch {
-			/* ignore */
-		}
+		} catch {}
 		if (category === "Top5") tags.unshift("Top5");
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
 
-		/* enhance runway prompts ------------------------------------ */
+		/* ─────────────────────────────────────────────────────────
+		 *  5.  Enhance runway prompts (human injection, style, etc.)
+		 * ───────────────────────────────────────────────────────── */
 		const humanCache = {};
 		const prependCustom = (p) => (customPrompt ? `${customPrompt}, ${p}` : p);
 
@@ -1195,13 +1231,16 @@ One sentence only. No filler words.
 				`${prompt}, ${RUNWAY_NEGATIVE_PROMPT}`.replace(/^,\s*/, "")
 			);
 		}
+
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 
-		/* overlay for top‑5 ----------------------------------------- */
+		/* ─────────────────────────────────────────────────────────
+		 *  6.  Build overlay for Top‑5
+		 * ───────────────────────────────────────────────────────── */
 		let overlay = "";
 		if (category === "Top5") {
-			let t = segLens[0],
-				draw = [];
+			let t = segLens[0];
+			const draw = [];
 			for (let i = 1; i < segCnt; i++) {
 				const d = segLens[i];
 				let label = segments[i].scriptText;
@@ -1209,8 +1248,9 @@ One sentence only. No filler words.
 				if (m) label = m[1].trim();
 				if (label.length > 60) label = label.slice(0, 57) + "…";
 				const spoken = spokenSeconds(label.split(/\s+/).length);
-				const showFrom = t.toFixed(2),
-					showTo = Math.min(t + spoken + 0.25, t + d - 0.1).toFixed(2);
+				const showFrom = t.toFixed(2);
+				const showTo = Math.min(t + spoken + 0.25, t + d - 0.1).toFixed(2);
+
 				draw.push(
 					`drawtext=fontfile='${FONT_PATH_FFMPEG}':text='${escTxt(label)}'` +
 						`:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=15:` +
@@ -1222,7 +1262,9 @@ One sentence only. No filler words.
 			await checkOverlay(overlay, w, h, duration);
 		}
 
-		/* optional music -------------------------------------------- */
+		/* ─────────────────────────────────────────────────────────
+		 *  7.  Optional background music
+		 * ───────────────────────────────────────────────────────── */
 		let music = null;
 		try {
 			const jam =
@@ -1235,13 +1277,11 @@ One sentence only. No filler words.
 					data.pipe(ws).on("finish", r).on("error", j)
 				);
 			}
-		} catch {
-			/* ignore */
-		}
+		} catch {}
 
-		/* ===============================================
-		 *  PER‑SEGMENT VIDEO GENERATION
-		 * =============================================== */
+		/* ─────────────────────────────────────────────────────────
+		 *  8.  PER‑SEGMENT VIDEO GENERATION
+		 * ───────────────────────────────────────────────────────── */
 		const clips = [];
 		sendPhase("GENERATING_CLIPS", {
 			msg: "Generating clips",
@@ -1253,10 +1293,11 @@ One sentence only. No filler words.
 			const d = segLens[i];
 			const rw = Math.abs(5 - d) <= Math.abs(10 - d) ? 5 : 10;
 			let clip = null;
+
 			const announceFallback = (type, reason) =>
 				sendPhase("FALLBACK", { segment: i + 1, type, reason });
 
-			/* helper – text‑to‑video */
+			/* helpers ------------------------------------------------ */
 			async function doTextToVideo(promptText, label, img = null) {
 				const payload = {
 					model: T2V_MODEL,
@@ -1266,6 +1307,7 @@ One sentence only. No filler words.
 					negativePrompt: RUNWAY_NEGATIVE_PROMPT,
 				};
 				if (img) payload.promptImage = img;
+
 				const id = await retry(
 					async () => {
 						const { data } = await axios.post(
@@ -1284,12 +1326,14 @@ One sentence only. No filler words.
 					i + 1,
 					`t2v${label}`
 				);
+
 				const vidUrl = await retry(
 					() => pollRunway(id, RUNWAY_ADMIN_KEY, i + 1, `poll(t2v${label})`),
 					3,
 					i + 1,
 					`poll(t2v${label})`
 				);
+
 				const p = tmpFile(`seg_t2v${label}${i + 1}`, ".mp4");
 				await new Promise((r, j) =>
 					axios
@@ -1300,8 +1344,6 @@ One sentence only. No filler words.
 				);
 				return p;
 			}
-
-			/* helper – tti + itv */
 			async function doTtiItv(promptText, label) {
 				const idImg = await retry(
 					async () => {
@@ -1321,6 +1363,7 @@ One sentence only. No filler words.
 					i + 1,
 					`tti${label}`
 				);
+
 				const imgUrl = await retry(
 					() => pollRunway(idImg, RUNWAY_ADMIN_KEY, i + 1, `poll(img${label})`),
 					3,
@@ -1352,12 +1395,14 @@ One sentence only. No filler words.
 					i + 1,
 					`itv${label}`
 				);
+
 				const vidUrl = await retry(
 					() => pollRunway(idVid, RUNWAY_ADMIN_KEY, i + 1, `poll(vid${label})`),
 					3,
 					i + 1,
 					`poll(vid${label})`
 				);
+
 				const p = tmpFile(`seg_${label}${i + 1}`, ".mp4");
 				await new Promise((r, j) =>
 					axios
@@ -1369,7 +1414,7 @@ One sentence only. No filler words.
 				return p;
 			}
 
-			/* tier 0 – t2v with seed image */
+			/* tier A – t2v with seed */
 			try {
 				if (seedImageUrl)
 					clip = await doTextToVideo(
@@ -1382,7 +1427,7 @@ One sentence only. No filler words.
 				announceFallback("t2v_seed", e.message);
 			}
 
-			/* tier 1 – pure t2v */
+			/* tier B – pure t2v */
 			if (!clip) {
 				try {
 					clip = await doTextToVideo(segments[i].runwayPrompt, "");
@@ -1392,7 +1437,7 @@ One sentence only. No filler words.
 				}
 			}
 
-			/* tier 2 – tti+itv */
+			/* tier C – tti + itv */
 			if (!clip) {
 				try {
 					clip = await doTtiItv(segments[i].runwayPrompt, "");
@@ -1402,7 +1447,7 @@ One sentence only. No filler words.
 				}
 			}
 
-			/* tier 3 – safe fallback prompt */
+			/* tier D – safe fallback prompt */
 			if (!clip) {
 				try {
 					const safe = await generateFallbackPrompt(topic, category);
@@ -1414,18 +1459,19 @@ One sentence only. No filler words.
 				}
 			}
 
-			/* tier 4 – black dummy */
+			/* tier E – black dummy */
 			if (!clip) {
 				console.warn(`[Seg ${i + 1}] using dummy clip`);
-				announceFallback("dummy", "using black dummy clip");
+				announceFallback("dummy", "black clip");
 				clip = await makeDummyClip(w, h, rw);
 			}
 
-			/* fix duration -------------------------------------------- */
+			/* fix length */
 			const fixed = tmpFile(`fx_${i + 1}`, ".mp4");
 			await exactLen(clip, d, fixed);
 			fs.unlinkSync(clip);
 			clips.push(fixed);
+
 			sendPhase("GENERATING_CLIPS", {
 				msg: `Rendering segment ${i + 1}/${segCnt}`,
 				total: segCnt,
@@ -1433,13 +1479,16 @@ One sentence only. No filler words.
 			});
 		}
 
-		/* assemble silent video ------------------------------------- */
+		/* ─────────────────────────────────────────────────────────
+		 *  9.  Concatenate video
+		 * ───────────────────────────────────────────────────────── */
 		sendPhase("ASSEMBLING_VIDEO", { msg: "Concatenating clips…" });
 		const listFile = tmpFile("list", ".txt");
 		fs.writeFileSync(
 			listFile,
 			clips.map((p) => `file '${norm(p)}'`).join("\n")
 		);
+
 		const silent = tmpFile("silent", ".mp4");
 		await ffmpegPromise((c) =>
 			c
@@ -1451,13 +1500,16 @@ One sentence only. No filler words.
 		fs.unlinkSync(listFile);
 		clips.forEach((p) => fs.unlinkSync(p));
 
-		/* enforce duration ----------------------------------------- */
+		/* exact duration */
 		const silentFixed = tmpFile("silent_fix", ".mp4");
 		await exactLen(silent, duration, silentFixed);
 		fs.unlinkSync(silent);
 
-		/* Voice & music -------------------------------------------- */
+		/* ─────────────────────────────────────────────────────────
+		 * 10.  Voice‑over & music
+		 * ───────────────────────────────────────────────────────── */
 		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
+
 		const fixedPieces = [];
 		for (let i = 0; i < segCnt; i++) {
 			const raw = tmpFile(`tts_raw_${i + 1}`, ".mp3");
@@ -1466,6 +1518,7 @@ One sentence only. No filler words.
 			try {
 				await elevenLabsTTS(txt, language, raw, category);
 			} catch {
+				/* fallback to OpenAI shimmer */
 				const tts = await openai.audio.speech.create({
 					model: "tts-1-hd",
 					voice: "shimmer",
@@ -1479,21 +1532,24 @@ One sentence only. No filler words.
 			fs.unlinkSync(raw);
 			fixedPieces.push(fixed);
 		}
+
+		/* concat audio segments */
 		fs.writeFileSync(
 			listFile,
 			fixedPieces.map((p) => `file '${norm(p)}'`).join("\n")
 		);
-		const ttsPath = tmpFile("tts_join", ".wav");
+		const ttsJoin = tmpFile("tts_join", ".wav");
 		await ffmpegPromise((c) =>
 			c
 				.input(norm(listFile))
 				.inputOptions("-f", "concat", "-safe", "0")
 				.outputOptions("-c", "copy", "-y")
-				.save(norm(ttsPath))
+				.save(norm(ttsJoin))
 		);
 		fs.unlinkSync(listFile);
 		fixedPieces.forEach((p) => fs.unlinkSync(p));
 
+		/* mix with bg music */
 		const mixedRaw = tmpFile("mix_raw", ".wav");
 		const mixed = tmpFile("mix_fix", ".wav");
 		if (music) {
@@ -1505,9 +1561,10 @@ One sentence only. No filler words.
 					.save(norm(trim))
 			);
 			fs.unlinkSync(music);
+
 			await ffmpegPromise((c) =>
 				c
-					.input(norm(ttsPath))
+					.input(norm(ttsJoin))
 					.input(norm(trim))
 					.complexFilter([
 						"[0:a]volume=1.4[a0]",
@@ -1521,23 +1578,27 @@ One sentence only. No filler words.
 		} else {
 			await ffmpegPromise((c) =>
 				c
-					.input(norm(ttsPath))
+					.input(norm(ttsJoin))
 					.audioFilters("volume=1.4")
 					.outputOptions("-c:a", "pcm_s16le", "-y")
 					.save(norm(mixedRaw))
 			);
 		}
-		fs.unlinkSync(ttsPath);
+		fs.unlinkSync(ttsJoin);
 		await exactLenAudio(mixedRaw, duration, mixed);
 		fs.unlinkSync(mixedRaw);
 
-		/* mux audio + video ---------------------------------------- */
+		/* ─────────────────────────────────────────────────────────
+		 * 11.  Mux audio + video
+		 * ───────────────────────────────────────────────────────── */
 		sendPhase("SYNCING_VOICE_MUSIC", { msg: "Muxing final video" });
+
 		const safeTitle = seoTitle
 			.toLowerCase()
 			.replace(/[^\w\d]+/g, "_")
 			.replace(/^_+|_+$/g, "");
 		const finalPath = tmpFile(safeTitle, ".mp4");
+
 		await ffmpegPromise((c) => {
 			c.input(norm(silentFixed)).input(norm(mixed));
 			if (category === "Top5") {
@@ -1582,7 +1643,9 @@ One sentence only. No filler words.
 			fs.unlinkSync(mixed);
 		} catch {}
 
-		/* YouTube upload ------------------------------------------- */
+		/* ─────────────────────────────────────────────────────────
+		 * 12.  YouTube upload (best‑effort)
+		 * ───────────────────────────────────────────────────────── */
 		let youtubeLink = "";
 		try {
 			const tokens = await refreshYouTubeTokensIfNeeded(user, req);
@@ -1618,7 +1681,9 @@ One sentence only. No filler words.
 			console.warn("[YouTube] upload skipped →", e.message);
 		}
 
-		/* Mongo DB record ------------------------------------------ */
+		/* ─────────────────────────────────────────────────────────
+		 * 13.  Persist to Mongo
+		 * ───────────────────────────────────────────────────────── */
 		const doc = await Video.create({
 			user: user._id,
 			category,
@@ -1640,18 +1705,20 @@ One sentence only. No filler words.
 			youtubeEmail,
 		});
 
-		/* optional schedule ---------------------------------------- */
+		/* optional scheduling */
 		if (schedule) {
 			const { type, timeOfDay, startDate, endDate } = schedule;
 			let next = dayjs(startDate)
 				.hour(+timeOfDay.split(":")[0])
 				.minute(+timeOfDay.split(":")[1])
 				.second(0);
+
 			if (next.isBefore(dayjs())) {
 				if (type === "daily") next = next.add(1, "day");
 				if (type === "weekly") next = next.add(1, "week");
 				if (type === "monthly") next = next.add(1, "month");
 			}
+
 			await new Schedule({
 				user: user._id,
 				video: doc._id,
@@ -1662,25 +1729,28 @@ One sentence only. No filler words.
 				nextRun: next.toDate(),
 				active: true,
 			}).save();
+
 			doc.scheduled = true;
 			await doc.save();
 			sendPhase("VIDEO_SCHEDULED", { msg: "Scheduled" });
 		}
 
-		/* done ------------------------------------------------------ */
+		/* ─────────────────────────────────────────────────────────
+		 * 14.  DONE
+		 * ───────────────────────────────────────────────────────── */
 		sendPhase("COMPLETED", {
 			id: doc._id,
 			youtubeLink,
-			phases: JSON.parse(JSON.stringify(phaseHistory)),
+			phases: JSON.parse(JSON.stringify(history)),
 		});
 		res.end();
 	} catch (err) {
 		console.error("[createVideo] ERROR", err);
-		sendError(err.message || "Internal error");
+		sendErr(err.message || "Internal error");
 	}
 };
 
-/* ─────────────────────────────────────────────────────────────── */
+/* expose helpers for tests / cli */
 exports.buildYouTubeOAuth2Client = buildYouTubeOAuth2Client;
 exports.refreshYouTubeTokensIfNeeded = refreshYouTubeTokensIfNeeded;
 exports.uploadToYouTube = uploadToYouTube;
