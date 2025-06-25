@@ -134,9 +134,38 @@ const WORDS_PER_SEC = 1.8;
 const QUALITY_BONUS =
 	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, " +
 	"award‑winning, trending on artstation"; // ← enh.
-const RUNWAY_NEGATIVE_PROMPT =
-	"duplicate, extra limbs, multiple heads, distorted, blurry, watermark, text, logo, " +
-	"lowres, malformed, backward motion, reversed walk, unnatural gait, physics‑defying";
+const RUNWAY_NEGATIVE_PROMPT = [
+	"duplicate",
+	"bad anatomy",
+	"deformed hands",
+	"extra fingers",
+	"extra limbs",
+	"missing limbs",
+	"multiple heads",
+	"mutated",
+	"disfigured",
+	"doll‑like skin",
+	"oversaturated",
+	"poor lighting",
+	"low contrast",
+	"grainy",
+	"lowres",
+	"jpeg artifacts",
+	"blur",
+	"watermark",
+	"text",
+	"logo",
+	"nsfw",
+	"nudity",
+	"violence",
+	"gore",
+	"blood",
+	"backward motion",
+	"reversed walk",
+	"unnatural gait",
+	"physics‑defying",
+	"distorted perspective",
+].join(", ");
 
 const HUMAN_SAFETY =
 	"anatomically correct, two eyes, one head, normal limbs, realistic proportions, natural waist";
@@ -414,7 +443,22 @@ async function checkOverlay(filter, w, h, d) {
 /*  GPT helpers (refineRunwayPrompt improved)                                */
 /* ────────────────────────────────────────────────────────────────────────── */
 async function refineRunwayPrompt(initialPrompt, scriptText) {
-	const ask = `Refine prompt to ≤25 words, prepend atmosphere, remove quotes:\n${initialPrompt}\n---\n${scriptText}`;
+	const ask = `
+Rewrite the following as a *production‑ready* text‑to‑video prompt.
+
+Rules
+• ≤ 25 words.  
+• Begin with one vivid atmosphere adjective.  
+• Use present‑tense, imperative verbs (e.g. “Soaring drone shot of …”).  
+• NO quote marks, NO brand names, NO proper names.  
+• Keep only essential subjects & actions; drop metadata, camera jargon.  
+• Inject strong cinematic language (lighting, mood, lens) where helpful.  
+• End with a concise style tag if absent.  
+Input
+«${initialPrompt}»
+---
+Context
+${scriptText}`.trim();
 	console.log("[GPT] refineRunwayPrompt");
 	try {
 		const { choices } = await openai.chat.completions.create({
@@ -428,7 +472,10 @@ async function refineRunwayPrompt(initialPrompt, scriptText) {
 	}
 }
 async function generateFallbackPrompt(topic, category) {
-	const ask = `In ≤12 words, give a cinematic, vivid scene (no names) illustrating latest ${category} topic: "${topic}".`;
+	const ask = `
+		In ≤ 12 words craft a TOP‑TIER, film‑grade scene (no names, no brands) that visually
+		captures today’s hottest ${category} topic: “${topic}”.
+		Start with a mood adjective, use concrete nouns & active verbs.`.trim();
 	const { choices } = await openai.chat.completions.create({
 		model: CHAT_MODEL,
 		messages: [{ role: "user", content: ask }],
@@ -447,7 +494,10 @@ async function describeHuman(language, country) {
 	return choices[0].message.content.trim();
 }
 async function describePerson(name) {
-	const prompt = `Describe a person similar to ${name} in ≤15 words; build, hair, eyes, ethnicity, attire, lens, lighting.`;
+	const prompt = `
+		In ≤ 20 words depict a photorealistic person who could be mistaken for ${name}.
+		Detail: face shape, skin tone, hair colour & style, eye shape, age range, build,
+		attire, mood, lens & lighting. No names.`.trim();
 	const { choices } = await openai.chat.completions.create({
 		model: CHAT_MODEL,
 		messages: [{ role: "user", content: prompt }],
@@ -488,9 +538,16 @@ async function injectHumanIfNeeded(
 }
 
 async function describeSeedImage(imageUrl) {
-	const ask =
-		"Describe every visible subject (include attire, build, hair colour)," +
-		" background and mood in ≤70 words, no proper names.";
+	const ask = `
+		Describe *everything* visible in a single sentence (≤ 70 words).
+
+		Include
+		• age range, gender, ethnicity, build, facial features, hair colour & style  
+		• attire & accessories  
+		• pose, expression & camera angle  
+		• environment, colour palette, lighting style, depth of field, mood
+
+		Use present tense. No names, no brands, no guessing unseen parts.`.trim();
 	try {
 		const { choices } = await openai.chat.completions.create({
 			model: CHAT_MODEL,
@@ -522,11 +579,11 @@ const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
 async function generateSeoTitle(headlines, category, language) {
 	try {
-		const ask =
-			`Give ONE catchy YouTube title in Title Case, ≤70 characters, no hashtags, no quotes.\n` +
-			`It must summarise these headlines: ${headlines.join(" | ")}${
-				language !== DEFAULT_LANGUAGE ? `\nRespond in ${language}.` : ""
-			}`;
+		const ask = `Give ONE irresistible YouTube title in Title Case (≤ 70 chars, no #, no “quotes”).
+			 Use a power verb + intrigue + keyword. Avoid click‑bait filler.
+			 Must summarise: ${headlines.join(" | ")}${
+			language !== DEFAULT_LANGUAGE ? `\nRespond in ${language}.` : ""
+		}`;
 		const { choices } = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [{ role: "user", content: ask }],
@@ -1048,7 +1105,11 @@ ${TONE_HINTS[category] || ""}${segLangLine}${articleSect}`.trim();
 				s.scriptText.trim().split(/\s+/).length <= segWordCaps[i]
 					? s
 					: (async () => {
-							const ask = `Shorten to ≤${segWordCaps[i]} words:\n"${s.scriptText}"`;
+							const ask = `
+								Rewrite in active voice, keep all facts, ≤ ${segWordCaps[i]} words.
+								One sentence only. No filler words.
+
+								“${s.scriptText}”`.trim();
 							const { choices } = await openai.chat.completions.create({
 								model: CHAT_MODEL,
 								messages: [{ role: "user", content: ask }],
