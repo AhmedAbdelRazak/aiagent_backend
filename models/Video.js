@@ -165,11 +165,6 @@ const videoSchema = new mongoose.Schema(
 			default: "all countries",
 		},
 
-		language: {
-			type: String,
-			trim: true,
-			default: "English",
-		},
 		videoRatedByUser: {
 			type: Number,
 		},

@@ -1913,9 +1913,10 @@ One sentence only. No filler words.
 		 * 12.  YouTube upload (best‑effort)
 		 * ───────────────────────────────────────────────────────── */
 		let youtubeLink = "";
+		let youtubeTokens = null;
 		try {
-			const tokens = await refreshYouTubeTokensIfNeeded(user, req);
-			const oauth2 = buildYouTubeOAuth2Client(tokens);
+			youtubeTokens = await refreshYouTubeTokensIfNeeded(user, req);
+			const oauth2 = buildYouTubeOAuth2Client(youtubeTokens);
 			if (oauth2) {
 				const yt = google.youtube({ version: "v3", auth: oauth2 });
 				const { data } = await yt.videos.insert(
@@ -1970,6 +1971,15 @@ One sentence only. No filler words.
 			refinedRunwayStub: customPrompt,
 			videoImage,
 			youtubeEmail,
+			youtubeAccessToken:
+				youtubeTokens?.access_token || req.body.youtubeAccessToken || "",
+			youtubeRefreshToken:
+				youtubeTokens?.refresh_token || req.body.youtubeRefreshToken || "",
+			youtubeTokenExpiresAt: youtubeTokens?.expiry_date
+				? new Date(youtubeTokens.expiry_date)
+				: req.body.youtubeTokenExpiresAt
+				? new Date(req.body.youtubeTokenExpiresAt)
+				: undefined,
 		});
 
 		/* optional scheduling */
