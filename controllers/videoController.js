@@ -41,6 +41,11 @@ const {
 	googleTrendingCategoriesId,
 } = require("../assets/utils");
 
+const {
+	safeDescribeSeedImage,
+	injectSeedDescription,
+} = require("../assets/helper");
+
 /* ───────────────────────────────────────────────────────────────
  *  2.  Runtime guards + ffmpeg bootstrap
  * ───────────────────────────────────────────────────────────── */
@@ -724,57 +729,6 @@ async function injectHumanIfNeeded(
 	return runwayPrompt;
 }
 
-async function describeSeedImage(url) {
-	const WORD_CAP = 70;
-	const MAX_ATTEMPTS = 2;
-
-	const baseAsk = (tryNo) => `
-Attempt ${tryNo}.
-Describe EVERYTHING visible in ONE sentence, ≤${WORD_CAP} words, present tense.
-
-Must include ▸ age range ▸ gender impression ▸ ethnicity impression ▸ build ▸ facial features  
-▸ hair colour & style ▸ attire & accessories ▸ pose ▸ expression ▸ camera angle  
-▸ environment ▸ colour palette ▸ lighting style ▸ depth‑of‑field ▸ mood.
-
-No names, brands, or speculation words (“appears”, “probably”, “might”).  
-Return ONLY the sentence.`;
-
-	for (let t = 1; t <= MAX_ATTEMPTS; t++) {
-		try {
-			const { choices } = await openai.chat.completions.create({
-				model: CHAT_MODEL,
-				messages: [
-					{
-						role: "user",
-						content: [
-							{ type: "text", text: baseAsk(t) },
-							{ type: "image_url", image_url: { url } },
-						],
-					},
-				],
-			});
-
-			let out = choices[0].message.content
-				.replace(/["“”]/g, "")
-				.replace(/\s+/g, " ")
-				.trim();
-
-			/* validation: single sentence & word cap */
-			const isSingleSentence = !/[.!?].+?[.!?]/.test(out); // only one terminal mark
-			const withinCap = out.split(/\s+/).length <= WORD_CAP;
-			const noSpeculation =
-				!/\b(appears|probably|seems|looks like|maybe)\b/i.test(out);
-
-			if (isSingleSentence && withinCap && noSpeculation) return out;
-		} catch (err) {
-			console.warn(`[describeSeedImage] attempt ${t} failed → ${err.message}`);
-		}
-	}
-
-	/* conservative fallback */
-	return "Middle‑aged woman with wavy blonde hair smiles subtly in three‑quarter view, wearing navy blazer and gold necklace, soft rim light against muted teal studio backdrop, shallow depth of field, calm professional mood.";
-}
-
 /* ───────────────────────────────────────────────────────────────
  *  8.  Google‑Trends helpers & SEO title
  * ───────────────────────────────────────────────────────────── */
@@ -1210,7 +1164,7 @@ exports.createVideo = async (req, res) => {
 		let seedImageDesc = null;
 		if (seedImageUrl) {
 			console.log("[Vision] describing seed image …");
-			seedImageDesc = await describeSeedImage(seedImageUrl);
+			seedImageDesc = await safeDescribeSeedImage(seedImageUrl);
 			console.log("[Vision] →", seedImageDesc);
 		}
 
@@ -1289,6 +1243,15 @@ ${TONE_HINTS[category] || ""}${
 				segments[i].runwayPrompt = s.runwayPrompt ?? "";
 				segments[i].scriptText = s.scriptText ?? "";
 			}
+		}
+
+		if (seedImageDesc) {
+			segments.forEach((s) => {
+				s.runwayPrompt = injectSeedDescription(
+					s.runwayPrompt || "",
+					seedImageDesc
+				);
+			});
 		}
 
 		/* shrink overlong lines */
