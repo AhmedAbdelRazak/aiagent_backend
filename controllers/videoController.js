@@ -806,7 +806,7 @@ Must summarise: ${headlines.join(" | ")}${
 async function fetchTrendingStory(category, geo = "US") {
 	const id = resolveTrendsCategoryId(category);
 	const url =
-		`${TRENDS_API_URL}?` + qs.stringify({ geo, category: id, hours: 24 });
+		`${TRENDS_API_URL}?` + qs.stringify({ geo, category: id, hours: 168 });
 
 	try {
 		const { data } = await axios.get(url, { timeout: 12_000 });
