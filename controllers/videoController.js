@@ -1469,16 +1469,25 @@ One sentence only. No filler words.
 				sendPhase("FALLBACK", { segment: i + 1, type, reason });
 
 			/* helpers ------------------------------------------------ */
-			async function doTextToVideo(promptText, label, img = null) {
+			async function doTextToVideo(promptTextRaw, label, img = null) {
+				/* --- 1. guard against prompt truncation ----------------------- */
+				const promptText =
+					promptTextRaw.length > PROMPT_CHAR_LIMIT
+						? promptTextRaw.slice(0, PROMPT_CHAR_LIMIT)
+						: promptTextRaw;
+
+				/* --- 2. build payload ----------------------------------------- */
 				const payload = {
 					model: T2V_MODEL,
 					promptText,
 					ratio,
-					duration: rw,
+					duration: rw, // ‘rw’ & ‘ratio’ come from outer scope
+					promptStrength: 0.85, // ✨ keeps the text in firm control
 					negativePrompt: segments[i].negativePromptFull,
 				};
 				if (img) payload.promptImage = img;
 
+				/* --- 3. fire → poll → download -------------------------------- */
 				const id = await retry(
 					async () => {
 						const { data } = await axios.post(
@@ -1515,41 +1524,59 @@ One sentence only. No filler words.
 				);
 				return p;
 			}
-			async function doTtiItv(promptText, label) {
-				const idImg = await retry(
-					async () => {
-						const { data } = await axios.post(
-							"https://api.dev.runwayml.com/v1/text_to_image",
-							{
-								model: TTI_MODEL,
-								promptText,
-								ratio,
-								negativePrompt: segments[i].negativePromptFull,
-							},
-							{
-								headers: {
-									Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
-									"X-Runway-Version": RUNWAY_VERSION,
+
+			let reusableFallbackImage = null; // <‑‑ persists across segments
+
+			async function doTtiItv(promptTextRaw, label) {
+				/* -------- 1. clamp prompt length ------------ */
+				const promptText =
+					promptTextRaw.length > PROMPT_CHAR_LIMIT
+						? promptTextRaw.slice(0, PROMPT_CHAR_LIMIT)
+						: promptTextRaw;
+
+				/* -------- 2. Step A – get / reuse an image --- */
+				let imgUrl = reusableFallbackImage;
+				if (!imgUrl) {
+					const idImg = await retry(
+						async () => {
+							const { data } = await axios.post(
+								"https://api.dev.runwayml.com/v1/text_to_image",
+								{
+									model: TTI_MODEL,
+									promptText,
+									ratio,
+									promptStrength: 0.9, // ✨ tighter adherence
+									negativePrompt: segments[i].negativePromptFull,
 								},
-							}
-						);
-						return data.id;
-					},
-					2,
-					i + 1,
-					`tti${label}`
-				);
+								{
+									headers: {
+										Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
+										"X-Runway-Version": RUNWAY_VERSION,
+									},
+								}
+							);
+							return data.id;
+						},
+						2,
+						i + 1,
+						`tti${label}`
+					);
 
-				const imgUrl = await retry(
-					() => pollRunway(idImg, RUNWAY_ADMIN_KEY, i + 1, `poll(img${label})`),
-					3,
-					i + 1,
-					`poll(img${label})`
-				);
+					imgUrl = await retry(
+						() =>
+							pollRunway(idImg, RUNWAY_ADMIN_KEY, i + 1, `poll(img${label})`),
+						3,
+						i + 1,
+						`poll(img${label})`
+					);
 
+					/* store for subsequent segments */
+					reusableFallbackImage = imgUrl;
+				}
+
+				/* -------- 3. Step B – animate that image ----- */
 				const idVid = await retry(
 					async () => {
-						// -------- image_to_video ----------
 						const { data } = await axios.post(
 							"https://api.dev.runwayml.com/v1/image_to_video",
 							{
@@ -1558,6 +1585,7 @@ One sentence only. No filler words.
 								promptText,
 								ratio,
 								duration: rw,
+								promptStrength: 0.85,
 								negativePrompt: segments[i].negativePromptFull,
 							},
 							{
@@ -1581,6 +1609,7 @@ One sentence only. No filler words.
 					`poll(vid${label})`
 				);
 
+				/* -------- 4. download & hand back ---------- */
 				const p = tmpFile(`seg_${label}${i + 1}`, ".mp4");
 				await new Promise((r, j) =>
 					axios

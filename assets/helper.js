@@ -1,4 +1,4 @@
-// assets/helper.js
+// assets/helper.js  (only the helpers – keep your other imports as‑is)
 require("dotenv").config();
 const path = require("node:path");
 const cloudinary = require("cloudinary").v2;
@@ -14,15 +14,34 @@ cloudinary.config({
 });
 
 /* ------------------------------------------------------------------ */
-/*  OPENAI utilities (unchanged: you already had these)               */
+/* OpenAI initialisation                                              */
 /* ------------------------------------------------------------------ */
 const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
 
+/* ------------------------------------------------------------------ */
+/* Small util: make a URL‑safe slug from a file/path/URL               */
+/* ------------------------------------------------------------------ */
+function slugify(str = "") {
+	return str
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/(^-|-$)+/g, "");
+}
+
+/* ------------------------------------------------------------------ */
+/* 1️⃣  Vision‑GPT captioning with two detail levels                   */
+/* ------------------------------------------------------------------ */
 async function safeDescribeSeedImage(
 	imageUrl,
-	{ maxWords = 60, model = "gpt-4o", retries = 2 } = {}
+	{
+		maxWords = 60,
+		model = "gpt-4o",
+		retries = 2,
+		detailLevel = "concise", // ✨ NEW
+	} = {}
 ) {
-	const systemPrompt = `
+	/* ----  build the system prompt dynamically  ---- */
+	const baseRules = `
 You are a professional photo‑captioning assistant.
 
 **Hard rules**
@@ -33,11 +52,16 @@ You are a professional photo‑captioning assistant.
 Allowed visible attributes (use any that apply):
 ─ age *range* │ gender *impression* │ hair colour & style │ attire
 ─ pose │ facial expression │ environment │ lighting │ colour palette │ camera angle │ mood.
+`.trim();
 
-Return **one sentence** not longer than ${maxWords} words.
-`;
+	const ask =
+		detailLevel === "comprehensive"
+			? `Return **two sentences** not longer than ${maxWords} words in total.`
+			: `Return **one sentence** not longer than ${maxWords} words.`;
 
-	const userPrompt = (attempt) => `Attempt ${attempt}: Describe the photo.`;
+	const systemPrompt = `${baseRules}\n\n${ask}`;
+
+	const userPrompt = (n) => `Attempt ${n}: Describe the photo.`;
 
 	let lastErr;
 	for (let a = 1; a <= retries; a++) {
@@ -45,7 +69,7 @@ Return **one sentence** not longer than ${maxWords} words.
 			const rsp = await openai.chat.completions.create({
 				model,
 				messages: [
-					{ role: "system", content: systemPrompt.trim() },
+					{ role: "system", content: systemPrompt },
 					{
 						role: "user",
 						content: [
@@ -61,15 +85,18 @@ Return **one sentence** not longer than ${maxWords} words.
 				.replace(/\s+/g, " ")
 				.trim();
 
-			/* ---- minimal validation ---- */
+			/* ---- minimal policy validation ---- */
 			const wordCnt = out.split(/\s+/).length;
-			const singleSentence = !/[.!?].+?[.!?]/.test(out);
+			const sentences = out.split(/[.!?](?:\s|$)/).filter(Boolean).length;
+			const allowedSent = detailLevel === "comprehensive" ? 2 : 1;
 			const noDisallowed =
 				!/\b(Black|White|Asian|Hispanic|Arab|Jewish|Christian|Muslim|disabled|blind)\b/i.test(
 					out
-				) && !/[A-Z][a-z]+\s+[A-Z][a-z]+/.test(out); // crude proper‑name / sensitive check
+				) && !/[A-Z][a-z]+\s+[A-Z][a-z]+/.test(out); // crude proper‑name block
 
-			if (wordCnt <= maxWords && singleSentence && noDisallowed) return out;
+			if (wordCnt <= maxWords && sentences === allowedSent && noDisallowed)
+				return out;
+
 			lastErr = new Error("validation failed");
 		} catch (e) {
 			lastErr = e;
@@ -78,37 +105,70 @@ Return **one sentence** not longer than ${maxWords} words.
 
 	console.warn(
 		"[visionSafe] fallback stub used – last error:",
-		lastErr && lastErr.message
+		lastErr?.message
 	);
 	return "A person looks ahead with a neutral expression under even studio lighting.";
 }
 
 /* ------------------------------------------------------------------ */
-/*  NEW: upload + Cloudinary‑first description                         */
+/* 2️⃣  Upload + caption + OPTIONAL GPT refinement                      */
 /* ------------------------------------------------------------------ */
 
 /**
- * Upload an image (file path OR public URL) to Cloudinary/videomatic,
+ * Upload an image to Cloudinary (it is stored *regardless* of captioning),
  * return { secureUrl, description }.
  *
- * If Cloudinary’s captioning fails, falls back to OpenAI to describe
- * the same image (using the Cloudinary URL if available).
- *
- * @param {string} src – local path or URL.
- * @param {Object}  [options]
- * @param {boolean} [options.openAIFallback=true]
- * @param {Object}  [options.openaiOptions] – passed straight to safeDescribeSeedImage
- * @returns {Promise<{secureUrl:string, description:string}>}
+ * @param {string} src  – local path **or** public URL to the image
+ * @param {Object} [options]
+ * @param {string} [options.folder='videomatic']    – Cloudinary folder
+ * @param {string|function} [options.publicId]      – explicit publicId OR a fn that receives `{base, ext}` and returns one
+ * @param {boolean} [options.useFilename=false]     – use original filename (normalised)                        :contentReference[oaicite:0]{index=0}
+ * @param {boolean} [options.uniqueFilename=true]   – let Cloudinary add a unique hash
+ * @param {boolean} [options.openAIFallback=true]   – call GPT‑4o if the add‑on fails
+ * @param {boolean} [options.enhance=true]          – run GPT‑4o even when Cloudinary gives a caption
+ * @param {Object}  [options.openaiOptions]         – forwarded to safeDescribeSeedImage
  */
 async function describeImageViaCloudinary(
 	src,
-	{ openAIFallback = true, openaiOptions = {} } = {}
+	{
+		folder = "videomatic",
+		publicId,
+		useFilename = false,
+		uniqueFilename = true,
+		openAIFallback = true,
+		enhance = true,
+		openaiOptions = {},
+	} = {}
 ) {
+	/* ---- 1. work out the public ID (file name) --------------------- */
+	let derivedId = publicId;
+	if (!derivedId) {
+		if (typeof publicId === "function") {
+			const parsed = path.parse(src);
+			derivedId = publicId(parsed);
+		} else if (useFilename) {
+			// Cloudinary will take care of normalising + uniqueness
+			derivedId = undefined;
+		} else {
+			// slug(from filename/url) + timestamp for readability AND uniqueness
+			const base =
+				path.extname(src) && !src.startsWith("http")
+					? path.parse(src).name
+					: slugify(new URL(src).pathname.split("/").pop() || "image");
+			derivedId = `${base}-${Date.now()}`;
+		}
+	}
+
+	/* ---- 2. initial upload + Cloudinary captioning ----------------- */
 	let uploadRes;
 	try {
 		uploadRes = await cloudinary.uploader.upload(src, {
-			folder: "videomatic", // auto‑creates the folder if it doesn’t exist :contentReference[oaicite:0]{index=0}
-			detection: "captioning", // triggers AI Captioning add‑on :contentReference[oaicite:1]{index=1}
+			folder,
+			public_id: derivedId,
+			use_filename: useFilename,
+			unique_filename: uniqueFilename,
+			detection: "captioning", // Cloudinary AI caption add‑on  :contentReference[oaicite:1]{index=1}
+			overwrite: false,
 		});
 
 		const captionObj = uploadRes?.info?.detection?.captioning;
@@ -116,32 +176,46 @@ async function describeImageViaCloudinary(
 			captionObj?.data?.caption ||
 			(Array.isArray(captionObj?.data) && captionObj.data[0]?.caption);
 
-		if (caption) {
-			return { secureUrl: uploadRes.secure_url, description: caption };
+		/* ---- 3. optionally enrich via GPT ---------------------------- */
+		let finalDesc = caption;
+		if (enhance) {
+			const gptDesc = await safeDescribeSeedImage(uploadRes.secure_url, {
+				detailLevel: "comprehensive",
+				maxWords: 120,
+				...openaiOptions,
+			});
+			finalDesc = caption ? `${caption} — ${gptDesc}` : gptDesc;
 		}
-		throw new Error("No caption returned in Cloudinary response");
+
+		return { secureUrl: uploadRes.secure_url, description: finalDesc };
 	} catch (err) {
 		console.error("[Cloudinary] captioning failed:", err.message);
 
 		if (!openAIFallback) throw err;
 
-		// Ensure we have a public URL to feed GPT‑4o:
-		const urlForOpenAI =
-			uploadRes?.secure_url ||
-			(/^https?:\/\//i.test(src) ? src : null) ||
-			(await cloudinary.uploader.upload(src, { folder: "videomatic" }))
-				.secure_url;
+		/* ---- 4. ensure the asset is STILL uploaded ------------------- */
+		if (!uploadRes) {
+			uploadRes = await cloudinary.uploader.upload(src, {
+				folder,
+				public_id: derivedId,
+				use_filename: useFilename,
+				unique_filename: uniqueFilename,
+				overwrite: false,
+			});
+		}
 
-		const fallbackDesc = await safeDescribeSeedImage(
-			urlForOpenAI,
-			openaiOptions
-		);
-		return { secureUrl: urlForOpenAI, description: fallbackDesc };
+		const fallbackDesc = await safeDescribeSeedImage(uploadRes.secure_url, {
+			detailLevel: "comprehensive",
+			maxWords: 120,
+			...openaiOptions,
+		});
+
+		return { secureUrl: uploadRes.secure_url, description: fallbackDesc };
 	}
 }
 
 /* ------------------------------------------------------------------ */
-/* Optional helper from your original file                            */
+/* 3️⃣  Optional helper (unchanged)                                    */
 /* ------------------------------------------------------------------ */
 function injectSeedDescription(runwayPrompt, seedDesc) {
 	if (!seedDesc) return runwayPrompt;
@@ -152,8 +226,9 @@ function injectSeedDescription(runwayPrompt, seedDesc) {
 	return hasHumanWord ? runwayPrompt : `${seedDesc}, ${runwayPrompt}`;
 }
 
+/* ------------------------------------------------------------------ */
 module.exports = {
 	safeDescribeSeedImage,
-	injectSeedDescription,
 	describeImageViaCloudinary,
+	injectSeedDescription,
 };
