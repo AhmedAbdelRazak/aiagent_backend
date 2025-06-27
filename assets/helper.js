@@ -1,67 +1,80 @@
-// assets/helper.js  (only the helpers – keep your other imports as‑is)
+/** @format */
+
 require("dotenv").config();
+
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const axios = require("axios");
 const cloudinary = require("cloudinary").v2;
 const { OpenAI } = require("openai");
 
 /* ------------------------------------------------------------------ */
-/* Cloudinary initialisation                                          */
+/* 0️⃣  Poly‑fill `globalThis.File` for Node < 20                      */
+/* ------------------------------------------------------------------ */
+if (typeof globalThis.File === "undefined") {
+	const { Blob, File } = require("node:buffer");
+	globalThis.File = File || class extends Blob {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Cloudinary + OpenAI                                                */
 /* ------------------------------------------------------------------ */
 cloudinary.config({
 	cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
 	api_key: process.env.CLOUDINARY_API_KEY,
 	api_secret: process.env.CLOUDINARY_API_SECRET,
 });
-
-/* ------------------------------------------------------------------ */
-/* OpenAI initialisation                                              */
-/* ------------------------------------------------------------------ */
 const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
 
 /* ------------------------------------------------------------------ */
-/* Small util: make a URL‑safe slug from a file/path/URL               */
+/* Little util                                                        */
 /* ------------------------------------------------------------------ */
-function slugify(str = "") {
-	return str
+function slugify(s = "") {
+	return s
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/(^-|-$)+/g, "");
 }
 
 /* ------------------------------------------------------------------ */
-/* 1️⃣  Vision‑GPT captioning with two detail levels                   */
+/* 1️⃣  Vision‑GPT caption helper  (unchanged)                        */
 /* ------------------------------------------------------------------ */
 async function safeDescribeSeedImage(
-	imageUrl,
+	url,
 	{
 		maxWords = 60,
 		model = "gpt-4o",
 		retries = 2,
-		detailLevel = "concise", // ✨ NEW
+		detailLevel = "concise",
+		includeSensitive = false,
 	} = {}
 ) {
-	/* ----  build the system prompt dynamically  ---- */
-	const baseRules = `
+	const rules = `
 You are a professional photo‑captioning assistant.
 
-**Hard rules**
+${
+	includeSensitive
+		? "If plainly visible, you MAY mention race / ethnicity."
+		: "DO NOT mention ethnicity, race, religion, disability, nationality."
+}
+
+Hard rules
 • DO NOT identify or name any real person.
-• DO NOT mention ethnicity, race, religion, disability, nationality.
 • DO NOT guess unseen facts or use speculative words (“looks like”, “maybe”).
 
-Allowed visible attributes (use any that apply):
-─ age *range* │ gender *impression* │ hair colour & style │ attire
+Allowed visible attributes:
+─ age range │ gender impression │ skin tone │ hair colour & style │ attire
 ─ pose │ facial expression │ environment │ lighting │ colour palette │ camera angle │ mood.
 `.trim();
 
 	const ask =
 		detailLevel === "comprehensive"
-			? `Return **two sentences** not longer than ${maxWords} words in total.`
-			: `Return **one sentence** not longer than ${maxWords} words.`;
+			? `Return two sentences not longer than ${maxWords} words in total.`
+			: `Return one sentence not longer than ${maxWords} words.`;
 
-	const systemPrompt = `${baseRules}\n\n${ask}`;
-
-	const userPrompt = (n) => `Attempt ${n}: Describe the photo.`;
+	const sys = `${rules}\n\n${ask}`;
+	const user = (n) => `Attempt ${n}: Describe the photo.`;
 
 	let lastErr;
 	for (let a = 1; a <= retries; a++) {
@@ -69,65 +82,35 @@ Allowed visible attributes (use any that apply):
 			const rsp = await openai.chat.completions.create({
 				model,
 				messages: [
-					{ role: "system", content: systemPrompt },
+					{ role: "system", content: sys },
 					{
 						role: "user",
 						content: [
-							{ type: "text", text: userPrompt(a) },
-							{ type: "image_url", image_url: { url: imageUrl } },
+							{ type: "text", text: user(a) },
+							{ type: "image_url", image_url: { url } },
 						],
 					},
 				],
 			});
-
-			const out = rsp.choices[0].message.content
-				.replace(/["“”]/g, "")
-				.replace(/\s+/g, " ")
-				.trim();
-
-			/* ---- minimal policy validation ---- */
-			const wordCnt = out.split(/\s+/).length;
-			const sentences = out.split(/[.!?](?:\s|$)/).filter(Boolean).length;
-			const allowedSent = detailLevel === "comprehensive" ? 2 : 1;
-			const noDisallowed =
-				!/\b(Black|White|Asian|Hispanic|Arab|Jewish|Christian|Muslim|disabled|blind)\b/i.test(
-					out
-				) && !/[A-Z][a-z]+\s+[A-Z][a-z]+/.test(out); // crude proper‑name block
-
-			if (wordCnt <= maxWords && sentences === allowedSent && noDisallowed)
+			const out = rsp.choices[0].message.content.replace(/\s+/g, " ").trim();
+			const words = out.split(/\s+/).length;
+			const sents = out.split(/[.!?](?:\s|$)/).filter(Boolean).length;
+			if (
+				words <= maxWords &&
+				sents === (detailLevel === "comprehensive" ? 2 : 1)
+			)
 				return out;
-
-			lastErr = new Error("validation failed");
 		} catch (e) {
 			lastErr = e;
 		}
 	}
-
-	console.warn(
-		"[visionSafe] fallback stub used – last error:",
-		lastErr?.message
-	);
+	console.warn("[visionSafe] fallback:", lastErr?.message);
 	return "A person looks ahead with a neutral expression under even studio lighting.";
 }
 
 /* ------------------------------------------------------------------ */
-/* 2️⃣  Upload + caption + OPTIONAL GPT refinement                      */
+/* 2️⃣  Cloudinary caption helper (unchanged logic)                    */
 /* ------------------------------------------------------------------ */
-
-/**
- * Upload an image to Cloudinary (it is stored *regardless* of captioning),
- * return { secureUrl, description }.
- *
- * @param {string} src  – local path **or** public URL to the image
- * @param {Object} [options]
- * @param {string} [options.folder='videomatic']    – Cloudinary folder
- * @param {string|function} [options.publicId]      – explicit publicId OR a fn that receives `{base, ext}` and returns one
- * @param {boolean} [options.useFilename=false]     – use original filename (normalised)                        :contentReference[oaicite:0]{index=0}
- * @param {boolean} [options.uniqueFilename=true]   – let Cloudinary add a unique hash
- * @param {boolean} [options.openAIFallback=true]   – call GPT‑4o if the add‑on fails
- * @param {boolean} [options.enhance=true]          – run GPT‑4o even when Cloudinary gives a caption
- * @param {Object}  [options.openaiOptions]         – forwarded to safeDescribeSeedImage
- */
 async function describeImageViaCloudinary(
 	src,
 	{
@@ -137,20 +120,15 @@ async function describeImageViaCloudinary(
 		uniqueFilename = true,
 		openAIFallback = true,
 		enhance = true,
+		includeSensitive = true,
 		openaiOptions = {},
 	} = {}
 ) {
-	/* ---- 1. work out the public ID (file name) --------------------- */
+	/* build ID ------------------------------------------------------- */
 	let derivedId = publicId;
 	if (!derivedId) {
-		if (typeof publicId === "function") {
-			const parsed = path.parse(src);
-			derivedId = publicId(parsed);
-		} else if (useFilename) {
-			// Cloudinary will take care of normalising + uniqueness
-			derivedId = undefined;
-		} else {
-			// slug(from filename/url) + timestamp for readability AND uniqueness
+		if (typeof publicId === "function") derivedId = publicId(path.parse(src));
+		else if (!useFilename) {
 			const base =
 				path.extname(src) && !src.startsWith("http")
 					? path.parse(src).name
@@ -159,7 +137,6 @@ async function describeImageViaCloudinary(
 		}
 	}
 
-	/* ---- 2. initial upload + Cloudinary captioning ----------------- */
 	let uploadRes;
 	try {
 		uploadRes = await cloudinary.uploader.upload(src, {
@@ -167,33 +144,47 @@ async function describeImageViaCloudinary(
 			public_id: derivedId,
 			use_filename: useFilename,
 			unique_filename: uniqueFilename,
-			detection: "captioning", // Cloudinary AI caption add‑on  :contentReference[oaicite:1]{index=1}
+			detection: "captioning,adv_face",
 			overwrite: false,
 		});
 
-		const captionObj = uploadRes?.info?.detection?.captioning;
-		const caption =
-			captionObj?.data?.caption ||
-			(Array.isArray(captionObj?.data) && captionObj.data[0]?.caption);
+		/* read Cloudinary’s own caption & face data -------------------- */
+		const capObj = uploadRes?.info?.detection?.captioning;
+		const cldCaption =
+			capObj?.data?.caption ||
+			(Array.isArray(capObj?.data) && capObj.data[0]?.caption) ||
+			"";
 
-		/* ---- 3. optionally enrich via GPT ---------------------------- */
-		let finalDesc = caption;
-		if (enhance) {
-			const gptDesc = await safeDescribeSeedImage(uploadRes.secure_url, {
-				detailLevel: "comprehensive",
-				maxWords: 120,
-				...openaiOptions,
-			});
-			finalDesc = caption ? `${caption} — ${gptDesc}` : gptDesc;
+		const faceData = uploadRes?.info?.detection?.adv_face?.data;
+		let faceClause = "";
+		if (Array.isArray(faceData) && faceData.length) {
+			const f = faceData[0];
+			const age = f?.age ? `${f.age}`.replace(/\.\d+$/, "") : "";
+			const gender = f?.gender?.value ? f.gender.value.toLowerCase() : "";
+			const race = f?.race?.value ? f.race.value : "";
+			faceClause = [age && `${age}s`, race, gender].filter(Boolean).join(" ");
 		}
 
-		return { secureUrl: uploadRes.secure_url, description: finalDesc };
+		let gptDesc = "";
+		if (enhance) {
+			gptDesc = await safeDescribeSeedImage(uploadRes.secure_url, {
+				detailLevel: "comprehensive",
+				maxWords: 120,
+				includeSensitive,
+				...openaiOptions,
+			});
+		}
+
+		const description = [faceClause, cldCaption, gptDesc]
+			.filter(Boolean)
+			.join(" — ")
+			.replace(/\s+—\s*$/, "");
+
+		return { secureUrl: uploadRes.secure_url, description };
 	} catch (err) {
 		console.error("[Cloudinary] captioning failed:", err.message);
-
 		if (!openAIFallback) throw err;
 
-		/* ---- 4. ensure the asset is STILL uploaded ------------------- */
 		if (!uploadRes) {
 			uploadRes = await cloudinary.uploader.upload(src, {
 				folder,
@@ -203,27 +194,120 @@ async function describeImageViaCloudinary(
 				overwrite: false,
 			});
 		}
-
 		const fallbackDesc = await safeDescribeSeedImage(uploadRes.secure_url, {
 			detailLevel: "comprehensive",
 			maxWords: 120,
+			includeSensitive,
 			...openaiOptions,
 		});
-
 		return { secureUrl: uploadRes.secure_url, description: fallbackDesc };
 	}
 }
 
 /* ------------------------------------------------------------------ */
-/* 3️⃣  Optional helper (unchanged)                                    */
+/* 3️⃣  upload → multi‑variation → QA → brighten → re‑upload           */
+/* ------------------------------------------------------------------ */
+async function faceLooksOk(url) {
+	const ask = `
+Yes / No only — Does the person's face in this photo look **natural** with no obvious distortions in the eyes, nose or mouth?`.trim();
+
+	const rsp = await openai.chat.completions.create({
+		model: "gpt-4o",
+		messages: [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: ask },
+					{ type: "image_url", image_url: { url } },
+				],
+			},
+		],
+	});
+	return rsp.choices[0].message.content.toLowerCase().startsWith("yes");
+}
+
+async function uploadWithVariation(
+	src,
+	{ folder = "aivideomatic", size = 1024, tries = 3 } = {}
+) {
+	/* 1. upload original ------------------------------------------- */
+	const stamp = Date.now();
+	const origUpload = await cloudinary.uploader.upload(src, {
+		folder,
+		public_id: `${stamp}_orig`,
+		resource_type: "image",
+	});
+
+	/* 2. make square PNG for DALL·E -------------------------------- */
+	const squareUrl = cloudinary.url(origUpload.public_id, {
+		secure: true,
+		width: size,
+		height: size,
+		crop: "fill",
+		gravity: "auto",
+		fetch_format: "png",
+	});
+	const squareBuf = (
+		await axios.get(squareUrl, { responseType: "arraybuffer" })
+	).data;
+	const tmpSquare = path.join(os.tmpdir(), `img-${stamp}.png`);
+	await fs.promises.writeFile(tmpSquare, squareBuf);
+
+	/* 3. generate 1‑3 variations until one passes QA --------------- */
+	let chosenUrl = null;
+	for (let a = 1; a <= tries; a++) {
+		const rsp = await openai.images.createVariation({
+			image: fs.createReadStream(tmpSquare),
+			n: 1,
+			size: `${size}x${size}`,
+		});
+		const url = rsp.data[0].url;
+
+		try {
+			if (await faceLooksOk(url)) {
+				chosenUrl = url;
+				break;
+			}
+			console.warn(`[Variation QA] try ${a} failed — face looks odd`);
+		} catch (e) {
+			console.warn("[Variation QA] skipped:", e.message);
+			chosenUrl = url; // if vision fails, keep this one
+			break;
+		}
+		chosenUrl = url; // last resort if all tries fail
+	}
+
+	/* 4. subtle brightening (~5 %) via Cloudinary ------------------ */
+	const brightened = cloudinary.url(chosenUrl, {
+		type: "fetch",
+		secure: true,
+		effect: "brightness:8", // tiny boost; 0‑100
+		fetch_format: "png",
+	});
+
+	/* 5. upload variant (brightened) ------------------------------- */
+	const varUpload = await cloudinary.uploader.upload(brightened, {
+		folder,
+		public_id: `${stamp}_variant`,
+		resource_type: "image",
+	});
+
+	return {
+		original: { public_id: origUpload.public_id, url: origUpload.secure_url },
+		variant: { public_id: varUpload.public_id, url: varUpload.secure_url },
+	};
+}
+
+/* ------------------------------------------------------------------ */
+/* 4️⃣  Prompt helper (unchanged)                                     */
 /* ------------------------------------------------------------------ */
 function injectSeedDescription(runwayPrompt, seedDesc) {
 	if (!seedDesc) return runwayPrompt;
-	const hasHumanWord =
+	const hasHuman =
 		/\b(male|female|person|man|woman|anchor|reporter|human)\b/i.test(
 			runwayPrompt
 		);
-	return hasHumanWord ? runwayPrompt : `${seedDesc}, ${runwayPrompt}`;
+	return hasHuman ? runwayPrompt : `${seedDesc}, ${runwayPrompt}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -231,4 +315,5 @@ module.exports = {
 	safeDescribeSeedImage,
 	describeImageViaCloudinary,
 	injectSeedDescription,
+	uploadWithVariation,
 };

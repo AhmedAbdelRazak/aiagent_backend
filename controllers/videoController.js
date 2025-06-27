@@ -44,6 +44,7 @@ const {
 const {
 	safeDescribeSeedImage,
 	injectSeedDescription,
+	uploadWithVariation,
 } = require("../assets/helper");
 
 /* ───────────────────────────────────────────────────────────────
@@ -639,7 +640,7 @@ async function describeHuman(language, country) {
 	const locale =
 		country && country.toLowerCase() !== "all countries"
 			? `from ${country}`
-			: "Western";
+			: "US";
 
 	const baseAsk = (n) => `
 Attempt ${n}: In ≤${WORD_CAP} words, describe **ONE** photorealistic human ${locale}.
@@ -835,7 +836,7 @@ async function pickTrendingTopicFresh(category, language, country) {
 	const loc =
 		country && country.toLowerCase() !== "all countries"
 			? ` in ${country}`
-			: "";
+			: "US";
 	const langLn =
 		language !== DEFAULT_LANGUAGE ? ` Respond in ${language}.` : "";
 	const base = (a) =>
@@ -1080,7 +1081,9 @@ exports.createVideo = async (req, res) => {
 
 		const user = req.user;
 		const language = (langIn || DEFAULT_LANGUAGE).trim();
-		const country = (countryIn || "US").trim();
+		const country = (
+			countryIn === "all countries" || !countryIn ? "US" : countryIn
+		).trim();
 		const customPrompt = customPromptRaw.trim();
 		const ratio = ratioIn;
 		const duration = +durIn;
@@ -1164,7 +1167,20 @@ exports.createVideo = async (req, res) => {
 		 * ───────────────────────────────────────────────────────── */
 		let seedImageUrl = videoImage?.url || trendImage || null;
 		let seedImageDesc = null;
+		let cldVariants = null; // keep IDs if you need them later
+
 		if (seedImageUrl) {
+			console.log("[Variation] creating cloudinary variant …");
+			cldVariants = await uploadWithVariation(seedImageUrl, {
+				folder: "aivideomatic",
+			});
+			/* use the 90 %-similar image for the rest of the pipeline */
+			seedImageUrl = cldVariants.variant.url;
+			console.log(
+				`[Variation] orig=${cldVariants.original.public_id}  ` +
+					`variant=${cldVariants.variant.public_id}`
+			);
+
 			console.log("[Vision] describing seed image …");
 			seedImageDesc = await safeDescribeSeedImage(seedImageUrl);
 			console.log("[Vision] →", seedImageDesc);
@@ -1462,7 +1478,9 @@ One sentence only. No filler words.
 		});
 		console.log("send phaste `GENERATING_CLIPS`");
 
-		let reusableFallbackImage = null; // <‑‑ persists across segments
+		// Pre‑seed with the Cloudinary variant so doTtiItv()
+		// skips the “text‑to‑image” call and goes straight to ITV.
+		let reusableFallbackImage = seedImageUrl; // NEW
 
 		for (let i = 0; i < segCnt; i++) {
 			const d = segLens[i];

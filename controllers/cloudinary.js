@@ -12,7 +12,7 @@ cloudinary.config({
 exports.uploadImages = async (req, res) => {
 	try {
 		const result = await cloudinary.uploader.upload(req.body.image, {
-			public_id: `ai_agent/${Date.now()}`,
+			public_id: `aivideomatic/${Date.now()}`,
 			resource_type: "auto", // let Cloudinary handle the format
 		});
 
