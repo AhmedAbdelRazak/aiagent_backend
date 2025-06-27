@@ -355,6 +355,8 @@ function improveTTSPronunciation(text) {
 	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
 }
 
+const PROMPT_CHAR_LIMIT = 220;
+
 /* ───────────────────────────────────────────────────────────────
  *  5.  JSON‑safe segment parser
  * ───────────────────────────────────────────────────────────── */
@@ -1460,6 +1462,8 @@ One sentence only. No filler words.
 		});
 		console.log("send phaste `GENERATING_CLIPS`");
 
+		let reusableFallbackImage = null; // <‑‑ persists across segments
+
 		for (let i = 0; i < segCnt; i++) {
 			const d = segLens[i];
 			const rw = Math.abs(5 - d) <= Math.abs(10 - d) ? 5 : 10;
@@ -1524,8 +1528,6 @@ One sentence only. No filler words.
 				);
 				return p;
 			}
-
-			let reusableFallbackImage = null; // <‑‑ persists across segments
 
 			async function doTtiItv(promptTextRaw, label) {
 				/* -------- 1. clamp prompt length ------------ */
