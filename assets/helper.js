@@ -1,7 +1,6 @@
 /** @format */
 
 require("dotenv").config();
-
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -10,15 +9,13 @@ const cloudinary = require("cloudinary").v2;
 const { OpenAI } = require("openai");
 
 /* ------------------------------------------------------------------ */
-/* 0️⃣  Poly‑fill `globalThis.File` for Node < 20                      */
+/* Poly‑fill File for Node < 20                                       */
 /* ------------------------------------------------------------------ */
 if (typeof globalThis.File === "undefined") {
 	const { Blob, File } = require("node:buffer");
 	globalThis.File = File || class extends Blob {};
 }
 
-/* ------------------------------------------------------------------ */
-/* Cloudinary + OpenAI                                                */
 /* ------------------------------------------------------------------ */
 cloudinary.config({
 	cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -28,8 +25,6 @@ cloudinary.config({
 const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
 
 /* ------------------------------------------------------------------ */
-/* Little util                                                        */
-/* ------------------------------------------------------------------ */
 function slugify(s = "") {
 	return s
 		.toLowerCase()
@@ -37,9 +32,7 @@ function slugify(s = "") {
 		.replace(/(^-|-$)+/g, "");
 }
 
-/* ------------------------------------------------------------------ */
-/* 1️⃣  Vision‑GPT caption helper  (unchanged)                        */
-/* ------------------------------------------------------------------ */
+/* ---------- 1. safeDescribeSeedImage (unchanged) ------------------ */
 async function safeDescribeSeedImage(
 	url,
 	{
@@ -50,8 +43,7 @@ async function safeDescribeSeedImage(
 		includeSensitive = false,
 	} = {}
 ) {
-	const rules = `
-You are a professional photo‑captioning assistant.
+	const rules = `You are a professional photo‑captioning assistant.
 
 ${
 	includeSensitive
@@ -65,21 +57,24 @@ Hard rules
 
 Allowed visible attributes:
 ─ age range │ gender impression │ skin tone │ hair colour & style │ attire
-─ pose │ facial expression │ environment │ lighting │ colour palette │ camera angle │ mood.
-`.trim();
+─ pose │ facial expression │ environment │ lighting │ colour palette │ camera angle │ mood.`.trim();
 
 	const ask =
 		detailLevel === "comprehensive"
 			? `Return two sentences not longer than ${maxWords} words in total.`
 			: `Return one sentence not longer than ${maxWords} words.`;
-
 	const sys = `${rules}\n\n${ask}`;
 	const user = (n) => `Attempt ${n}: Describe the photo.`;
-
-	let lastErr;
+	let err;
 	for (let a = 1; a <= retries; a++) {
 		try {
-			const rsp = await openai.chat.completions.create({
+			const {
+				choices: [
+					{
+						message: { content },
+					},
+				],
+			} = await openai.chat.completions.create({
 				model,
 				messages: [
 					{ role: "system", content: sys },
@@ -92,25 +87,23 @@ Allowed visible attributes:
 					},
 				],
 			});
-			const out = rsp.choices[0].message.content.replace(/\s+/g, " ").trim();
-			const words = out.split(/\s+/).length;
-			const sents = out.split(/[.!?](?:\s|$)/).filter(Boolean).length;
+			const out = content.replace(/\s+/g, " ").trim();
+			const words = out.split(/\s+/).length,
+				sents = out.split(/[.!?](?:\s|$)/).filter(Boolean).length;
 			if (
 				words <= maxWords &&
 				sents === (detailLevel === "comprehensive" ? 2 : 1)
 			)
 				return out;
 		} catch (e) {
-			lastErr = e;
+			err = e;
 		}
 	}
-	console.warn("[visionSafe] fallback:", lastErr?.message);
-	return "A person looks ahead with a neutral expression under even studio lighting.";
+	console.warn("[visionSafe] fallback:", err?.message);
+	return "Person looks ahead with neutral expression under even lighting.";
 }
 
-/* ------------------------------------------------------------------ */
-/* 2️⃣  Cloudinary caption helper (unchanged logic)                    */
-/* ------------------------------------------------------------------ */
+/* ---------- 2. describeImageViaCloudinary (unchanged) ------------- */
 async function describeImageViaCloudinary(
 	src,
 	{
@@ -124,7 +117,6 @@ async function describeImageViaCloudinary(
 		openaiOptions = {},
 	} = {}
 ) {
-	/* build ID ------------------------------------------------------- */
 	let derivedId = publicId;
 	if (!derivedId) {
 		if (typeof publicId === "function") derivedId = publicId(path.parse(src));
@@ -136,7 +128,6 @@ async function describeImageViaCloudinary(
 			derivedId = `${base}-${Date.now()}`;
 		}
 	}
-
 	let uploadRes;
 	try {
 		uploadRes = await cloudinary.uploader.upload(src, {
@@ -147,45 +138,38 @@ async function describeImageViaCloudinary(
 			detection: "captioning,adv_face",
 			overwrite: false,
 		});
-
-		/* read Cloudinary’s own caption & face data -------------------- */
 		const capObj = uploadRes?.info?.detection?.captioning;
 		const cldCaption =
 			capObj?.data?.caption ||
 			(Array.isArray(capObj?.data) && capObj.data[0]?.caption) ||
 			"";
-
-		const faceData = uploadRes?.info?.detection?.adv_face?.data;
-		let faceClause = "";
-		if (Array.isArray(faceData) && faceData.length) {
-			const f = faceData[0];
-			const age = f?.age ? `${f.age}`.replace(/\.\d+$/, "") : "";
-			const gender = f?.gender?.value ? f.gender.value.toLowerCase() : "";
-			const race = f?.race?.value ? f.race.value : "";
-			faceClause = [age && `${age}s`, race, gender].filter(Boolean).join(" ");
-		}
-
-		let gptDesc = "";
-		if (enhance) {
-			gptDesc = await safeDescribeSeedImage(uploadRes.secure_url, {
-				detailLevel: "comprehensive",
-				maxWords: 120,
-				includeSensitive,
-				...openaiOptions,
-			});
-		}
-
-		const description = [faceClause, cldCaption, gptDesc]
+		const f = uploadRes?.info?.detection?.adv_face?.data?.[0] || {};
+		const faceClause = [
+			f.age && `${String(f.age).split(".")[0]}s`,
+			f.race?.value,
+			f.gender?.value?.toLowerCase(),
+		]
 			.filter(Boolean)
-			.join(" — ")
-			.replace(/\s+—\s*$/, "");
-
-		return { secureUrl: uploadRes.secure_url, description };
+			.join(" ");
+		const gptDesc = enhance
+			? await safeDescribeSeedImage(uploadRes.secure_url, {
+					detailLevel: "comprehensive",
+					maxWords: 120,
+					includeSensitive,
+					...openaiOptions,
+			  })
+			: "";
+		return {
+			secureUrl: uploadRes.secure_url,
+			description: [faceClause, cldCaption, gptDesc]
+				.filter(Boolean)
+				.join(" — ")
+				.replace(/\s+—\s*$/, ""),
+		};
 	} catch (err) {
 		console.error("[Cloudinary] captioning failed:", err.message);
 		if (!openAIFallback) throw err;
-
-		if (!uploadRes) {
+		if (!uploadRes)
 			uploadRes = await cloudinary.uploader.upload(src, {
 				folder,
 				public_id: derivedId,
@@ -193,7 +177,6 @@ async function describeImageViaCloudinary(
 				unique_filename: uniqueFilename,
 				overwrite: false,
 			});
-		}
 		const fallbackDesc = await safeDescribeSeedImage(uploadRes.secure_url, {
 			detailLevel: "comprehensive",
 			maxWords: 120,
@@ -204,42 +187,46 @@ async function describeImageViaCloudinary(
 	}
 }
 
-/* ------------------------------------------------------------------ */
-/* 3️⃣  upload → multi‑variation → QA → brighten → re‑upload           */
-/* ------------------------------------------------------------------ */
+/* ---------- 3. helper: simple face QA ----------------------------- */
 async function faceLooksOk(url) {
-	const ask = `
-Yes / No only — Does the person's face in this photo look **natural** with no obvious distortions in the eyes, nose or mouth?`.trim();
-
-	const rsp = await openai.chat.completions.create({
+	const q =
+		"Yes / No — Does the person's face look natural with no obvious distortions?";
+	const {
+		choices: [
+			{
+				message: { content },
+			},
+		],
+	} = await openai.chat.completions.create({
 		model: "gpt-4o",
 		messages: [
 			{
 				role: "user",
 				content: [
-					{ type: "text", text: ask },
+					{ type: "text", text: q },
 					{ type: "image_url", image_url: { url } },
 				],
 			},
 		],
 	});
-	return rsp.choices[0].message.content.toLowerCase().startsWith("yes");
+	return content.trim().toLowerCase().startsWith("yes");
 }
 
+/* ---------- 4. uploadWithVariation (fixed) ------------------------ */
 async function uploadWithVariation(
 	src,
-	{ folder = "aivideomatic", size = 1024, tries = 3 } = {}
+	{ folder = "aivideomatic", size = 1024, maxTries = 3 } = {}
 ) {
-	/* 1. upload original ------------------------------------------- */
+	/* upload original */
 	const stamp = Date.now();
-	const origUpload = await cloudinary.uploader.upload(src, {
+	const orig = await cloudinary.uploader.upload(src, {
 		folder,
 		public_id: `${stamp}_orig`,
 		resource_type: "image",
 	});
 
-	/* 2. make square PNG for DALL·E -------------------------------- */
-	const squareUrl = cloudinary.url(origUpload.public_id, {
+	/* prepare square PNG */
+	const squareUrl = cloudinary.url(orig.public_id, {
 		secure: true,
 		width: size,
 		height: size,
@@ -247,67 +234,65 @@ async function uploadWithVariation(
 		gravity: "auto",
 		fetch_format: "png",
 	});
-	const squareBuf = (
-		await axios.get(squareUrl, { responseType: "arraybuffer" })
-	).data;
-	const tmpSquare = path.join(os.tmpdir(), `img-${stamp}.png`);
-	await fs.promises.writeFile(tmpSquare, squareBuf);
+	const tmpSquare = path.join(os.tmpdir(), `sq-${stamp}.png`);
+	await fs.promises.writeFile(
+		tmpSquare,
+		(
+			await axios.get(squareUrl, { responseType: "arraybuffer" })
+		).data
+	);
 
-	/* 3. generate 1‑3 variations until one passes QA --------------- */
-	let chosenUrl = null;
-	for (let a = 1; a <= tries; a++) {
-		const rsp = await openai.images.createVariation({
-			image: fs.createReadStream(tmpSquare),
-			n: 1,
-			size: `${size}x${size}`,
-		});
-		const url = rsp.data[0].url;
-
+	/* variation loop */
+	let acceptedBuf = null;
+	for (let t = 1; t <= maxTries; t++) {
+		const url = (
+			await openai.images.createVariation({
+				image: fs.createReadStream(tmpSquare),
+				n: 1,
+				size: `${size}x${size}`,
+			})
+		).data[0].url;
 		try {
 			if (await faceLooksOk(url)) {
-				chosenUrl = url;
+				acceptedBuf = (await axios.get(url, { responseType: "arraybuffer" }))
+					.data;
 				break;
 			}
-			console.warn(`[Variation QA] try ${a} failed — face looks odd`);
+			console.warn(`[Variation QA] try ${t} failed — face looks odd`);
 		} catch (e) {
 			console.warn("[Variation QA] skipped:", e.message);
-			chosenUrl = url; // if vision fails, keep this one
+			acceptedBuf = (await axios.get(url, { responseType: "arraybuffer" }))
+				.data;
 			break;
 		}
-		chosenUrl = url; // last resort if all tries fail
 	}
+	if (!acceptedBuf)
+		acceptedBuf = (await axios.get(src, { responseType: "arraybuffer" })).data; // ultimate fallback
 
-	/* 4. subtle brightening (~5 %) via Cloudinary ------------------ */
-	const brightened = cloudinary.url(chosenUrl, {
-		type: "fetch",
-		secure: true,
-		effect: "brightness:8", // tiny boost; 0‑100
-		fetch_format: "png",
-	});
-
-	/* 5. upload variant (brightened) ------------------------------- */
-	const varUpload = await cloudinary.uploader.upload(brightened, {
+	/* brighten & upload */
+	const tmpVar = path.join(os.tmpdir(), `var-${stamp}.png`);
+	await fs.promises.writeFile(tmpVar, acceptedBuf);
+	const variant = await cloudinary.uploader.upload(tmpVar, {
 		folder,
 		public_id: `${stamp}_variant`,
+		transformation: [{ effect: "brightness:8" }],
 		resource_type: "image",
 	});
 
 	return {
-		original: { public_id: origUpload.public_id, url: origUpload.secure_url },
-		variant: { public_id: varUpload.public_id, url: varUpload.secure_url },
+		original: { public_id: orig.public_id, url: orig.secure_url },
+		variant: { public_id: variant.public_id, url: variant.secure_url },
 	};
 }
 
-/* ------------------------------------------------------------------ */
-/* 4️⃣  Prompt helper (unchanged)                                     */
-/* ------------------------------------------------------------------ */
-function injectSeedDescription(runwayPrompt, seedDesc) {
-	if (!seedDesc) return runwayPrompt;
-	const hasHuman =
-		/\b(male|female|person|man|woman|anchor|reporter|human)\b/i.test(
-			runwayPrompt
-		);
-	return hasHuman ? runwayPrompt : `${seedDesc}, ${runwayPrompt}`;
+/* ---------- 5. injectSeedDescription (unchanged) ------------------ */
+function injectSeedDescription(prompt, seed) {
+	if (!seed) return prompt;
+	return /\b(male|female|person|man|woman|anchor|reporter|human)\b/i.test(
+		prompt
+	)
+		? prompt
+		: `${seed}, ${prompt}`;
 }
 
 /* ------------------------------------------------------------------ */
