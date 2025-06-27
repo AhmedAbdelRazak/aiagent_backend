@@ -211,9 +211,11 @@ const TONE_HINTS = {
 
 const TOPIC_RULES = [
 	{
-		test: /football|soccer/i,
-		positive: "single soccer ball",
-		negative: "two balls, duplicate ball, extra ball",
+		test: /\b(soccer|football)\b/i,
+		positive:
+			"single black‑and‑white soccer ball, player wears short‑sleeved soccer kit",
+		negative:
+			"helmet, shoulder pad, quarterback, linebacker, american football, two balls, duplicate ball, extra ball",
 	},
 	{
 		test: /tennis/i,
@@ -526,9 +528,10 @@ async function refineRunwayPrompt(initialPrompt, scriptText) {
 	const mustHaveUniqueObj =
 		/\b(soccer ball|tennis ball|football|basketball)\b/i.test(initialPrompt);
 
-	const needFwdMotion = /\bwalk|run|jog|march|drive|cycle|skate\b/i.test(
-		scriptText
-	);
+	const needFwdMotion =
+		/\b(walk|run|jog|march|drive|cycle|skate|celebrat(e|ion)|jump)\b/i.test(
+			scriptText
+		);
 
 	const involvesHandshake = /\bhandshake|deal|agreement|congratulate\b/i.test(
 		scriptText
@@ -543,7 +546,9 @@ async function refineRunwayPrompt(initialPrompt, scriptText) {
 	const extrasArr = [
 		spatial,
 		mustHaveUniqueObj ? "single object in view" : "",
-		needFwdMotion ? "natural forward motion, heel‑to‑toe gait" : "",
+		needFwdMotion ? "subject moves with natural forward motion" : "",
+		// NEW — encourage body motion if no obvious verb was found
+		!needFwdMotion ? "subject shifts weight or gestures" : "",
 		involvesHandshake
 			? "firm professional handshake, thumbs locked, eye‑contact"
 			: "",
@@ -1647,7 +1652,9 @@ One sentence only. No filler words.
 					clip = await doTextToVideo(
 						segments[i].runwayPrompt,
 						"_seed",
-						seedImageUrl
+						`data:image/png;base64,${(
+							await axios.get(seedImageUrl, { responseType: "arraybuffer" })
+						).data.toString("base64")}`
 					);
 			} catch (e) {
 				console.warn(`[Seg ${i + 1}] t2v‑seed failed → ${e.message}`);
