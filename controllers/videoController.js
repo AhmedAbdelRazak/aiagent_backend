@@ -334,6 +334,30 @@ function spokenSeconds(words) {
 	return +(words / WORDS_PER_SEC).toFixed(2);
 }
 
+/* ----------  TITLE HELPERS  ---------- */
+function toTitleCase(str = "") {
+	return str
+		.toLowerCase()
+		.replace(/(^\w|\s\w)/g, (m) => m.toUpperCase())
+		.trim();
+}
+
+function fallbackSeoTitle(topic, category) {
+	const hooks = [
+		"🔥 Breaking",
+		"🚀 Spotlight",
+		"⚡ Update",
+		"🎯 Insight",
+		"📢 Must‑See",
+	];
+	const hook = hooks[Math.floor(Math.random() * hooks.length)];
+
+	if (category === "Top5") return `${hook}: Top 5 ${toTitleCase(topic)}`;
+	if (category === "Other") return `${hook}: ${toTitleCase(topic)}`;
+	/* default for named categories */
+	return `${hook}: ${toTitleCase(topic)} (${category})`;
+}
+
 /* smoother numbers for TTS */
 const NUM_WORD = Object.freeze({
 	1: "one",
@@ -751,30 +775,39 @@ function resolveTrendsCategoryId(label) {
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
 
-async function generateSeoTitle(headlines, category, language) {
+async function generateSeoTitle(
+	headlinesOrTopic,
+	category,
+	language = DEFAULT_LANGUAGE
+) {
+	/* normalise input to array */
+	const items = Array.isArray(headlinesOrTopic)
+		? headlinesOrTopic
+		: [headlinesOrTopic];
+
 	const ask = `
-✨ Craft ONE irresistible YouTube‑Shorts title (Title Case, ≤ 65 chars, no hashtags/quotes).
+Give ONE irresistible YouTube‑Shorts title (≤65 chars, Title Case, no hashtags/quotes).
 
 Checklist
-• Start with a vivid “hook” word or emoji (🔥 Epic, 🚨 Breaking, etc.).  
-• Use a power verb (Unveils, Shocks, Crushes…).  
-• Promise intrigue or benefit.  
+• Start with a vivid hook word or emoji.  
+• Use a power verb (Shakes, Ignites, Reveals…).  
 • Include the core keyword.  
-• No click‑bait filler (“You Won’t Believe”).  
+• NO filler like “You Won’t Believe”.  
 • Must read naturally.
 
-Context: ${headlines.join(" | ")}${
-		language !== DEFAULT_LANGUAGE ? `\nRespond in ${language}.` : ""
-	}
-`;
+Context: ${items.join(" | ")}
+${language !== DEFAULT_LANGUAGE ? `Respond in ${language}.` : ""}`.trim();
+
 	try {
 		const { choices } = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [{ role: "user", content: ask }],
 		});
-		return choices[0].message.content.replace(/["“”]/g, "").trim();
+		/* safety‑net: enforce Title Case */
+		return toTitleCase(choices[0].message.content.replace(/["“”]/g, "").trim());
 	} catch {
-		return `🔥 ${category} Update: ${headlines[0]}`;
+		/* will be handled by caller */
+		return "";
 	}
 }
 
@@ -1377,17 +1410,17 @@ One sentence only. No filler words.
 			trendArticleTitles = null;
 
 		let seoTitle = "";
-		if (trendArticleTitles?.length) {
-			seoTitle =
-				(await generateSeoTitle(trendArticleTitles, category, language)) || "";
+
+		try {
+			/* Use GPT even when we only have the topic */
+			const seeds = trendArticleTitles?.length ? trendArticleTitles : [topic];
+			seoTitle = await generateSeoTitle(seeds, category, language);
+		} catch {
+			/* ignored – will fall back below */
 		}
-		if (!seoTitle)
-			seoTitle =
-				category === "Top5"
-					? /^top\s*5/i.test(topic)
-						? topic
-						: `Top 5: ${topic}`
-					: `${category} Highlights: ${topic}`;
+
+		/* FINAL GUARANTEE */
+		if (!seoTitle) seoTitle = fallbackSeoTitle(topic, category);
 
 		const descResp = await openai.chat.completions.create({
 			model: CHAT_MODEL,
