@@ -285,6 +285,42 @@ async function uploadWithVariation(
 	};
 }
 
+/* ---------- 6. uploadRemoteImagePlain ---------------------------------
+ * Lightweight wrapper that simply uploads the remote image (no variation,
+ * no transformation) and returns the Cloudinary secure URL.               */
+async function uploadRemoteImagePlain(
+	src,
+	{
+		folder = "aivideomatic",
+		publicId, // optional custom id
+		timeout = 12_000,
+	} = {}
+) {
+	const derivedId =
+		publicId ||
+		slugify(
+			(src.startsWith("http") ? new URL(src).pathname : path.parse(src).name) +
+				"-" +
+				Date.now()
+		);
+
+	const { data } = await axios.get(src, {
+		responseType: "arraybuffer",
+		timeout,
+	});
+	const tmp = path.join(os.tmpdir(), `${derivedId}.bin`);
+	await fs.promises.writeFile(tmp, data);
+
+	const up = await cloudinary.uploader.upload(tmp, {
+		folder,
+		public_id: derivedId,
+		resource_type: "image",
+		overwrite: false,
+	});
+	await fs.promises.unlink(tmp);
+	return up.secure_url; // <-- what we finally send to RunwayML
+}
+
 /* ---------- 5. injectSeedDescription (unchanged) ------------------ */
 function injectSeedDescription(prompt, seed) {
 	if (!seed) return prompt;
@@ -301,4 +337,5 @@ module.exports = {
 	describeImageViaCloudinary,
 	injectSeedDescription,
 	uploadWithVariation,
+	uploadRemoteImagePlain,
 };

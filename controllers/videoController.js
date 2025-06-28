@@ -45,6 +45,7 @@ const {
 	safeDescribeSeedImage,
 	injectSeedDescription,
 	uploadWithVariation,
+	uploadRemoteImagePlain,
 } = require("../assets/helper");
 
 /* ───────────────────────────────────────────────────────────────
@@ -251,7 +252,10 @@ function tunePromptForTopic(prompt, topicRaw) {
 	for (const rule of TOPIC_RULES) {
 		if (rule.test.test(topicRaw)) {
 			const plus = rule.positive ? `${rule.positive}, ` : "";
-			return `${plus}${prompt.replace(
+			const motion = /soccer|football/i.test(topicRaw)
+				? "jersey flutters naturally, "
+				: "";
+			return `${motion}${plus}${prompt.replace(
 				RUNWAY_NEGATIVE_PROMPT,
 				`${rule.negative}, ${RUNWAY_NEGATIVE_PROMPT}`
 			)}`;
@@ -524,7 +528,7 @@ async function validateClipStill(stillPath, yesNoChecks = []) {
  *  7.  GPT prompt helpers
  * ───────────────────────────────────────────────────────────── */
 async function refineRunwayPrompt(initialPrompt, scriptText) {
-	/* ---------- 1.  derive context‑sensitive extra tags ---------- */
+	/* ---------- 1. derive context‑sensitive extra tags ---------- */
 	const mustHaveUniqueObj =
 		/\b(soccer ball|tennis ball|football|basketball)\b/i.test(initialPrompt);
 
@@ -543,19 +547,21 @@ async function refineRunwayPrompt(initialPrompt, scriptText) {
 		? ""
 		: "center frame";
 
+	const MOTION_TAG = "clothing and hair react realistically to movement";
+
 	const extrasArr = [
 		spatial,
 		mustHaveUniqueObj ? "single object in view" : "",
-		needFwdMotion ? "subject moves with natural forward motion" : "",
-		// NEW — encourage body motion if no obvious verb was found
-		!needFwdMotion ? "subject shifts weight or gestures" : "",
+		needFwdMotion
+			? `subject moves with natural forward motion, ${MOTION_TAG}`
+			: `subject shifts weight or gestures, ${MOTION_TAG}`,
 		involvesHandshake
 			? "firm professional handshake, thumbs locked, eye‑contact"
 			: "",
 		"face‑preserving",
 	].filter(Boolean);
 
-	/* ---------- 2.  build the GPT instruction ---------- */
+	/* ---------- 2. build the GPT instruction ---------- */
 	const ask = `
 Rewrite the following as a *production‑ready* RUNWAY Gen‑2 prompt.
 
@@ -578,7 +584,7 @@ ${scriptText}
 Return ONLY the rewritten prompt.
   `.trim();
 
-	/* ---------- 3.  call GPT – retry max 2 ---------- */
+	/* ---------- 3.  GPT call with retry (unchanged) ---------- */
 	for (let attempt = 1; attempt <= 2; attempt++) {
 		try {
 			const rsp = await openai.chat.completions.create({
@@ -588,11 +594,9 @@ Return ONLY the rewritten prompt.
 
 			let out = rsp.choices[0].message.content.replace(/["“”]/g, "").trim();
 
-			/* hard‑truncate to 75 tokens  */
 			const tokens = out.split(/\s+/);
 			if (tokens.length > 75) out = tokens.slice(0, 75).join(" ");
 
-			/* post‑pend extras & return */
 			return `${extrasArr.join(", ")}, ${out}`;
 		} catch (err) {
 			console.warn(`[GPT refine] attempt ${attempt} failed → ${err.message}`);
@@ -748,20 +752,29 @@ const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
 
 async function generateSeoTitle(headlines, category, language) {
-	try {
-		const ask = `Give ONE irresistible YouTube title in Title Case (≤ 70 chars, no #, no “quotes”).
-Use a power verb + intrigue + keyword. Avoid click‑bait filler.
+	const ask = `
+✨ Craft ONE irresistible YouTube‑Shorts title (Title Case, ≤ 65 chars, no hashtags/quotes).
 
-Must summarise: ${headlines.join(" | ")}${
-			language !== DEFAULT_LANGUAGE ? `\nRespond in ${language}.` : ""
-		}`;
+Checklist
+• Start with a vivid “hook” word or emoji (🔥 Epic, 🚨 Breaking, etc.).  
+• Use a power verb (Unveils, Shocks, Crushes…).  
+• Promise intrigue or benefit.  
+• Include the core keyword.  
+• No click‑bait filler (“You Won’t Believe”).  
+• Must read naturally.
+
+Context: ${headlines.join(" | ")}${
+		language !== DEFAULT_LANGUAGE ? `\nRespond in ${language}.` : ""
+	}
+`;
+	try {
 		const { choices } = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [{ role: "user", content: ask }],
 		});
 		return choices[0].message.content.replace(/["“”]/g, "").trim();
 	} catch {
-		return null;
+		return `🔥 ${category} Update: ${headlines[0]}`;
 	}
 }
 
@@ -1172,23 +1185,35 @@ exports.createVideo = async (req, res) => {
 		 * ───────────────────────────────────────────────────────── */
 		let seedImageUrl = videoImage?.url || trendImage || null;
 		let seedImageDesc = null;
-		let cldVariants = null; // keep IDs if you need them later
+		let imagePool = []; // will feed segments
 
 		if (seedImageUrl) {
-			console.log("[Variation] creating cloudinary variant …");
-			cldVariants = await uploadWithVariation(seedImageUrl, {
+			// 2‑A  plain Cloudinary upload (personalised URL)
+
+			const cldPlain = await uploadRemoteImagePlain(seedImageUrl, {
 				folder: "aivideomatic",
 			});
-			/* use the 90 %-similar image for the rest of the pipeline */
-			seedImageUrl = cldVariants.variant.url;
-			console.log(
-				`[Variation] orig=${cldVariants.original.public_id}  ` +
-					`variant=${cldVariants.variant.public_id}`
-			);
+			imagePool.push(cldPlain); // original
+			seedImageUrl = cldPlain; // <-- now the canonical Cloudinary URL
 
+			// 2‑B  generate up to two variations for diversity
+			try {
+				const v1 = await uploadWithVariation(cldPlain, {
+					folder: "aivideomatic",
+				});
+				imagePool.push(v1.variant.url);
+				const v2 = await uploadWithVariation(cldPlain, {
+					folder: "aivideomatic",
+					size: 896,
+				});
+				imagePool.push(v2.variant.url);
+			} catch (e) {
+				console.warn("[Seed] variation skipped:", e.message);
+			}
+
+			// description of the *original*, will be injected into prompts
 			console.log("[Vision] describing seed image …");
-			seedImageDesc = await safeDescribeSeedImage(seedImageUrl);
-			console.log("[Vision] →", seedImageDesc);
+			seedImageDesc = await safeDescribeSeedImage(cldPlain);
 		}
 
 		const articleText = await scrapeArticleText(trendArticleUrl);
@@ -1485,12 +1510,17 @@ One sentence only. No filler words.
 
 		// Pre‑seed with the Cloudinary variant so doTtiItv()
 		// skips the “text‑to‑image” call and goes straight to ITV.
-		let reusableFallbackImage = seedImageUrl; // NEW
+		let reusableFallbackImage = imagePool.length ? imagePool[0] : null;
 
 		for (let i = 0; i < segCnt; i++) {
 			const d = segLens[i];
 			const rw = Math.abs(5 - d) <= Math.abs(10 - d) ? 5 : 10;
 			let clip = null;
+
+			/* pick deterministic image from the pool to add visual variety         */
+			const segSeedUrl = imagePool.length
+				? imagePool[i % imagePool.length]
+				: null;
 
 			const announceFallback = (type, reason) =>
 				sendPhase("FALLBACK", { segment: i + 1, type, reason });
@@ -1646,19 +1676,45 @@ One sentence only. No filler words.
 				return p;
 			}
 
-			/* tier A – t2v with seed */
-			try {
-				if (seedImageUrl)
+			/* tier A – t2v with segSeedUrl (may be null) */
+			if (segSeedUrl) {
+				try {
+					const buf = (
+						await axios.get(segSeedUrl, { responseType: "arraybuffer" })
+					).data.toString("base64");
 					clip = await doTextToVideo(
 						segments[i].runwayPrompt,
 						"_seed",
-						`data:image/png;base64,${(
-							await axios.get(seedImageUrl, { responseType: "arraybuffer" })
-						).data.toString("base64")}`
+						`data:image/png;base64,${buf}`
 					);
-			} catch (e) {
-				console.warn(`[Seg ${i + 1}] t2v‑seed failed → ${e.message}`);
-				announceFallback("t2v_seed", e.message);
+				} catch (e) {
+					console.warn(`[Seg ${i + 1}] t2v‑seed failed → ${e.message}`);
+					sendPhase("FALLBACK", {
+						segment: i + 1,
+						type: "t2v_seed",
+						reason: e.message,
+					});
+
+					/* 𝐅𝐚𝐥𝐥𝐛𝐚𝐜𝐤 path: create brand‑new variation, then retry once */
+					try {
+						const { uploadWithVariation } = require("../assets/helper");
+						const fresh = await uploadWithVariation(segSeedUrl, {
+							folder: "aivideomatic",
+						});
+						const buf2 = (
+							await axios.get(fresh.variant.url, {
+								responseType: "arraybuffer",
+							})
+						).data.toString("base64");
+						clip = await doTextToVideo(
+							segments[i].runwayPrompt,
+							"_seedRetry",
+							`data:image/png;base64,${buf2}`
+						);
+					} catch (e2) {
+						/* let outer fallbacks handle */
+					}
+				}
 			}
 
 			/* tier B – pure t2v */
