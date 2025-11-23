@@ -12,7 +12,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const child_process = require("child_process");
-
+const mongoose = require("mongoose");
 const axios = require("axios");
 const dayjs = require("dayjs");
 const cheerio = require("cheerio");
@@ -38,6 +38,8 @@ const {
 	uploadWithVariation,
 	uploadRemoteImagePlain,
 } = require("../assets/helper");
+
+const PST_TZ = "America/Los_Angeles";
 
 /* ───────────────────────────────────────────────────────────────
  *  2.  Runtime guards + ffmpeg bootstrap
@@ -2346,25 +2348,47 @@ One sentence only. No filler words.
 		/* optional scheduling */
 		if (schedule) {
 			const { type, timeOfDay, startDate, endDate } = schedule;
-			let next = dayjs(startDate)
-				.hour(+timeOfDay.split(":")[0])
-				.minute(+timeOfDay.split(":")[1])
-				.second(0);
+			const [hh, mm] = timeOfDay.split(":").map(Number);
 
-			if (next.isBefore(dayjs())) {
+			// Treat startDate as a calendar date, ignore its original timezone.
+			const startDateStr = dayjs(startDate).format("YYYY-MM-DD");
+
+			// First candidate run: that date + timeOfDay in PST
+			let next = dayjs.tz(
+				`${startDateStr} ${timeOfDay}`,
+				"YYYY-MM-DD HH:mm",
+				PST_TZ
+			);
+
+			const nowPST = dayjs().tz(PST_TZ);
+
+			// Push forward until it's in the future (still all in PST)
+			while (next.isBefore(nowPST)) {
 				if (type === "daily") next = next.add(1, "day");
-				if (type === "weekly") next = next.add(1, "week");
-				if (type === "monthly") next = next.add(1, "month");
+				else if (type === "weekly") next = next.add(1, "week");
+				else if (type === "monthly") next = next.add(1, "month");
+				else break;
 			}
+
+			// Normalise start/end to PST‑midnight (so dates behave as PST calendar days)
+			const startPST = dayjs
+				.tz(startDateStr, "YYYY-MM-DD", PST_TZ)
+				.startOf("day");
+			const endPST =
+				endDate && dayjs(endDate).isValid()
+					? dayjs
+							.tz(dayjs(endDate).format("YYYY-MM-DD"), "YYYY-MM-DD", PST_TZ)
+							.startOf("day")
+					: null;
 
 			await new Schedule({
 				user: user._id,
 				video: doc._id,
 				scheduleType: type,
 				timeOfDay,
-				startDate: dayjs(startDate).toDate(),
-				endDate: endDate ? dayjs(endDate).toDate() : undefined,
-				nextRun: next.toDate(),
+				startDate: startPST.toDate(),
+				endDate: endPST ? endPST.toDate() : undefined,
+				nextRun: next.toDate(), // this is "wall clock" PST time, stored as UTC
 				active: true,
 			}).save();
 

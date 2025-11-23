@@ -35,6 +35,7 @@ const {
 /* ---------- Middleware ---------- */
 const { protect } = require("./middlewares/authMiddleware");
 const { authorize } = require("./middlewares/roleMiddleware");
+const PST_TZ = "America/Los_Angeles";
 
 /* ---------- Express + HTTP + Socket.IO ---------- */
 const app = express();
@@ -113,14 +114,19 @@ async function processQueue() {
 
 /* Core logic for one schedule */
 async function handleSchedule(sched) {
-	const nowPST = dayjs().tz("America/Los_Angeles");
+	const nowPST = dayjs().tz(PST_TZ);
 
-	/* 1 ▸ stop expired schedules */
-	if (sched.endDate && nowPST.isAfter(dayjs(sched.endDate))) {
-		sched.active = false;
-		await sched.save();
-		console.log(`[Queue] Schedule ${sched._id} expired & deactivated`);
-		return;
+	/* 1 ▸ stop expired schedules (endDate is a PST calendar date) */
+	let endPST = null;
+	if (sched.endDate) {
+		const endDateStr = dayjs(sched.endDate).format("YYYY-MM-DD");
+		endPST = dayjs.tz(`${endDateStr} 23:59`, "YYYY-MM-DD HH:mm", PST_TZ);
+		if (nowPST.isAfter(endPST)) {
+			sched.active = false;
+			await sched.save();
+			console.log(`[Queue] Schedule ${sched._id} expired & deactivated`);
+			return;
+		}
 	}
 
 	const { user, video, scheduleType, timeOfDay } = sched;
@@ -158,28 +164,39 @@ async function handleSchedule(sched) {
 	await createVideo(reqMock, resMock);
 	console.log(`[Queue] ✔ Video done for schedule ${sched._id}`);
 
-	/* 3 ▸ compute nextRun */
-	let next = dayjs(sched.nextRun).tz("America/Los_Angeles");
-	if (scheduleType === "daily") next = next.add(1, "day");
-	if (scheduleType === "weekly") next = next.add(1, "week");
-	if (scheduleType === "monthly") next = next.add(1, "month");
-
+	/* 3 ▸ compute nextRun (always PST timeOfDay) */
 	const [hh, mm] = timeOfDay.split(":").map(Number);
-	next = next.hour(hh).minute(mm).second(0).millisecond(0);
 
+	// Start from the date of the previous run, in PST
+	let base = dayjs(sched.nextRun).tz(PST_TZ);
+
+	if (scheduleType === "daily") base = base.add(1, "day");
+	else if (scheduleType === "weekly") base = base.add(1, "week");
+	else if (scheduleType === "monthly") base = base.add(1, "month");
+
+	// Force the configured wall‑clock time in PST
+	let next = base.hour(hh).minute(mm).second(0).millisecond(0);
+
+	// If for some reason it's already in the past, bump one more period
 	if (next.isBefore(nowPST)) {
 		if (scheduleType === "daily") next = next.add(1, "day");
-		if (scheduleType === "weekly") next = next.add(1, "week");
-		if (scheduleType === "monthly") next = next.add(1, "month");
+		else if (scheduleType === "weekly") next = next.add(1, "week");
+		else if (scheduleType === "monthly") next = next.add(1, "month");
 	}
 
-	if (sched.endDate && next.isAfter(dayjs(sched.endDate))) {
+	// Re‑evaluate against endDate in PST (end‑of‑day)
+	if (endPST && next.isAfter(endPST)) {
 		sched.active = false;
 	} else {
-		sched.nextRun = next.toDate();
+		sched.nextRun = next.toDate(); // moment in time corresponding to HH:mm PST
 	}
+
 	await sched.save();
-	console.log(`[Queue] Schedule ${sched._id} → nextRun ${next.format()}`);
+	console.log(
+		`[Queue] Schedule ${
+			sched._id
+		} → nextRun ${next.format()} PST (stored as ${sched.nextRun.toISOString()})`
+	);
 }
 
 /* ───────────────────────────────────────────────────────────── */
