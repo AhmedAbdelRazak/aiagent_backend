@@ -1,10 +1,14 @@
 /** @format */
-/*  videoController.js  — trends‑driven, OpenAI‑orchestrated edition
+/*  videoController.js  — ultra‑fidelity, trends‑driven edition
  *  ✅ Uses Google Trends images per segment (non‑redundant where possible)
  *  ✅ OpenAI plans narration + visuals dynamically from Trends + article links
- *  ✅ Cloudinary normalises ratio & lightly enhances images before Runway
+ *  ✅ Cloudinary upscales + normalises aspect ratio at high resolution before Runway
  *  ✅ Runway image‑to‑video as the primary path; hard‑fail on rejection
  *  ✅ Falls back to text‑to‑image→video only when no Trends images exist (e.g. Top5)
+ *  ✅ Per‑segment video sharpened + contrast‑tuned at target resolution
+ *  ✅ ElevenLabs voice picked dynamically via their /voices API + GPT
+ *  ✅ OpenAI plans background music search + levels; Jamendo is used as library
+ *  ✅ Script timing recomputed from words → minimal awkward pauses
  *  ✅ Phases kept in sync with GenerationModal (INIT → … → COMPLETED / ERROR)
  */
 
@@ -140,7 +144,17 @@ const VALID_RATIOS = [
 	"960:960",
 	"1584:672",
 ];
-const WORDS_PER_SEC = 1.8;
+
+/**
+ * WORDS_PER_SEC: conservative cap used when asking GPT for max words.
+ * NATURAL_WPS: more realistic speed used when recomputing durations from script.
+ */
+const WORDS_PER_SEC = 2.1;
+const NATURAL_WPS = 2.25;
+
+const MAX_SILENCE_PAD = 0.35; // max silence we’ll add at end of a segment
+const MIN_ATEMPO = 0.9; // min speed change (slowest)
+const MAX_ATEMPO = 1.15; // max speed change (fastest)
 
 /* Gen‑4 Turbo everywhere for speed + fidelity */
 const T2V_MODEL = "gen4_turbo";
@@ -168,6 +182,8 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"lowres",
 	"pixelated",
 	"blur",
+	"blurry",
+	"soft focus",
 	"overexposed",
 	"underexposed",
 	"watermark",
@@ -178,7 +194,6 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"awkward pose",
 	"mismatched gaze",
 	"crossed eyes",
-	"wall‑eyed",
 	"wall‑eyed",
 	"sliding feet",
 ].join(", ");
@@ -306,6 +321,17 @@ function toTitleCase(str = "") {
 		.trim();
 }
 
+async function downloadImageToTemp(url, ext = ".jpg") {
+	const tmp = tmpFile("trend_raw", ext);
+	const writer = fs.createWriteStream(tmp);
+
+	const resp = await axios.get(url, { responseType: "stream" });
+	await new Promise((resolve, reject) => {
+		resp.data.pipe(writer).on("finish", resolve).on("error", reject);
+	});
+	return tmp;
+}
+
 function fallbackSeoTitle(topic, category) {
 	const base = toTitleCase(topic || "Breaking Update");
 	if (category === "Top5") return `${base} | Top 5`;
@@ -386,6 +412,120 @@ function deriveVoiceSettings(text, category = "Other") {
 	};
 }
 
+/* Recompute segment durations from final script to avoid long pauses */
+function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
+	if (
+		!Array.isArray(segments) ||
+		!segments.length ||
+		!targetTotalSeconds ||
+		!Number.isFinite(targetTotalSeconds)
+	)
+		return null;
+
+	const MIN_SEGMENT_SECONDS = 2.5;
+
+	const est = segments.map((s, idx) => {
+		const words = String(s.scriptText || "")
+			.trim()
+			.split(/\s+/)
+			.filter(Boolean).length;
+		const basePause = idx === segments.length - 1 ? 0.35 : 0.25;
+		const raw = (words || 1) / NATURAL_WPS + basePause;
+		return Math.max(MIN_SEGMENT_SECONDS, raw);
+	});
+
+	const estTotal = est.reduce((a, b) => a + b, 0) || targetTotalSeconds;
+	let scale = targetTotalSeconds / estTotal;
+	if (scale < 0.8) scale = 0.8;
+	if (scale > 1.25) scale = 1.25;
+
+	let scaled = est.map((v) => v * scale);
+	let total = scaled.reduce((a, b) => a + b, 0);
+	let diff = +(targetTotalSeconds - total).toFixed(2);
+
+	// distribute rounding difference across segments with tiny nudges
+	let idx = scaled.length - 1;
+	const step = diff > 0 ? 0.1 : -0.1;
+	while (Math.abs(diff) > 0.05 && scaled.length && idx >= 0) {
+		const candidate = scaled[idx] + step;
+		if (candidate >= MIN_SEGMENT_SECONDS) {
+			scaled[idx] = candidate;
+			diff -= step;
+		}
+		idx--;
+		if (idx < 0 && Math.abs(diff) > 0.05) idx = scaled.length - 1;
+	}
+
+	return scaled.map((v) => +v.toFixed(2));
+}
+
+/* ───────────────────────────────────────────────────────────────
+ *  Cloudinary + resolution helpers
+ * ───────────────────────────────────────────────────────────── */
+function ratioToCloudinaryAspect(ratio) {
+	switch (ratio) {
+		case "1280:720":
+		case "1584:672":
+			return "16:9";
+		case "720:1280":
+		case "832:1104":
+			return "9:16";
+		case "960:960":
+			return "1:1";
+		case "1104:832":
+			return "4:3";
+		default:
+			return "16:9";
+	}
+}
+
+/** Target display resolution per ratio – avoids tiny / stretched frames */
+function targetResolutionForRatio(ratio) {
+	switch (ratio) {
+		case "720:1280":
+		case "832:1104":
+			return { width: 1080, height: 1920 };
+		case "960:960":
+			return { width: 1080, height: 1080 };
+		case "1104:832":
+			return { width: 1440, height: 1080 }; // ~4:3
+		case "1584:672":
+		case "1280:720":
+		default:
+			return { width: 1920, height: 1080 };
+	}
+}
+
+/** Cloudinary transform tuned for crisp, upscaled Runway seeds */
+function buildCloudinaryTransformForRatio(ratio) {
+	const aspect = ratioToCloudinaryAspect(ratio);
+	const { width, height } = targetResolutionForRatio(ratio);
+
+	const base = {
+		crop: "fill",
+		gravity: "auto:subject",
+		quality: "auto:best",
+		fetch_format: "auto",
+	};
+
+	if (width && height) {
+		base.width = width;
+		base.height = height;
+	} else {
+		base.aspect_ratio = aspect;
+	}
+
+	// 1) crop to exact display ratio at high resolution
+	// 2) AI upscale whenever source is smaller (e_upscale)
+	// 3) Gentle sharpen + contrast for extra bite on sports/news stills
+	return [
+		base,
+		{ effect: "upscale" },
+		{ effect: "sharpen:80" },
+		{ effect: "contrast:25" },
+	];
+}
+
 /* ───────────────────────────────────────────────────────────────
  *  ffmpeg helpers
  * ───────────────────────────────────────────────────────────── */
@@ -398,28 +538,65 @@ function ffmpegPromise(cfg) {
 	});
 }
 
-async function exactLen(src, target, out) {
+/**
+ * exactLen – normalises video clips:
+ * - optional upscale/crop to canonical resolution per ratio
+ * - optional light sharpen/contrast
+ * - enforce or pad duration with tpad
+ */
+async function exactLen(src, target, out, opts = {}) {
+	const { ratio = null, enhance = false } = opts;
 	const meta = await new Promise((r, j) =>
 		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
 	);
 	const diff = +(target - meta.format.duration).toFixed(3);
+
+	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
+
 	await ffmpegPromise((c) => {
 		c.input(norm(src));
+
+		const vf = [];
+
+		// Normalise resolution only once per seed clip
+		if (enhance && targetRes && targetRes.width && targetRes.height) {
+			const { width, height } = targetRes;
+			vf.push(
+				`scale=${width}:${height}:force_original_aspect_ratio=increase`,
+				`crop=${width}:${height}`
+			);
+		}
+
 		if (Math.abs(diff) < 0.05) {
-			/* keep length */
+			// keep timing
 		} else if (diff < 0) {
+			// clip if slightly too long
 			c.outputOptions("-t", String(target));
 		} else {
-			c.videoFilters(`tpad=stop_duration=${diff}`);
+			// pad up to target
+			vf.push(`tpad=stop_duration=${diff}`);
 		}
+
+		// Light, global enhancement – no over‑processing
+		if (enhance) {
+			vf.push(
+				"unsharp=lx=5:ly=5:la=0.9:cx=3:cy=3:ca=0.45",
+				"eq=contrast=1.05:saturation=1.03:gamma=0.98"
+			);
+		}
+
+		if (vf.length) {
+			c.videoFilters(vf.join(","));
+		}
+
 		return c
 			.outputOptions(
 				"-c:v",
 				"libx264",
 				"-preset",
-				"veryfast",
+				enhance ? "slow" : "veryfast",
 				"-crf",
-				"21",
+				enhance ? "17" : "18",
 				"-pix_fmt",
 				"yuv420p",
 				"-y"
@@ -428,28 +605,65 @@ async function exactLen(src, target, out) {
 	});
 }
 
+/**
+ * exactLenAudio – keeps audio tightly aligned with target while avoiding big silent gaps.
+ * - small diffs: untouched
+ * - shorter audio: mild slow‑down + at most MAX_SILENCE_PAD silence
+ * - longer audio: mild speed‑up or trim for extreme overflows
+ */
 async function exactLenAudio(src, target, out) {
 	const meta = await new Promise((r, j) =>
 		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
 	);
 	const inDur = meta.format.duration;
 	const diff = +(target - inDur).toFixed(3);
+
 	await ffmpegPromise((c) => {
 		c.input(norm(src));
-		if (Math.abs(diff) <= 0.05) {
-			/* leave */
-		} else if (diff > 0.05) {
-			c.audioFilters(`apad=pad_dur=${diff}`);
-		} else {
+		const filters = [];
+
+		if (Math.abs(diff) <= 0.08) {
+			// essentially the same – keep as‑is
+		} else if (diff < -0.08) {
+			// audio longer than segment → gently compress or, if huge, trim
 			const ratio = inDur / target;
 			if (ratio <= 2.0) {
-				c.audioFilters(`atempo=${ratio.toFixed(3)}`);
+				filters.push(`atempo=${ratio.toFixed(3)}`);
 			} else if (ratio <= 4.0) {
 				const r = Math.sqrt(ratio).toFixed(3);
-				c.audioFilters(`atempo=${r},atempo=${r}`);
+				filters.push(`atempo=${r},atempo=${r}`);
 			} else {
+				// extreme outlier – hard trim
 				c.outputOptions("-t", String(target));
 			}
+		} else {
+			// audio shorter than segment (most common case)
+			const desiredMinDur = target - MAX_SILENCE_PAD;
+			if (desiredMinDur > 0 && inDur > 0.1) {
+				let tempo = inDur / desiredMinDur; // <1 slows down, >1 speeds up
+				tempo = Math.max(MIN_ATEMPO, Math.min(MAX_ATEMPO, tempo));
+				if (Math.abs(tempo - 1) > 0.02) {
+					filters.push(`atempo=${tempo.toFixed(3)}`);
+				}
+				const lenAfterTempo = inDur / tempo;
+				const remaining = target - lenAfterTempo;
+				if (remaining > 0.05) {
+					const padDur = Math.min(MAX_SILENCE_PAD, Math.max(0, remaining));
+					if (padDur > 0.05) {
+						filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
+					}
+				}
+			} else {
+				// degenerate case – just pad a little
+				const padDur = Math.min(MAX_SILENCE_PAD, diff);
+				if (padDur > 0.05) {
+					filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
+				}
+			}
+		}
+
+		if (filters.length) {
+			c.audioFilters(filters.join(","));
 		}
 		return c.outputOptions("-y").save(norm(out));
 	});
@@ -693,53 +907,108 @@ Keep everything in ${language}. Do not include any other keys or free‑text.
 /* ───────────────────────────────────────────────────────────────
  *  Cloudinary helpers for Trends images
  * ───────────────────────────────────────────────────────────── */
-function ratioToCloudinaryAspect(ratio) {
-	switch (ratio) {
-		case "1280:720":
-		case "1584:672":
-			return "16:9";
-		case "720:1280":
-		case "832:1104":
-			return "9:16";
-		case "960:960":
-			return "1:1";
-		case "1104:832":
-			return "4:3";
-		default:
-			return "16:9";
-	}
-}
-
 async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 	if (!url) throw new Error("Missing Trends image URL");
-	const aspect = ratioToCloudinaryAspect(ratio);
+
 	const publicIdBase =
 		slugBase || `aivideomatic/trend_seeds/${Date.now()}_${crypto.randomUUID()}`;
-	const opts = {
+
+	const baseOpts = {
 		public_id: publicIdBase,
 		resource_type: "image",
 		overwrite: false,
 		folder: "aivideomatic/trend_seeds",
-		transformation: [
-			{
-				aspect_ratio: aspect,
-				crop: "fill",
-				gravity: "auto",
-			},
-			{ effect: "sharpen:60" },
-			{ effect: "contrast:20" },
-		],
 	};
-	const result = await cloudinary.uploader.upload(url, opts);
-	console.log("[Cloudinary] Seed image uploaded →", result.public_id);
-	return {
-		public_id: result.public_id,
-		url: result.secure_url,
-	};
+
+	const transform = buildCloudinaryTransformForRatio(ratio);
+
+	try {
+		// Normal path: let Cloudinary fetch + transform + AI‑upscale
+		const result = await cloudinary.uploader.upload(url, {
+			...baseOpts,
+			transformation: transform,
+		});
+		console.log("[Cloudinary] Seed image uploaded →", {
+			public_id: result.public_id,
+			width: result.width,
+			height: result.height,
+			format: result.format,
+		});
+		return {
+			public_id: result.public_id,
+			url: result.secure_url,
+		};
+	} catch (e) {
+		const msg = String(e?.message || "");
+		if (!msg.includes("Maximum image size is 25 Megapixels")) {
+			// Some other error – bubble up
+			throw e;
+		}
+
+		console.warn(
+			"[Cloudinary] 25MP limit hit, pre‑downscaling locally and retrying …"
+		);
+
+		// Fallback path: download + resize with ffmpeg, THEN upload
+		const { width, height } = targetResolutionForRatio(ratio);
+		const rawPath = await downloadImageToTemp(url, ".jpg");
+		const scaledPath = tmpFile("trend_scaled", ".jpg");
+
+		try {
+			const vf = [];
+
+			if (width && height) {
+				vf.push(
+					`scale=${width}:${height}:force_original_aspect_ratio=increase`,
+					`crop=${width}:${height}`
+				);
+			}
+			// light sharpening so the still looks crisp before Runway
+			vf.push(
+				"unsharp=lx=5:ly=5:la=0.8:cx=3:cy=3:ca=0.4",
+				"eq=contrast=1.03:saturation=1.02:gamma=0.99"
+			);
+
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(rawPath))
+					.videoFilters(vf.join(","))
+					.outputOptions("-frames:v", "1", "-y")
+					.save(norm(scaledPath))
+			);
+		} finally {
+			try {
+				fs.unlinkSync(rawPath);
+			} catch (_) {}
+		}
+
+		// Now upload the already‑resized image – no transform needed
+		const result = await cloudinary.uploader.upload(scaledPath, {
+			...baseOpts,
+			quality: "auto:best",
+			fetch_format: "auto",
+		});
+
+		try {
+			fs.unlinkSync(scaledPath);
+		} catch (_) {}
+
+		console.log("[Cloudinary] Seed image uploaded (fallback path) →", {
+			public_id: result.public_id,
+			width: result.width,
+			height: result.height,
+			format: result.format,
+		});
+
+		return {
+			public_id: result.public_id,
+			url: result.secure_url,
+		};
+	}
 }
 
 /* ───────────────────────────────────────────────────────────────
- *  Runway poll + retry (hard‑fail on 4xx, as requested)
+ *  Runway poll + retry (hard‑fail on 4xx)
  * ───────────────────────────────────────────────────────────── */
 async function pollRunway(id, tk, lbl) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${id}`;
@@ -865,6 +1134,7 @@ async function uploadToYouTube(u, fp, { title, description, tags, category }) {
 	return `https://www.youtube.com/watch?v=${data.id}`;
 }
 async function jamendo(term) {
+	if (!JAMENDO_ID) return null;
 	try {
 		const { data } = await axios.get("https://api.jamendo.com/v3.0/tracks", {
 			params: { client_id: JAMENDO_ID, format: "json", limit: 1, search: term },
@@ -876,11 +1146,128 @@ async function jamendo(term) {
 }
 
 /* ───────────────────────────────────────────────────────────────
- *  ElevenLabs TTS helper (with per‑segment tone)
+ *  ElevenLabs helpers – dynamic voice selection + TTS
  * ───────────────────────────────────────────────────────────── */
-async function elevenLabsTTS(text, language, outPath, category = "Other") {
+
+/** Fetches the user's ElevenLabs voices via /v1/voices */
+async function fetchElevenVoices() {
+	if (!ELEVEN_API_KEY) return null;
+	try {
+		const { data } = await axios.get("https://api.elevenlabs.io/v1/voices", {
+			headers: { "xi-api-key": ELEVEN_API_KEY },
+			timeout: 8000,
+		});
+		const voices = Array.isArray(data?.voices) ? data.voices : [];
+		if (!voices.length) return null;
+		return voices;
+	} catch (e) {
+		console.warn("[Eleven] fetch voices failed →", e.message);
+		return null;
+	}
+}
+
+/**
+ * Ask GPT to choose the best ElevenLabs voice for this video,
+ * based on category, language and script tone.
+ */
+async function selectBestElevenVoice(language, category, sampleText) {
+	const fallbackId = ELEVEN_VOICES[language] || ELEVEN_VOICES[DEFAULT_LANGUAGE];
+
+	const voices = await fetchElevenVoices();
+	if (!voices || !voices.length) {
+		if (fallbackId) {
+			return {
+				voiceId: fallbackId,
+				name: "default",
+				source: "static",
+				reason: "ElevenLabs /voices unavailable, using static fallback map.",
+			};
+		}
+		return null;
+	}
+
+	const slimVoices = voices
+		.filter((v) => v && (v.voice_id || v.voiceId))
+		.slice(0, 30)
+		.map((v) => ({
+			id: v.voice_id || v.voiceId,
+			name: v.name || "",
+			category: v.category || "",
+			labels: v.labels || {},
+			description: v.description || "",
+		}));
+
+	const tone = deriveVoiceSettings(sampleText || "", category);
+
+	const ask = `
+You are selecting the MOST natural-sounding ElevenLabs voice for a YouTube Shorts narration.
+
+Goal:
+- Category: ${category}
+- Language preference label: ${language}
+- Script tone: ${
+		tone.isSensitive ? "sensitive / serious" : "neutral to energetic"
+	}
+- It should sound like a real human news or sports broadcaster, never robotic.
+
+You are given a JSON array called "voices" with candidate voices from the ElevenLabs /voices API.
+Pick ONE best "id" to use. Prefer:
+- Narrator / storyteller voices over comedic, meme, or character voices.
+- Voices that fit the language/accent when possible.
+- Calmer, more neutral voices if the tone is sensitive.
+
+voices:
+${JSON.stringify(slimVoices).slice(0, 11000)}
+
+Return ONLY JSON:
+{ "voiceId": "<id>", "name": "<readable name>", "reason": "short explanation" }
+`.trim();
+
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask }],
+		});
+		const parsed = JSON.parse(strip(choices[0].message.content));
+		if (parsed && parsed.voiceId) {
+			return {
+				voiceId: parsed.voiceId,
+				name: parsed.name || "",
+				source: "dynamic-gpt",
+				reason: parsed.reason || "",
+			};
+		}
+	} catch (e) {
+		console.warn("[Eleven] GPT voice selection failed →", e.message);
+	}
+
+	if (fallbackId) {
+		return {
+			voiceId: fallbackId,
+			name: "default",
+			source: "static-fallback",
+			reason: "Falling back to predefined voice mapping.",
+		};
+	}
+	return null;
+}
+
+/**
+ * ElevenLabs TTS helper (per‑segment), now taking explicit voiceId so that GPT
+ * can choose the voice dynamically once per video.
+ */
+async function elevenLabsTTS(
+	text,
+	language,
+	outPath,
+	category = "Other",
+	voiceIdOverride = null
+) {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
-	const voiceId = ELEVEN_VOICES[language] || ELEVEN_VOICES[DEFAULT_LANGUAGE];
+	const voiceId =
+		voiceIdOverride ||
+		ELEVEN_VOICES[language] ||
+		ELEVEN_VOICES[DEFAULT_LANGUAGE];
 
 	const tone = deriveVoiceSettings(text, category);
 
@@ -916,6 +1303,120 @@ async function elevenLabsTTS(text, language, outPath, category = "Other") {
 	);
 
 	return tone;
+}
+
+/* ───────────────────────────────────────────────────────────────
+ *  Background music planner (GPT‑driven)
+ * ───────────────────────────────────────────────────────────── */
+const DEFAULT_MUSIC_GAIN_BY_CATEGORY = {
+	Sports: 0.16,
+	Top5: 0.15,
+	Entertainment: 0.13,
+	Technology: 0.11,
+	Politics: 0.09,
+	Finance: 0.09,
+	World: 0.09,
+	Health: 0.09,
+	Lifestyle: 0.12,
+	Science: 0.1,
+	Other: 0.11,
+};
+
+function defaultMusicGain(category) {
+	return DEFAULT_MUSIC_GAIN_BY_CATEGORY[category] ?? 0.11;
+}
+
+/**
+ * Use GPT as a "music supervisor" to:
+ *  - pick Jamendo search terms
+ *  - suggest voice/music gain levels so VO is always readable
+ */
+async function planBackgroundMusic({
+	topic,
+	category,
+	language,
+	fullScript,
+	duration,
+}) {
+	const snippet =
+		typeof fullScript === "string" ? fullScript.slice(0, 800) : "";
+
+	const ask = `
+You are a YouTube Shorts music supervisor.
+
+Choose ONE instrumental music direction for this video:
+- Topic: ${topic}
+- Category: ${category}
+- Language of narration: ${language}
+- Duration: about ${duration} seconds
+
+Narration snippet for tone:
+${snippet || "(no script snippet provided)"}
+
+Constraints:
+- Instrumental only (no vocals).
+- Must sit cleanly under a voiceover (no harsh leads that fight with speech).
+- Match the tone: energetic and epic for Sports/Top5/Entertainment, calm and neutral for Politics/Finance/World/Health, curious for Technology/Science, friendly for Lifestyle.
+
+Return ONLY JSON with this exact shape:
+{
+  "jamendoSearch": "search query for Jamendo (max 80 characters)",
+  "fallbackSearchTerms": ["alt search 1", "alt search 2"],
+  "musicGain": 0.13,
+  "voiceGain": 1.45
+}
+
+Rules:
+- musicGain between 0.07 and 0.20
+- voiceGain between 1.20 and 1.60
+`.trim();
+
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask }],
+		});
+
+		const raw = strip(choices[0].message.content);
+		const parsed = JSON.parse(raw);
+
+		let musicGain = Number(parsed.musicGain);
+		if (!Number.isFinite(musicGain)) {
+			musicGain = defaultMusicGain(category);
+		} else {
+			musicGain = Math.min(0.2, Math.max(0.07, musicGain));
+		}
+
+		let voiceGain = Number(parsed.voiceGain);
+		if (!Number.isFinite(voiceGain)) {
+			voiceGain = 1.4;
+		} else {
+			voiceGain = Math.min(1.6, Math.max(1.2, voiceGain));
+		}
+
+		const jamendoSearch = String(parsed.jamendoSearch || topic).slice(0, 80);
+		const fallbackSearchTerms = Array.isArray(parsed.fallbackSearchTerms)
+			? parsed.fallbackSearchTerms
+					.map((s) => String(s || "").trim())
+					.filter(Boolean)
+					.slice(0, 4)
+			: [];
+
+		return {
+			jamendoSearch,
+			fallbackSearchTerms,
+			musicGain,
+			voiceGain,
+		};
+	} catch (e) {
+		console.warn("[MusicPlan] failed →", e.message);
+		return {
+			jamendoSearch: topic.split(" ")[0] || "instrumental",
+			fallbackSearchTerms: ["instrumental", "background", "cinematic"],
+			musicGain: defaultMusicGain(category),
+			voiceGain: 1.4,
+		};
+	}
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -1001,7 +1502,9 @@ Your job:
 Visual rules:
 - Use each imageIndex at most once before reusing any image.
 - Aim for subtle, realistic animation: camera push‑in or pan, shallow depth‑of‑field, arena lights flickering, slow‑motion crowd, gentle parallax.
-- Do NOT radically change the scene: keep team colours, logos and basic composition.
+- Keep the subject sharp and in focus. Avoid soft focus, heavy motion blur, or smeared details.
+- Frame as if the video will be watched full‑screen on a phone: main subject large and centered, never tiny in the distance.
+- Do NOT radically change the scene: keep team colours, uniforms, logos and basic composition.
 - Never morph faces into different people.
 - No surreal or abstract effects.
 
@@ -1048,6 +1551,12 @@ For each segment, output:
 - "scriptText"
 - "runwayPrompt": a vivid but grounded description of the scene to generate from scratch. Focus on symbols (arenas, trophies, jerseys), not specific copyrighted logos.
 
+Visual rules:
+- Keep scenes realistic and grounded in today's world.
+- Keep the focal subject large and sharp; avoid tiny subjects, chaotic camera moves and motion blur.
+- Avoid specific trademarks or team logos; describe them generically (for example "home team in dark jerseys").
+- If people are visible, keep faces natural and undistorted.
+
 Return JSON of the form:
 {
   "segments": [
@@ -1069,6 +1578,7 @@ You must imagine the visuals from scratch. For each segment, output:
 
 Visual rules:
 - Keep scenes realistic and grounded in today's world.
+- Favour crisp, well‑lit compositions; avoid heavy motion blur or extreme camera moves.
 - Avoid specific trademarks or team logos; describe them generically (for example "home team in dark jerseys").
 - If people are visible, keep faces natural and undistorted.
 - Prefer one clear focal subject per segment.
@@ -1396,8 +1906,19 @@ One or two sentences only.
 
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 
+		// Recompute segment durations from actual script to minimise long pauses
+		const recomputed = recomputeSegmentDurationsFromScript(segments, duration);
+		if (recomputed && recomputed.length === segLens.length) {
+			console.log("[Timing] Recomputed segment durations from script:", {
+				before: segLens,
+				after: recomputed,
+			});
+			segLens = recomputed;
+		}
+		segCnt = segLens.length;
+
 		/* ─────────────────────────────────────────────────────────
-		 *  6.  Global style, SEO title, tags
+		 *  6.  Global style, SEO title, tags, dynamic voice & music plan
 		 * ───────────────────────────────────────────────────────── */
 		let globalStyle = "";
 		try {
@@ -1464,13 +1985,70 @@ One or two sentences only.
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
 		tags = [...new Set(tags)];
 
+		// Dynamic ElevenLabs voice selection from /voices + GPT
+		let chosenVoice = null;
+		try {
+			chosenVoice = await selectBestElevenVoice(language, category, fullScript);
+			if (chosenVoice) {
+				console.log("[TTS] Using ElevenLabs voice", {
+					id: chosenVoice.voiceId,
+					name: chosenVoice.name,
+					source: chosenVoice.source,
+					reason: chosenVoice.reason,
+				});
+			}
+		} catch (e) {
+			console.warn("[TTS] Voice selection failed →", e.message);
+		}
+
+		// GPT‑planned background music search + gain levels
+		let musicPlan = null;
+		let musicGain = defaultMusicGain(category);
+		let voiceGain = 1.4;
+		try {
+			musicPlan = await planBackgroundMusic({
+				topic,
+				category,
+				language,
+				fullScript,
+				duration,
+			});
+			if (musicPlan) {
+				musicGain = musicPlan.musicGain;
+				voiceGain = musicPlan.voiceGain;
+				console.log("[MusicPlan] planned", musicPlan);
+			}
+		} catch (e) {
+			console.warn("[MusicPlan] planning failed →", e.message);
+		}
+
 		/* ─────────────────────────────────────────────────────────
-		 *  7.  Optional background music
+		 *  7.  Optional background music (Jamendo via planned search)
 		 * ───────────────────────────────────────────────────────── */
 		let music = null;
 		try {
-			const jam =
-				(await jamendo(topic.split(" ")[0])) || (await jamendo("ambient"));
+			const searchTerms = [];
+			if (musicPlan?.jamendoSearch) searchTerms.push(musicPlan.jamendoSearch);
+			if (Array.isArray(musicPlan?.fallbackSearchTerms))
+				searchTerms.push(...musicPlan.fallbackSearchTerms);
+			searchTerms.push(topic.split(" ")[0] || "");
+			searchTerms.push("ambient");
+
+			const tried = new Set();
+			let jam = null;
+			for (const term of searchTerms) {
+				const t = String(term || "").trim();
+				if (!t) continue;
+				const key = t.toLowerCase();
+				if (tried.has(key)) continue;
+				tried.add(key);
+				jam = await jamendo(t);
+				if (jam) {
+					console.log("[Music] Jamendo match", t);
+					break;
+				}
+			}
+
 			if (jam) {
 				music = tmpFile("bg", ".mp3");
 				const ws = fs.createWriteStream(music);
@@ -1478,6 +2056,8 @@ One or two sentences only.
 				await new Promise((r, j) =>
 					data.pipe(ws).on("finish", r).on("error", j)
 				);
+			} else {
+				console.warn("[Music] No Jamendo track found for any search term");
 			}
 		} catch (e) {
 			console.warn("[Music] Jamendo failed →", e.message);
@@ -1498,11 +2078,13 @@ One or two sentences only.
 			const d = segLens[i];
 			const seg = segments[i];
 
-			// Runway supports discrete durations; we’ll pick the closest of 5 or 10s
+			// Runway supports discrete durations; pick the closest of 5 or 10s
 			const rw = Math.abs(5 - d) <= Math.abs(10 - d) ? 5 : 10;
 
 			console.log(
-				`[Seg ${i + 1}/${segCnt}] targetDuration=${d}s runwayDuration=${rw}s`
+				`[Seg ${i + 1}/${segCnt}] targetDuration=${d.toFixed(
+					2
+				)}s runwayDuration=${rw}s`
 			);
 
 			const promptBase = `${
@@ -1521,7 +2103,7 @@ One or two sentences only.
 				if (!imgUrl)
 					throw new Error("No Cloudinary Trends image available for Runway");
 
-				// Primary path: image_to_video using real Trends image
+				// Primary path: image_to_video using real (upscaled) Trends image
 				const idVid = await retry(
 					async () => {
 						const { data } = await axios.post(
@@ -1643,9 +2225,9 @@ One or two sentences only.
 				clipPath = p;
 			}
 
-			// Adjust to exact segment duration
+			// Adjust to exact segment duration + enhance / normalise resolution
 			const fixed = tmpFile(`fx_${i + 1}`, ".mp4");
-			await exactLen(clipPath, d, fixed);
+			await exactLen(clipPath, d, fixed, { ratio, enhance: true });
 			try {
 				fs.unlinkSync(clipPath);
 			} catch {}
@@ -1688,7 +2270,11 @@ One or two sentences only.
 		});
 
 		const silentFixed = tmpFile("silent_fix", ".mp4");
-		await exactLen(silent, duration, silentFixed);
+		// timing cleanup only; no extra enhancement pass
+		await exactLen(silent, duration, silentFixed, {
+			ratio,
+			enhance: false,
+		});
 		try {
 			fs.unlinkSync(silent);
 		} catch {}
@@ -1705,9 +2291,14 @@ One or two sentences only.
 			const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
 			const txt = improveTTSPronunciation(segments[i].scriptText);
 
-			let tone;
 			try {
-				tone = await elevenLabsTTS(txt, language, raw, category);
+				await elevenLabsTTS(
+					txt,
+					language,
+					raw,
+					category,
+					chosenVoice?.voiceId || null
+				);
 			} catch (e) {
 				console.warn(
 					`[TTS] ElevenLabs failed for seg ${i + 1}, falling back to OpenAI →`,
@@ -1731,20 +2322,21 @@ One or two sentences only.
 			fixedPieces.push(fixed);
 		}
 
+		const audioConcatList = tmpFile("audio_list", ".txt");
 		fs.writeFileSync(
-			listFile,
+			audioConcatList,
 			fixedPieces.map((p) => `file '${norm(p)}'`).join("\n")
 		);
 		const ttsJoin = tmpFile("tts_join", ".wav");
 		await ffmpegPromise((c) =>
 			c
-				.input(norm(listFile))
+				.input(norm(audioConcatList))
 				.inputOptions("-f", "concat", "-safe", "0")
 				.outputOptions("-c", "copy", "-y")
 				.save(norm(ttsJoin))
 		);
 		try {
-			fs.unlinkSync(listFile);
+			fs.unlinkSync(audioConcatList);
 		} catch {}
 		fixedPieces.forEach((p) => {
 			try {
@@ -1771,8 +2363,8 @@ One or two sentences only.
 					.input(norm(ttsJoin))
 					.input(norm(trim))
 					.complexFilter([
-						"[0:a]volume=1.4[a0]",
-						"[1:a]volume=0.12[a1]",
+						`[0:a]volume=${voiceGain.toFixed(2)}[a0]`,
+						`[1:a]volume=${musicGain.toFixed(3)}[a1]`,
 						"[a0][a1]amix=inputs=2:duration=first[aout]",
 					])
 					.outputOptions("-map", "[aout]", "-c:a", "pcm_s16le", "-y")
@@ -1785,7 +2377,7 @@ One or two sentences only.
 			await ffmpegPromise((c) =>
 				c
 					.input(norm(ttsJoin))
-					.audioFilters("volume=1.4")
+					.audioFilters(`volume=${voiceGain.toFixed(2)}`)
 					.outputOptions("-c:a", "pcm_s16le", "-y")
 					.save(norm(mixedRaw))
 			);
@@ -1917,7 +2509,6 @@ One or two sentences only.
 		/* optional scheduling */
 		if (schedule) {
 			const { type, timeOfDay, startDate, endDate } = schedule;
-			const [hh, mm] = timeOfDay.split(":").map(Number);
 
 			const startDateStr = dayjs(startDate).format("YYYY-MM-DD");
 
