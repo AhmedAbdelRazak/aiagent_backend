@@ -201,6 +201,13 @@ const ELEVEN_STYLE_BY_CATEGORY = {
 	Other: 0.7,
 };
 
+/* VO tone: detect sensitive vs hype segments */
+const SENSITIVE_TONE_RE =
+	/\b(died|dead|death|killed|slain|shot dead|massacre|tragedy|tragic|funeral|mourning|mourner|passed away|succumbed|fatal|fatalities|casualty|casualties|victim|victims|hospitalized|in intensive care|on life support|critically ill|coma|cancer|tumor|tumour|leukemia|stroke|heart attack|illness|terminal|pandemic|epidemic|outbreak|bombing|explosion|airstrike|air strike|genocide)\b/i;
+
+const HYPE_TONE_RE =
+	/\b(breaking|incredible|amazing|unbelievable|huge|massive|record|historic|epic|insane|wild|stunning|shocking|explodes|erupt(s|ed)?|surge(s|d)?|soar(s|ed)?|smashes|crushes|upset|thriller|last-second|overtime|buzzer-beater|comeback)\b/i;
+
 const DEFAULT_LANGUAGE = "English";
 const TONE_HINTS = {
 	Sports: "Use an energetic, motivational tone and sprinkle light humour.",
@@ -420,6 +427,52 @@ function improveTTSPronunciation(text) {
 
 const PROMPT_CHAR_LIMIT = 220;
 
+/* Voice tone classification – excited, varied, but respectful on tragedy */
+function deriveVoiceSettings(text, category = "Other") {
+	const baseStyle = ELEVEN_STYLE_BY_CATEGORY[category] ?? 0.7;
+	const lower = String(text || "").toLowerCase();
+
+	const isSensitive = SENSITIVE_TONE_RE.test(lower);
+
+	let style = baseStyle;
+	let stability = 0.15; // lower = more expressive
+	let similarityBoost = 0.92;
+	let openaiSpeed = 1.03; // default slightly energetic
+
+	if (isSensitive) {
+		// Somber, respectful – no hype
+		style = 0.25;
+		stability = 0.55;
+		similarityBoost = 0.9;
+		openaiSpeed = 0.94;
+	} else {
+		const isHype =
+			HYPE_TONE_RE.test(lower) ||
+			/[!?]/.test(text) ||
+			category === "Sports" ||
+			category === "Top5" ||
+			category === "Entertainment";
+
+		if (isHype) {
+			style = Math.min(1, baseStyle + 0.25);
+			stability = 0.13;
+			openaiSpeed = 1.07;
+		} else {
+			style = Math.min(1, baseStyle + 0.1);
+			stability = 0.17;
+			openaiSpeed = 1.02;
+		}
+	}
+
+	return {
+		style,
+		stability,
+		similarityBoost,
+		openaiSpeed,
+		isSensitive,
+	};
+}
+
 /* ───────────────────────────────────────────────────────────────
  *  5.  JSON‑safe segment parser
  * ───────────────────────────────────────────────────────────── */
@@ -539,14 +592,38 @@ async function checkOverlay(filter, w, h, d) {
 	fs.unlinkSync(tmp);
 }
 
-async function makeDummyClip(w, h, d) {
+/* Improved dummy / fallback clip:
+ *  1) Prefer reusing the last good clip (keeps motion)
+ *  2) Otherwise, create a branded non‑black background
+ */
+async function makeDummyClip(w, h, d, opts = {}) {
+	const { lastGoodClip = null } = opts || {};
+
+	if (lastGoodClip) {
+		const out = tmpFile("dummy_reuse", ".mp4");
+		await exactLen(lastGoodClip, d, out);
+		return out;
+	}
+
 	if (!hasLavfi)
 		throw new Error("FFmpeg without lavfi – cannot create dummy clip");
+
 	const out = tmpFile("dummy", ".mp4");
+	const color = "0x07172b"; // deep blue, not black
+	const text = "AiVideomatic";
+
 	await ffmpegPromise((c) =>
 		c
-			.input(`color=c=black:s=${w}x${h}:d=${d}`)
+			.input(`color=c=${color}:s=${w}x${h}:d=${d}`)
 			.inputOptions("-f", "lavfi")
+			.videoFilters(
+				[
+					"format=yuv420p",
+					`drawtext=fontfile='${FONT_PATH_FFMPEG}':text='${escTxt(
+						text
+					)}':fontsize=36:fontcolor=white@0.88:box=1:boxcolor=black@0.3:boxborderw=16:x=(w-text_w)/2:y=h*0.8`,
+				].join(",")
+			)
 			.outputOptions(
 				"-c:v",
 				"libx264",
@@ -566,6 +643,9 @@ async function validateClipStill(stillPath, yesNoChecks = []) {
 	const checks = [
 		{
 			q: "Does this frame look like a clean, high‑quality cinematic shot with no obvious glitches or distortions?",
+		},
+		{
+			q: "Is there a clear, visible subject or environment (not just a mostly blank or solid‑color screen)?",
 		},
 		...yesNoChecks,
 	];
@@ -602,7 +682,7 @@ async function validateClipStill(stillPath, yesNoChecks = []) {
 
 	const lines = choices[0].message.content
 		.toLowerCase()
-		.split(/[\r\n]+/)
+		.split(/[\r\n]+/g)
 		.map((s) => s.trim())
 		.filter(Boolean);
 
@@ -1191,19 +1271,21 @@ async function jamendo(term) {
 }
 
 /* ───────────────────────────────────────────────────────────────
- * 11.  ElevenLabs TTS helper
+ * 11.  ElevenLabs TTS helper (with per‑segment tone)
  * ───────────────────────────────────────────────────────────── */
 async function elevenLabsTTS(text, language, outPath, category = "Other") {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
 	const voiceId = ELEVEN_VOICES[language] || ELEVEN_VOICES[DEFAULT_LANGUAGE];
-	const style = ELEVEN_STYLE_BY_CATEGORY[category] ?? 0.7;
+
+	const tone = deriveVoiceSettings(text, category);
+
 	const payload = {
 		text,
 		model_id: "eleven_multilingual_v2",
 		voice_settings: {
-			stability: 0.15,
-			similarity_boost: 0.92,
-			style,
+			stability: tone.stability,
+			similarity_boost: tone.similarityBoost,
+			style: tone.style,
 			use_speaker_boost: true,
 		},
 	};
@@ -1219,6 +1301,7 @@ async function elevenLabsTTS(text, language, outPath, category = "Other") {
 	const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`;
 	let res = await axios.post(url, payload, opts);
 	if (res.status === 422) {
+		// If style rejected, retry without it
 		delete payload.voice_settings.style;
 		res = await axios.post(url, payload, opts);
 	}
@@ -1227,6 +1310,8 @@ async function elevenLabsTTS(text, language, outPath, category = "Other") {
 	await new Promise((r, j) =>
 		res.data.pipe(fs.createWriteStream(outPath)).on("finish", r).on("error", j)
 	);
+
+	return tone; // so caller can reuse openaiSpeed if needed
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -1438,10 +1523,19 @@ exports.createVideo = async (req, res) => {
 
 		const segPrompt = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
-We need a ${duration}s ${category} video titled "${topic}" split into ${segCnt} segments (${segLens.join(
+We need a ${duration}s ${category} YouTube‑Shorts video titled "${topic}" split into ${segCnt} segments (${segLens.join(
 			"/"
 		)}). 
 ${capTable}
+
+Writing rules (very important)
+• Optimised for YouTube Shorts – hook hard in segment 1, no slow intro.  
+• Use natural, spoken‑style language and varied sentence length.  
+• Avoid filler like “in this video” or “subscribe to our channel”.  
+• End some segments with a micro‑cliffhanger to keep viewers watching.  
+• Keep the tone excited and high‑energy by default.  
+• If the story involves death, serious illness or tragedy, keep the tone respectful and never celebratory.
+
 ${
 	category === "Top5"
 		? `Segments 2–6 must start with "#5:" … "#1:"${
@@ -1455,7 +1549,8 @@ ${
 	top5Outline
 		? top5Outline
 				.map(
-					(it) => "#" + it.rank + ": " + it.label + " — " + (it.oneLine || "")
+					(it) =>
+						"#" + it.rank + ": " + (it.label || "") + " — " + (it.oneLine || "")
 				)
 				.join("\n")
 		: ""
@@ -1647,25 +1742,27 @@ One sentence only. No filler words.
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 
 		/* ─────────────────────────────────────────────────────────
-		 *  6.  Build overlay for Top‑5
+		 *  6.  Build overlay for Top‑5 (now fully segment‑synced)
 		 * ───────────────────────────────────────────────────────── */
 		let overlay = "";
 		if (category === "Top5") {
-			let t = segLens[0];
+			let t = segLens[0]; // intro
 			const draw = [];
 			for (let i = 1; i < segCnt; i++) {
 				const d = segLens[i];
-				let label = segments[i].scriptText;
+				let label = segments[i].scriptText.trim();
 				const m = label.match(/^#\s*\d\s*:\s*(.+)$/i);
 				if (m) label = m[1].trim();
-				if (label.length > 60) label = label.slice(0, 57) + "…";
-				const spoken = spokenSeconds(label.split(/\s+/).length);
-				const showFrom = t.toFixed(2);
-				const showTo = Math.min(t + spoken + 0.25, t + d - 0.1).toFixed(2);
+				if (!label) label = `Top Pick ${i}`;
+				if (label.length > 60) label = `${label.slice(0, 57)}…`;
+
+				const showFrom = (t + 0.05).toFixed(2);
+				const showTo = (t + d - 0.05).toFixed(2);
 
 				draw.push(
-					`drawtext=fontfile='${FONT_PATH_FFMPEG}':text='${escTxt(label)}'` +
-						`:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=15:` +
+					`drawtext=fontfile='${FONT_PATH_FFMPEG}':text='${escTxt(
+						label
+					)}':fontsize=32:fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=15:` +
 						`x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,${showFrom},${showTo})'`
 				);
 				t += d;
@@ -1911,11 +2008,12 @@ One sentence only. No filler words.
 				}
 			}
 
-			/* tier E – pure dummy clip */
+			/* tier E – dynamic dummy clip (never pure black) */
 			if (!clip) {
 				console.warn(`[Seg ${i + 1}] using dummy clip`);
-				announceFallback("dummy", "black clip");
-				clip = await makeDummyClip(w, h, rw);
+				announceFallback("dummy", "dynamic fallback clip");
+				const last = clips.length ? clips[clips.length - 1] : null;
+				clip = await makeDummyClip(w, h, rw, { lastGoodClip: last });
 			}
 
 			/* adjust to target duration */
@@ -1954,20 +2052,16 @@ One sentence only. No filler words.
 			}
 
 			let passed = true;
-			if (qaRules.length) {
-				try {
-					const ok = await validateClipStill(still, qaRules);
-					if (!ok) {
-						console.warn(
-							`[Vision QA] seg ${
-								i + 1
-							} → FAIL (will try symbolic fallback once)`
-						);
-						passed = false;
-					}
-				} catch (e) {
-					console.warn("[Vision QA] skipped →", e.message);
+			try {
+				const ok = await validateClipStill(still, qaRules);
+				if (!ok) {
+					console.warn(
+						`[Vision QA] seg ${i + 1} → FAIL (will try symbolic fallback once)`
+					);
+					passed = false;
 				}
+			} catch (e) {
+				console.warn("[Vision QA] skipped →", e.message);
 			}
 			try {
 				fs.unlinkSync(still);
@@ -1978,7 +2072,8 @@ One sentence only. No filler words.
 				sendPhase("FALLBACK", {
 					segment: i + 1,
 					type: "vision_qa",
-					reason: "frame looked distorted, regenerating symbolically",
+					reason:
+						"frame looked distorted or empty, regenerating with symbolic safe prompt",
 				});
 				try {
 					const sym = await generateSymbolicFallbackPrompt(topic, category);
@@ -2037,7 +2132,7 @@ One sentence only. No filler words.
 		fs.unlinkSync(silent);
 
 		/* ─────────────────────────────────────────────────────────
-		 * 10.  Voice‑over & music
+		 * 10.  Voice‑over & music (tone‑aware per segment)
 		 * ───────────────────────────────────────────────────────── */
 		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
 		console.log("[Phase] ADDING_VOICE_MUSIC → Creating audio layer");
@@ -2046,13 +2141,17 @@ One sentence only. No filler words.
 			const raw = tmpFile(`tts_raw_${i + 1}`, ".mp3");
 			const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
 			const txt = improveTTSPronunciation(segments[i].scriptText);
+
+			const tone = deriveVoiceSettings(txt, category);
+
 			try {
 				await elevenLabsTTS(txt, language, raw, category);
 			} catch {
+				// Fallback: OpenAI TTS with similar pacing (energetic but natural)
 				const tts = await openai.audio.speech.create({
 					model: "tts-1-hd",
 					voice: "shimmer",
-					speed: 1.0,
+					speed: tone.openaiSpeed,
 					input: txt,
 					format: "mp3",
 				});
