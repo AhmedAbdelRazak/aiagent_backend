@@ -1,14 +1,15 @@
 /** @format */
-/*  videoController.js  — ultra‑fidelity, trends‑driven edition
+/*  videoController.js  — high‑motion, trends‑driven edition
  *  ✅ Uses Google Trends images per segment (non‑redundant where possible)
- *  ✅ OpenAI plans narration + visuals dynamically from Trends + article links
- *  ✅ Cloudinary upscales + normalises aspect ratio at high resolution before Runway
+ *  ✅ Cloudinary normalises aspect ratio & upscales/enhances images before Runway
+ *  ✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos
  *  ✅ Runway image‑to‑video as the primary path; hard‑fail on rejection
- *  ✅ Falls back to text‑to‑image→video only when no Trends images exist (e.g. Top5)
- *  ✅ Per‑segment video sharpened + contrast‑tuned at target resolution
- *  ✅ ElevenLabs voice picked dynamically via their /voices API + GPT
- *  ✅ OpenAI plans background music search + levels; Jamendo is used as library
- *  ✅ Script timing recomputed from words → minimal awkward pauses
+ *  ✅ Runway clips always ≥ segment duration (no big freeze‑frame padding)
+ *  ✅ OpenAI plans narration + visuals dynamically from Trends + article links
+ *  ✅ Prompts emphasise clear, human‑like motion in every segment
+ *  ✅ ElevenLabs voice picked dynamically via /voices + GPT
+ *  ✅ Background music planned via GPT (search term + voice/music gains)
+ *  ✅ Script timing recomputed from words → far fewer long pauses
  *  ✅ Phases kept in sync with GenerationModal (INIT → … → COMPLETED / ERROR)
  */
 
@@ -152,7 +153,7 @@ const VALID_RATIOS = [
 const WORDS_PER_SEC = 2.1;
 const NATURAL_WPS = 2.25;
 
-const MAX_SILENCE_PAD = 0.35; // max silence we’ll add at end of a segment
+const MAX_SILENCE_PAD = 0.35; // seconds of silence we’re willing to add at the end of a segment
 const MIN_ATEMPO = 0.9; // min speed change (slowest)
 const MAX_ATEMPO = 1.15; // max speed change (fastest)
 
@@ -162,7 +163,7 @@ const ITV_MODEL = "gen4_turbo";
 const TTI_MODEL = "gen4_image";
 
 const QUALITY_BONUS =
-	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, award‑winning, trending on artstation";
+	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, award‑winning, cinematic camera movement, smooth parallax, subtle subject motion, emotional body language";
 
 const RUNWAY_NEGATIVE_PROMPT = [
 	"duplicate",
@@ -196,6 +197,10 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"crossed eyes",
 	"wall‑eyed",
 	"sliding feet",
+	"static frame",
+	"frozen frame",
+	"no motion",
+	"still image",
 ].join(", ");
 
 const HUMAN_SAFETY =
@@ -309,6 +314,17 @@ function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
+/** Download image from URL to a temp file (used for 25MP fallback) */
+async function downloadImageToTemp(url, ext = ".jpg") {
+	const tmp = tmpFile("trend_raw", ext);
+	const writer = fs.createWriteStream(tmp);
+	const resp = await axios.get(url, { responseType: "stream" });
+	await new Promise((resolve, reject) => {
+		resp.data.pipe(writer).on("finish", resolve).on("error", reject);
+	});
+	return tmp;
+}
+
 function spokenSeconds(words) {
 	return +(words / WORDS_PER_SEC).toFixed(2);
 }
@@ -319,17 +335,6 @@ function toTitleCase(str = "") {
 		.toLowerCase()
 		.replace(/(^\w|\s\w)/g, (m) => m.toUpperCase())
 		.trim();
-}
-
-async function downloadImageToTemp(url, ext = ".jpg") {
-	const tmp = tmpFile("trend_raw", ext);
-	const writer = fs.createWriteStream(tmp);
-
-	const resp = await axios.get(url, { responseType: "stream" });
-	await new Promise((resolve, reject) => {
-		resp.data.pipe(writer).on("finish", resolve).on("error", reject);
-	});
-	return tmp;
 }
 
 function fallbackSeoTitle(topic, category) {
@@ -496,18 +501,17 @@ function targetResolutionForRatio(ratio) {
 	}
 }
 
-/** Cloudinary transform tuned for crisp, upscaled Runway seeds */
+/** Cloudinary transform tuned for crisp Runway seeds */
 function buildCloudinaryTransformForRatio(ratio) {
 	const aspect = ratioToCloudinaryAspect(ratio);
 	const { width, height } = targetResolutionForRatio(ratio);
 
 	const base = {
 		crop: "fill",
-		gravity: "auto:subject",
+		gravity: "auto",
 		quality: "auto:best",
 		fetch_format: "auto",
 	};
-
 	if (width && height) {
 		base.width = width;
 		base.height = height;
@@ -515,15 +519,7 @@ function buildCloudinaryTransformForRatio(ratio) {
 		base.aspect_ratio = aspect;
 	}
 
-	// 1) crop to exact display ratio at high resolution
-	// 2) AI upscale whenever source is smaller (e_upscale)
-	// 3) Gentle sharpen + contrast for extra bite on sports/news stills
-	return [
-		base,
-		{ effect: "upscale" },
-		{ effect: "sharpen:80" },
-		{ effect: "contrast:25" },
-	];
+	return [base, { effect: "sharpen:80" }, { effect: "contrast:25" }];
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -573,7 +569,7 @@ async function exactLen(src, target, out, opts = {}) {
 			// clip if slightly too long
 			c.outputOptions("-t", String(target));
 		} else {
-			// pad up to target
+			// pad up to target (rare now that Runway duration >= target)
 			vf.push(`tpad=stop_duration=${diff}`);
 		}
 
@@ -768,12 +764,12 @@ Hard constraints:
 - No over-hyped or tabloid adjectives like "Insane", "Crazy", "Wild", "Lightning Burst".
 - The style must feel ${
 		isSports
-			? "like ESPN or an official league/NHL channel, not a meme or fan channel."
+			? "like ESPN or an official league/NFL/NBA channel, not a meme or fan channel."
 			: "like a major newspaper or broadcaster, not a clickbait channel."
 	}
 
 SEO / search behaviour:
-- Include the core subject or matchup once (for example: "Golden Knights vs Ducks").
+- Include the core subject or matchup once.
 - Prefer phrases that match how people actually search, such as:
   ${
 		isSports
@@ -781,7 +777,7 @@ SEO / search behaviour:
 			: '"Explained", "Update", "Analysis", "What To Know".'
 	}
 - You may use a short descriptor after a separator like "|" or "–"
-  (for example: "Golden Knights vs Ducks | Gameday Preview").
+  (for example: "Team A vs Team B | Gameday Preview").
 
 Context from Google Trends and linked articles:
 ${context || "(no extra context)"}
@@ -982,7 +978,6 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 			} catch (_) {}
 		}
 
-		// Now upload the already‑resized image – no transform needed
 		const result = await cloudinary.uploader.upload(scaledPath, {
 			...baseOpts,
 			quality: "auto:best",
@@ -1008,7 +1003,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 }
 
 /* ───────────────────────────────────────────────────────────────
- *  Runway poll + retry (hard‑fail on 4xx)
+ *  Runway poll + retry (hard‑fail on 4xx, as requested)
  * ───────────────────────────────────────────────────────────── */
 async function pollRunway(id, tk, lbl) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${id}`;
@@ -1134,13 +1129,76 @@ async function uploadToYouTube(u, fp, { title, description, tags, category }) {
 	return `https://www.youtube.com/watch?v=${data.id}`;
 }
 async function jamendo(term) {
-	if (!JAMENDO_ID) return null;
 	try {
 		const { data } = await axios.get("https://api.jamendo.com/v3.0/tracks", {
 			params: { client_id: JAMENDO_ID, format: "json", limit: 1, search: term },
 		});
 		return data.results?.length ? data.results[0].audio : null;
 	} catch {
+		return null;
+	}
+}
+
+/* Background music planning – GPT picks Jamendo search + gains */
+async function planBackgroundMusic(category, language, script) {
+	const ask = `
+You are a sound designer for short-form YouTube videos.
+
+Goal:
+- Category: ${category}
+- Language: ${language}
+- Script (excerpt): ${String(script || "").slice(0, 600)}
+
+Pick background music that:
+- Has NO vocals (instrumental only).
+- Fits the pacing and emotion of the script.
+- Never overpowers the narration.
+
+Return JSON:
+{
+  "jamendoSearch": "one concise search term for Jamendo, including genre and mood, must imply no vocals",
+  "fallbackSearchTerms": ["term1", "term2"],
+  "voiceGain": 1.4,
+  "musicGain": 0.14
+}
+
+Constraints:
+- "fallbackSearchTerms" must be an array of exactly 2 short strings.
+- "voiceGain" between 1.2 and 1.7 (voice louder).
+- "musicGain" between 0.08 and 0.22 (music softer).
+- Use English for search terms so Jamendo search works well, even if the narration language is different.
+`.trim();
+
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask }],
+		});
+		const raw = strip(choices[0].message.content);
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed !== "object") return null;
+
+		let voiceGain = Number(parsed.voiceGain) || 1.4;
+		let musicGain = Number(parsed.musicGain) || 0.14;
+
+		voiceGain = Math.max(1.2, Math.min(1.7, voiceGain));
+		musicGain = Math.max(0.08, Math.min(0.22, musicGain));
+
+		const fallbackSearchTerms = Array.isArray(parsed.fallbackSearchTerms)
+			? parsed.fallbackSearchTerms
+					.map((t) => String(t || "").trim())
+					.filter(Boolean)
+					.slice(0, 2)
+			: [];
+
+		return {
+			jamendoSearch: String(parsed.jamendoSearch || "").slice(0, 120),
+			fallbackSearchTerms,
+			voiceGain,
+			musicGain,
+		};
+	} catch (e) {
+		console.warn("[MusicPlan] planning failed →", e.message);
 		return null;
 	}
 }
@@ -1306,120 +1364,6 @@ async function elevenLabsTTS(
 }
 
 /* ───────────────────────────────────────────────────────────────
- *  Background music planner (GPT‑driven)
- * ───────────────────────────────────────────────────────────── */
-const DEFAULT_MUSIC_GAIN_BY_CATEGORY = {
-	Sports: 0.16,
-	Top5: 0.15,
-	Entertainment: 0.13,
-	Technology: 0.11,
-	Politics: 0.09,
-	Finance: 0.09,
-	World: 0.09,
-	Health: 0.09,
-	Lifestyle: 0.12,
-	Science: 0.1,
-	Other: 0.11,
-};
-
-function defaultMusicGain(category) {
-	return DEFAULT_MUSIC_GAIN_BY_CATEGORY[category] ?? 0.11;
-}
-
-/**
- * Use GPT as a "music supervisor" to:
- *  - pick Jamendo search terms
- *  - suggest voice/music gain levels so VO is always readable
- */
-async function planBackgroundMusic({
-	topic,
-	category,
-	language,
-	fullScript,
-	duration,
-}) {
-	const snippet =
-		typeof fullScript === "string" ? fullScript.slice(0, 800) : "";
-
-	const ask = `
-You are a YouTube Shorts music supervisor.
-
-Choose ONE instrumental music direction for this video:
-- Topic: ${topic}
-- Category: ${category}
-- Language of narration: ${language}
-- Duration: about ${duration} seconds
-
-Narration snippet for tone:
-${snippet || "(no script snippet provided)"}
-
-Constraints:
-- Instrumental only (no vocals).
-- Must sit cleanly under a voiceover (no harsh leads that fight with speech).
-- Match the tone: energetic and epic for Sports/Top5/Entertainment, calm and neutral for Politics/Finance/World/Health, curious for Technology/Science, friendly for Lifestyle.
-
-Return ONLY JSON with this exact shape:
-{
-  "jamendoSearch": "search query for Jamendo (max 80 characters)",
-  "fallbackSearchTerms": ["alt search 1", "alt search 2"],
-  "musicGain": 0.13,
-  "voiceGain": 1.45
-}
-
-Rules:
-- musicGain between 0.07 and 0.20
-- voiceGain between 1.20 and 1.60
-`.trim();
-
-	try {
-		const { choices } = await openai.chat.completions.create({
-			model: CHAT_MODEL,
-			messages: [{ role: "user", content: ask }],
-		});
-
-		const raw = strip(choices[0].message.content);
-		const parsed = JSON.parse(raw);
-
-		let musicGain = Number(parsed.musicGain);
-		if (!Number.isFinite(musicGain)) {
-			musicGain = defaultMusicGain(category);
-		} else {
-			musicGain = Math.min(0.2, Math.max(0.07, musicGain));
-		}
-
-		let voiceGain = Number(parsed.voiceGain);
-		if (!Number.isFinite(voiceGain)) {
-			voiceGain = 1.4;
-		} else {
-			voiceGain = Math.min(1.6, Math.max(1.2, voiceGain));
-		}
-
-		const jamendoSearch = String(parsed.jamendoSearch || topic).slice(0, 80);
-		const fallbackSearchTerms = Array.isArray(parsed.fallbackSearchTerms)
-			? parsed.fallbackSearchTerms
-					.map((s) => String(s || "").trim())
-					.filter(Boolean)
-					.slice(0, 4)
-			: [];
-
-		return {
-			jamendoSearch,
-			fallbackSearchTerms,
-			musicGain,
-			voiceGain,
-		};
-	} catch (e) {
-		console.warn("[MusicPlan] failed →", e.message);
-		return {
-			jamendoSearch: topic.split(" ")[0] || "instrumental",
-			fallbackSearchTerms: ["instrumental", "background", "cinematic"],
-			musicGain: defaultMusicGain(category),
-			voiceGain: 1.4,
-		};
-	}
-}
-
-/* ───────────────────────────────────────────────────────────────
  *  OpenAI “director” – build full video plan (segments + visuals)
  * ───────────────────────────────────────────────────────────── */
 async function buildVideoPlanWithGPT({
@@ -1446,7 +1390,9 @@ async function buildVideoPlanWithGPT({
 	const segDescLines = segLens
 		.map(
 			(sec, i) =>
-				`Segment ${i + 1}: ~${sec}s, ≤ ${segWordCaps[i]} spoken words.`
+				`Segment ${i + 1}: ~${sec.toFixed(1)}s, ≤ ${
+					segWordCaps[i]
+				} spoken words.`
 		)
 		.join("\n");
 
@@ -1499,14 +1445,19 @@ Your job:
 2) Decide which imageIndex to animate for each segment.
 3) For each segment, write one concise "runwayPrompt" telling a video model how to animate THAT exact real photo.
 
-Visual rules:
+Visual rules (very important):
+- EVERY segment must have clear, visible motion: no "still photograph" look.
+- Use camera movement (slow zoom, dolly, pan, tilt) AND/OR subject motion (players walking, crowd cheering, lights flickering, flags waving).
 - Use each imageIndex at most once before reusing any image.
-- Aim for subtle, realistic animation: camera push‑in or pan, shallow depth‑of‑field, arena lights flickering, slow‑motion crowd, gentle parallax.
 - Keep the subject sharp and in focus. Avoid soft focus, heavy motion blur, or smeared details.
 - Frame as if the video will be watched full‑screen on a phone: main subject large and centered, never tiny in the distance.
 - Do NOT radically change the scene: keep team colours, uniforms, logos and basic composition.
 - Never morph faces into different people.
 - No surreal or abstract effects.
+
+For each "runwayPrompt":
+- Explicitly mention at least ONE motion verb, such as "slow zoom in", "camera pans left", "quarterback jogs toward camera", "fans wave towels", "stadium lights flicker".
+- Do NOT ask for still images; it must describe a short moving shot.
 
 Return a single JSON object with this exact shape:
 
@@ -1554,8 +1505,8 @@ For each segment, output:
 Visual rules:
 - Keep scenes realistic and grounded in today's world.
 - Keep the focal subject large and sharp; avoid tiny subjects, chaotic camera moves and motion blur.
-- Avoid specific trademarks or team logos; describe them generically (for example "home team in dark jerseys").
 - If people are visible, keep faces natural and undistorted.
+- EVERY runwayPrompt must describe clear motion (camera or subject), never a static pose.
 
 Return JSON of the form:
 {
@@ -1582,6 +1533,7 @@ Visual rules:
 - Avoid specific trademarks or team logos; describe them generically (for example "home team in dark jerseys").
 - If people are visible, keep faces natural and undistorted.
 - Prefer one clear focal subject per segment.
+- EVERY runwayPrompt must include explicit motion: for example "camera slowly pushes in", "athlete jogs toward camera", "crowd claps and waves", "scoreboard lights pulse".
 
 Return JSON of the form:
 {
@@ -1763,7 +1715,7 @@ exports.createVideo = async (req, res) => {
 					).map((v) => v.topic)
 				);
 				const remaining = ALL_TOP5_TOPICS.filter((t) => !used.has(t));
-				topic = remaining.length ? choose(remaining) : choose(ALL_TOP5_TOPICS);
+				topic = remaining.length ? remaining[0] : choose(ALL_TOP5_TOPICS);
 			} else {
 				const list = await pickTrendingTopicFresh(category, language, country);
 				const used = new Set(
@@ -1918,7 +1870,7 @@ One or two sentences only.
 		segCnt = segLens.length;
 
 		/* ─────────────────────────────────────────────────────────
-		 *  6.  Global style, SEO title, tags, dynamic voice & music plan
+		 *  6.  Global style, SEO title, tags, and dynamic voice
 		 * ───────────────────────────────────────────────────────── */
 		let globalStyle = "";
 		try {
@@ -2001,63 +1953,67 @@ One or two sentences only.
 			console.warn("[TTS] Voice selection failed →", e.message);
 		}
 
-		// GPT‑planned background music search + gain levels
-		let musicPlan = null;
-		let musicGain = defaultMusicGain(category);
+		/* ─────────────────────────────────────────────────────────
+		 *  7.  Optional background music (planned by GPT)
+		 * ───────────────────────────────────────────────────────── */
+		let music = null;
 		let voiceGain = 1.4;
+		let musicGain = 0.12;
+		let musicPlan = null;
+
 		try {
-			musicPlan = await planBackgroundMusic({
-				topic,
-				category,
-				language,
-				fullScript,
-				duration,
-			});
+			musicPlan = await planBackgroundMusic(category, language, fullScript);
 			if (musicPlan) {
-				musicGain = musicPlan.musicGain;
-				voiceGain = musicPlan.voiceGain;
 				console.log("[MusicPlan] planned", musicPlan);
+				if (typeof musicPlan.voiceGain === "number") {
+					voiceGain = Math.min(1.8, Math.max(1.1, musicPlan.voiceGain));
+				}
+				if (typeof musicPlan.musicGain === "number") {
+					musicGain = Math.min(0.25, Math.max(0.06, musicPlan.musicGain));
+				}
 			}
 		} catch (e) {
 			console.warn("[MusicPlan] planning failed →", e.message);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  7.  Optional background music (Jamendo via planned search)
-		 * ───────────────────────────────────────────────────────── */
-		let music = null;
 		try {
 			const searchTerms = [];
-			if (musicPlan?.jamendoSearch) searchTerms.push(musicPlan.jamendoSearch);
-			if (Array.isArray(musicPlan?.fallbackSearchTerms))
-				searchTerms.push(...musicPlan.fallbackSearchTerms);
-			searchTerms.push(topic.split(" ")[0] || "");
-			searchTerms.push("ambient");
+			if (musicPlan?.jamendoSearch) {
+				searchTerms.push(musicPlan.jamendoSearch);
+			}
+			if (Array.isArray(musicPlan?.fallbackSearchTerms)) {
+				musicPlan.fallbackSearchTerms.forEach((t) => {
+					if (t && typeof t === "string") searchTerms.push(t);
+				});
+			}
+			if (!searchTerms.length) {
+				searchTerms.push(
+					topic.split(" ")[0],
+					`${category.toLowerCase()} instrumental`,
+					"ambient instrumental no vocals"
+				);
+			}
 
-			const tried = new Set();
-			let jam = null;
+			let jamUrl = null;
+			let usedSearch = null;
 			for (const term of searchTerms) {
-				const t = String(term || "").trim();
-				if (!t) continue;
-				const key = t.toLowerCase();
-				if (tried.has(key)) continue;
-				tried.add(key);
-				jam = await jamendo(t);
-				if (jam) {
-					console.log("[Music] Jamendo match", t);
+				if (!term) continue;
+				const u = await jamendo(term);
+				if (u) {
+					jamUrl = u;
+					usedSearch = term;
 					break;
 				}
 			}
 
-			if (jam) {
+			if (jamUrl) {
+				console.log("[Music] Jamendo match", usedSearch);
 				music = tmpFile("bg", ".mp3");
 				const ws = fs.createWriteStream(music);
-				const { data } = await axios.get(jam, { responseType: "stream" });
+				const { data } = await axios.get(jamUrl, { responseType: "stream" });
 				await new Promise((r, j) =>
 					data.pipe(ws).on("finish", r).on("error", j)
 				);
-			} else {
-				console.warn("[Music] No Jamendo track found for any search term");
 			}
 		} catch (e) {
 			console.warn("[Music] Jamendo failed →", e.message);
@@ -2078,8 +2034,8 @@ One or two sentences only.
 			const d = segLens[i];
 			const seg = segments[i];
 
-			// Runway supports discrete durations; pick the closest of 5 or 10s
-			const rw = Math.abs(5 - d) <= Math.abs(10 - d) ? 5 : 10;
+			// Runway supports discrete durations; always generate >= target to avoid freeze‑frame padding
+			const rw = d <= 5 ? 5 : 10;
 
 			console.log(
 				`[Seg ${i + 1}/${segCnt}] targetDuration=${d.toFixed(
@@ -2103,7 +2059,7 @@ One or two sentences only.
 				if (!imgUrl)
 					throw new Error("No Cloudinary Trends image available for Runway");
 
-				// Primary path: image_to_video using real (upscaled) Trends image
+				// Primary path: image_to_video using real Trends image
 				const idVid = await retry(
 					async () => {
 						const { data } = await axios.post(
@@ -2114,7 +2070,7 @@ One or two sentences only.
 								promptText,
 								ratio,
 								duration: rw,
-								promptStrength: 0.4, // mild changes only
+								promptStrength: 0.55, // allow more animation while respecting the seed
 								negativePrompt: RUNWAY_NEGATIVE_PROMPT,
 							},
 							{
@@ -2363,7 +2319,7 @@ One or two sentences only.
 					.input(norm(ttsJoin))
 					.input(norm(trim))
 					.complexFilter([
-						`[0:a]volume=${voiceGain.toFixed(2)}[a0]`,
+						`[0:a]volume=${voiceGain.toFixed(3)}[a0]`,
 						`[1:a]volume=${musicGain.toFixed(3)}[a1]`,
 						"[a0][a1]amix=inputs=2:duration=first[aout]",
 					])
@@ -2377,7 +2333,7 @@ One or two sentences only.
 			await ffmpegPromise((c) =>
 				c
 					.input(norm(ttsJoin))
-					.audioFilters(`volume=${voiceGain.toFixed(2)}`)
+					.audioFilters("volume=1.4")
 					.outputOptions("-c:a", "pcm_s16le", "-y")
 					.save(norm(mixedRaw))
 			);
