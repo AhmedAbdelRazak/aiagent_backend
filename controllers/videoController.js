@@ -3,7 +3,7 @@
  *  ✅ Uses Google Trends images per segment (non‑redundant where possible)
  *  ✅ Cloudinary normalises aspect ratio & upscales/enhances images before Runway
  *  ✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos
- *  ✅ Runway image‑to‑video as the primary path; hard‑fail on rejection
+ *  ✅ Runway image‑to‑video as the primary path; safety-only fallback to TTI+ITV
  *  ✅ Runway clips always ≥ segment duration (no big freeze‑frame padding)
  *  ✅ OpenAI plans narration + visuals dynamically from Trends + article links
  *  ✅ Prompts emphasise clear, human‑like motion in every segment
@@ -204,7 +204,10 @@ const RUNWAY_NEGATIVE_PROMPT = [
 ].join(", ");
 
 const HUMAN_SAFETY =
-	"anatomically correct, one natural‑looking head, two eyes, normal limbs, realistic proportions, natural head position";
+	"anatomically correct, natural human faces, one natural‑looking head, two eyes, normal limbs, realistic body proportions, natural head position, natural skin texture";
+
+const BRAND_ENHANCEMENT_HINT =
+	"subtle global brightness and contrast boost, slightly brighter and clearer faces while preserving natural skin tones, consistent AiVideomatic brand color grading";
 
 const CHAT_MODEL = "gpt-5.1";
 
@@ -708,6 +711,19 @@ async function fetchTrendingStory(category, geo = "US") {
 		};
 	} catch (e) {
 		console.warn("[Trending] fetch failed →", e.message);
+		if (e.response) {
+			console.warn("[Trending] HTTP status:", e.response.status);
+			if (e.response.data) {
+				try {
+					console.warn(
+						"[Trending] response data snippet:",
+						typeof e.response.data === "string"
+							? e.response.data.slice(0, 300)
+							: JSON.stringify(e.response.data).slice(0, 300)
+					);
+				} catch (_) {}
+			}
+		}
 		return null;
 	}
 }
@@ -725,6 +741,19 @@ async function scrapeArticleText(url) {
 		return cleaned.slice(0, 12000) || null;
 	} catch (e) {
 		console.warn("[Scrape] article failed →", e.message);
+		if (e.response) {
+			console.warn("[Scrape] HTTP status:", e.response.status);
+			if (e.response.data) {
+				try {
+					console.warn(
+						"[Scrape] response data snippet:",
+						typeof e.response.data === "string"
+							? e.response.data.slice(0, 300)
+							: JSON.stringify(e.response.data).slice(0, 300)
+					);
+				} catch (_) {}
+			}
+		}
 		return null;
 	}
 }
@@ -1003,22 +1032,60 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 }
 
 /* ───────────────────────────────────────────────────────────────
- *  Runway poll + retry (hard‑fail on 4xx, as requested)
+ *  Runway poll + retry (hard‑fail on 4xx, with richer logging)
  * ───────────────────────────────────────────────────────────── */
 async function pollRunway(id, tk, lbl) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${id}`;
 	for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
 		await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-		const { data } = await axios.get(url, {
-			headers: {
-				Authorization: `Bearer ${tk}`,
-				"X-Runway-Version": RUNWAY_VERSION,
-			},
-		});
-		if (data.status === "SUCCEEDED") return data.output[0];
-		if (data.status === "FAILED")
-			throw new Error(`${lbl} failed (Runway reported FAILED)`);
+		let resp;
+		try {
+			resp = await axios.get(url, {
+				headers: {
+					Authorization: `Bearer ${tk}`,
+					"X-Runway-Version": RUNWAY_VERSION,
+				},
+			});
+		} catch (e) {
+			console.error("[Runway] poll error", {
+				label: lbl,
+				taskId: id,
+				message: e.message,
+				status: e.response?.status,
+				data: e.response?.data
+					? (() => {
+							try {
+								return typeof e.response.data === "string"
+									? e.response.data.slice(0, 400)
+									: JSON.stringify(e.response.data).slice(0, 400);
+							} catch {
+								return "[unserializable response data]";
+							}
+					  })()
+					: undefined,
+			});
+			throw e;
+		}
+
+		const { data } = resp;
+		if (data.status === "SUCCEEDED") {
+			console.log("[Runway] task SUCCEEDED", { label: lbl, taskId: id });
+			return data.output[0];
+		}
+		if (data.status === "FAILED") {
+			console.error("[Runway] task FAILED", {
+				label: lbl,
+				taskId: id,
+				status: data.status,
+				failureCode: data.failureCode,
+				failure: data.failure,
+			});
+			throw new Error(
+				`${lbl} failed (Runway: ${data.failureCode || "FAILED"})`
+			);
+		}
 	}
+	console.error("[Runway] task TIMED OUT", { label: lbl, taskId: id });
 	throw new Error(`${lbl} timed out`);
 }
 
@@ -1035,12 +1102,169 @@ async function retry(fn, max, lbl) {
 					status ? ` (HTTP ${status})` : ""
 				} → ${e.message}`
 			);
+			if (e.response?.data) {
+				try {
+					const snippet =
+						typeof e.response.data === "string"
+							? e.response.data.slice(0, 300)
+							: JSON.stringify(e.response.data).slice(0, 300);
+					console.warn(`[Retry] ${lbl} response data snippet:`, snippet);
+				} catch (_) {
+					console.warn(
+						`[Retry] ${lbl} response data snippet: [unserializable]`
+					);
+				}
+			}
 			last = e;
 			// Hard 4xx (except 429) are unrecoverable → do not keep retrying
 			if (status && status >= 400 && status < 500 && status !== 429) break;
 		}
 	}
 	throw last;
+}
+
+/* ───────────────────────────────────────────────────────────────
+ *  Runway helpers for clips
+ *  - generateItvClipFromImage: primary path (Trends image)
+ *  - generateTtiItvClip: prompt-only path
+ * ───────────────────────────────────────────────────────────── */
+async function generateItvClipFromImage({
+	segmentIndex,
+	imgUrl,
+	promptText,
+	negativePrompt,
+	ratio,
+	runwayDuration,
+}) {
+	const itvLabel = `itv_seg${segmentIndex}`;
+	const pollLabel = `poll_itv_seg${segmentIndex}`;
+
+	const idVid = await retry(
+		async () => {
+			const { data } = await axios.post(
+				"https://api.dev.runwayml.com/v1/image_to_video",
+				{
+					model: ITV_MODEL,
+					promptImage: imgUrl,
+					promptText,
+					ratio,
+					duration: runwayDuration,
+					promptStrength: 0.55,
+					negativePrompt: negativePrompt || RUNWAY_NEGATIVE_PROMPT,
+				},
+				{
+					headers: {
+						Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
+						"X-Runway-Version": RUNWAY_VERSION,
+					},
+				}
+			);
+			return data.id;
+		},
+		2,
+		itvLabel
+	);
+
+	const vidUrl = await retry(
+		() => pollRunway(idVid, RUNWAY_ADMIN_KEY, pollLabel),
+		3,
+		pollLabel
+	);
+
+	const p = tmpFile(`seg_itv_${segmentIndex}`, ".mp4");
+	await new Promise((r, j) =>
+		axios
+			.get(vidUrl, { responseType: "stream" })
+			.then(({ data }) =>
+				data.pipe(fs.createWriteStream(p)).on("finish", r).on("error", j)
+			)
+	);
+	return p;
+}
+
+async function generateTtiItvClip({
+	segmentIndex,
+	promptText,
+	negativePrompt,
+	ratio,
+	runwayDuration,
+}) {
+	const ttiLabel = `tti_seg${segmentIndex}`;
+	const pollTtiLabel = `poll_tti_seg${segmentIndex}`;
+	const itvLabel = `itv_from_tti_seg${segmentIndex}`;
+	const pollItvLabel = `poll_itv_from_tti_seg${segmentIndex}`;
+
+	const ttiId = await retry(
+		async () => {
+			const { data } = await axios.post(
+				"https://api.dev.runwayml.com/v1/text_to_image",
+				{
+					model: TTI_MODEL,
+					promptText,
+					ratio,
+					promptStrength: 0.9,
+					negativePrompt: negativePrompt || RUNWAY_NEGATIVE_PROMPT,
+				},
+				{
+					headers: {
+						Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
+						"X-Runway-Version": RUNWAY_VERSION,
+					},
+				}
+			);
+			return data.id;
+		},
+		2,
+		ttiLabel
+	);
+
+	const imgUrl = await retry(
+		() => pollRunway(ttiId, RUNWAY_ADMIN_KEY, pollTtiLabel),
+		3,
+		pollTtiLabel
+	);
+
+	const idVid = await retry(
+		async () => {
+			const { data } = await axios.post(
+				"https://api.dev.runwayml.com/v1/image_to_video",
+				{
+					model: ITV_MODEL,
+					promptImage: imgUrl,
+					promptText,
+					ratio,
+					duration: runwayDuration,
+					promptStrength: 0.85,
+					negativePrompt: negativePrompt || RUNWAY_NEGATIVE_PROMPT,
+				},
+				{
+					headers: {
+						Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
+						"X-Runway-Version": RUNWAY_VERSION,
+					},
+				}
+			);
+			return data.id;
+		},
+		2,
+		itvLabel
+	);
+
+	const vidUrl = await retry(
+		() => pollRunway(idVid, RUNWAY_ADMIN_KEY, pollItvLabel),
+		3,
+		pollItvLabel
+	);
+
+	const p = tmpFile(`seg_tti_itv_${segmentIndex}`, ".mp4");
+	await new Promise((r, j) =>
+		axios
+			.get(vidUrl, { responseType: "stream" })
+			.then(({ data }) =>
+				data.pipe(fs.createWriteStream(p)).on("finish", r).on("error", j)
+			)
+	);
+	return p;
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -1365,6 +1589,7 @@ async function elevenLabsTTS(
 
 /* ───────────────────────────────────────────────────────────────
  *  OpenAI “director” – build full video plan (segments + visuals)
+ *  (Runway prompts: no real names, stay faithful to attached image)
  * ───────────────────────────────────────────────────────────── */
 async function buildVideoPlanWithGPT({
 	topic,
@@ -1373,16 +1598,17 @@ async function buildVideoPlanWithGPT({
 	duration,
 	segLens,
 	trendStory,
+	trendImagesForPlanning,
 	articleText,
 	top5Outline,
 }) {
 	const segCnt = segLens.length;
 	const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 	const hasImages =
-		trendStory &&
-		Array.isArray(trendStory.images) &&
-		trendStory.images.length > 0;
-	const images = hasImages ? trendStory.images.slice(0, 8) : [];
+		trendImagesForPlanning &&
+		Array.isArray(trendImagesForPlanning) &&
+		trendImagesForPlanning.length > 0;
+	const images = hasImages ? trendImagesForPlanning.slice(0, 8) : [];
 	const articleTitles = (trendStory?.articles || [])
 		.map((a) => a.title)
 		.filter(Boolean);
@@ -1429,7 +1655,7 @@ ${baseIntro}
 You also have ${imgCount} REAL photos from Google Trends for this story.
 
 Google Trends context:
-- Story title: ${trendStory.title || topic}
+- Story title: ${trendStory?.title || topic}
 - Article headlines (for factual grounding):
   ${articleTitles.map((t) => `- ${t}`).join("\n  ") || "- (none)"}
 
@@ -1439,25 +1665,45 @@ ${snippet || "(no article text available)"}
 Images:
 I have attached the ${imgCount} images to this message, in order.
 The FIRST attached image is imageIndex 0, the second is 1, etc.
+The video engine will receive an upscaled, cropped version of these photos (via Cloudinary),
+but it is still the exact same real shot and the same real people.
+Minor global adjustments such as a subtle brightness/contrast lift and slightly brighter faces
+for a consistent brand look are allowed, but the underlying people and setting must remain identical.
 
 Your job:
 1) Write the voice‑over script for each segment.
 2) Decide which imageIndex to animate for each segment.
-3) For each segment, write one concise "runwayPrompt" telling a video model how to animate THAT exact real photo.
+3) For each segment, write one concise "runwayPrompt" telling a video model how to animate THAT exact real photo, as if you are a professional video director.
+4) For each segment, also write a "negativePrompt" listing visual problems that the video model must avoid for that shot.
 
-Visual rules (very important):
+Critical policy and visual rules:
+- The video model ALREADY SEES the real Google Trends photo. The "runwayPrompt" is ONLY there to describe camera motion and subtle, realistic movement in the existing scene.
+- Do NOT change who the people are. Do not add new people that are not implied by the original image.
+- Do NOT change the basic setting, stadium, or composition in a drastic way. Subtle global color/brightness changes and slightly brighter faces for branding are fine, but the scene must still clearly look like the same photo.
+- NEVER mention any real person names, team names, club names, jersey numbers, or brand names in "runwayPrompt". Names are fine in the narration, but NOT in the visual prompt.
+- When referring to people or teams in "runwayPrompt", use generic roles such as "the head coach", "star quarterback", "home team in red jerseys", "away team in white jerseys", "fans in the crowd".
 - EVERY segment must have clear, visible motion: no "still photograph" look.
 - Use camera movement (slow zoom, dolly, pan, tilt) AND/OR subject motion (players walking, crowd cheering, lights flickering, flags waving).
 - Use each imageIndex at most once before reusing any image.
 - Keep the subject sharp and in focus. Avoid soft focus, heavy motion blur, or smeared details.
+- Faces must remain human and natural: no distortion, no duplicated or missing facial features, no melted or blurry faces.
 - Frame as if the video will be watched full‑screen on a phone: main subject large and centered, never tiny in the distance.
-- Do NOT radically change the scene: keep team colours, uniforms, logos and basic composition.
 - Never morph faces into different people.
 - No surreal or abstract effects.
 
 For each "runwayPrompt":
-- Explicitly mention at least ONE motion verb, such as "slow zoom in", "camera pans left", "quarterback jogs toward camera", "fans wave towels", "stadium lights flicker".
+- Describe motion that is consistent with what you actually see in that attached photo.
+- Explicitly mention at least ONE motion verb, such as "slow zoom in", "camera pans left", "coach glances toward the field", "fans wave towels", "stadium lights flicker".
 - Do NOT ask for still images; it must describe a short moving shot.
+- Do NOT restate the news headline or player names; focus purely on what the camera sees and how it moves.
+
+For each "negativePrompt":
+- Explicitly list all visual defects the model must avoid, especially those that make people look "unhuman":
+  extra limbs, extra heads, missing limbs, mutated or fused fingers, distorted anatomy, broken or twisted joints,
+  twisted necks, wall‑eyed or crossed‑eyed gazes, melted or blurry faces, stretched or glitched bodies.
+- Also include technical artifacts to avoid: lowres, pixelated, blur, overexposed, underexposed, watermark, logo,
+  text overlay, frozen frame, static frame, no motion, surreal or abstract effects, gore, nsfw content.
+- Keep it a single comma‑separated string tailored for that segment (you may reuse core phrases across segments).
 
 Return a single JSON object with this exact shape:
 
@@ -1467,7 +1713,8 @@ Return a single JSON object with this exact shape:
       "index": 1,
       "scriptText": "spoken narration for segment 1",
       "imageIndex": 0,
-      "runwayPrompt": "how to animate the first attached photo"
+      "runwayPrompt": "how to animate the first attached photo",
+      "negativePrompt": "comma‑separated list of things to avoid for this shot"
     }
     // exactly ${segCnt} segments, index 1..${segCnt}
   ]
@@ -1494,24 +1741,32 @@ Rules:
 - Segment 1 should tease the countdown and hook the viewer.
 - Segments 2–6 must correspond to ranks #5, #4, #3, #2, and #1 respectively.
 - Each of those segments MUST start with "#5:", "#4:", "#3:", "#2:" or "#1:" followed by the item label.
-- After the rank label, you may add one concise sentence explaining why that item deserves its rank.
+- After the rank label, you may add one concise sentence explaining why that item deserves this rank.
 - No images are provided, so you must imagine visuals.
 
 For each segment, output:
 - "index"
 - "scriptText"
 - "runwayPrompt": a vivid but grounded description of the scene to generate from scratch. Focus on symbols (arenas, trophies, jerseys), not specific copyrighted logos.
+- "negativePrompt": a comma‑separated list of visual defects to avoid for that scene.
 
 Visual rules:
 - Keep scenes realistic and grounded in today's world.
 - Keep the focal subject large and sharp; avoid tiny subjects, chaotic camera moves and motion blur.
 - If people are visible, keep faces natural and undistorted.
 - EVERY runwayPrompt must describe clear motion (camera or subject), never a static pose.
+- NEVER mention real person names, team names, club names, jersey numbers, or brand names in "runwayPrompt". Use generic roles such as "star player", "coach", "home team", "away team".
+- Faces must remain human and natural: no extra or missing limbs, no distorted anatomy, no melted or glitched faces.
+
+For each "negativePrompt":
+- Explicitly list human‑anatomy defects and artifacts to avoid (extra limbs, extra heads, mutated or fused fingers, broken joints, twisted necks, distorted faces, etc.).
+- Also include lowres, pixelated, blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
+- Keep it as one comma‑separated string.
 
 Return JSON of the form:
 {
   "segments": [
-    { "index": 1, "scriptText": "...", "runwayPrompt": "..." },
+    { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "..." },
     ...
   ]
 }
@@ -1526,6 +1781,7 @@ You must imagine the visuals from scratch. For each segment, output:
 - "index"
 - "scriptText"
 - "runwayPrompt": a short scene description that a text‑to‑image model can turn into one keyframe.
+- "negativePrompt": a comma‑separated list of visual defects to avoid for that scene.
 
 Visual rules:
 - Keep scenes realistic and grounded in today's world.
@@ -1534,11 +1790,18 @@ Visual rules:
 - If people are visible, keep faces natural and undistorted.
 - Prefer one clear focal subject per segment.
 - EVERY runwayPrompt must include explicit motion: for example "camera slowly pushes in", "athlete jogs toward camera", "crowd claps and waves", "scoreboard lights pulse".
+- Do NOT mention any real person names, team names, club names, jersey numbers, or brand names in "runwayPrompt". Use generic roles instead.
+- Faces must remain human and natural: no extra or missing limbs, no distorted anatomy, no melted or glitched faces.
+
+For each "negativePrompt":
+- Explicitly list human‑anatomy defects and artifacts to avoid (extra limbs, extra heads, mutated or fused fingers, broken joints, twisted necks, distorted faces, etc.).
+- Also include lowres, pixelated, blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
+- Keep it as one comma‑separated string.
 
 Return JSON of the form:
 {
   "segments": [
-    { "index": 1, "scriptText": "...", "runwayPrompt": "..." },
+    { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "..." },
     ...
   ]
 }
@@ -1580,11 +1843,16 @@ Return JSON of the form:
 
 	// Normalise & clamp
 	const segments = plan.segments.map((s, idx) => {
+		const runwayPrompt = String(s.runwayPrompt || "").trim();
+		const negativePromptRaw = String(s.negativePrompt || "").trim();
+
 		const base = {
 			index: typeof s.index === "number" ? s.index : idx + 1,
 			scriptText: String(s.scriptText || "").trim(),
-			runwayPrompt: String(s.runwayPrompt || "").trim(),
+			runwayPrompt,
+			runwayNegativePrompt: negativePromptRaw,
 		};
+
 		if (hasImages) {
 			const imgIdxRaw = Number.isInteger(s.imageIndex) ? s.imageIndex : 0;
 			const imgIdxSafe =
@@ -1596,7 +1864,6 @@ Return JSON of the form:
 
 	return { segments };
 }
-
 /* ───────────────────────────────────────────────────────────────
  *  Main controller – createVideo
  * ───────────────────────────────────────────────────────────── */
@@ -1767,6 +2034,10 @@ exports.createVideo = async (req, res) => {
 		if (Math.abs(delta) >= 1) segLens[segLens.length - 1] += delta;
 
 		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+		console.log("[Timing] initial segment lengths", {
+			segLens,
+			segWordCaps,
+		});
 
 		/* ─────────────────────────────────────────────────────────
 		 *  3.  Top‑5 outline if needed
@@ -1827,11 +2098,17 @@ exports.createVideo = async (req, res) => {
 			duration,
 			segLens,
 			trendStory: hasTrendImages ? trendStory : null,
+			trendImagesForPlanning: hasTrendImages ? trendCloudinaryImages : null,
 			articleText: trendArticleText,
 			top5Outline,
 		});
 
 		let segments = plan.segments;
+
+		console.log("[GPT] buildVideoPlanWithGPT → plan ready", {
+			segments: segments.length,
+			hasImages: hasTrendImages,
+		});
 
 		// Tighten narration to fit word caps using GPT when necessary
 		await Promise.all(
@@ -1879,15 +2156,15 @@ One or two sentences only.
 				messages: [
 					{
 						role: "user",
-						content: `Give one short cinematic style phrase for the video topic "${topic}".`,
+						content: `Give one short cinematic style phrase describing the visual mood, camera movement, and pacing for the video topic "${topic}". Do NOT include any real person names, team names, or brand names in this phrase.`,
 					},
 				],
 			});
 			globalStyle = g.choices[0].message.content
 				.replace(/^[-–•\s]+/, "")
 				.trim();
-		} catch {
-			/* ignore */
+		} catch (e) {
+			console.warn("[GPT] global style generation failed →", e.message);
 		}
 
 		let seoTitle = "";
@@ -1903,8 +2180,8 @@ One or two sentences only.
 				language,
 				snippet
 			);
-		} catch {
-			/* ignore */
+		} catch (e) {
+			console.warn("[SEO title] generation outer failed →", e.message);
 		}
 		if (!seoTitle) seoTitle = fallbackSeoTitle(topic, category);
 
@@ -1932,7 +2209,9 @@ One or two sentences only.
 			});
 			const parsed = JSON.parse(strip(tagResp.choices[0].message.content));
 			if (Array.isArray(parsed)) tags.push(...parsed);
-		} catch {}
+		} catch (e) {
+			console.warn("[Tags] generation failed →", e.message);
+		}
 		if (category === "Top5") tags.unshift("Top5");
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
 		tags = [...new Set(tags)];
@@ -2020,7 +2299,8 @@ One or two sentences only.
 		}
 
 		/* ─────────────────────────────────────────────────────────
-		 *  8.  PER‑SEGMENT VIDEO GENERATION (Runway image‑to‑video first)
+		 *  8.  PER‑SEGMENT VIDEO GENERATION
+		 *      - Use Trends image → ITV
 		 * ───────────────────────────────────────────────────────── */
 		const clips = [];
 		sendPhase("GENERATING_CLIPS", {
@@ -2033,23 +2313,33 @@ One or two sentences only.
 		for (let i = 0; i < segCnt; i++) {
 			const d = segLens[i];
 			const seg = segments[i];
+			const segIndex = i + 1;
 
 			// Runway supports discrete durations; always generate >= target to avoid freeze‑frame padding
 			const rw = d <= 5 ? 5 : 10;
 
 			console.log(
-				`[Seg ${i + 1}/${segCnt}] targetDuration=${d.toFixed(
+				`[Seg ${segIndex}/${segCnt}] targetDuration=${d.toFixed(
 					2
 				)}s runwayDuration=${rw}s`
 			);
 
 			const promptBase = `${
 				seg.runwayPrompt || ""
-			}, ${globalStyle}, ${QUALITY_BONUS}, ${HUMAN_SAFETY}`;
+			}, ${globalStyle}, ${QUALITY_BONUS}, ${HUMAN_SAFETY}, ${BRAND_ENHANCEMENT_HINT}`;
 			const promptText =
 				promptBase.length > PROMPT_CHAR_LIMIT
 					? promptBase.slice(0, PROMPT_CHAR_LIMIT)
 					: promptBase;
+
+			const negativeBase =
+				seg.runwayNegativePrompt && seg.runwayNegativePrompt.trim().length
+					? seg.runwayNegativePrompt.trim()
+					: RUNWAY_NEGATIVE_PROMPT;
+			const negativePrompt =
+				negativeBase.length > PROMPT_CHAR_LIMIT
+					? negativeBase.slice(0, PROMPT_CHAR_LIMIT)
+					: negativeBase;
 
 			let clipPath = null;
 
@@ -2059,130 +2349,61 @@ One or two sentences only.
 				if (!imgUrl)
 					throw new Error("No Cloudinary Trends image available for Runway");
 
-				// Primary path: image_to_video using real Trends image
-				const idVid = await retry(
-					async () => {
-						const { data } = await axios.post(
-							"https://api.dev.runwayml.com/v1/image_to_video",
-							{
-								model: ITV_MODEL,
-								promptImage: imgUrl,
-								promptText,
-								ratio,
-								duration: rw,
-								promptStrength: 0.55, // allow more animation while respecting the seed
-								negativePrompt: RUNWAY_NEGATIVE_PROMPT,
-							},
-							{
-								headers: {
-									Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
-									"X-Runway-Version": RUNWAY_VERSION,
-								},
-							}
+				console.log("[Runway] prompt preview", {
+					segment: segIndex,
+					promptPreview: promptText.slice(0, 160),
+					hasTrendImage: true,
+				});
+
+				try {
+					// Primary path: image_to_video using real Trends image
+					clipPath = await generateItvClipFromImage({
+						segmentIndex: segIndex,
+						imgUrl,
+						promptText,
+						negativePrompt,
+						ratio,
+						runwayDuration: rw,
+					});
+				} catch (e) {
+					const msg = String(e?.message || "");
+					console.error(
+						`[Seg ${segIndex}] Runway image_to_video failed with Trends image →`,
+						msg
+					);
+					if (msg.includes("SAFETY.INPUT.IMAGE")) {
+						console.warn(
+							`[Seg ${segIndex}] SAFETY.INPUT.IMAGE detected – falling back to text_to_image + image_to_video without using the real photo`
 						);
-						return data.id;
-					},
-					2,
-					`itv_seg${i + 1}`
-				);
-
-				const vidUrl = await retry(
-					() => pollRunway(idVid, RUNWAY_ADMIN_KEY, `poll_itv_seg${i + 1}`),
-					3,
-					`poll_itv_seg${i + 1}`
-				);
-
-				const p = tmpFile(`seg_itv_${i + 1}`, ".mp4");
-				await new Promise((r, j) =>
-					axios
-						.get(vidUrl, { responseType: "stream" })
-						.then(({ data }) =>
-							data.pipe(fs.createWriteStream(p)).on("finish", r).on("error", j)
-						)
-				);
-				clipPath = p;
+						clipPath = await generateTtiItvClip({
+							segmentIndex: segIndex,
+							promptText,
+							negativePrompt,
+							ratio,
+							runwayDuration: rw,
+						});
+					} else {
+						throw e;
+					}
+				}
 			} else {
-				// Fallback: no Trends images – text_to_image + image_to_video
-				const ttiId = await retry(
-					async () => {
-						const { data } = await axios.post(
-							"https://api.dev.runwayml.com/v1/text_to_image",
-							{
-								model: TTI_MODEL,
-								promptText,
-								ratio,
-								promptStrength: 0.9,
-								negativePrompt: RUNWAY_NEGATIVE_PROMPT,
-							},
-							{
-								headers: {
-									Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
-									"X-Runway-Version": RUNWAY_VERSION,
-								},
-							}
-						);
-						return data.id;
-					},
-					2,
-					`tti_seg${i + 1}`
-				);
-
-				const imgUrl = await retry(
-					() => pollRunway(ttiId, RUNWAY_ADMIN_KEY, `poll_tti_seg${i + 1}`),
-					3,
-					`poll_tti_seg${i + 1}`
-				);
-
-				const idVid = await retry(
-					async () => {
-						const { data } = await axios.post(
-							"https://api.dev.runwayml.com/v1/image_to_video",
-							{
-								model: ITV_MODEL,
-								promptImage: imgUrl,
-								promptText,
-								ratio,
-								duration: rw,
-								promptStrength: 0.85,
-								negativePrompt: RUNWAY_NEGATIVE_PROMPT,
-							},
-							{
-								headers: {
-									Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
-									"X-Runway-Version": RUNWAY_VERSION,
-								},
-							}
-						);
-						return data.id;
-					},
-					2,
-					`itv_from_tti_seg${i + 1}`
-				);
-
-				const vidUrl = await retry(
-					() =>
-						pollRunway(
-							idVid,
-							RUNWAY_ADMIN_KEY,
-							`poll_itv_from_tti_seg${i + 1}`
-						),
-					3,
-					`poll_itv_from_tti_seg${i + 1}`
-				);
-
-				const p = tmpFile(`seg_tti_itv_${i + 1}`, ".mp4");
-				await new Promise((r, j) =>
-					axios
-						.get(vidUrl, { responseType: "stream" })
-						.then(({ data }) =>
-							data.pipe(fs.createWriteStream(p)).on("finish", r).on("error", j)
-						)
-				);
-				clipPath = p;
+				// No Trends images at all – prompt-only path
+				console.log("[Runway] prompt preview", {
+					segment: segIndex,
+					promptPreview: promptText.slice(0, 160),
+					hasTrendImage: false,
+				});
+				clipPath = await generateTtiItvClip({
+					segmentIndex: segIndex,
+					promptText,
+					negativePrompt,
+					ratio,
+					runwayDuration: rw,
+				});
 			}
 
 			// Adjust to exact segment duration + enhance / normalise resolution
-			const fixed = tmpFile(`fx_${i + 1}`, ".mp4");
+			const fixed = tmpFile(`fx_${segIndex}`, ".mp4");
 			await exactLen(clipPath, d, fixed, { ratio, enhance: true });
 			try {
 				fs.unlinkSync(clipPath);
@@ -2191,11 +2412,11 @@ One or two sentences only.
 			clips.push(fixed);
 
 			sendPhase("GENERATING_CLIPS", {
-				msg: `Rendering segment ${i + 1}/${segCnt}`,
+				msg: `Rendering segment ${segIndex}/${segCnt}`,
 				total: segCnt,
-				done: i + 1,
+				done: segIndex,
 			});
-			console.log("[Phase] GENERATING_CLIPS → Rendering segment", i + 1);
+			console.log("[Phase] GENERATING_CLIPS → Rendering segment", segIndex);
 		}
 
 		/* ─────────────────────────────────────────────────────────
@@ -2521,7 +2742,28 @@ One or two sentences only.
 		console.log("[Phase] COMPLETED", doc._id, youtubeLink);
 		res.end();
 	} catch (err) {
-		console.error("[createVideo] ERROR", err);
+		console.error("[createVideo] ERROR", {
+			message: err?.message,
+			stack: err?.stack,
+		});
+		if (err?.response) {
+			console.error(
+				"[createVideo] ERROR response status:",
+				err.response.status
+			);
+			try {
+				console.error(
+					"[createVideo] ERROR response data snippet:",
+					typeof err.response.data === "string"
+						? err.response.data.slice(0, 500)
+						: JSON.stringify(err.response.data).slice(0, 500)
+				);
+			} catch (_) {
+				console.error(
+					"[createVideo] ERROR response data snippet: [unserializable]"
+				);
+			}
+		}
 		sendErr(err.message || "Internal error");
 	}
 };
