@@ -3,11 +3,11 @@
  *  ✅ Uses Google Trends images per segment (non‑redundant where possible)
  *  ✅ Cloudinary normalises aspect ratio & upscales/enhances images before Runway
  *  ✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos
- *  ✅ Runway image‑to‑video as the primary path; safety-only fallback to TTI+ITV
+ *  ✅ Runway image‑to‑video as the primary path; safety-only fallback to original static image
  *  ✅ Runway clips always ≥ segment duration (no big freeze‑frame padding)
  *  ✅ OpenAI plans narration + visuals dynamically from Trends + article links
  *  ✅ Prompts emphasise clear, human‑like motion in every segment
- *  ✅ ElevenLabs voice picked dynamically via /voices + GPT
+ *  ✅ ElevenLabs voice picked dynamically via /voices + GPT, with American accent for English
  *  ✅ Background music planned via GPT (search term + voice/music gains)
  *  ✅ Script timing recomputed from words → far fewer long pauses
  *  ✅ Phases kept in sync with GenerationModal (INIT → … → COMPLETED / ERROR)
@@ -317,7 +317,7 @@ function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
-/** Download image from URL to a temp file (used for 25MP fallback) */
+/** Download image from URL to a temp file (used for 25MP fallback and static clips) */
 async function downloadImageToTemp(url, ext = ".jpg") {
 	const tmp = tmpFile("trend_raw", ext);
 	const writer = fs.createWriteStream(tmp);
@@ -1127,6 +1127,7 @@ async function retry(fn, max, lbl) {
  *  Runway helpers for clips
  *  - generateItvClipFromImage: primary path (Trends image)
  *  - generateTtiItvClip: prompt-only path
+ *  - generateStaticClipFromImage: non-AI fallback on SAFETY.INPUT.IMAGE
  * ───────────────────────────────────────────────────────────── */
 async function generateItvClipFromImage({
 	segmentIndex,
@@ -1265,6 +1266,68 @@ async function generateTtiItvClip({
 			)
 	);
 	return p;
+}
+
+/**
+ * generateStaticClipFromImage – NON‑AI fallback when Runway flags SAFETY.INPUT.IMAGE.
+ * Uses the already-upscaled Cloudinary image and turns it into a simple
+ * still‑frame video for the desired duration.
+ */
+async function generateStaticClipFromImage({
+	segmentIndex,
+	imgUrl,
+	ratio,
+	targetDuration,
+}) {
+	if (!imgUrl) throw new Error("Missing image URL for static clip");
+
+	console.log(
+		`[Seg ${segmentIndex}] Using static image fallback (SAFETY.INPUT.IMAGE) → ${imgUrl}`
+	);
+
+	const localPath = await downloadImageToTemp(imgUrl, ".jpg");
+	const out = tmpFile(`seg_static_${segmentIndex}`, ".mp4");
+	const { width, height } = targetResolutionForRatio(ratio);
+	const vf = [];
+
+	if (width && height) {
+		vf.push(
+			`scale=${width}:${height}:force_original_aspect_ratio=increase`,
+			`crop=${width}:${height}`
+		);
+	}
+
+	await ffmpegPromise((c) => {
+		c.input(norm(localPath)).inputOptions("-loop", "1");
+
+		if (vf.length) {
+			c.videoFilters(vf.join(","));
+		}
+
+		return c
+			.outputOptions(
+				"-t",
+				String(targetDuration),
+				"-c:v",
+				"libx264",
+				"-preset",
+				"veryfast",
+				"-crf",
+				"18",
+				"-pix_fmt",
+				"yuv420p",
+				"-r",
+				"30",
+				"-y"
+			)
+			.save(norm(out));
+	});
+
+	try {
+		fs.unlinkSync(localPath);
+	} catch (_) {}
+
+	return out;
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -1451,6 +1514,7 @@ async function fetchElevenVoices() {
 /**
  * Ask GPT to choose the best ElevenLabs voice for this video,
  * based on category, language and script tone.
+ * For English, this is constrained to American / US accents only.
  */
 async function selectBestElevenVoice(language, category, sampleText) {
 	const fallbackId = ELEVEN_VOICES[language] || ELEVEN_VOICES[DEFAULT_LANGUAGE];
@@ -1479,6 +1543,46 @@ async function selectBestElevenVoice(language, category, sampleText) {
 			description: v.description || "",
 		}));
 
+	let candidates = slimVoices;
+
+	// ★ Ensure English uses an American / US accent only where possible
+	if (language === "English") {
+		const americanCandidates = slimVoices.filter((v) => {
+			const labels = v.labels || {};
+			const labelStr = JSON.stringify(labels).toLowerCase();
+			const accent = String(labels.accent || labels.Accent || "").toLowerCase();
+			const desc = String(v.description || "").toLowerCase();
+			const name = String(v.name || "").toLowerCase();
+
+			if (accent.includes("american") || accent.includes("us")) return true;
+			if (labelStr.includes("american") || labelStr.includes("us english"))
+				return true;
+			if (desc.includes("american accent") || desc.includes("us accent"))
+				return true;
+			// Very soft heuristic on name to catch "US Narrator" style names
+			if (name.includes("us ") || name.includes("usa")) return true;
+			return false;
+		});
+
+		if (americanCandidates.length) {
+			candidates = americanCandidates;
+			console.log(
+				`[Eleven] Restricted to ${americanCandidates.length} American English voices`
+			);
+		} else if (fallbackId) {
+			console.warn(
+				"[Eleven] No explicit American English voices detected in /voices – using static fallback voice."
+			);
+			return {
+				voiceId: fallbackId,
+				name: "default",
+				source: "static-fallback-no-american-tag",
+				reason:
+					"Could not confidently find an American-accent English voice in /voices; using predefined US voice.",
+			};
+		}
+	}
+
 	const tone = deriveVoiceSettings(sampleText || "", category);
 
 	const ask = `
@@ -1491,6 +1595,11 @@ Goal:
 		tone.isSensitive ? "sensitive / serious" : "neutral to energetic"
 	}
 - It should sound like a real human news or sports broadcaster, never robotic.
+${
+	language === "English"
+		? "- IMPORTANT: Only select a voice with a clearly American / US English accent.\n- Do NOT pick British, Australian or other non-US accents."
+		: ""
+}
 
 You are given a JSON array called "voices" with candidate voices from the ElevenLabs /voices API.
 Pick ONE best "id" to use. Prefer:
@@ -1499,7 +1608,7 @@ Pick ONE best "id" to use. Prefer:
 - Calmer, more neutral voices if the tone is sensitive.
 
 voices:
-${JSON.stringify(slimVoices).slice(0, 11000)}
+${JSON.stringify(candidates).slice(0, 11000)}
 
 Return ONLY JSON:
 { "voiceId": "<id>", "name": "<readable name>", "reason": "short explanation" }
@@ -1864,6 +1973,7 @@ Return JSON of the form:
 
 	return { segments };
 }
+
 /* ───────────────────────────────────────────────────────────────
  *  Main controller – createVideo
  * ───────────────────────────────────────────────────────────── */
@@ -2373,14 +2483,13 @@ One or two sentences only.
 					);
 					if (msg.includes("SAFETY.INPUT.IMAGE")) {
 						console.warn(
-							`[Seg ${segIndex}] SAFETY.INPUT.IMAGE detected – falling back to text_to_image + image_to_video without using the real photo`
+							`[Seg ${segIndex}] SAFETY.INPUT.IMAGE detected – using original static image with no AI motion.`
 						);
-						clipPath = await generateTtiItvClip({
+						clipPath = await generateStaticClipFromImage({
 							segmentIndex: segIndex,
-							promptText,
-							negativePrompt,
+							imgUrl,
 							ratio,
-							runwayDuration: rw,
+							targetDuration: d,
 						});
 					} else {
 						throw e;
