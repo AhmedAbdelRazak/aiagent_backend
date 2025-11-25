@@ -4,6 +4,7 @@
  *  ✅ Cloudinary normalises aspect ratio & upscales/enhances images before Runway
  *  ✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos
  *  ✅ Runway image‑to‑video as the primary path; safety-only fallback to original static image
+ *  ✅ Static fallback now uses best‑quality source (original URL first) + lanczos scaling
  *  ✅ Runway clips always ≥ segment duration (no big freeze‑frame padding)
  *  ✅ OpenAI plans narration + visuals dynamically from Trends + article links
  *  ✅ Prompts emphasise clear, human‑like motion in every segment
@@ -561,7 +562,7 @@ async function exactLen(src, target, out, opts = {}) {
 		if (enhance && targetRes && targetRes.width && targetRes.height) {
 			const { width, height } = targetRes;
 			vf.push(
-				`scale=${width}:${height}:force_original_aspect_ratio=increase`,
+				`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
 				`crop=${width}:${height}`
 			);
 		}
@@ -984,7 +985,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 
 			if (width && height) {
 				vf.push(
-					`scale=${width}:${height}:force_original_aspect_ratio=increase`,
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
 					`crop=${width}:${height}`
 				);
 			}
@@ -1270,64 +1271,89 @@ async function generateTtiItvClip({
 
 /**
  * generateStaticClipFromImage – NON‑AI fallback when Runway flags SAFETY.INPUT.IMAGE.
- * Uses the already-upscaled Cloudinary image and turns it into a simple
- * still‑frame video for the desired duration.
+ * Uses the highest quality source available:
+ *  - tries the original Trends image URL first
+ *  - falls back to the Cloudinary‑processed URL if needed
+ * Then turns it into a simple still‑frame video for the desired duration.
  */
 async function generateStaticClipFromImage({
 	segmentIndex,
-	imgUrl,
+	imgUrlOriginal,
+	imgUrlCloudinary,
 	ratio,
 	targetDuration,
 }) {
-	if (!imgUrl) throw new Error("Missing image URL for static clip");
+	const candidates = [imgUrlOriginal, imgUrlCloudinary].filter(Boolean);
+	if (!candidates.length) throw new Error("Missing image URL for static clip");
 
 	console.log(
-		`[Seg ${segmentIndex}] Using static image fallback (SAFETY.INPUT.IMAGE) → ${imgUrl}`
+		`[Seg ${segmentIndex}] Using static image fallback (SAFETY.INPUT.IMAGE). Candidates:`,
+		candidates
 	);
 
-	const localPath = await downloadImageToTemp(imgUrl, ".jpg");
-	const out = tmpFile(`seg_static_${segmentIndex}`, ".mp4");
-	const { width, height } = targetResolutionForRatio(ratio);
-	const vf = [];
+	let lastErr;
 
-	if (width && height) {
-		vf.push(
-			`scale=${width}:${height}:force_original_aspect_ratio=increase`,
-			`crop=${width}:${height}`
-		);
+	for (const url of candidates) {
+		try {
+			const localPath = await downloadImageToTemp(url, ".jpg");
+			const out = tmpFile(`seg_static_${segmentIndex}`, ".mp4");
+			const { width, height } = targetResolutionForRatio(ratio);
+			const vf = [];
+
+			if (width && height) {
+				vf.push(
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
+					`crop=${width}:${height}`
+				);
+			}
+
+			await ffmpegPromise((c) => {
+				c.input(norm(localPath)).inputOptions("-loop", "1");
+
+				if (vf.length) {
+					c.videoFilters(vf.join(","));
+				}
+
+				// Slightly slower preset + lower CRF because this is our
+				// final visual when Runway rejects the image.
+				return c
+					.outputOptions(
+						"-t",
+						String(targetDuration),
+						"-c:v",
+						"libx264",
+						"-preset",
+						"slow",
+						"-crf",
+						"17",
+						"-pix_fmt",
+						"yuv420p",
+						"-r",
+						"30",
+						"-y"
+					)
+					.save(norm(out));
+			});
+
+			try {
+				fs.unlinkSync(localPath);
+			} catch (_) {}
+
+			console.log(
+				`[Seg ${segmentIndex}] Static fallback clip created from ${url}`
+			);
+
+			return out;
+		} catch (e) {
+			lastErr = e;
+			console.warn(
+				`[Seg ${segmentIndex}] Static fallback failed for ${url} →`,
+				e.message
+			);
+		}
 	}
 
-	await ffmpegPromise((c) => {
-		c.input(norm(localPath)).inputOptions("-loop", "1");
-
-		if (vf.length) {
-			c.videoFilters(vf.join(","));
-		}
-
-		return c
-			.outputOptions(
-				"-t",
-				String(targetDuration),
-				"-c:v",
-				"libx264",
-				"-preset",
-				"veryfast",
-				"-crf",
-				"18",
-				"-pix_fmt",
-				"yuv420p",
-				"-r",
-				"30",
-				"-y"
-			)
-			.save(norm(out));
-	});
-
-	try {
-		fs.unlinkSync(localPath);
-	} catch (_) {}
-
-	return out;
+	throw lastErr || new Error("Failed to build static clip from any image URL");
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -1862,6 +1888,7 @@ For each segment, output:
 Visual rules:
 - Keep scenes realistic and grounded in today's world.
 - Keep the focal subject large and sharp; avoid tiny subjects, chaotic camera moves and motion blur.
+- Avoid specific trademarks or team logos; describe them generically (for example "home team in dark jerseys").
 - If people are visible, keep faces natural and undistorted.
 - EVERY runwayPrompt must describe clear motion (camera or subject), never a static pose.
 - NEVER mention real person names, team names, club names, jersey numbers, or brand names in "runwayPrompt". Use generic roles such as "star player", "coach", "home team", "away team".
@@ -2159,8 +2186,9 @@ exports.createVideo = async (req, res) => {
 
 		/* ─────────────────────────────────────────────────────────
 		 *  4.  Upload Trends images to Cloudinary (if available)
+		 *      (track both original + Cloudinary URL for best quality)
 		 * ───────────────────────────────────────────────────────── */
-		let trendCloudinaryImages = [];
+		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
 		const canUseTrendsImages =
 			category !== "Top5" &&
 			!userOverrides &&
@@ -2182,19 +2210,22 @@ exports.createVideo = async (req, res) => {
 						ratio,
 						`aivideomatic/trend_seeds/${slugBase}_${i}`
 					);
-					trendCloudinaryImages.push(up.url);
+					trendImagePairs.push({
+						originalUrl: url,
+						cloudinaryUrl: up.url,
+					});
 				} catch (e) {
 					console.warn("[Cloudinary] upload failed →", e.message);
 				}
 			}
-			if (!trendCloudinaryImages.length) {
+			if (!trendImagePairs.length) {
 				console.warn(
 					"[Cloudinary] All Trends uploads failed – falling back to prompt‑only mode"
 				);
 			}
 		}
 
-		const hasTrendImages = trendCloudinaryImages.length > 0;
+		const hasTrendImages = trendImagePairs.length > 0;
 
 		/* ─────────────────────────────────────────────────────────
 		 *  5.  Let OpenAI orchestrate segments + visuals
@@ -2208,7 +2239,9 @@ exports.createVideo = async (req, res) => {
 			duration,
 			segLens,
 			trendStory: hasTrendImages ? trendStory : null,
-			trendImagesForPlanning: hasTrendImages ? trendCloudinaryImages : null,
+			trendImagesForPlanning: hasTrendImages
+				? trendImagePairs.map((p) => p.cloudinaryUrl)
+				: null,
 			articleText: trendArticleText,
 			top5Outline,
 		});
@@ -2410,7 +2443,7 @@ One or two sentences only.
 
 		/* ─────────────────────────────────────────────────────────
 		 *  8.  PER‑SEGMENT VIDEO GENERATION
-		 *      - Use Trends image → ITV
+		 *      - Use Trends image → ITV; SAFETY fallback → highest‑quality static
 		 * ───────────────────────────────────────────────────────── */
 		const clips = [];
 		sendPhase("GENERATING_CLIPS", {
@@ -2425,7 +2458,7 @@ One or two sentences only.
 			const seg = segments[i];
 			const segIndex = i + 1;
 
-			// Runway supports discrete durations; always generate >= target to avoid freeze‑frame padding
+			// Runway supports discrete durations; always generate ≥ target
 			const rw = d <= 5 ? 5 : 10;
 
 			console.log(
@@ -2454,9 +2487,12 @@ One or two sentences only.
 			let clipPath = null;
 
 			if (hasTrendImages && seg.imageIndex !== null) {
-				const imgUrl =
-					trendCloudinaryImages[seg.imageIndex] || trendCloudinaryImages[0];
-				if (!imgUrl)
+				const pair =
+					trendImagePairs[seg.imageIndex] || trendImagePairs[0] || null;
+				const imgUrlCloudinary = pair?.cloudinaryUrl;
+				const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
+
+				if (!imgUrlCloudinary)
 					throw new Error("No Cloudinary Trends image available for Runway");
 
 				console.log("[Runway] prompt preview", {
@@ -2466,10 +2502,10 @@ One or two sentences only.
 				});
 
 				try {
-					// Primary path: image_to_video using real Trends image
+					// Primary path: image_to_video using high‑res Cloudinary seed
 					clipPath = await generateItvClipFromImage({
 						segmentIndex: segIndex,
-						imgUrl,
+						imgUrl: imgUrlCloudinary,
 						promptText,
 						negativePrompt,
 						ratio,
@@ -2483,11 +2519,12 @@ One or two sentences only.
 					);
 					if (msg.includes("SAFETY.INPUT.IMAGE")) {
 						console.warn(
-							`[Seg ${segIndex}] SAFETY.INPUT.IMAGE detected – using original static image with no AI motion.`
+							`[Seg ${segIndex}] SAFETY.INPUT.IMAGE detected – falling back to highest‑quality static image.`
 						);
 						clipPath = await generateStaticClipFromImage({
 							segmentIndex: segIndex,
-							imgUrl,
+							imgUrlOriginal,
+							imgUrlCloudinary,
 							ratio,
 							targetDuration: d,
 						});
@@ -2649,7 +2686,8 @@ One or two sentences only.
 					.input(norm(ttsJoin))
 					.input(norm(trim))
 					.complexFilter([
-						`[0:a]volume=${voiceGain.toFixed(3)}[a0]`,
+						`
+						[0:a]volume=${voiceGain.toFixed(3)}[a0]`,
 						`[1:a]volume=${musicGain.toFixed(3)}[a1]`,
 						"[a0][a1]amix=inputs=2:duration=first[aout]",
 					])

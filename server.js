@@ -89,9 +89,10 @@ readdirSync("./routes").forEach((file) => {
 
 /* ───────────────────────────────────────────────────────────── */
 /* 6)  SIMPLE IN‑MEMORY JOB QUEUE (concurrency = 1)              */
+/*     Fix: keep id in queuedIds UNTIL handleSchedule finishes   */
 /* ───────────────────────────────────────────────────────────── */
 const jobQueue = [];
-const queuedIds = new Set(); // avoid duplicates
+const queuedIds = new Set(); // avoid duplicates per schedule _id
 let processing = false;
 
 async function processQueue() {
@@ -100,12 +101,16 @@ async function processQueue() {
 
 	while (jobQueue.length) {
 		const sched = jobQueue.shift();
-		queuedIds.delete(String(sched._id));
 
 		try {
 			await handleSchedule(sched);
 		} catch (err) {
 			console.error("[Queue] job error:", err.message);
+		} finally {
+			// IMPORTANT: only clear after the job finishes (success or error).
+			// While handleSchedule is running, this id stays in queuedIds so
+			// the cron poller cannot enqueue a duplicate.
+			queuedIds.delete(String(sched._id));
 		}
 	}
 
@@ -140,7 +145,7 @@ async function handleSchedule(sched) {
 		country: video.country,
 		customPrompt: "",
 		videoImage: video.videoImage,
-		schedule: null,
+		schedule: null, // don't schedule a schedule-run
 		youtubeAccessToken: video.youtubeAccessToken,
 		youtubeRefreshToken: video.youtubeRefreshToken,
 		youtubeTokenExpiresAt: video.youtubeTokenExpiresAt,
@@ -160,7 +165,9 @@ async function handleSchedule(sched) {
 		end() {},
 	};
 
-	console.log(`[Queue] ▶ Generating video for user ${user._id}`);
+	console.log(
+		`[Queue] ▶ Generating video for user ${user._id} from schedule ${sched._id}`
+	);
 	await createVideo(reqMock, resMock);
 	console.log(`[Queue] ✔ Video done for schedule ${sched._id}`);
 
@@ -187,8 +194,11 @@ async function handleSchedule(sched) {
 	// Re‑evaluate against endDate in PST (end‑of‑day)
 	if (endPST && next.isAfter(endPST)) {
 		sched.active = false;
+		console.log(
+			`[Queue] Schedule ${sched._id} reached endDate, marking inactive`
+		);
 	} else {
-		sched.nextRun = next.toDate(); // moment in time corresponding to HH:mm PST
+		sched.nextRun = next.toDate(); // exact instant corresponding to HH:mm PST
 	}
 
 	await sched.save();
@@ -201,24 +211,34 @@ async function handleSchedule(sched) {
 
 /* ───────────────────────────────────────────────────────────── */
 /* 7)  CRON POLLER — adds due schedules to the queue            */
+/*     Runs every minute in PST                                 */
 /* ───────────────────────────────────────────────────────────── */
 cron.schedule("* * * * *", async () => {
 	try {
-		const nowPST = dayjs().tz("America/Los_Angeles").toDate();
-		const due = await Schedule.find({ nextRun: { $lte: nowPST }, active: true })
+		const nowPSTDate = dayjs().tz(PST_TZ).toDate();
+
+		const due = await Schedule.find({
+			nextRun: { $lte: nowPSTDate },
+			active: true,
+		})
 			.populate("video")
 			.populate("user");
+
+		let newlyEnqueued = 0;
 
 		for (const sched of due) {
 			const idStr = String(sched._id);
 			if (!queuedIds.has(idStr)) {
 				jobQueue.push(sched);
 				queuedIds.add(idStr);
+				newlyEnqueued++;
 			}
 		}
 
-		if (jobQueue.length) {
-			console.log(`[Cron] Enqueued ${jobQueue.length} job(s)`);
+		if (newlyEnqueued > 0) {
+			console.log(
+				`[Cron] Enqueued ${newlyEnqueued} new job(s); queue size now ${jobQueue.length}`
+			);
 			processQueue(); // kick the worker if idle
 		}
 	} catch (err) {
