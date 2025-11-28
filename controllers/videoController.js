@@ -1,20 +1,4 @@
-/** @format */
-/*  videoController.js  — high‑motion, trends‑driven edition (enhanced)
- *  ✅ Uses Google Trends images per segment (non‑redundant where possible)
- *  ✅ Cloudinary normalises aspect ratio & upscales/enhances images before Runway
- *  ✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos
- *  ✅ Runway image‑to‑video as the primary path; safety-only fallback to original static image
- *  ✅ Static fallback now uses best‑quality source (original URL first) + high‑quality lanczos scaling
- *  ✅ Runway clips always ≥ segment duration (no big freeze‑frame padding)
- *  ✅ OpenAI plans narration + visuals dynamically from Trends + article links
- *  ✅ Prompts emphasise clear, human‑like motion in every segment
- *  ✅ ElevenLabs voice picked dynamically via /voices + GPT, with American accent for English
- *  ✅ NEW: Orchestrator avoids reusing the last ElevenLabs voice for the same user when possible
- *  ✅ NEW: Voice planning nudged towards clear, motivated, brisk American‑style delivery (non‑sensitive topics)
- *  ✅ Background music planned via GPT (search term + voice/music gains) & metadata saved on Video
- *  ✅ Script timing recomputed from words → far fewer long pauses
- *  ✅ Phases kept in sync with GenerationModal (INIT → … → COMPLETED / ERROR)
- */
+/** @format */ /* videoController.js — high‑motion, trends‑driven edition (enhanced) * ✅ Uses Google Trends images per segment (non‑redundant where possible) * ✅ Cloudinary normalises aspect ratio & upscales/enhances images before Runway * ✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos * ✅ Runway image‑to‑video as the primary path; safety-only fallback to original static image * ✅ Static fallback now uses best‑quality source (original URL first) + high‑quality lanczos scaling * ✅ Runway clips always ≥ segment duration (no big freeze‑frame padding) * ✅ OpenAI plans narration + visuals dynamically from Trends + article links * ✅ Prompts emphasise clear, human‑like motion in every segment * ✅ ElevenLabs voice picked dynamically via /voices + GPT, with American accent for English * ✅ NEW: Orchestrator avoids reusing the last ElevenLabs voice for the same user when possible * ✅ NEW: Voice planning nudged towards clear, motivated, brisk American‑style delivery (non‑sensitive topics) * ✅ Background music planned via GPT (search term + voice/music gains) & metadata saved on Video * ✅ Script timing recomputed from words → far fewer long pauses * ✅ Phases kept in sync with GenerationModal (INIT → … → COMPLETED / ERROR) */
 
 const fs = require("fs");
 const os = require("os");
@@ -152,14 +136,13 @@ const VALID_RATIOS = [
 /**
  * WORDS_PER_SEC: conservative cap used when asking GPT for max words.
  * NATURAL_WPS: more realistic speed used when recomputing durations from script.
- * (Slightly higher now to encourage brisker, more motivated delivery.)
  */
 const WORDS_PER_SEC = 2.35;
 const NATURAL_WPS = 2.45;
 
-const MAX_SILENCE_PAD = 0.35; // seconds of silence we’re willing to add at the end of a segment
-const MIN_ATEMPO = 0.9; // min speed change (slowest)
-const MAX_ATEMPO = 1.18; // max speed change (fastest)
+const MAX_SILENCE_PAD = 0.35;
+const MIN_ATEMPO = 0.9;
+const MAX_ATEMPO = 1.18;
 
 /* Gen‑4 Turbo everywhere for speed + fidelity */
 const T2V_MODEL = "gen4_turbo";
@@ -308,7 +291,6 @@ const PROMPT_CHAR_LIMIT = 220;
 const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
 
-/* remove surrounding markdown code fence if present, without using literal ``` */
 const TICK_CHAR = String.fromCharCode(96);
 function stripCodeFence(s) {
 	const marker = TICK_CHAR + TICK_CHAR + TICK_CHAR;
@@ -567,57 +549,75 @@ function ffmpegPromise(cfg) {
  */
 async function exactLen(src, target, out, opts = {}) {
 	const { ratio = null, enhance = false } = opts;
-	const meta = await new Promise((r, j) =>
-		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
+
+	const meta = await new Promise((resolve, reject) =>
+		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
 	);
-	const diff = +(target - meta.format.duration).toFixed(3);
+
+	const inDur = meta.format?.duration || target;
+	const diff = +(target - inDur).toFixed(3);
 
 	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
+	const videoStream = Array.isArray(meta.streams)
+		? meta.streams.find((s) => s.codec_type === "video")
+		: null;
+	const inW = videoStream?.width;
+	const inH = videoStream?.height;
 
-	await ffmpegPromise((c) => {
-		c.input(norm(src));
+	await ffmpegPromise((cmd) => {
+		cmd.input(norm(src));
 
 		const vf = [];
 
-		// Normalise resolution only once per seed clip
+		// Normalise resolution only when needed
 		if (enhance && targetRes && targetRes.width && targetRes.height) {
 			const { width, height } = targetRes;
-			vf.push(
-				`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
-				`crop=${width}:${height}`
-			);
+			const needsResize =
+				!inW || !inH || Math.abs(inW - width) > 8 || Math.abs(inH - height) > 8;
+
+			if (needsResize) {
+				vf.push(
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+					`crop=${width}:${height}`
+				);
+			}
 		}
 
-		if (Math.abs(diff) < 0.05) {
-			// keep timing
-		} else if (diff < 0) {
-			// clip if slightly too long
-			c.outputOptions("-t", String(target));
-		} else {
-			// pad up to target (rare now that Runway duration >= target)
-			vf.push(`tpad=stop_duration=${diff}`);
+		// Duration normalisation
+		if (Math.abs(diff) >= 0.08) {
+			if (diff < 0) {
+				// Video slightly too long → trim
+				cmd.outputOptions("-t", String(target));
+			} else {
+				// Video slightly too short → pad tail
+				vf.push(`tpad=stop_duration=${diff.toFixed(3)}`);
+			}
 		}
 
-		// Light, global enhancement – no over‑processing
+		// Light enhancement pass (only when requested)
 		if (enhance) {
 			vf.push(
-				"unsharp=lx=4:ly=4:la=0.7:cx=3:cy=3:ca=0.4",
+				// IMPORTANT: lx/ly must be odd numbers between 3 and 13
+				"unsharp=lx=5:ly=5:la=0.9:cx=3:cy=3:ca=0.45",
 				"eq=contrast=1.06:saturation=1.04:gamma=0.99"
 			);
 		}
 
 		if (vf.length) {
-			c.videoFilters(vf.join(","));
+			cmd.videoFilters(vf.join(","));
 		}
 
-		return c
+		const preset = enhance ? "slow" : "veryfast";
+		const crf = enhance ? 17 : 18;
+
+		return cmd
 			.outputOptions(
 				"-c:v",
 				"libx264",
 				"-preset",
-				enhance ? "slow" : "veryfast",
+				preset,
 				"-crf",
-				enhance ? "17" : "18",
+				String(crf),
 				"-pix_fmt",
 				"yuv420p",
 				"-y"
@@ -633,60 +633,48 @@ async function exactLen(src, target, out, opts = {}) {
  * - longer audio: mild speed‑up or trim for extreme overflows
  */
 async function exactLenAudio(src, target, out) {
-	const meta = await new Promise((r, j) =>
-		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
+	const meta = await new Promise((resolve, reject) =>
+		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
 	);
-	const inDur = meta.format.duration;
+
+	const inDur = meta.format?.duration || target;
 	const diff = +(target - inDur).toFixed(3);
 
-	await ffmpegPromise((c) => {
-		c.input(norm(src));
+	await ffmpegPromise((cmd) => {
+		cmd.input(norm(src));
+
 		const filters = [];
 
 		if (Math.abs(diff) <= 0.08) {
-			// essentially the same – keep as‑is
+			// Durations basically match – no change
 		} else if (diff < -0.08) {
-			// audio longer than segment → gently compress or, if huge, trim
-			const ratio = inDur / target;
+			// Audio longer than target → gently speed it up or trim
+			const ratio = inDur / target; // >1 means we need to play faster
+
 			if (ratio <= 2.0) {
-				filters.push(`atempo=${ratio.toFixed(3)}`);
+				let tempo = ratio;
+				if (tempo > MAX_ATEMPO) tempo = MAX_ATEMPO;
+				filters.push(`atempo=${tempo.toFixed(3)}`);
 			} else if (ratio <= 4.0) {
-				const r = Math.sqrt(ratio).toFixed(3);
-				filters.push(`atempo=${r},atempo=${r}`);
+				const r = Math.min(MAX_ATEMPO, Math.sqrt(ratio));
+				filters.push(`atempo=${r.toFixed(3)},atempo=${r.toFixed(3)}`);
 			} else {
-				// extreme outlier – hard trim
-				c.outputOptions("-t", String(target));
+				// Extreme edge case – just hard trim
+				cmd.outputOptions("-t", String(target));
 			}
 		} else {
-			// audio shorter than segment (most common case)
-			const desiredMinDur = target - MAX_SILENCE_PAD;
-			if (desiredMinDur > 0 && inDur > 0.1) {
-				let tempo = inDur / desiredMinDur; // <1 slows down, >1 speeds up
-				tempo = Math.max(MIN_ATEMPO, Math.min(MAX_ATEMPO, tempo));
-				if (Math.abs(tempo - 1) > 0.02) {
-					filters.push(`atempo=${tempo.toFixed(3)}`);
-				}
-				const lenAfterTempo = inDur / tempo;
-				const remaining = target - lenAfterTempo;
-				if (remaining > 0.05) {
-					const padDur = Math.min(MAX_SILENCE_PAD, Math.max(0, remaining));
-					if (padDur > 0.05) {
-						filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
-					}
-				}
-			} else {
-				// degenerate case – just pad a little
-				const padDur = Math.min(MAX_SILENCE_PAD, diff);
-				if (padDur > 0.05) {
-					filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
-				}
+			// Audio shorter than target → keep speed, add small silence at end
+			const padDur = Math.min(MAX_SILENCE_PAD, diff);
+			if (padDur > 0.05) {
+				filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
 			}
 		}
 
 		if (filters.length) {
-			c.audioFilters(filters.join(","));
+			cmd.audioFilters(filters.join(","));
 		}
-		return c.outputOptions("-y").save(norm(out));
+
+		return cmd.outputOptions("-y").save(norm(out));
 	});
 }
 
@@ -1006,13 +994,13 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 
 			if (width && height) {
 				vf.push(
-					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
 					`crop=${width}:${height}`
 				);
 			}
 			// light sharpening so the still looks crisp before Runway
 			vf.push(
-				"unsharp=lx=4:ly=4:la=0.65:cx=3:cy=3:ca=0.4",
+				"unsharp=lx=5:ly=5:la=0.65:cx=3:cy=3:ca=0.4",
 				"eq=contrast=1.04:saturation=1.03:gamma=0.99"
 			);
 
@@ -1323,14 +1311,14 @@ async function generateStaticClipFromImage({
 
 			if (width && height) {
 				vf.push(
-					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
 					`crop=${width}:${height}`
 				);
 			}
 
 			// Subtle sharpening + contrast so the still looks crisp without halos
 			vf.push(
-				"unsharp=lx=4:ly=4:la=0.65:cx=3:cy=3:ca=0.4",
+				"unsharp=lx=5:ly=5:la=0.65:cx=3:cy=3:ca=0.4",
 				"eq=contrast=1.04:saturation=1.03:gamma=0.99"
 			);
 
@@ -1341,8 +1329,6 @@ async function generateStaticClipFromImage({
 					c.videoFilters(vf.join(","));
 				}
 
-				// Slightly slower preset + lower CRF because this is our
-				// final visual when Runway rejects the image.
 				return c
 					.outputOptions(
 						"-t",
