@@ -1,8 +1,8 @@
 /** @format */
 /*  videoController.js  — high‑motion, trends‑driven edition (enhanced)
  *  ✅ Uses Google Trends images per segment (non‑redundant where possible)
- *  ✅ Local high‑quality preprocessing for all seed images (optional Real‑ESRGAN super‑resolution)
  *  ✅ Cloudinary normalises aspect ratio & upscales/enhances images before Runway
+ *  ✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos
  *  ✅ Runway image‑to‑video as the primary path; safety-only fallback to original static image
  *  ✅ Static fallback now uses best‑quality source (original URL first) + high‑quality lanczos scaling
  *  ✅ Runway clips always ≥ segment duration (no big freeze‑frame padding)
@@ -13,7 +13,6 @@
  *  ✅ NEW: Voice planning nudged towards clear, motivated, brisk American‑style delivery (non‑sensitive topics)
  *  ✅ Background music planned via GPT (search term + voice/music gains) & metadata saved on Video
  *  ✅ Script timing recomputed from words → far fewer long pauses
- *  ✅ NEW: GPT retargets the script so natural spoken time lands within (duration - 2) .. duration seconds
  *  ✅ Phases kept in sync with GenerationModal (INIT → … → COMPLETED / ERROR)
  */
 
@@ -129,55 +128,6 @@ assertExists(
 );
 const FONT_PATH_FFMPEG = FONT_PATH.replace(/\\/g, "/").replace(/:/g, "\\:");
 
-/* Optional Real‑ESRGAN (local AI super‑resolution for seed images) */
-function resolveRealEsrganPath() {
-	const p = process.env.REAL_ESRGAN_PATH;
-	if (!p) return null;
-
-	// 1) Confirm the file actually exists
-	if (!fs.existsSync(p)) {
-		console.warn(
-			"[RealESRGAN] REAL_ESRGAN_PATH is set but file does not exist →",
-			p
-		);
-		return null;
-	}
-
-	// 2) Try to launch it once with "-h".
-	//    We treat ANY exit code as "OK" as long as it starts without ENOENT.
-	try {
-		const res = child_process.spawnSync(p, ["-h"], {
-			windowsHide: true,
-			stdio: "ignore",
-		});
-
-		if (res.error && res.error.code === "ENOENT") {
-			console.warn(
-				"[RealESRGAN] REAL_ESRGAN_PATH is set but executable not found →",
-				res.error.message
-			);
-			return null;
-		}
-
-		// If we get here, the process started successfully.
-		return p;
-	} catch (e) {
-		console.warn(
-			"[RealESRGAN] REAL_ESRGAN_PATH is set but binary failed to launch →",
-			e.message
-		);
-		return null;
-	}
-}
-
-const REAL_ESRGAN_PATH = resolveRealEsrganPath();
-const HAS_REAL_ESRGAN = !!REAL_ESRGAN_PATH;
-console.log(
-	`[RealESRGAN] ${
-		HAS_REAL_ESRGAN ? `enabled at ${REAL_ESRGAN_PATH}` : "not configured"
-	}`
-);
-
 /* ───────────────────────────────────────────────────────────────
  *  Global constants
  * ───────────────────────────────────────────────────────────── */
@@ -202,13 +152,14 @@ const VALID_RATIOS = [
 /**
  * WORDS_PER_SEC: conservative cap used when asking GPT for max words.
  * NATURAL_WPS: more realistic speed used when recomputing durations from script.
+ * (Slightly higher now to encourage brisker, more motivated delivery.)
  */
 const WORDS_PER_SEC = 2.35;
 const NATURAL_WPS = 2.45;
 
-const MAX_SILENCE_PAD = 0.35;
-const MIN_ATEMPO = 0.9;
-const MAX_ATEMPO = 1.18;
+const MAX_SILENCE_PAD = 0.35; // seconds of silence we’re willing to add at the end of a segment
+const MIN_ATEMPO = 0.9; // min speed change (slowest)
+const MAX_ATEMPO = 1.18; // max speed change (fastest)
 
 /* Gen‑4 Turbo everywhere for speed + fidelity */
 const T2V_MODEL = "gen4_turbo";
@@ -357,7 +308,7 @@ const PROMPT_CHAR_LIMIT = 220;
 const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
 
-// remove surrounding markdown code fence if present, without using literal ```
+/* remove surrounding markdown code fence if present, without using literal ``` */
 const TICK_CHAR = String.fromCharCode(96);
 function stripCodeFence(s) {
 	const marker = TICK_CHAR + TICK_CHAR + TICK_CHAR;
@@ -386,7 +337,7 @@ function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
-/** Download image from URL to a temp file (used for Trends and static clips) */
+/** Download image from URL to a temp file (used for 25MP fallback and static clips) */
 async function downloadImageToTemp(url, ext = ".jpg") {
 	const tmp = tmpFile("trend_raw", ext);
 	const writer = fs.createWriteStream(tmp);
@@ -444,7 +395,7 @@ function improveTTSPronunciation(text) {
 	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
 }
 
-/* Voice tone classification */
+/* Voice tone classification – excited, varied, but respectful on tragedy */
 function deriveVoiceSettings(text, category = "Other") {
 	const baseStyle = ELEVEN_STYLE_BY_CATEGORY[category] ?? 0.7;
 	const lower = String(text || "").toLowerCase();
@@ -454,7 +405,7 @@ function deriveVoiceSettings(text, category = "Other") {
 	let style = baseStyle;
 	let stability = 0.15;
 	let similarityBoost = 0.92;
-	let openaiSpeed = 1.06;
+	let openaiSpeed = 1.06; // a touch brisker by default
 
 	if (isSensitive) {
 		style = 0.25;
@@ -489,14 +440,6 @@ function deriveVoiceSettings(text, category = "Other") {
 	};
 }
 
-/* simple word counter */
-function countWordsInText(text) {
-	return String(text || "")
-		.trim()
-		.split(/\s+/)
-		.filter(Boolean).length;
-}
-
 /* Recompute segment durations from final script to avoid long pauses */
 function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	if (
@@ -510,7 +453,10 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	const MIN_SEGMENT_SECONDS = 2.5;
 
 	const est = segments.map((s, idx) => {
-		const words = countWordsInText(s.scriptText || "");
+		const words = String(s.scriptText || "")
+			.trim()
+			.split(/\s+/)
+			.filter(Boolean).length;
 		const basePause = idx === segments.length - 1 ? 0.35 : 0.25;
 		const raw = (words || 1) / NATURAL_WPS + basePause;
 		return Math.max(MIN_SEGMENT_SECONDS, raw);
@@ -525,13 +471,13 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	let total = scaled.reduce((a, b) => a + b, 0);
 	let diff = +(targetTotalSeconds - total).toFixed(2);
 
+	// distribute rounding difference across segments with tiny nudges
 	let idx = scaled.length - 1;
 	const step = diff > 0 ? 0.1 : -0.1;
 	while (Math.abs(diff) > 0.05 && scaled.length && idx >= 0) {
 		const candidate = scaled[idx] + step;
 		if (candidate >= MIN_SEGMENT_SECONDS) {
-			sd = candidate;
-			scaled[idx] = sd;
+			scaled[idx] = candidate;
 			diff -= step;
 		}
 		idx--;
@@ -539,140 +485,6 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	}
 
 	return scaled.map((v) => +v.toFixed(2));
-}
-
-/* Retarget whole script so natural spoken time ≈ requested duration */
-async function retargetScriptToDuration(
-	segments,
-	targetTotalSeconds,
-	segWordCaps,
-	category,
-	language
-) {
-	if (
-		!Array.isArray(segments) ||
-		!segments.length ||
-		!targetTotalSeconds ||
-		!Number.isFinite(targetTotalSeconds)
-	) {
-		return segments;
-	}
-
-	const wordCounts = segments.map((s) => countWordsInText(s.scriptText));
-	const totalWords = wordCounts.reduce((a, b) => a + b, 0);
-	if (!totalWords) return segments;
-
-	const estSeconds = totalWords / NATURAL_WPS;
-	const minSeconds = Math.max(5, targetTotalSeconds - 2);
-	const maxSeconds = targetTotalSeconds;
-
-	if (estSeconds >= minSeconds && estSeconds <= maxSeconds) {
-		return segments;
-	}
-
-	const minWords = Math.floor(minSeconds * NATURAL_WPS);
-	const maxWords = Math.floor(maxSeconds * NATURAL_WPS);
-	const targetWords = Math.round((minWords + maxWords) / 2);
-
-	const caps =
-		Array.isArray(segWordCaps) && segWordCaps.length === segments.length
-			? segWordCaps.map((c) =>
-					Number.isFinite(c) && c > 0 ? Math.floor(c) : null
-			  )
-			: segments.map(() => null);
-
-	const payloadSegments = segments.map((s, idx) => ({
-		index: typeof s.index === "number" ? s.index : idx + 1,
-		scriptText: String(s.scriptText || "").trim(),
-	}));
-
-	const toneHint = TONE_HINTS[category] || "";
-	const ask = `
-You are editing the narration for a short-form ${category} video.
-
-The script is split into ${
-		segments.length
-	} segments, which will be read aloud at about ${NATURAL_WPS.toFixed(
-		2
-	)} words per second.
-
-Current script:
-- Approximate total words: ${totalWords}
-- Estimated reading time: ~${estSeconds.toFixed(1)} seconds.
-
-Target:
-- Video length: ${targetTotalSeconds} seconds.
-- Desired reading time window: ${minSeconds.toFixed(1)}–${maxSeconds.toFixed(
-		1
-	)} seconds.
-- So the total word count across ALL segments should be between ${minWords} and ${maxWords} words (ideally near ${targetWords}).
-
-Constraints:
-- Keep the same number of segments and the same order.
-- Preserve all important facts and logical flow, but you may compress or expand phrasing.
-- Each segment must NOT exceed its max word cap from this array (treat these as hard limits):
-
-wordCaps = [${caps.map((c) => (c === null ? "null" : c)).join(", ")}]
-
-Additional style:
-${toneHint ? `- ${toneHint}` : ""}
-- All narration must remain in ${language}.
-- Segment 1 must remain a strong hook.
-- The final segment must still feel like a natural ending.
-
-Return ONLY JSON with this exact shape:
-{
-  "segments": [
-    { "index": 1, "scriptText": "..." },
-    ...
-  ]
-}
-
-Here are the current segments as JSON:
-${JSON.stringify(payloadSegments).slice(0, 12000)}
-`.trim();
-
-	for (let attempt = 1; attempt <= 2; attempt++) {
-		try {
-			const { choices } = await openai.chat.completions.create({
-				model: CHAT_MODEL,
-				messages: [{ role: "user", content: ask }],
-			});
-			const raw = strip(choices[0].message.content);
-			const parsed = JSON.parse(raw);
-			if (!parsed || !Array.isArray(parsed.segments)) continue;
-
-			const incoming = parsed.segments;
-			if (incoming.length !== segments.length) continue;
-
-			const merged = segments.map((s, idx) => ({
-				...s,
-				scriptText: String(
-					incoming[idx]?.scriptText || s.scriptText || ""
-				).trim(),
-			}));
-
-			const newWordsTotal = merged.reduce(
-				(acc, seg) => acc + countWordsInText(seg.scriptText),
-				0
-			);
-			const newEstSeconds = newWordsTotal / NATURAL_WPS;
-			console.log("[Timing] retargetScriptToDuration result", {
-				oldWords: totalWords,
-				newWords: newWordsTotal,
-				oldSecs: estSeconds.toFixed(2),
-				newSecs: newEstSeconds.toFixed(2),
-			});
-			return merged;
-		} catch (e) {
-			console.warn(
-				`[Timing] retargetScriptToDuration attempt ${attempt} failed →`,
-				e.message
-			);
-		}
-	}
-
-	return segments;
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -704,7 +516,7 @@ function targetResolutionForRatio(ratio) {
 		case "960:960":
 			return { width: 1080, height: 1080 };
 		case "1104:832":
-			return { width: 1440, height: 1080 };
+			return { width: 1440, height: 1080 }; // ~4:3
 		case "1584:672":
 		case "1280:720":
 		default:
@@ -731,12 +543,8 @@ function buildCloudinaryTransformForRatio(ratio) {
 		base.aspect_ratio = aspect;
 	}
 
-	return [
-		base,
-		{ effect: "upscale" },
-		{ effect: "improve" },
-		{ effect: "sharpen:80" },
-	];
+	// Let Cloudinary do a smart global improvement + mild sharpen
+	return [base, { effect: "improve" }, { effect: "sharpen:60" }];
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -751,115 +559,6 @@ function ffmpegPromise(cfg) {
 	});
 }
 
-/** local super‑resolution using Real‑ESRGAN if available */
-async function maybeUpscaleWithRealEsrgan(srcPath, ratio) {
-	if (!HAS_REAL_ESRGAN || !srcPath) return srcPath;
-
-	try {
-		const meta = await new Promise((resolve, reject) =>
-			ffmpeg.ffprobe(srcPath, (err, data) =>
-				err ? reject(err) : resolve(data)
-			)
-		);
-		const stream = Array.isArray(meta.streams)
-			? meta.streams.find((s) => s.width && s.height)
-			: null;
-		const inW = stream?.width;
-		const inH = stream?.height;
-		if (!inW || !inH) return srcPath;
-
-		const targetRes = targetResolutionForRatio(ratio);
-		const shortTarget = Math.min(
-			targetRes?.width || inW,
-			targetRes?.height || inH
-		);
-		const shortIn = Math.min(inW, inH);
-
-		if (!shortTarget || shortIn >= shortTarget * 0.9) {
-			return srcPath;
-		}
-
-		const rawFactor = shortTarget / shortIn;
-		let scaleFactor = rawFactor <= 2.3 ? 2 : 4;
-		if (scaleFactor <= 1.2) return srcPath;
-		if (scaleFactor > 4) scaleFactor = 4;
-
-		const outPath = tmpFile("esr_up", path.extname(srcPath) || ".png");
-		console.log(
-			`[RealESRGAN] Upscaling seed from ${inW}x${inH} by x${scaleFactor}`
-		);
-
-		await new Promise((resolve, reject) => {
-			const args = ["-i", srcPath, "-o", outPath, "-s", String(scaleFactor)];
-			const child = child_process.spawn(REAL_ESRGAN_PATH, args, {
-				stdio: "ignore",
-			});
-			child.on("error", reject);
-			child.on("close", (code) => {
-				if (code === 0) resolve();
-				else reject(new Error(`RealESRGAN exited with non‑zero code ${code}`));
-			});
-		});
-
-		return outPath;
-	} catch (e) {
-		console.warn("[RealESRGAN] upscale failed →", e.message);
-		return srcPath;
-	}
-}
-
-/**
- * Prepare a still image for use as a high‑quality video seed:
- * download → (optional Real‑ESRGAN) → scale/crop → subtle sharpen/contrast.
- * Returns a local file path.
- */
-async function prepareImageForVideo(url, ratio, tag = "img") {
-	const rawPath = await downloadImageToTemp(url, ".jpg");
-	let workPath = rawPath;
-	let scaledPath = null;
-
-	try {
-		const maybeUpscaled = await maybeUpscaleWithRealEsrgan(workPath, ratio);
-		if (maybeUpscaled && maybeUpscaled !== workPath) {
-			workPath = maybeUpscaled;
-		}
-
-		const { width, height } = targetResolutionForRatio(ratio);
-		if (width && height) {
-			scaledPath = tmpFile(`${tag}_prep`, ".jpg");
-			const vf = [
-				`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
-				`crop=${width}:${height}`,
-				"unsharp=lx=5:ly=5:la=0.75:cx=3:cy=3:ca=0.45",
-				"eq=contrast=1.06:saturation=1.04:gamma=0.99",
-			];
-
-			await ffmpegPromise((c) =>
-				c
-					.input(norm(workPath))
-					.videoFilters(vf.join(","))
-					.outputOptions("-frames:v", "1", "-y")
-					.save(norm(scaledPath))
-			);
-		}
-	} catch (e) {
-		console.warn("[ImagePrep] preprocessing failed →", e.message);
-	}
-
-	const outPath = scaledPath || workPath;
-	if (outPath !== rawPath) {
-		try {
-			if (workPath && workPath !== outPath && workPath !== rawPath) {
-				fs.unlinkSync(workPath);
-			}
-		} catch (_) {}
-		try {
-			fs.unlinkSync(rawPath);
-		} catch (_) {}
-	}
-	return outPath;
-}
-
 /**
  * exactLen – normalises video clips:
  * - optional upscale/crop to canonical resolution per ratio
@@ -868,69 +567,57 @@ async function prepareImageForVideo(url, ratio, tag = "img") {
  */
 async function exactLen(src, target, out, opts = {}) {
 	const { ratio = null, enhance = false } = opts;
-
-	const meta = await new Promise((resolve, reject) =>
-		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
+	const meta = await new Promise((r, j) =>
+		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
 	);
-
-	const inDur = meta.format?.duration || target;
-	const diff = +(target - inDur).toFixed(3);
+	const diff = +(target - meta.format.duration).toFixed(3);
 
 	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
-	const videoStream = Array.isArray(meta.streams)
-		? meta.streams.find((s) => s.codec_type === "video")
-		: null;
-	const inW = videoStream?.width;
-	const inH = videoStream?.height;
 
-	await ffmpegPromise((cmd) => {
-		cmd.input(norm(src));
+	await ffmpegPromise((c) => {
+		c.input(norm(src));
 
 		const vf = [];
 
+		// Normalise resolution only once per seed clip
 		if (enhance && targetRes && targetRes.width && targetRes.height) {
 			const { width, height } = targetRes;
-			const needsResize =
-				!inW || !inH || Math.abs(inW - width) > 8 || Math.abs(inH - height) > 8;
-
-			if (needsResize) {
-				vf.push(
-					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
-					`crop=${width}:${height}`
-				);
-			}
+			vf.push(
+				`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+				`crop=${width}:${height}`
+			);
 		}
 
-		if (Math.abs(diff) >= 0.08) {
-			if (diff < 0) {
-				cmd.outputOptions("-t", String(target));
-			} else {
-				vf.push(`tpad=stop_duration=${diff.toFixed(3)}`);
-			}
+		if (Math.abs(diff) < 0.05) {
+			// keep timing
+		} else if (diff < 0) {
+			// clip if slightly too long
+			c.outputOptions("-t", String(target));
+		} else {
+			// pad up to target (rare now that Runway duration >= target)
+			vf.push(`tpad=stop_duration=${diff}`);
 		}
 
+		// Light, global enhancement – no over‑processing
 		if (enhance) {
 			vf.push(
-				"unsharp=lx=5:ly=5:la=0.9:cx=3:cy=3:ca=0.45",
+				"unsharp=lx=4:ly=4:la=0.7:cx=3:cy=3:ca=0.4",
 				"eq=contrast=1.06:saturation=1.04:gamma=0.99"
 			);
 		}
 
 		if (vf.length) {
-			cmd.videoFilters(vf.join(","));
+			c.videoFilters(vf.join(","));
 		}
 
-		const preset = enhance ? "slow" : "veryfast";
-		const crf = enhance ? 17 : 18;
-
-		return cmd
+		return c
 			.outputOptions(
 				"-c:v",
 				"libx264",
 				"-preset",
-				preset,
+				enhance ? "slow" : "veryfast",
 				"-crf",
-				String(crf),
+				enhance ? "17" : "18",
 				"-pix_fmt",
 				"yuv420p",
 				"-y"
@@ -941,47 +628,65 @@ async function exactLen(src, target, out, opts = {}) {
 
 /**
  * exactLenAudio – keeps audio tightly aligned with target while avoiding big silent gaps.
+ * - small diffs: untouched
+ * - shorter audio: mild slow‑down + at most MAX_SILENCE_PAD silence
+ * - longer audio: mild speed‑up or trim for extreme overflows
  */
 async function exactLenAudio(src, target, out) {
-	const meta = await new Promise((resolve, reject) =>
-		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
+	const meta = await new Promise((r, j) =>
+		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
 	);
-
-	const inDur = meta.format?.duration || target;
+	const inDur = meta.format.duration;
 	const diff = +(target - inDur).toFixed(3);
 
-	await ffmpegPromise((cmd) => {
-		cmd.input(norm(src));
-
+	await ffmpegPromise((c) => {
+		c.input(norm(src));
 		const filters = [];
 
-		if (Math.abs(diff) <= 0.12) {
-		} else if (diff < -0.12) {
+		if (Math.abs(diff) <= 0.08) {
+			// essentially the same – keep as‑is
+		} else if (diff < -0.08) {
+			// audio longer than segment → gently compress or, if huge, trim
 			const ratio = inDur / target;
-
 			if (ratio <= 2.0) {
-				let tempo = ratio;
-				if (tempo > MAX_ATEMPO) tempo = MAX_ATEMPO;
-				if (tempo < MIN_ATEMPO) tempo = MIN_ATEMPO;
-				filters.push(`atempo=${tempo.toFixed(3)}`);
+				filters.push(`atempo=${ratio.toFixed(3)}`);
 			} else if (ratio <= 4.0) {
-				const r = Math.min(MAX_ATEMPO, Math.sqrt(ratio));
-				filters.push(`atempo=${r.toFixed(3)},atempo=${r.toFixed(3)}`);
+				const r = Math.sqrt(ratio).toFixed(3);
+				filters.push(`atempo=${r},atempo=${r}`);
 			} else {
-				cmd.outputOptions("-t", String(target));
+				// extreme outlier – hard trim
+				c.outputOptions("-t", String(target));
 			}
 		} else {
-			const padDur = Math.min(MAX_SILENCE_PAD, diff);
-			if (padDur > 0.05) {
-				filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
+			// audio shorter than segment (most common case)
+			const desiredMinDur = target - MAX_SILENCE_PAD;
+			if (desiredMinDur > 0 && inDur > 0.1) {
+				let tempo = inDur / desiredMinDur; // <1 slows down, >1 speeds up
+				tempo = Math.max(MIN_ATEMPO, Math.min(MAX_ATEMPO, tempo));
+				if (Math.abs(tempo - 1) > 0.02) {
+					filters.push(`atempo=${tempo.toFixed(3)}`);
+				}
+				const lenAfterTempo = inDur / tempo;
+				const remaining = target - lenAfterTempo;
+				if (remaining > 0.05) {
+					const padDur = Math.min(MAX_SILENCE_PAD, Math.max(0, remaining));
+					if (padDur > 0.05) {
+						filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
+					}
+				}
+			} else {
+				// degenerate case – just pad a little
+				const padDur = Math.min(MAX_SILENCE_PAD, diff);
+				if (padDur > 0.05) {
+					filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
+				}
 			}
 		}
 
 		if (filters.length) {
-			cmd.audioFilters(filters.join(","));
+			c.audioFilters(filters.join(","));
 		}
-
-		return cmd.outputOptions("-y").save(norm(out));
+		return c.outputOptions("-y").save(norm(out));
 	});
 }
 
@@ -1075,7 +780,7 @@ async function scrapeArticleText(url) {
 	}
 }
 
-/* SEO title – official, search‑friendly */
+/* SEO title – official, search‑friendly, non‑clickbait */
 async function generateSeoTitle(
 	headlinesOrTopic,
 	category,
@@ -1207,7 +912,7 @@ Return a JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${lo
 	return [`Breaking ${category} Story – ${CURRENT_MONTH_YEAR}`];
 }
 
-/* Top‑5 outline helper */
+/* Top‑5 outline helper so GPT is “smart” about which items it uses */
 async function generateTop5Outline(topic, language = DEFAULT_LANGUAGE) {
 	const ask = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
@@ -1264,10 +969,9 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 
 	const transform = buildCloudinaryTransformForRatio(ratio);
 
-	const prepped = await prepareImageForVideo(url, ratio, "trend_seed");
-
 	try {
-		const result = await cloudinary.uploader.upload(prepped, {
+		// Normal path: let Cloudinary fetch + transform + AI‑upscale
+		const result = await cloudinary.uploader.upload(url, {
 			...baseOpts,
 			transformation: transform,
 		});
@@ -1281,10 +985,71 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 			public_id: result.public_id,
 			url: result.secure_url,
 		};
-	} finally {
+	} catch (e) {
+		const msg = String(e?.message || "");
+		if (!msg.includes("Maximum image size is 25 Megapixels")) {
+			// Some other error – bubble up
+			throw e;
+		}
+
+		console.warn(
+			"[Cloudinary] 25MP limit hit, pre‑downscaling locally and retrying …"
+		);
+
+		// Fallback path: download + resize with ffmpeg, THEN upload
+		const { width, height } = targetResolutionForRatio(ratio);
+		const rawPath = await downloadImageToTemp(url, ".jpg");
+		const scaledPath = tmpFile("trend_scaled", ".jpg");
+
 		try {
-			fs.unlinkSync(prepped);
+			const vf = [];
+
+			if (width && height) {
+				vf.push(
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+					`crop=${width}:${height}`
+				);
+			}
+			// light sharpening so the still looks crisp before Runway
+			vf.push(
+				"unsharp=lx=4:ly=4:la=0.65:cx=3:cy=3:ca=0.4",
+				"eq=contrast=1.04:saturation=1.03:gamma=0.99"
+			);
+
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(rawPath))
+					.videoFilters(vf.join(","))
+					.outputOptions("-frames:v", "1", "-y")
+					.save(norm(scaledPath))
+			);
+		} finally {
+			try {
+				fs.unlinkSync(rawPath);
+			} catch (_) {}
+		}
+
+		const result = await cloudinary.uploader.upload(scaledPath, {
+			...baseOpts,
+			quality: "auto:best",
+			fetch_format: "auto",
+		});
+
+		try {
+			fs.unlinkSync(scaledPath);
 		} catch (_) {}
+
+		console.log("[Cloudinary] Seed image uploaded (fallback path) →", {
+			public_id: result.public_id,
+			width: result.width,
+			height: result.height,
+			format: result.format,
+		});
+
+		return {
+			public_id: result.public_id,
+			url: result.secure_url,
+		};
 	}
 }
 
@@ -1373,6 +1138,7 @@ async function retry(fn, max, lbl) {
 				}
 			}
 			last = e;
+			// Hard 4xx (except 429) are unrecoverable → do not keep retrying
 			if (status && status >= 400 && status < 500 && status !== 429) break;
 		}
 	}
@@ -1381,6 +1147,9 @@ async function retry(fn, max, lbl) {
 
 /* ───────────────────────────────────────────────────────────────
  *  Runway helpers for clips
+ *  - generateItvClipFromImage: primary path (Trends image)
+ *  - generateTtiItvClip: prompt-only path
+ *  - generateStaticClipFromImage: non-AI fallback on SAFETY / HumanSafety
  * ───────────────────────────────────────────────────────────── */
 async function generateItvClipFromImage({
 	segmentIndex,
@@ -1523,6 +1292,10 @@ async function generateTtiItvClip({
 
 /**
  * generateStaticClipFromImage – NON‑AI fallback when Runway flags SAFETY / HumanSafety
+ * or any unrecoverable error. Uses the highest quality source available:
+ *  - tries the original Trends image URL first
+ *  - falls back to the Cloudinary‑processed URL if needed
+ * Then turns it into a simple still‑frame video for the desired duration.
  */
 async function generateStaticClipFromImage({
 	segmentIndex,
@@ -1543,16 +1316,33 @@ async function generateStaticClipFromImage({
 
 	for (const url of candidates) {
 		try {
-			const localPath = await prepareImageForVideo(
-				url,
-				ratio,
-				`static_${segmentIndex}`
-			);
+			const localPath = await downloadImageToTemp(url, ".jpg");
 			const out = tmpFile(`seg_static_${segmentIndex}`, ".mp4");
+			const { width, height } = targetResolutionForRatio(ratio);
+			const vf = [];
+
+			if (width && height) {
+				vf.push(
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+					`crop=${width}:${height}`
+				);
+			}
+
+			// Subtle sharpening + contrast so the still looks crisp without halos
+			vf.push(
+				"unsharp=lx=4:ly=4:la=0.65:cx=3:cy=3:ca=0.4",
+				"eq=contrast=1.04:saturation=1.03:gamma=0.99"
+			);
 
 			await ffmpegPromise((c) => {
 				c.input(norm(localPath)).inputOptions("-loop", "1");
 
+				if (vf.length) {
+					c.videoFilters(vf.join(","));
+				}
+
+				// Slightly slower preset + lower CRF because this is our
+				// final visual when Runway rejects the image.
 				return c
 					.outputOptions(
 						"-t",
@@ -1756,6 +1546,8 @@ Constraints:
 /* ───────────────────────────────────────────────────────────────
  *  ElevenLabs helpers – dynamic voice selection + TTS
  * ───────────────────────────────────────────────────────────── */
+
+/** Fetches the user's ElevenLabs voices via /v1/voices */
 async function fetchElevenVoices() {
 	if (!ELEVEN_API_KEY) return null;
 	try {
@@ -1772,6 +1564,12 @@ async function fetchElevenVoices() {
 	}
 }
 
+/**
+ * Ask GPT to choose the best ElevenLabs voice for this video,
+ * based on category, language and script tone.
+ * For English, this is constrained to American / US accents only.
+ * Also tries to avoid reusing the last voice used by this user.
+ */
 async function selectBestElevenVoice(
 	language,
 	category,
@@ -1783,6 +1581,7 @@ async function selectBestElevenVoice(
 	const staticLanguageVoice = ELEVEN_VOICES[language];
 	const staticDefaultVoice = ELEVEN_VOICES[DEFAULT_LANGUAGE];
 
+	// Prefer a fallback that is not in the avoid list
 	const fallbackCandidates = [staticLanguageVoice, staticDefaultVoice].filter(
 		(id, idx, arr) => id && arr.indexOf(id) === idx && !avoidSet.has(id)
 	);
@@ -1816,6 +1615,7 @@ async function selectBestElevenVoice(
 
 	let candidates = slimVoices;
 
+	// ★ Ensure English uses an American / US accent only where possible
 	if (language === "English") {
 		const americanCandidates = slimVoices.filter((v) => {
 			const labels = v.labels || {};
@@ -1852,6 +1652,7 @@ async function selectBestElevenVoice(
 		}
 	}
 
+	// Avoid the last used voice if possible
 	if (avoidSet.size) {
 		const filtered = candidates.filter((v) => !avoidSet.has(v.id));
 		if (filtered.length) {
@@ -1946,6 +1747,10 @@ Return ONLY JSON:
 	return null;
 }
 
+/**
+ * ElevenLabs TTS helper (per‑segment), now taking explicit voiceId so that GPT
+ * can choose the voice dynamically once per video.
+ */
 async function elevenLabsTTS(
 	text,
 	language,
@@ -1997,7 +1802,8 @@ async function elevenLabsTTS(
 
 /* ───────────────────────────────────────────────────────────────
  *  OpenAI “director” – build full video plan (segments + visuals)
- * ─────────────────────────────────────────────────────────────── */
+ *  (Runway prompts: no real names, stay faithful to attached image)
+ * ───────────────────────────────────────────────────────────── */
 async function buildVideoPlanWithGPT({
 	topic,
 	category,
@@ -2251,6 +2057,7 @@ Return JSON of the form:
 		);
 	}
 
+	// Normalise & clamp
 	const segments = plan.segments.map((s, idx) => {
 		const runwayPrompt = String(s.runwayPrompt || "").trim();
 		const negativePromptRaw = String(s.negativePrompt || "").trim();
@@ -2289,6 +2096,7 @@ exports.createVideo = async (req, res) => {
 	const ratio = ratioIn;
 	const duration = +durIn;
 
+	/* SSE bootstrap */
 	res.setHeader("Content-Type", "text/event-stream");
 	res.setHeader("Cache-Control", "no-cache");
 	res.setHeader("Connection", "keep-alive");
@@ -2343,7 +2151,9 @@ exports.createVideo = async (req, res) => {
 			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}`
 		);
 
-		/* 1. Topic resolution & Trends */
+		/* ─────────────────────────────────────────────────────────
+		 *  1.  Topic resolution & Google Trends
+		 * ───────────────────────────────────────────────────────── */
 		let topic = "";
 		let trendStory = null;
 		let trendArticleText = null;
@@ -2374,7 +2184,9 @@ exports.createVideo = async (req, res) => {
 		if (customPrompt && !topic) {
 			try {
 				topic = await topicFromCustomPrompt(customPrompt);
-			} catch {}
+			} catch {
+				/* ignore – fallback below */
+			}
 		}
 
 		if (!topic) {
@@ -2401,13 +2213,16 @@ exports.createVideo = async (req, res) => {
 
 		console.log(`[Job] final topic="${topic}"`);
 
+		// If we have a Trends story, grab a little article text for better grounding
 		if (trendStory && trendStory.articles && trendStory.articles.length) {
 			trendArticleText = await scrapeArticleText(
 				trendStory.articles[0].url || null
 			);
 		}
 
-		/* 2. Segment timing */
+		/* ─────────────────────────────────────────────────────────
+		 *  2.  Segment timing (Intro + body segments)
+		 * ───────────────────────────────────────────────────────── */
 		const INTRO = 3;
 		let segCnt =
 			category === "Top5" ? 6 : Math.ceil((duration - INTRO) / 10) + 1;
@@ -2441,14 +2256,19 @@ exports.createVideo = async (req, res) => {
 			segWordCaps,
 		});
 
-		/* 3. Top‑5 outline if needed */
+		/* ─────────────────────────────────────────────────────────
+		 *  3.  Top‑5 outline if needed
+		 * ───────────────────────────────────────────────────────── */
 		let top5Outline = null;
 		if (category === "Top5") {
 			top5Outline = await generateTop5Outline(topic, language);
 		}
 
-		/* 4. Upload Trends images to Cloudinary */
-		let trendImagePairs = [];
+		/* ─────────────────────────────────────────────────────────
+		 *  4.  Upload Trends images to Cloudinary (if available)
+		 *      (track both original + Cloudinary URL for best quality)
+		 * ───────────────────────────────────────────────────────── */
+		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
 		const canUseTrendsImages =
 			category !== "Top5" &&
 			!userOverrides &&
@@ -2487,7 +2307,9 @@ exports.createVideo = async (req, res) => {
 
 		const hasTrendImages = trendImagePairs.length > 0;
 
-		/* 5. Let OpenAI orchestrate segments + visuals */
+		/* ─────────────────────────────────────────────────────────
+		 *  5.  Let OpenAI orchestrate segments + visuals
+		 * ───────────────────────────────────────────────────────── */
 		console.log("[GPT] building full video plan …");
 
 		const plan = await buildVideoPlanWithGPT({
@@ -2511,10 +2333,10 @@ exports.createVideo = async (req, res) => {
 			hasImages: hasTrendImages,
 		});
 
-		// Per‑segment hard cap tightening
+		// Tighten narration to fit word caps using GPT when necessary
 		await Promise.all(
 			segments.map((s, i) =>
-				countWordsInText(s.scriptText) <= segWordCaps[i]
+				s.scriptText.trim().split(/\s+/).length <= segWordCaps[i]
 					? s
 					: (async () => {
 							const ask = `
@@ -2534,25 +2356,9 @@ One or two sentences only.
 			)
 		);
 
-		// Global script retargeting so natural spoken time ≈ duration
-		try {
-			const adjusted = await retargetScriptToDuration(
-				segments,
-				duration,
-				segWordCaps,
-				category,
-				language
-			);
-			if (adjusted) {
-				segments = adjusted;
-			}
-		} catch (e) {
-			console.warn("[Timing] retargetScriptToDuration failed →", e.message);
-		}
-
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 
-		// Recompute segment durations from final script
+		// Recompute segment durations from actual script to minimise long pauses
 		const recomputed = recomputeSegmentDurationsFromScript(segments, duration);
 		if (recomputed && recomputed.length === segLens.length) {
 			console.log("[Timing] Recomputed segment durations from script:", {
@@ -2563,7 +2369,9 @@ One or two sentences only.
 		}
 		segCnt = segLens.length;
 
-		/* 6. Global style, SEO title, tags */
+		/* ─────────────────────────────────────────────────────────
+		 *  6.  Global style, SEO title, tags
+		 * ───────────────────────────────────────────────────────── */
 		let globalStyle = "";
 		try {
 			const g = await openai.chat.completions.create({
@@ -2631,7 +2439,9 @@ One or two sentences only.
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
 		tags = [...new Set(tags)];
 
-		/* 7. Load last ElevenLabs voice */
+		/* ─────────────────────────────────────────────────────────
+		 *  7.  Load last ElevenLabs voice (to avoid repeating it)
+		 * ───────────────────────────────────────────────────────── */
 		let lastVoiceMeta = null;
 		let avoidVoiceIds = [];
 		try {
@@ -2656,7 +2466,9 @@ One or two sentences only.
 			);
 		}
 
-		/* 8. Dynamic ElevenLabs voice selection */
+		/* ─────────────────────────────────────────────────────────
+		 *  8.  Dynamic ElevenLabs voice selection from /voices + GPT
+		 * ───────────────────────────────────────────────────────── */
 		let chosenVoice = null;
 		try {
 			chosenVoice = await selectBestElevenVoice(
@@ -2677,7 +2489,9 @@ One or two sentences only.
 			console.warn("[TTS] Voice selection failed →", e.message);
 		}
 
-		/* 9. Optional background music */
+		/* ─────────────────────────────────────────────────────────
+		 *  9.  Optional background music (planned by GPT)
+		 * ───────────────────────────────────────────────────────── */
 		let music = null;
 		let voiceGain = 1.4;
 		let musicGain = 0.12;
@@ -2762,7 +2576,10 @@ One or two sentences only.
 			};
 		}
 
-		/* 10. Per‑segment video generation */
+		/* ─────────────────────────────────────────────────────────
+		 * 10. PER‑SEGMENT VIDEO GENERATION
+		 *      - Use Trends image → ITV; SAFETY / HumanSafety fallback → highest‑quality static
+		 * ───────────────────────────────────────────────────────── */
 		const clips = [];
 		sendPhase("GENERATING_CLIPS", {
 			msg: "Generating clips",
@@ -2776,6 +2593,7 @@ One or two sentences only.
 			const seg = segments[i];
 			const segIndex = i + 1;
 
+			// Runway supports discrete durations; always generate ≥ target
 			const rw = d <= 5 ? 5 : 10;
 
 			console.log(
@@ -2819,6 +2637,7 @@ One or two sentences only.
 				});
 
 				try {
+					// Primary path: image_to_video using high‑res Cloudinary seed
 					clipPath = await generateItvClipFromImage({
 						segmentIndex: segIndex,
 						imgUrl: imgUrlCloudinary,
@@ -2860,6 +2679,7 @@ One or two sentences only.
 					}
 				}
 			} else {
+				// No Trends images at all – prompt-only path
 				console.log("[Runway] prompt preview", {
 					segment: segIndex,
 					promptPreview: promptText.slice(0, 160),
@@ -2874,6 +2694,7 @@ One or two sentences only.
 				});
 			}
 
+			// Adjust to exact segment duration + enhance / normalise resolution
 			const fixed = tmpFile(`fx_${segIndex}`, ".mp4");
 			await exactLen(clipPath, d, fixed, { ratio, enhance: true });
 			try {
@@ -2890,7 +2711,9 @@ One or two sentences only.
 			console.log("[Phase] GENERATING_CLIPS → Rendering segment", segIndex);
 		}
 
-		/* 11. Concatenate silent video */
+		/* ─────────────────────────────────────────────────────────
+		 * 11.  Concatenate silent video
+		 * ───────────────────────────────────────────────────────── */
 		sendPhase("ASSEMBLING_VIDEO", { msg: "Concatenating clips…" });
 		console.log("[Phase] ASSEMBLING_VIDEO → Concatenating clips");
 
@@ -2916,6 +2739,7 @@ One or two sentences only.
 		});
 
 		const silentFixed = tmpFile("silent_fix", ".mp4");
+		// timing cleanup only; no extra enhancement pass
 		await exactLen(silent, duration, silentFixed, {
 			ratio,
 			enhance: false,
@@ -2924,7 +2748,9 @@ One or two sentences only.
 			fs.unlinkSync(silent);
 		} catch {}
 
-		/* 12. Voice‑over & music */
+		/* ─────────────────────────────────────────────────────────
+		 * 12.  Voice‑over & music
+		 * ───────────────────────────────────────────────────────── */
 		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
 		console.log("[Phase] ADDING_VOICE_MUSIC → Creating audio layer");
 
@@ -3040,7 +2866,9 @@ One or two sentences only.
 			fs.unlinkSync(mixedRaw);
 		} catch {}
 
-		/* 13. Mux audio + video */
+		/* ─────────────────────────────────────────────────────────
+		 * 13.  Mux audio + video  (higher quality final encode)
+		 * ───────────────────────────────────────────────────────── */
 		sendPhase("SYNCING_VOICE_MUSIC", { msg: "Muxing final video" });
 		console.log("[Phase] SYNCING_VOICE_MUSIC → Muxing final video");
 
@@ -3080,7 +2908,9 @@ One or two sentences only.
 			fs.unlinkSync(mixed);
 		} catch {}
 
-		/* 14. YouTube upload (best‑effort) */
+		/* ─────────────────────────────────────────────────────────
+		 * 14.  YouTube upload (best‑effort)
+		 * ───────────────────────────────────────────────────────── */
 		let youtubeLink = "";
 		let youtubeTokens = null;
 		try {
@@ -3118,7 +2948,9 @@ One or two sentences only.
 			console.warn("[YouTube] upload skipped →", e.message);
 		}
 
-		/* 15. Prepare voice + music metadata */
+		/* ─────────────────────────────────────────────────────────
+		 * 15.  Prepare voice + music metadata for persistence
+		 * ───────────────────────────────────────────────────────── */
 		const elevenLabsVoice =
 			chosenVoice || voiceToneSample
 				? {
@@ -3132,7 +2964,9 @@ One or two sentences only.
 				  }
 				: null;
 
-		/* 16. Persist to Mongo */
+		/* ─────────────────────────────────────────────────────────
+		 * 16.  Persist to Mongo
+		 * ───────────────────────────────────────────────────────── */
 		const doc = await Video.create({
 			user: user._id,
 			category,
@@ -3213,7 +3047,9 @@ One or two sentences only.
 			console.log("[Phase] VIDEO_SCHEDULED");
 		}
 
-		/* 17. DONE */
+		/* ─────────────────────────────────────────────────────────
+		 * 17.  DONE
+		 * ───────────────────────────────────────────────────────── */
 		sendPhase("COMPLETED", {
 			id: doc._id,
 			youtubeLink,
