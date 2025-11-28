@@ -114,7 +114,7 @@ const videoSchema = new mongoose.Schema(
 				"960:960",
 				"1584:672",
 			],
-			default: "1280:720",
+			default: "720:1280",
 		},
 		duration: {
 			type: Number,
@@ -174,6 +174,12 @@ const videoSchema = new mongoose.Schema(
 				public_id: "",
 				url: "",
 			},
+		},
+		backgroundMusic: {
+			type: Object,
+		},
+		elevenLabsVoice: {
+			type: Object,
 		},
 	},
 	{ timestamps: true }

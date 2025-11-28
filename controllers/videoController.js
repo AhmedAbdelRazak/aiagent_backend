@@ -1,16 +1,19 @@
 /** @format */
-/*  videoController.js  — high‑motion, trends‑driven edition
+/*  videoController.js  — high‑motion, trends‑driven edition (enhanced)
  *  ✅ Uses Google Trends images per segment (non‑redundant where possible)
+ *  ✅ Local high‑quality preprocessing for all seed images (optional Real‑ESRGAN super‑resolution)
  *  ✅ Cloudinary normalises aspect ratio & upscales/enhances images before Runway
- *  ✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos
  *  ✅ Runway image‑to‑video as the primary path; safety-only fallback to original static image
- *  ✅ Static fallback now uses best‑quality source (original URL first) + lanczos scaling
+ *  ✅ Static fallback now uses best‑quality source (original URL first) + high‑quality lanczos scaling
  *  ✅ Runway clips always ≥ segment duration (no big freeze‑frame padding)
  *  ✅ OpenAI plans narration + visuals dynamically from Trends + article links
  *  ✅ Prompts emphasise clear, human‑like motion in every segment
  *  ✅ ElevenLabs voice picked dynamically via /voices + GPT, with American accent for English
- *  ✅ Background music planned via GPT (search term + voice/music gains)
+ *  ✅ NEW: Orchestrator avoids reusing the last ElevenLabs voice for the same user when possible
+ *  ✅ NEW: Voice planning nudged towards clear, motivated, brisk American‑style delivery (non‑sensitive topics)
+ *  ✅ Background music planned via GPT (search term + voice/music gains) & metadata saved on Video
  *  ✅ Script timing recomputed from words → far fewer long pauses
+ *  ✅ NEW: GPT retargets the script so natural spoken time lands within (duration - 2) .. duration seconds
  *  ✅ Phases kept in sync with GenerationModal (INIT → … → COMPLETED / ERROR)
  */
 
@@ -126,6 +129,55 @@ assertExists(
 );
 const FONT_PATH_FFMPEG = FONT_PATH.replace(/\\/g, "/").replace(/:/g, "\\:");
 
+/* Optional Real‑ESRGAN (local AI super‑resolution for seed images) */
+function resolveRealEsrganPath() {
+	const p = process.env.REAL_ESRGAN_PATH;
+	if (!p) return null;
+
+	// 1) Confirm the file actually exists
+	if (!fs.existsSync(p)) {
+		console.warn(
+			"[RealESRGAN] REAL_ESRGAN_PATH is set but file does not exist →",
+			p
+		);
+		return null;
+	}
+
+	// 2) Try to launch it once with "-h".
+	//    We treat ANY exit code as "OK" as long as it starts without ENOENT.
+	try {
+		const res = child_process.spawnSync(p, ["-h"], {
+			windowsHide: true,
+			stdio: "ignore",
+		});
+
+		if (res.error && res.error.code === "ENOENT") {
+			console.warn(
+				"[RealESRGAN] REAL_ESRGAN_PATH is set but executable not found →",
+				res.error.message
+			);
+			return null;
+		}
+
+		// If we get here, the process started successfully.
+		return p;
+	} catch (e) {
+		console.warn(
+			"[RealESRGAN] REAL_ESRGAN_PATH is set but binary failed to launch →",
+			e.message
+		);
+		return null;
+	}
+}
+
+const REAL_ESRGAN_PATH = resolveRealEsrganPath();
+const HAS_REAL_ESRGAN = !!REAL_ESRGAN_PATH;
+console.log(
+	`[RealESRGAN] ${
+		HAS_REAL_ESRGAN ? `enabled at ${REAL_ESRGAN_PATH}` : "not configured"
+	}`
+);
+
 /* ───────────────────────────────────────────────────────────────
  *  Global constants
  * ───────────────────────────────────────────────────────────── */
@@ -151,12 +203,12 @@ const VALID_RATIOS = [
  * WORDS_PER_SEC: conservative cap used when asking GPT for max words.
  * NATURAL_WPS: more realistic speed used when recomputing durations from script.
  */
-const WORDS_PER_SEC = 2.1;
-const NATURAL_WPS = 2.25;
+const WORDS_PER_SEC = 2.35;
+const NATURAL_WPS = 2.45;
 
-const MAX_SILENCE_PAD = 0.35; // seconds of silence we’re willing to add at the end of a segment
-const MIN_ATEMPO = 0.9; // min speed change (slowest)
-const MAX_ATEMPO = 1.15; // max speed change (fastest)
+const MAX_SILENCE_PAD = 0.35;
+const MIN_ATEMPO = 0.9;
+const MAX_ATEMPO = 1.18;
 
 /* Gen‑4 Turbo everywhere for speed + fidelity */
 const T2V_MODEL = "gen4_turbo";
@@ -186,6 +238,8 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"blur",
 	"blurry",
 	"soft focus",
+	"out of focus",
+	"motion blur",
 	"overexposed",
 	"underexposed",
 	"watermark",
@@ -202,10 +256,24 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"frozen frame",
 	"no motion",
 	"still image",
+	"deformed face",
+	"melted face",
+	"distorted face",
+	"warped face",
+	"plastic skin",
+	"doll-like face",
+	"over-sharpened",
+	"oversharpened",
+	"grainy",
+	"artifact",
+	"compression artifacts",
+	"glitch",
+	"streaks",
+	"ghosting",
 ].join(", ");
 
 const HUMAN_SAFETY =
-	"anatomically correct, natural human faces, one natural‑looking head, two eyes, normal limbs, realistic body proportions, natural head position, natural skin texture";
+	"anatomically correct, natural human faces, one natural‑looking head, two eyes, normal limbs, realistic body proportions, natural head position, natural skin texture, sharp and in‑focus facial features, no distortion, no warping, no blurring";
 
 const BRAND_ENHANCEMENT_HINT =
 	"subtle global brightness and contrast boost, slightly brighter and clearer faces while preserving natural skin tones, consistent AiVideomatic brand color grading";
@@ -289,7 +357,7 @@ const PROMPT_CHAR_LIMIT = 220;
 const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
 
-/* remove surrounding markdown code fence if present, without using literal ``` */
+// remove surrounding markdown code fence if present, without using literal ```
 const TICK_CHAR = String.fromCharCode(96);
 function stripCodeFence(s) {
 	const marker = TICK_CHAR + TICK_CHAR + TICK_CHAR;
@@ -318,7 +386,7 @@ function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
-/** Download image from URL to a temp file (used for 25MP fallback and static clips) */
+/** Download image from URL to a temp file (used for Trends and static clips) */
 async function downloadImageToTemp(url, ext = ".jpg") {
 	const tmp = tmpFile("trend_raw", ext);
 	const writer = fs.createWriteStream(tmp);
@@ -376,7 +444,7 @@ function improveTTSPronunciation(text) {
 	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
 }
 
-/* Voice tone classification – excited, varied, but respectful on tragedy */
+/* Voice tone classification */
 function deriveVoiceSettings(text, category = "Other") {
 	const baseStyle = ELEVEN_STYLE_BY_CATEGORY[category] ?? 0.7;
 	const lower = String(text || "").toLowerCase();
@@ -386,7 +454,7 @@ function deriveVoiceSettings(text, category = "Other") {
 	let style = baseStyle;
 	let stability = 0.15;
 	let similarityBoost = 0.92;
-	let openaiSpeed = 1.03;
+	let openaiSpeed = 1.06;
 
 	if (isSensitive) {
 		style = 0.25;
@@ -402,13 +470,13 @@ function deriveVoiceSettings(text, category = "Other") {
 			category === "Entertainment";
 
 		if (isHype) {
-			style = Math.min(1, baseStyle + 0.25);
+			style = Math.min(1, baseStyle + 0.3);
 			stability = 0.13;
-			openaiSpeed = 1.07;
+			openaiSpeed = 1.12;
 		} else {
-			style = Math.min(1, baseStyle + 0.1);
+			style = Math.min(1, baseStyle + 0.15);
 			stability = 0.17;
-			openaiSpeed = 1.02;
+			openaiSpeed = 1.08;
 		}
 	}
 
@@ -419,6 +487,14 @@ function deriveVoiceSettings(text, category = "Other") {
 		openaiSpeed,
 		isSensitive,
 	};
+}
+
+/* simple word counter */
+function countWordsInText(text) {
+	return String(text || "")
+		.trim()
+		.split(/\s+/)
+		.filter(Boolean).length;
 }
 
 /* Recompute segment durations from final script to avoid long pauses */
@@ -434,10 +510,7 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	const MIN_SEGMENT_SECONDS = 2.5;
 
 	const est = segments.map((s, idx) => {
-		const words = String(s.scriptText || "")
-			.trim()
-			.split(/\s+/)
-			.filter(Boolean).length;
+		const words = countWordsInText(s.scriptText || "");
 		const basePause = idx === segments.length - 1 ? 0.35 : 0.25;
 		const raw = (words || 1) / NATURAL_WPS + basePause;
 		return Math.max(MIN_SEGMENT_SECONDS, raw);
@@ -452,13 +525,13 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	let total = scaled.reduce((a, b) => a + b, 0);
 	let diff = +(targetTotalSeconds - total).toFixed(2);
 
-	// distribute rounding difference across segments with tiny nudges
 	let idx = scaled.length - 1;
 	const step = diff > 0 ? 0.1 : -0.1;
 	while (Math.abs(diff) > 0.05 && scaled.length && idx >= 0) {
 		const candidate = scaled[idx] + step;
 		if (candidate >= MIN_SEGMENT_SECONDS) {
-			scaled[idx] = candidate;
+			sd = candidate;
+			scaled[idx] = sd;
 			diff -= step;
 		}
 		idx--;
@@ -466,6 +539,140 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	}
 
 	return scaled.map((v) => +v.toFixed(2));
+}
+
+/* Retarget whole script so natural spoken time ≈ requested duration */
+async function retargetScriptToDuration(
+	segments,
+	targetTotalSeconds,
+	segWordCaps,
+	category,
+	language
+) {
+	if (
+		!Array.isArray(segments) ||
+		!segments.length ||
+		!targetTotalSeconds ||
+		!Number.isFinite(targetTotalSeconds)
+	) {
+		return segments;
+	}
+
+	const wordCounts = segments.map((s) => countWordsInText(s.scriptText));
+	const totalWords = wordCounts.reduce((a, b) => a + b, 0);
+	if (!totalWords) return segments;
+
+	const estSeconds = totalWords / NATURAL_WPS;
+	const minSeconds = Math.max(5, targetTotalSeconds - 2);
+	const maxSeconds = targetTotalSeconds;
+
+	if (estSeconds >= minSeconds && estSeconds <= maxSeconds) {
+		return segments;
+	}
+
+	const minWords = Math.floor(minSeconds * NATURAL_WPS);
+	const maxWords = Math.floor(maxSeconds * NATURAL_WPS);
+	const targetWords = Math.round((minWords + maxWords) / 2);
+
+	const caps =
+		Array.isArray(segWordCaps) && segWordCaps.length === segments.length
+			? segWordCaps.map((c) =>
+					Number.isFinite(c) && c > 0 ? Math.floor(c) : null
+			  )
+			: segments.map(() => null);
+
+	const payloadSegments = segments.map((s, idx) => ({
+		index: typeof s.index === "number" ? s.index : idx + 1,
+		scriptText: String(s.scriptText || "").trim(),
+	}));
+
+	const toneHint = TONE_HINTS[category] || "";
+	const ask = `
+You are editing the narration for a short-form ${category} video.
+
+The script is split into ${
+		segments.length
+	} segments, which will be read aloud at about ${NATURAL_WPS.toFixed(
+		2
+	)} words per second.
+
+Current script:
+- Approximate total words: ${totalWords}
+- Estimated reading time: ~${estSeconds.toFixed(1)} seconds.
+
+Target:
+- Video length: ${targetTotalSeconds} seconds.
+- Desired reading time window: ${minSeconds.toFixed(1)}–${maxSeconds.toFixed(
+		1
+	)} seconds.
+- So the total word count across ALL segments should be between ${minWords} and ${maxWords} words (ideally near ${targetWords}).
+
+Constraints:
+- Keep the same number of segments and the same order.
+- Preserve all important facts and logical flow, but you may compress or expand phrasing.
+- Each segment must NOT exceed its max word cap from this array (treat these as hard limits):
+
+wordCaps = [${caps.map((c) => (c === null ? "null" : c)).join(", ")}]
+
+Additional style:
+${toneHint ? `- ${toneHint}` : ""}
+- All narration must remain in ${language}.
+- Segment 1 must remain a strong hook.
+- The final segment must still feel like a natural ending.
+
+Return ONLY JSON with this exact shape:
+{
+  "segments": [
+    { "index": 1, "scriptText": "..." },
+    ...
+  ]
+}
+
+Here are the current segments as JSON:
+${JSON.stringify(payloadSegments).slice(0, 12000)}
+`.trim();
+
+	for (let attempt = 1; attempt <= 2; attempt++) {
+		try {
+			const { choices } = await openai.chat.completions.create({
+				model: CHAT_MODEL,
+				messages: [{ role: "user", content: ask }],
+			});
+			const raw = strip(choices[0].message.content);
+			const parsed = JSON.parse(raw);
+			if (!parsed || !Array.isArray(parsed.segments)) continue;
+
+			const incoming = parsed.segments;
+			if (incoming.length !== segments.length) continue;
+
+			const merged = segments.map((s, idx) => ({
+				...s,
+				scriptText: String(
+					incoming[idx]?.scriptText || s.scriptText || ""
+				).trim(),
+			}));
+
+			const newWordsTotal = merged.reduce(
+				(acc, seg) => acc + countWordsInText(seg.scriptText),
+				0
+			);
+			const newEstSeconds = newWordsTotal / NATURAL_WPS;
+			console.log("[Timing] retargetScriptToDuration result", {
+				oldWords: totalWords,
+				newWords: newWordsTotal,
+				oldSecs: estSeconds.toFixed(2),
+				newSecs: newEstSeconds.toFixed(2),
+			});
+			return merged;
+		} catch (e) {
+			console.warn(
+				`[Timing] retargetScriptToDuration attempt ${attempt} failed →`,
+				e.message
+			);
+		}
+	}
+
+	return segments;
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -497,7 +704,7 @@ function targetResolutionForRatio(ratio) {
 		case "960:960":
 			return { width: 1080, height: 1080 };
 		case "1104:832":
-			return { width: 1440, height: 1080 }; // ~4:3
+			return { width: 1440, height: 1080 };
 		case "1584:672":
 		case "1280:720":
 		default:
@@ -515,6 +722,7 @@ function buildCloudinaryTransformForRatio(ratio) {
 		gravity: "auto",
 		quality: "auto:best",
 		fetch_format: "auto",
+		dpr: "auto",
 	};
 	if (width && height) {
 		base.width = width;
@@ -523,7 +731,12 @@ function buildCloudinaryTransformForRatio(ratio) {
 		base.aspect_ratio = aspect;
 	}
 
-	return [base, { effect: "sharpen:80" }, { effect: "contrast:25" }];
+	return [
+		base,
+		{ effect: "upscale" },
+		{ effect: "improve" },
+		{ effect: "sharpen:80" },
+	];
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -538,6 +751,115 @@ function ffmpegPromise(cfg) {
 	});
 }
 
+/** local super‑resolution using Real‑ESRGAN if available */
+async function maybeUpscaleWithRealEsrgan(srcPath, ratio) {
+	if (!HAS_REAL_ESRGAN || !srcPath) return srcPath;
+
+	try {
+		const meta = await new Promise((resolve, reject) =>
+			ffmpeg.ffprobe(srcPath, (err, data) =>
+				err ? reject(err) : resolve(data)
+			)
+		);
+		const stream = Array.isArray(meta.streams)
+			? meta.streams.find((s) => s.width && s.height)
+			: null;
+		const inW = stream?.width;
+		const inH = stream?.height;
+		if (!inW || !inH) return srcPath;
+
+		const targetRes = targetResolutionForRatio(ratio);
+		const shortTarget = Math.min(
+			targetRes?.width || inW,
+			targetRes?.height || inH
+		);
+		const shortIn = Math.min(inW, inH);
+
+		if (!shortTarget || shortIn >= shortTarget * 0.9) {
+			return srcPath;
+		}
+
+		const rawFactor = shortTarget / shortIn;
+		let scaleFactor = rawFactor <= 2.3 ? 2 : 4;
+		if (scaleFactor <= 1.2) return srcPath;
+		if (scaleFactor > 4) scaleFactor = 4;
+
+		const outPath = tmpFile("esr_up", path.extname(srcPath) || ".png");
+		console.log(
+			`[RealESRGAN] Upscaling seed from ${inW}x${inH} by x${scaleFactor}`
+		);
+
+		await new Promise((resolve, reject) => {
+			const args = ["-i", srcPath, "-o", outPath, "-s", String(scaleFactor)];
+			const child = child_process.spawn(REAL_ESRGAN_PATH, args, {
+				stdio: "ignore",
+			});
+			child.on("error", reject);
+			child.on("close", (code) => {
+				if (code === 0) resolve();
+				else reject(new Error(`RealESRGAN exited with non‑zero code ${code}`));
+			});
+		});
+
+		return outPath;
+	} catch (e) {
+		console.warn("[RealESRGAN] upscale failed →", e.message);
+		return srcPath;
+	}
+}
+
+/**
+ * Prepare a still image for use as a high‑quality video seed:
+ * download → (optional Real‑ESRGAN) → scale/crop → subtle sharpen/contrast.
+ * Returns a local file path.
+ */
+async function prepareImageForVideo(url, ratio, tag = "img") {
+	const rawPath = await downloadImageToTemp(url, ".jpg");
+	let workPath = rawPath;
+	let scaledPath = null;
+
+	try {
+		const maybeUpscaled = await maybeUpscaleWithRealEsrgan(workPath, ratio);
+		if (maybeUpscaled && maybeUpscaled !== workPath) {
+			workPath = maybeUpscaled;
+		}
+
+		const { width, height } = targetResolutionForRatio(ratio);
+		if (width && height) {
+			scaledPath = tmpFile(`${tag}_prep`, ".jpg");
+			const vf = [
+				`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+				`crop=${width}:${height}`,
+				"unsharp=lx=5:ly=5:la=0.75:cx=3:cy=3:ca=0.45",
+				"eq=contrast=1.06:saturation=1.04:gamma=0.99",
+			];
+
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(workPath))
+					.videoFilters(vf.join(","))
+					.outputOptions("-frames:v", "1", "-y")
+					.save(norm(scaledPath))
+			);
+		}
+	} catch (e) {
+		console.warn("[ImagePrep] preprocessing failed →", e.message);
+	}
+
+	const outPath = scaledPath || workPath;
+	if (outPath !== rawPath) {
+		try {
+			if (workPath && workPath !== outPath && workPath !== rawPath) {
+				fs.unlinkSync(workPath);
+			}
+		} catch (_) {}
+		try {
+			fs.unlinkSync(rawPath);
+		} catch (_) {}
+	}
+	return outPath;
+}
+
 /**
  * exactLen – normalises video clips:
  * - optional upscale/crop to canonical resolution per ratio
@@ -546,57 +868,69 @@ function ffmpegPromise(cfg) {
  */
 async function exactLen(src, target, out, opts = {}) {
 	const { ratio = null, enhance = false } = opts;
-	const meta = await new Promise((r, j) =>
-		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
+
+	const meta = await new Promise((resolve, reject) =>
+		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
 	);
-	const diff = +(target - meta.format.duration).toFixed(3);
+
+	const inDur = meta.format?.duration || target;
+	const diff = +(target - inDur).toFixed(3);
 
 	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
+	const videoStream = Array.isArray(meta.streams)
+		? meta.streams.find((s) => s.codec_type === "video")
+		: null;
+	const inW = videoStream?.width;
+	const inH = videoStream?.height;
 
-	await ffmpegPromise((c) => {
-		c.input(norm(src));
+	await ffmpegPromise((cmd) => {
+		cmd.input(norm(src));
 
 		const vf = [];
 
-		// Normalise resolution only once per seed clip
 		if (enhance && targetRes && targetRes.width && targetRes.height) {
 			const { width, height } = targetRes;
-			vf.push(
-				`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
-				`crop=${width}:${height}`
-			);
+			const needsResize =
+				!inW || !inH || Math.abs(inW - width) > 8 || Math.abs(inH - height) > 8;
+
+			if (needsResize) {
+				vf.push(
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+					`crop=${width}:${height}`
+				);
+			}
 		}
 
-		if (Math.abs(diff) < 0.05) {
-			// keep timing
-		} else if (diff < 0) {
-			// clip if slightly too long
-			c.outputOptions("-t", String(target));
-		} else {
-			// pad up to target (rare now that Runway duration >= target)
-			vf.push(`tpad=stop_duration=${diff}`);
+		if (Math.abs(diff) >= 0.08) {
+			if (diff < 0) {
+				cmd.outputOptions("-t", String(target));
+			} else {
+				vf.push(`tpad=stop_duration=${diff.toFixed(3)}`);
+			}
 		}
 
-		// Light, global enhancement – no over‑processing
 		if (enhance) {
 			vf.push(
 				"unsharp=lx=5:ly=5:la=0.9:cx=3:cy=3:ca=0.45",
-				"eq=contrast=1.05:saturation=1.03:gamma=0.98"
+				"eq=contrast=1.06:saturation=1.04:gamma=0.99"
 			);
 		}
 
 		if (vf.length) {
-			c.videoFilters(vf.join(","));
+			cmd.videoFilters(vf.join(","));
 		}
 
-		return c
+		const preset = enhance ? "slow" : "veryfast";
+		const crf = enhance ? 17 : 18;
+
+		return cmd
 			.outputOptions(
 				"-c:v",
 				"libx264",
 				"-preset",
-				enhance ? "slow" : "veryfast",
+				preset,
 				"-crf",
-				enhance ? "17" : "18",
+				String(crf),
 				"-pix_fmt",
 				"yuv420p",
 				"-y"
@@ -607,65 +941,47 @@ async function exactLen(src, target, out, opts = {}) {
 
 /**
  * exactLenAudio – keeps audio tightly aligned with target while avoiding big silent gaps.
- * - small diffs: untouched
- * - shorter audio: mild slow‑down + at most MAX_SILENCE_PAD silence
- * - longer audio: mild speed‑up or trim for extreme overflows
  */
 async function exactLenAudio(src, target, out) {
-	const meta = await new Promise((r, j) =>
-		ffmpeg.ffprobe(src, (e, d) => (e ? j(e) : r(d)))
+	const meta = await new Promise((resolve, reject) =>
+		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
 	);
-	const inDur = meta.format.duration;
+
+	const inDur = meta.format?.duration || target;
 	const diff = +(target - inDur).toFixed(3);
 
-	await ffmpegPromise((c) => {
-		c.input(norm(src));
+	await ffmpegPromise((cmd) => {
+		cmd.input(norm(src));
+
 		const filters = [];
 
-		if (Math.abs(diff) <= 0.08) {
-			// essentially the same – keep as‑is
-		} else if (diff < -0.08) {
-			// audio longer than segment → gently compress or, if huge, trim
+		if (Math.abs(diff) <= 0.12) {
+		} else if (diff < -0.12) {
 			const ratio = inDur / target;
+
 			if (ratio <= 2.0) {
-				filters.push(`atempo=${ratio.toFixed(3)}`);
+				let tempo = ratio;
+				if (tempo > MAX_ATEMPO) tempo = MAX_ATEMPO;
+				if (tempo < MIN_ATEMPO) tempo = MIN_ATEMPO;
+				filters.push(`atempo=${tempo.toFixed(3)}`);
 			} else if (ratio <= 4.0) {
-				const r = Math.sqrt(ratio).toFixed(3);
-				filters.push(`atempo=${r},atempo=${r}`);
+				const r = Math.min(MAX_ATEMPO, Math.sqrt(ratio));
+				filters.push(`atempo=${r.toFixed(3)},atempo=${r.toFixed(3)}`);
 			} else {
-				// extreme outlier – hard trim
-				c.outputOptions("-t", String(target));
+				cmd.outputOptions("-t", String(target));
 			}
 		} else {
-			// audio shorter than segment (most common case)
-			const desiredMinDur = target - MAX_SILENCE_PAD;
-			if (desiredMinDur > 0 && inDur > 0.1) {
-				let tempo = inDur / desiredMinDur; // <1 slows down, >1 speeds up
-				tempo = Math.max(MIN_ATEMPO, Math.min(MAX_ATEMPO, tempo));
-				if (Math.abs(tempo - 1) > 0.02) {
-					filters.push(`atempo=${tempo.toFixed(3)}`);
-				}
-				const lenAfterTempo = inDur / tempo;
-				const remaining = target - lenAfterTempo;
-				if (remaining > 0.05) {
-					const padDur = Math.min(MAX_SILENCE_PAD, Math.max(0, remaining));
-					if (padDur > 0.05) {
-						filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
-					}
-				}
-			} else {
-				// degenerate case – just pad a little
-				const padDur = Math.min(MAX_SILENCE_PAD, diff);
-				if (padDur > 0.05) {
-					filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
-				}
+			const padDur = Math.min(MAX_SILENCE_PAD, diff);
+			if (padDur > 0.05) {
+				filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
 			}
 		}
 
 		if (filters.length) {
-			c.audioFilters(filters.join(","));
+			cmd.audioFilters(filters.join(","));
 		}
-		return c.outputOptions("-y").save(norm(out));
+
+		return cmd.outputOptions("-y").save(norm(out));
 	});
 }
 
@@ -759,7 +1075,7 @@ async function scrapeArticleText(url) {
 	}
 }
 
-/* SEO title – official, search‑friendly, non‑clickbait */
+/* SEO title – official, search‑friendly */
 async function generateSeoTitle(
 	headlinesOrTopic,
 	category,
@@ -891,7 +1207,7 @@ Return a JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${lo
 	return [`Breaking ${category} Story – ${CURRENT_MONTH_YEAR}`];
 }
 
-/* Top‑5 outline helper so GPT is “smart” about which items it uses */
+/* Top‑5 outline helper */
 async function generateTop5Outline(topic, language = DEFAULT_LANGUAGE) {
 	const ask = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
@@ -948,9 +1264,10 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 
 	const transform = buildCloudinaryTransformForRatio(ratio);
 
+	const prepped = await prepareImageForVideo(url, ratio, "trend_seed");
+
 	try {
-		// Normal path: let Cloudinary fetch + transform + AI‑upscale
-		const result = await cloudinary.uploader.upload(url, {
+		const result = await cloudinary.uploader.upload(prepped, {
 			...baseOpts,
 			transformation: transform,
 		});
@@ -964,71 +1281,10 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 			public_id: result.public_id,
 			url: result.secure_url,
 		};
-	} catch (e) {
-		const msg = String(e?.message || "");
-		if (!msg.includes("Maximum image size is 25 Megapixels")) {
-			// Some other error – bubble up
-			throw e;
-		}
-
-		console.warn(
-			"[Cloudinary] 25MP limit hit, pre‑downscaling locally and retrying …"
-		);
-
-		// Fallback path: download + resize with ffmpeg, THEN upload
-		const { width, height } = targetResolutionForRatio(ratio);
-		const rawPath = await downloadImageToTemp(url, ".jpg");
-		const scaledPath = tmpFile("trend_scaled", ".jpg");
-
+	} finally {
 		try {
-			const vf = [];
-
-			if (width && height) {
-				vf.push(
-					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
-					`crop=${width}:${height}`
-				);
-			}
-			// light sharpening so the still looks crisp before Runway
-			vf.push(
-				"unsharp=lx=5:ly=5:la=0.8:cx=3:cy=3:ca=0.4",
-				"eq=contrast=1.03:saturation=1.02:gamma=0.99"
-			);
-
-			await ffmpegPromise((c) =>
-				c
-					.input(norm(rawPath))
-					.videoFilters(vf.join(","))
-					.outputOptions("-frames:v", "1", "-y")
-					.save(norm(scaledPath))
-			);
-		} finally {
-			try {
-				fs.unlinkSync(rawPath);
-			} catch (_) {}
-		}
-
-		const result = await cloudinary.uploader.upload(scaledPath, {
-			...baseOpts,
-			quality: "auto:best",
-			fetch_format: "auto",
-		});
-
-		try {
-			fs.unlinkSync(scaledPath);
+			fs.unlinkSync(prepped);
 		} catch (_) {}
-
-		console.log("[Cloudinary] Seed image uploaded (fallback path) →", {
-			public_id: result.public_id,
-			width: result.width,
-			height: result.height,
-			format: result.format,
-		});
-
-		return {
-			public_id: result.public_id,
-			url: result.secure_url,
-		};
 	}
 }
 
@@ -1117,7 +1373,6 @@ async function retry(fn, max, lbl) {
 				}
 			}
 			last = e;
-			// Hard 4xx (except 429) are unrecoverable → do not keep retrying
 			if (status && status >= 400 && status < 500 && status !== 429) break;
 		}
 	}
@@ -1126,9 +1381,6 @@ async function retry(fn, max, lbl) {
 
 /* ───────────────────────────────────────────────────────────────
  *  Runway helpers for clips
- *  - generateItvClipFromImage: primary path (Trends image)
- *  - generateTtiItvClip: prompt-only path
- *  - generateStaticClipFromImage: non-AI fallback on SAFETY.INPUT.IMAGE
  * ───────────────────────────────────────────────────────────── */
 async function generateItvClipFromImage({
 	segmentIndex,
@@ -1270,11 +1522,7 @@ async function generateTtiItvClip({
 }
 
 /**
- * generateStaticClipFromImage – NON‑AI fallback when Runway flags SAFETY.INPUT.IMAGE.
- * Uses the highest quality source available:
- *  - tries the original Trends image URL first
- *  - falls back to the Cloudinary‑processed URL if needed
- * Then turns it into a simple still‑frame video for the desired duration.
+ * generateStaticClipFromImage – NON‑AI fallback when Runway flags SAFETY / HumanSafety
  */
 async function generateStaticClipFromImage({
 	segmentIndex,
@@ -1287,7 +1535,7 @@ async function generateStaticClipFromImage({
 	if (!candidates.length) throw new Error("Missing image URL for static clip");
 
 	console.log(
-		`[Seg ${segmentIndex}] Using static image fallback (SAFETY.INPUT.IMAGE). Candidates:`,
+		`[Seg ${segmentIndex}] Using static image fallback. Candidates:`,
 		candidates
 	);
 
@@ -1295,27 +1543,16 @@ async function generateStaticClipFromImage({
 
 	for (const url of candidates) {
 		try {
-			const localPath = await downloadImageToTemp(url, ".jpg");
+			const localPath = await prepareImageForVideo(
+				url,
+				ratio,
+				`static_${segmentIndex}`
+			);
 			const out = tmpFile(`seg_static_${segmentIndex}`, ".mp4");
-			const { width, height } = targetResolutionForRatio(ratio);
-			const vf = [];
-
-			if (width && height) {
-				vf.push(
-					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
-					`crop=${width}:${height}`
-				);
-			}
 
 			await ffmpegPromise((c) => {
 				c.input(norm(localPath)).inputOptions("-loop", "1");
 
-				if (vf.length) {
-					c.videoFilters(vf.join(","));
-				}
-
-				// Slightly slower preset + lower CRF because this is our
-				// final visual when Runway rejects the image.
 				return c
 					.outputOptions(
 						"-t",
@@ -1519,8 +1756,6 @@ Constraints:
 /* ───────────────────────────────────────────────────────────────
  *  ElevenLabs helpers – dynamic voice selection + TTS
  * ───────────────────────────────────────────────────────────── */
-
-/** Fetches the user's ElevenLabs voices via /v1/voices */
 async function fetchElevenVoices() {
 	if (!ELEVEN_API_KEY) return null;
 	try {
@@ -1537,13 +1772,22 @@ async function fetchElevenVoices() {
 	}
 }
 
-/**
- * Ask GPT to choose the best ElevenLabs voice for this video,
- * based on category, language and script tone.
- * For English, this is constrained to American / US accents only.
- */
-async function selectBestElevenVoice(language, category, sampleText) {
-	const fallbackId = ELEVEN_VOICES[language] || ELEVEN_VOICES[DEFAULT_LANGUAGE];
+async function selectBestElevenVoice(
+	language,
+	category,
+	sampleText,
+	avoidVoiceIds = []
+) {
+	const avoidSet = new Set((avoidVoiceIds || []).filter(Boolean));
+
+	const staticLanguageVoice = ELEVEN_VOICES[language];
+	const staticDefaultVoice = ELEVEN_VOICES[DEFAULT_LANGUAGE];
+
+	const fallbackCandidates = [staticLanguageVoice, staticDefaultVoice].filter(
+		(id, idx, arr) => id && arr.indexOf(id) === idx && !avoidSet.has(id)
+	);
+	const fallbackId =
+		fallbackCandidates[0] || staticLanguageVoice || staticDefaultVoice || null;
 
 	const voices = await fetchElevenVoices();
 	if (!voices || !voices.length) {
@@ -1552,7 +1796,8 @@ async function selectBestElevenVoice(language, category, sampleText) {
 				voiceId: fallbackId,
 				name: "default",
 				source: "static",
-				reason: "ElevenLabs /voices unavailable, using static fallback map.",
+				reason:
+					"ElevenLabs /voices unavailable, using static fallback map (avoiding previous voice where possible).",
 			};
 		}
 		return null;
@@ -1571,7 +1816,6 @@ async function selectBestElevenVoice(language, category, sampleText) {
 
 	let candidates = slimVoices;
 
-	// ★ Ensure English uses an American / US accent only where possible
 	if (language === "English") {
 		const americanCandidates = slimVoices.filter((v) => {
 			const labels = v.labels || {};
@@ -1585,7 +1829,6 @@ async function selectBestElevenVoice(language, category, sampleText) {
 				return true;
 			if (desc.includes("american accent") || desc.includes("us accent"))
 				return true;
-			// Very soft heuristic on name to catch "US Narrator" style names
 			if (name.includes("us ") || name.includes("usa")) return true;
 			return false;
 		});
@@ -1609,7 +1852,28 @@ async function selectBestElevenVoice(language, category, sampleText) {
 		}
 	}
 
+	if (avoidSet.size) {
+		const filtered = candidates.filter((v) => !avoidSet.has(v.id));
+		if (filtered.length) {
+			console.log(
+				`[Eleven] Avoiding previously used voice(s) ${[...avoidSet].join(", ")}`
+			);
+			candidates = filtered;
+		} else {
+			console.warn(
+				"[Eleven] All candidate voices are in the avoid list – keeping full candidate set."
+			);
+		}
+	}
+
 	const tone = deriveVoiceSettings(sampleText || "", category);
+
+	const avoidText = avoidSet.size
+		? `
+The last video used these voice IDs: ${Array.from(avoidSet).join(", ")}.
+You MUST choose a different "id" than any of these from the voices array below.
+`
+		: "";
 
 	const ask = `
 You are selecting the MOST natural-sounding ElevenLabs voice for a YouTube Shorts narration.
@@ -1621,17 +1885,22 @@ Goal:
 		tone.isSensitive ? "sensitive / serious" : "neutral to energetic"
 	}
 - It should sound like a real human news or sports broadcaster, never robotic.
+- Pacing should feel clear and slightly brisk, not sleepy or dragged out, unless the topic is clearly tragic or sensitive.
+
 ${
 	language === "English"
 		? "- IMPORTANT: Only select a voice with a clearly American / US English accent.\n- Do NOT pick British, Australian or other non-US accents."
 		: ""
 }
 
+${avoidText}
+
 You are given a JSON array called "voices" with candidate voices from the ElevenLabs /voices API.
 Pick ONE best "id" to use. Prefer:
 - Narrator / storyteller voices over comedic, meme, or character voices.
 - Voices that fit the language/accent when possible.
 - Calmer, more neutral voices if the tone is sensitive.
+- Otherwise, choose a clear, warm, motivated broadcast voice that sounds confident and engaging.
 
 voices:
 ${JSON.stringify(candidates).slice(0, 11000)}
@@ -1659,20 +1928,24 @@ Return ONLY JSON:
 	}
 
 	if (fallbackId) {
+		const reused = avoidSet.has(fallbackId);
+		if (reused) {
+			console.warn(
+				`[Eleven] Fallback voice ${fallbackId} is the same as last used; no alternative available.`
+			);
+		}
 		return {
 			voiceId: fallbackId,
 			name: "default",
-			source: "static-fallback",
-			reason: "Falling back to predefined voice mapping.",
+			source: reused ? "static-fallback-reused" : "static-fallback",
+			reason: reused
+				? "Only one suitable voice available; reusing previous voice."
+				: "Falling back to predefined voice mapping.",
 		};
 	}
 	return null;
 }
 
-/**
- * ElevenLabs TTS helper (per‑segment), now taking explicit voiceId so that GPT
- * can choose the voice dynamically once per video.
- */
 async function elevenLabsTTS(
 	text,
 	language,
@@ -1724,8 +1997,7 @@ async function elevenLabsTTS(
 
 /* ───────────────────────────────────────────────────────────────
  *  OpenAI “director” – build full video plan (segments + visuals)
- *  (Runway prompts: no real names, stay faithful to attached image)
- * ───────────────────────────────────────────────────────────── */
+ * ─────────────────────────────────────────────────────────────── */
 async function buildVideoPlanWithGPT({
 	topic,
 	category,
@@ -1778,6 +2050,8 @@ Narration rules (for all segments):
 - Later segments should deepen the context (stakes, key players, what to watch, etc.).
 - Keep within the word caps above so that the voice‑over can fit the timing.
 - All narration MUST be in ${language}.
+- For non‑tragic topics, pacing should feel clear and slightly brisk, like a motivated American TV host, without awkward long pauses.
+- For clearly tragic or sensitive stories, slow the pacing slightly but keep it clear and respectful.
 ${categoryTone ? `- Tone: ${categoryTone}` : ""}
 `.trim();
 
@@ -1836,8 +2110,8 @@ For each "negativePrompt":
 - Explicitly list all visual defects the model must avoid, especially those that make people look "unhuman":
   extra limbs, extra heads, missing limbs, mutated or fused fingers, distorted anatomy, broken or twisted joints,
   twisted necks, wall‑eyed or crossed‑eyed gazes, melted or blurry faces, stretched or glitched bodies.
-- Also include technical artifacts to avoid: lowres, pixelated, blur, overexposed, underexposed, watermark, logo,
-  text overlay, frozen frame, static frame, no motion, surreal or abstract effects, gore, nsfw content.
+- Also include technical artifacts to avoid: lowres, pixelated, blur, out of focus, soft focus, heavy motion blur,
+  overexposed, underexposed, watermark, logo, text overlay, frozen frame, static frame, no motion, surreal or abstract effects, gore, nsfw content.
 - Keep it a single comma‑separated string tailored for that segment (you may reuse core phrases across segments).
 
 Return a single JSON object with this exact shape:
@@ -1887,7 +2161,7 @@ For each segment, output:
 
 Visual rules:
 - Keep scenes realistic and grounded in today's world.
-- Keep the focal subject large and sharp; avoid tiny subjects, chaotic camera moves and motion blur.
+- Keep the focal subject large and sharp; avoid tiny subjects, chaotic camera moves and heavy motion blur.
 - Avoid specific trademarks or team logos; describe them generically (for example "home team in dark jerseys").
 - If people are visible, keep faces natural and undistorted.
 - EVERY runwayPrompt must describe clear motion (camera or subject), never a static pose.
@@ -1896,7 +2170,7 @@ Visual rules:
 
 For each "negativePrompt":
 - Explicitly list human‑anatomy defects and artifacts to avoid (extra limbs, extra heads, mutated or fused fingers, broken joints, twisted necks, distorted faces, etc.).
-- Also include lowres, pixelated, blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
+- Also include lowres, pixelated, blur, out of focus, soft focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
 - Keep it as one comma‑separated string.
 
 Return JSON of the form:
@@ -1931,7 +2205,7 @@ Visual rules:
 
 For each "negativePrompt":
 - Explicitly list human‑anatomy defects and artifacts to avoid (extra limbs, extra heads, mutated or fused fingers, broken joints, twisted necks, distorted faces, etc.).
-- Also include lowres, pixelated, blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
+- Also include lowres, pixelated, blur, out of focus, soft focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
 - Keep it as one comma‑separated string.
 
 Return JSON of the form:
@@ -1977,7 +2251,6 @@ Return JSON of the form:
 		);
 	}
 
-	// Normalise & clamp
 	const segments = plan.segments.map((s, idx) => {
 		const runwayPrompt = String(s.runwayPrompt || "").trim();
 		const negativePromptRaw = String(s.negativePrompt || "").trim();
@@ -2016,7 +2289,6 @@ exports.createVideo = async (req, res) => {
 	const ratio = ratioIn;
 	const duration = +durIn;
 
-	/* SSE bootstrap */
 	res.setHeader("Content-Type", "text/event-stream");
 	res.setHeader("Cache-Control", "no-cache");
 	res.setHeader("Connection", "keep-alive");
@@ -2071,9 +2343,7 @@ exports.createVideo = async (req, res) => {
 			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}`
 		);
 
-		/* ─────────────────────────────────────────────────────────
-		 *  1.  Topic resolution & Google Trends
-		 * ───────────────────────────────────────────────────────── */
+		/* 1. Topic resolution & Trends */
 		let topic = "";
 		let trendStory = null;
 		let trendArticleText = null;
@@ -2104,9 +2374,7 @@ exports.createVideo = async (req, res) => {
 		if (customPrompt && !topic) {
 			try {
 				topic = await topicFromCustomPrompt(customPrompt);
-			} catch {
-				/* ignore – fallback below */
-			}
+			} catch {}
 		}
 
 		if (!topic) {
@@ -2133,16 +2401,13 @@ exports.createVideo = async (req, res) => {
 
 		console.log(`[Job] final topic="${topic}"`);
 
-		// If we have a Trends story, grab a little article text for better grounding
 		if (trendStory && trendStory.articles && trendStory.articles.length) {
 			trendArticleText = await scrapeArticleText(
 				trendStory.articles[0].url || null
 			);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  2.  Segment timing (Intro + body segments)
-		 * ───────────────────────────────────────────────────────── */
+		/* 2. Segment timing */
 		const INTRO = 3;
 		let segCnt =
 			category === "Top5" ? 6 : Math.ceil((duration - INTRO) / 10) + 1;
@@ -2176,19 +2441,14 @@ exports.createVideo = async (req, res) => {
 			segWordCaps,
 		});
 
-		/* ─────────────────────────────────────────────────────────
-		 *  3.  Top‑5 outline if needed
-		 * ───────────────────────────────────────────────────────── */
+		/* 3. Top‑5 outline if needed */
 		let top5Outline = null;
 		if (category === "Top5") {
 			top5Outline = await generateTop5Outline(topic, language);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  4.  Upload Trends images to Cloudinary (if available)
-		 *      (track both original + Cloudinary URL for best quality)
-		 * ───────────────────────────────────────────────────────── */
-		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
+		/* 4. Upload Trends images to Cloudinary */
+		let trendImagePairs = [];
 		const canUseTrendsImages =
 			category !== "Top5" &&
 			!userOverrides &&
@@ -2227,9 +2487,7 @@ exports.createVideo = async (req, res) => {
 
 		const hasTrendImages = trendImagePairs.length > 0;
 
-		/* ─────────────────────────────────────────────────────────
-		 *  5.  Let OpenAI orchestrate segments + visuals
-		 * ───────────────────────────────────────────────────────── */
+		/* 5. Let OpenAI orchestrate segments + visuals */
 		console.log("[GPT] building full video plan …");
 
 		const plan = await buildVideoPlanWithGPT({
@@ -2253,10 +2511,10 @@ exports.createVideo = async (req, res) => {
 			hasImages: hasTrendImages,
 		});
 
-		// Tighten narration to fit word caps using GPT when necessary
+		// Per‑segment hard cap tightening
 		await Promise.all(
 			segments.map((s, i) =>
-				s.scriptText.trim().split(/\s+/).length <= segWordCaps[i]
+				countWordsInText(s.scriptText) <= segWordCaps[i]
 					? s
 					: (async () => {
 							const ask = `
@@ -2276,9 +2534,25 @@ One or two sentences only.
 			)
 		);
 
+		// Global script retargeting so natural spoken time ≈ duration
+		try {
+			const adjusted = await retargetScriptToDuration(
+				segments,
+				duration,
+				segWordCaps,
+				category,
+				language
+			);
+			if (adjusted) {
+				segments = adjusted;
+			}
+		} catch (e) {
+			console.warn("[Timing] retargetScriptToDuration failed →", e.message);
+		}
+
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 
-		// Recompute segment durations from actual script to minimise long pauses
+		// Recompute segment durations from final script
 		const recomputed = recomputeSegmentDurationsFromScript(segments, duration);
 		if (recomputed && recomputed.length === segLens.length) {
 			console.log("[Timing] Recomputed segment durations from script:", {
@@ -2289,9 +2563,7 @@ One or two sentences only.
 		}
 		segCnt = segLens.length;
 
-		/* ─────────────────────────────────────────────────────────
-		 *  6.  Global style, SEO title, tags, and dynamic voice
-		 * ───────────────────────────────────────────────────────── */
+		/* 6. Global style, SEO title, tags */
 		let globalStyle = "";
 		try {
 			const g = await openai.chat.completions.create({
@@ -2359,10 +2631,40 @@ One or two sentences only.
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
 		tags = [...new Set(tags)];
 
-		// Dynamic ElevenLabs voice selection from /voices + GPT
+		/* 7. Load last ElevenLabs voice */
+		let lastVoiceMeta = null;
+		let avoidVoiceIds = [];
+		try {
+			lastVoiceMeta = await Video.findOne({
+				user: user._id,
+				"elevenLabsVoice.voiceId": { $exists: true },
+			})
+				.sort({ createdAt: -1 })
+				.select("elevenLabsVoice category language");
+			if (lastVoiceMeta?.elevenLabsVoice?.voiceId) {
+				avoidVoiceIds.push(lastVoiceMeta.elevenLabsVoice.voiceId);
+				console.log("[TTS] Last used ElevenLabs voice", {
+					voiceId: lastVoiceMeta.elevenLabsVoice.voiceId,
+					language: lastVoiceMeta.language,
+					category: lastVoiceMeta.category,
+				});
+			}
+		} catch (e) {
+			console.warn(
+				"[TTS] Unable to load last ElevenLabs voice metadata →",
+				e.message
+			);
+		}
+
+		/* 8. Dynamic ElevenLabs voice selection */
 		let chosenVoice = null;
 		try {
-			chosenVoice = await selectBestElevenVoice(language, category, fullScript);
+			chosenVoice = await selectBestElevenVoice(
+				language,
+				category,
+				fullScript,
+				avoidVoiceIds
+			);
 			if (chosenVoice) {
 				console.log("[TTS] Using ElevenLabs voice", {
 					id: chosenVoice.voiceId,
@@ -2375,13 +2677,15 @@ One or two sentences only.
 			console.warn("[TTS] Voice selection failed →", e.message);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  7.  Optional background music (planned by GPT)
-		 * ───────────────────────────────────────────────────────── */
+		/* 9. Optional background music */
 		let music = null;
 		let voiceGain = 1.4;
 		let musicGain = 0.12;
 		let musicPlan = null;
+		let backgroundMusicMeta = null;
+		let jamendoUrl = null;
+		let jamendoSearchUsed = null;
+		let jamendoSearchTermsTried = [];
 
 		try {
 			musicPlan = await planBackgroundMusic(category, language, fullScript);
@@ -2416,6 +2720,7 @@ One or two sentences only.
 				);
 			}
 
+			jamendoSearchTermsTried = searchTerms.slice();
 			let jamUrl = null;
 			let usedSearch = null;
 			for (const term of searchTerms) {
@@ -2430,6 +2735,8 @@ One or two sentences only.
 
 			if (jamUrl) {
 				console.log("[Music] Jamendo match", usedSearch);
+				jamendoUrl = jamUrl;
+				jamendoSearchUsed = usedSearch;
 				music = tmpFile("bg", ".mp3");
 				const ws = fs.createWriteStream(music);
 				const { data } = await axios.get(jamUrl, { responseType: "stream" });
@@ -2441,10 +2748,21 @@ One or two sentences only.
 			console.warn("[Music] Jamendo failed →", e.message);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  8.  PER‑SEGMENT VIDEO GENERATION
-		 *      - Use Trends image → ITV; SAFETY fallback → highest‑quality static
-		 * ───────────────────────────────────────────────────────── */
+		if (musicPlan || jamendoUrl || jamendoSearchTermsTried.length) {
+			backgroundMusicMeta = {
+				plan: musicPlan || null,
+				jamendoUrl: jamendoUrl || null,
+				searchTerm:
+					jamendoSearchUsed ||
+					(musicPlan ? musicPlan.jamendoSearch : null) ||
+					null,
+				searchTermsTried: jamendoSearchTermsTried,
+				voiceGain,
+				musicGain,
+			};
+		}
+
+		/* 10. Per‑segment video generation */
 		const clips = [];
 		sendPhase("GENERATING_CLIPS", {
 			msg: "Generating clips",
@@ -2458,7 +2776,6 @@ One or two sentences only.
 			const seg = segments[i];
 			const segIndex = i + 1;
 
-			// Runway supports discrete durations; always generate ≥ target
 			const rw = d <= 5 ? 5 : 10;
 
 			console.log(
@@ -2502,7 +2819,6 @@ One or two sentences only.
 				});
 
 				try {
-					// Primary path: image_to_video using high‑res Cloudinary seed
 					clipPath = await generateItvClipFromImage({
 						segmentIndex: segIndex,
 						imgUrl: imgUrlCloudinary,
@@ -2513,13 +2829,24 @@ One or two sentences only.
 					});
 				} catch (e) {
 					const msg = String(e?.message || "");
+					const failureCode =
+						e?.response?.data?.failureCode || e?.response?.data?.code || "";
+					const isSafety =
+						/SAFETY/i.test(msg) ||
+						/SAFETY/i.test(String(failureCode || "")) ||
+						/HUMAN/i.test(String(failureCode || ""));
+
 					console.error(
 						`[Seg ${segIndex}] Runway image_to_video failed with Trends image →`,
-						msg
+						msg,
+						failureCode ? `(${failureCode})` : ""
 					);
-					if (msg.includes("SAFETY.INPUT.IMAGE")) {
+
+					if (isSafety || imgUrlOriginal || imgUrlCloudinary) {
 						console.warn(
-							`[Seg ${segIndex}] SAFETY.INPUT.IMAGE detected – falling back to highest‑quality static image.`
+							`[Seg ${segIndex}] Falling back to highest‑quality static image due to Runway failure${
+								isSafety ? " (safety-related)." : "."
+							}`
 						);
 						clipPath = await generateStaticClipFromImage({
 							segmentIndex: segIndex,
@@ -2533,7 +2860,6 @@ One or two sentences only.
 					}
 				}
 			} else {
-				// No Trends images at all – prompt-only path
 				console.log("[Runway] prompt preview", {
 					segment: segIndex,
 					promptPreview: promptText.slice(0, 160),
@@ -2548,7 +2874,6 @@ One or two sentences only.
 				});
 			}
 
-			// Adjust to exact segment duration + enhance / normalise resolution
 			const fixed = tmpFile(`fx_${segIndex}`, ".mp4");
 			await exactLen(clipPath, d, fixed, { ratio, enhance: true });
 			try {
@@ -2565,9 +2890,7 @@ One or two sentences only.
 			console.log("[Phase] GENERATING_CLIPS → Rendering segment", segIndex);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  9.  Concatenate silent video
-		 * ───────────────────────────────────────────────────────── */
+		/* 11. Concatenate silent video */
 		sendPhase("ASSEMBLING_VIDEO", { msg: "Concatenating clips…" });
 		console.log("[Phase] ASSEMBLING_VIDEO → Concatenating clips");
 
@@ -2593,7 +2916,6 @@ One or two sentences only.
 		});
 
 		const silentFixed = tmpFile("silent_fix", ".mp4");
-		// timing cleanup only; no extra enhancement pass
 		await exactLen(silent, duration, silentFixed, {
 			ratio,
 			enhance: false,
@@ -2602,17 +2924,20 @@ One or two sentences only.
 			fs.unlinkSync(silent);
 		} catch {}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 10.  Voice‑over & music
-		 * ───────────────────────────────────────────────────────── */
+		/* 12. Voice‑over & music */
 		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
 		console.log("[Phase] ADDING_VOICE_MUSIC → Creating audio layer");
 
 		const fixedPieces = [];
+		let voiceToneSample = null;
+
 		for (let i = 0; i < segCnt; i++) {
 			const raw = tmpFile(`tts_raw_${i + 1}`, ".mp3");
 			const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
 			const txt = improveTTSPronunciation(segments[i].scriptText);
+
+			const localTone = deriveVoiceSettings(txt, category);
+			if (!voiceToneSample) voiceToneSample = localTone;
 
 			try {
 				await elevenLabsTTS(
@@ -2627,11 +2952,11 @@ One or two sentences only.
 					`[TTS] ElevenLabs failed for seg ${i + 1}, falling back to OpenAI →`,
 					e.message
 				);
-				const t = deriveVoiceSettings(txt, category);
+
 				const tts = await openai.audio.speech.create({
 					model: "tts-1-hd",
 					voice: "shimmer",
-					speed: t.openaiSpeed,
+					speed: localTone.openaiSpeed,
 					input: txt,
 					format: "mp3",
 				});
@@ -2715,9 +3040,7 @@ One or two sentences only.
 			fs.unlinkSync(mixedRaw);
 		} catch {}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 11.  Mux audio + video
-		 * ───────────────────────────────────────────────────────── */
+		/* 13. Mux audio + video */
 		sendPhase("SYNCING_VOICE_MUSIC", { msg: "Muxing final video" });
 		console.log("[Phase] SYNCING_VOICE_MUSIC → Muxing final video");
 
@@ -2739,9 +3062,9 @@ One or two sentences only.
 					"-c:v",
 					"libx264",
 					"-preset",
-					"veryfast",
+					"slow",
 					"-crf",
-					"18",
+					"17",
 					"-c:a",
 					"aac",
 					"-t",
@@ -2757,9 +3080,7 @@ One or two sentences only.
 			fs.unlinkSync(mixed);
 		} catch {}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 12.  YouTube upload (best‑effort)
-		 * ───────────────────────────────────────────────────────── */
+		/* 14. YouTube upload (best‑effort) */
 		let youtubeLink = "";
 		let youtubeTokens = null;
 		try {
@@ -2797,9 +3118,21 @@ One or two sentences only.
 			console.warn("[YouTube] upload skipped →", e.message);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 13.  Persist to Mongo
-		 * ───────────────────────────────────────────────────────── */
+		/* 15. Prepare voice + music metadata */
+		const elevenLabsVoice =
+			chosenVoice || voiceToneSample
+				? {
+						voiceId: chosenVoice?.voiceId || null,
+						name: chosenVoice?.name || null,
+						source: chosenVoice?.source || null,
+						reason: chosenVoice?.reason || null,
+						category,
+						language,
+						tone: voiceToneSample || null,
+				  }
+				: null;
+
+		/* 16. Persist to Mongo */
 		const doc = await Video.create({
 			user: user._id,
 			category,
@@ -2828,6 +3161,8 @@ One or two sentences only.
 				: req.body.youtubeTokenExpiresAt
 				? new Date(req.body.youtubeTokenExpiresAt)
 				: undefined,
+			elevenLabsVoice,
+			backgroundMusic: backgroundMusicMeta,
 		});
 
 		/* optional scheduling */
@@ -2878,9 +3213,7 @@ One or two sentences only.
 			console.log("[Phase] VIDEO_SCHEDULED");
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 14.  DONE
-		 * ───────────────────────────────────────────────────────── */
+		/* 17. DONE */
 		sendPhase("COMPLETED", {
 			id: doc._id,
 			youtubeLink,
