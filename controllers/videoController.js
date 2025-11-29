@@ -296,7 +296,7 @@ const YT_CATEGORY_MAP = {
 
 const BRAND_TAG = "AiVideomatic";
 const BRAND_CREDIT = "Powered by AiVideomatic";
-const MERCH_INTRO = "Support the channel & customize your own merch:\n- https://serenejannat.com/custom-gifts\n- Unisex Heavy Blend Hooded Sweatshirt: https://serenejannat.com/custom-gifts/6815366fd8583c434ec42fec\n- Black Mug (11oz, 15oz): https://serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n(You can add your own design - your support keeps the channel going!)\n\n";
+const MERCH_INTRO = "Support the channel & customize your own merch:\n- https://serenejannat.com/custom-gifts (choose anything)\n- https://serenejannat.com/custom-gifts/6815366fd8583c434ec42fec (Unisex Heavy Blend Hooded Sweatshirt)\n- https://serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3 (Black Mug 11oz/15oz)\n(You can add your own design - your support keeps the channel going!)\n\n";
 const PROMPT_CHAR_LIMIT = 220;
 
 /* ---------------------------------------------------------------
@@ -3697,6 +3697,7 @@ exports.listVideos = async (req, res, next) => {
 		next(err);
 	}
 };
+
 
 
 
