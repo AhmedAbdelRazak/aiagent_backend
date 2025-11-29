@@ -1,4 +1,4 @@
-/** @format */
+﻿/** @format */
 /* videoController.js — high‑motion, trends‑driven edition (enhanced, multi‑image) *
 ✅ Uses multiple Google Trends images per video for visual variety (hero + article images) *
 ✅ GPT is encouraged to rotate images; hard fallback enforces round‑robin variety if GPT doesn't *
@@ -582,8 +582,8 @@ async function exactLen(src, target, out, opts = {}) {
 			cmd.videoFilters(vf.join(","));
 		}
 
-		const preset = enhance ? "slow" : "veryfast";
-		const crf = enhance ? 17 : 18;
+		const preset = enhance ? "slow" : "fast";
+		const crf = enhance ? 16 : 17;
 
 		return cmd
 			.outputOptions(
@@ -593,8 +593,12 @@ async function exactLen(src, target, out, opts = {}) {
 				preset,
 				"-crf",
 				String(crf),
+				"-profile:v",
+				"high",
 				"-pix_fmt",
 				"yuv420p",
+				"-movflags",
+				"+faststart",
 				"-y"
 			)
 			.save(norm(out));
@@ -642,6 +646,106 @@ async function exactLenAudio(src, target, out) {
 
 		return cmd.outputOptions("-y").save(norm(out));
 	});
+}
+
+async function probeVideoDuration(file) {
+	const meta = await new Promise((resolve, reject) =>
+		ffmpeg.ffprobe(file, (err, data) => (err ? reject(err) : resolve(data)))
+	);
+	return meta.format?.duration || 0;
+}
+
+async function concatWithTransitions(
+	clips,
+	durationsHint = [],
+	ratio = null,
+	transitionDuration = 0.65
+) {
+	if (!clips || !clips.length) throw new Error("No clips to stitch");
+
+	const out = tmpFile("transitioned", ".mp4");
+	if (clips.length === 1) {
+		fs.copyFileSync(clips[0], out);
+		return out;
+	}
+
+	const durations =
+		Array.isArray(durationsHint) && durationsHint.length === clips.length
+			? durationsHint.map((d) => Math.max(0, +d || 0))
+			: await Promise.all(clips.map((c) => probeVideoDuration(c)));
+
+	const validDurations = durations.filter((d) => d > 0.1);
+	const minDur = validDurations.length
+		? Math.min(...validDurations)
+		: transitionDuration;
+	const xfadeDur = Math.max(0.35, Math.min(transitionDuration, minDur * 0.45));
+
+	const transitions = [
+		"fade",
+		"fadeblack",
+		"fadewhite",
+		"slideleft",
+		"slideright",
+		"smoothleft",
+		"smoothright",
+		"wipeup",
+		"wipedown",
+	];
+
+	const graph = [];
+	let acc = Math.max(0, durations[0] - xfadeDur);
+	let prevLabel = "[0:v]";
+
+	for (let i = 1; i < clips.length; i++) {
+		const label = i === clips.length - 1 ? "[vout]" : `[v${i}]`;
+		const trans = transitions[(i - 1) % transitions.length];
+		graph.push(
+			`${prevLabel}[${i}:v]xfade=transition=${trans}:duration=${xfadeDur.toFixed(
+				3
+			)}:offset=${acc.toFixed(3)}${label}`
+		);
+		prevLabel = label;
+		acc += Math.max(0.05, durations[i] - xfadeDur);
+	}
+
+	await ffmpegPromise((cmd) => {
+		clips.forEach((p) => cmd.input(norm(p)));
+
+		if (ratio) {
+			const targetRes = targetResolutionForRatio(ratio);
+			if (targetRes.width && targetRes.height) {
+				cmd.videoFilters(
+					`scale=${targetRes.width}:${targetRes.height}:flags=lanczos+accurate_rnd+full_chroma_int`
+				);
+			}
+		}
+
+		cmd.complexFilter(graph.join(";"));
+
+		return cmd
+			.outputOptions(
+				"-map",
+				prevLabel,
+				"-c:v",
+				"libx264",
+				"-preset",
+				"slow",
+				"-crf",
+				"16",
+				"-profile:v",
+				"high",
+				"-pix_fmt",
+				"yuv420p",
+				"-movflags",
+				"+faststart",
+				"-vsync",
+				"vfr",
+				"-y"
+			)
+			.save(norm(out));
+	});
+
+	return out;
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -2761,30 +2865,42 @@ One or two sentences only.
 		}
 
 		/* 11. Concatenate silent video */
-		sendPhase("ASSEMBLING_VIDEO", { msg: "Concatenating clips…" });
-		console.log("[Phase] ASSEMBLING_VIDEO → Concatenating clips");
+		sendPhase("ASSEMBLING_VIDEO", {
+			msg: "Blending clips with cinematic transitions...",
+		});
+		console.log("[Phase] ASSEMBLING_VIDEO + Blending clips with transitions");
 
-		const listFile = tmpFile("list", ".txt");
-		fs.writeFileSync(
-			listFile,
-			clips.map((p) => `file '${norm(p)}'`).join("\n")
-		);
+		let silent;
+		try {
+			silent = await concatWithTransitions(clips, segLens, ratio, 0.75);
+		} catch (err) {
+			console.warn(
+				"[Transitions] Failed to xfade, falling back to direct concat:",
+				err.message
+			);
+			const listFile = tmpFile("list", ".txt");
+			fs.writeFileSync(
+				listFile,
+				clips.map((p) => `file '${norm(p)}'`).join("\n")
+			);
 
-		const silent = tmpFile("silent", ".mp4");
-		await ffmpegPromise((c) =>
-			c
-				.input(norm(listFile))
-				.inputOptions("-f", "concat", "-safe", "0")
-				.outputOptions("-c", "copy", "-y")
-				.save(norm(silent))
-		);
-		fs.unlinkSync(listFile);
+			silent = tmpFile("silent", ".mp4");
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(listFile))
+					.inputOptions("-f", "concat", "-safe", "0")
+					.outputOptions("-c", "copy", "-y")
+					.save(norm(silent))
+			);
+			try {
+				fs.unlinkSync(listFile);
+			} catch {}
+		}
 		clips.forEach((p) => {
 			try {
 				fs.unlinkSync(p);
 			} catch {}
 		});
-
 		const silentFixed = tmpFile("silent_fix", ".mp4");
 		await exactLen(silent, duration, silentFixed, {
 			ratio,
