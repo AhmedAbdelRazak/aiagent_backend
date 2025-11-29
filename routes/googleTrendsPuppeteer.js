@@ -11,7 +11,7 @@ puppeteer.use(Stealth());
 
 const router = express.Router();
 
-const ROW_LIMIT = 5; // how many rising‑search rows we scrape
+const ROW_LIMIT = 6; // how many rising‑search rows we scrape
 const ROW_TIMEOUT_MS = 12_000; // per‑row timeout (ms)
 const PROTOCOL_TIMEOUT = 120_000; // whole‑browser cap (ms)
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML

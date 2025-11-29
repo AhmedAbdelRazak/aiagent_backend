@@ -151,8 +151,8 @@ const VALID_RATIOS = [
  */
 const WORDS_PER_SEC = 2.35;
 const NATURAL_WPS = 2.45;
-const ENGAGEMENT_TAIL_MIN = 2;
-const ENGAGEMENT_TAIL_MAX = 4;
+const ENGAGEMENT_TAIL_MIN = 5;
+const ENGAGEMENT_TAIL_MAX = 6;
 
 const MAX_SILENCE_PAD = 0.35;
 const MIN_ATEMPO = 0.9;
@@ -2213,7 +2213,7 @@ async function buildVideoPlanWithGPT({
 	const categoryTone = TONE_HINTS[category] || "";
 const outroDirective = `
 Segment ${segCnt} is the engagement outro (about ${
-		engagementTailSeconds || "2-4"
+		engagementTailSeconds || "5-6"
 	} seconds):
 - Ask one crisp, on-topic question to spark comments.
 - Immediately follow with a warm, slightly funny like/subscribe/comment nudge for an American audience.
@@ -2623,7 +2623,7 @@ exports.createVideo = async (req, res) => {
 	/* 2. Segment timing */
 	const INTRO = 3;
 	let engagementTailSeconds = Math.round(
-		Math.max(ENGAGEMENT_TAIL_MIN, Math.min(ENGAGEMENT_TAIL_MAX, duration * 0.08 || ENGAGEMENT_TAIL_MIN))
+		Math.max(ENGAGEMENT_TAIL_MIN, Math.min(ENGAGEMENT_TAIL_MAX, duration * 0.12 || ENGAGEMENT_TAIL_MIN))
 	);
 	if (duration < 12) {
 		engagementTailSeconds = ENGAGEMENT_TAIL_MIN;
@@ -2683,7 +2683,7 @@ exports.createVideo = async (req, res) => {
 				.replace(/[^\w]+/g, "_")
 				.replace(/^_+|_+$/g, "")
 				.slice(0, 40);
-			for (let i = 0; i < trendStory.images.length; i++) {
+			for (let i = 0; i < Math.min(trendStory.images.length, 6); i++) {
 				const url = trendStory.images[i];
 				try {
 					const up = await uploadTrendImageToCloudinary(
@@ -3045,72 +3045,96 @@ One or two sentences only.
 			let clipPath = null;
 
 			if (hasTrendImages && seg.imageIndex !== null) {
-				const pair =
-					trendImagePairs[seg.imageIndex] || trendImagePairs[0] || null;
-				const imgUrlCloudinary = pair?.cloudinaryUrl;
-				const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
+	const candidatesIdx = [];
+	const baseIdx =
+		seg.imageIndex >= 0 && seg.imageIndex < trendImagePairs.length
+			? seg.imageIndex
+			: 0;
+	for (let k = 0; k < trendImagePairs.length; k++) {
+		const idx = (baseIdx + k) % trendImagePairs.length;
+		if (!candidatesIdx.includes(idx)) candidatesIdx.push(idx);
+	}
 
-				if (!imgUrlCloudinary)
-					throw new Error("No Cloudinary Trends image available for Runway");
+	console.log("[Runway] prompt preview", {
+		segment: segIndex,
+		promptPreview: promptText.slice(0, 160),
+		hasTrendImage: true,
+		candidates: candidatesIdx.length,
+	});
 
-				console.log("[Runway] prompt preview", {
-					segment: segIndex,
-					promptPreview: promptText.slice(0, 160),
-					hasTrendImage: true,
-				});
+	let safetyTriggered = false;
+	for (const idx of candidatesIdx) {
+		const pair = trendImagePairs[idx];
+		if (!pair || !pair.cloudinaryUrl) continue;
+		try {
+			clipPath = await generateItvClipFromImage({
+				segmentIndex: segIndex,
+				imgUrl: pair.cloudinaryUrl,
+				promptText,
+				negativePrompt,
+				ratio,
+				runwayDuration: rw,
+			});
+			break;
+		} catch (e) {
+			const msg = String(e?.message || "");
+			const failureCode =
+				e?.response?.data?.failureCode || e?.response?.data?.code || "";
+			const isSafety =
+				/SAFETY/i.test(msg) ||
+				/SAFETY/i.test(String(failureCode || "")) ||
+				/HUMAN/i.test(String(failureCode || ""));
+			safetyTriggered = safetyTriggered || isSafety;
+			console.warn(
+				`[Seg ${segIndex}] Runway image_to_video failed for image #${idx}`,
+				msg
+			);
+			continue;
+		}
+	}
 
-				try {
-					clipPath = await generateItvClipFromImage({
-						segmentIndex: segIndex,
-						imgUrl: imgUrlCloudinary,
-						promptText,
-						negativePrompt,
-						ratio,
-						runwayDuration: rw,
-					});
-				} catch (e) {
-					const msg = String(e?.message || "");
-					const failureCode =
-						e?.response?.data?.failureCode || e?.response?.data?.code || "";
-					const isSafety =
-						/SAFETY/i.test(msg) ||
-						/SAFETY/i.test(String(failureCode || "")) ||
-						/HUMAN/i.test(String(failureCode || ""));
+	if (!clipPath && safetyTriggered) {
+		try {
+			const safePrompt = `${promptText} no celebrity likeness, generic characters, no recognisable faces`;
+			clipPath = await generateTtiItvClip({
+				segmentIndex: segIndex,
+				promptText: safePrompt,
+				negativePrompt:
+					negativePrompt || `${RUNWAY_NEGATIVE_PROMPT}, celebrity`,
+				ratio,
+				runwayDuration: rw,
+			});
+		} catch (e) {
+			console.warn(
+				`[Seg ${segIndex}] Safe TTI->ITV fallback failed:`,
+				e.message
+			);
+		}
+	}
 
-					console.error(
-						`[Seg ${segIndex}] Runway image_to_video failed with Trends image ?`,
-						msg,
-						failureCode ? `(${failureCode})` : ""
-					);
-
-					if (isSafety || imgUrlOriginal || imgUrlCloudinary) {
-						console.warn(
-							`[Seg ${segIndex}] Falling back to highest-quality static image due to Runway failure${
-								isSafety ? " (safety-related)." : "."
-							}`
-						);
-						clipPath = await generateStaticClipFromImage({
-							segmentIndex: segIndex,
-							imgUrlOriginal,
-							imgUrlCloudinary,
-							ratio,
-							targetDuration: d,
-						});
-					} else {
-						throw e;
-					}
-				}
-			} else {
-				console.log("[Runway] prompt preview", {
-					segment: segIndex,
-					promptPreview: promptText.slice(0, 160),
-					hasTrendImage: false,
-				});
-				clipPath = await generateTtiItvClip({
-					segmentIndex: segIndex,
-					promptText,
-					negativePrompt,
-					ratio,
+	if (!clipPath) {
+		const pair = trendImagePairs[baseIdx] || trendImagePairs[0] || null;
+		const imgUrlCloudinary = pair?.cloudinaryUrl;
+		const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
+		clipPath = await generateStaticClipFromImage({
+			segmentIndex: segIndex,
+			imgUrlOriginal,
+			imgUrlCloudinary,
+			ratio,
+			targetDuration: d,
+		});
+	}
+} else {
+	console.log("[Runway] prompt preview", {
+		segment: segIndex,
+		promptPreview: promptText.slice(0, 160),
+		hasTrendImage: false,
+	});
+	clipPath = await generateTtiItvClip({
+		segmentIndex: segIndex,
+		promptText,
+		negativePrompt,
+		ratio,
 					runwayDuration: rw,
 				});
 			}
@@ -3697,6 +3721,11 @@ exports.listVideos = async (req, res, next) => {
 		next(err);
 	}
 };
+
+
+
+
+
 
 
 
