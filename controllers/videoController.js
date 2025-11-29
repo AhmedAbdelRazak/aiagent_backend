@@ -2560,14 +2560,19 @@ exports.createVideo = async (req, res) => {
 			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}`
 		);
 
-		// Preload used topics for this user/category to avoid duplicates
-		const existingVideos = await Video.find({
+		// Preload recent topics for this user/category (last 3 days) to avoid duplicates
+		const threeDaysAgo = dayjs().subtract(3, "day").toDate();
+		const recentVideos = await Video.find({
 			user: user._id,
 			category,
-		}).select("topic");
+			createdAt: { $gte: threeDaysAgo },
+		}).select("topic seoTitle");
 		const usedTopics = new Set(
-			existingVideos.map((v) => v.topic).filter(Boolean)
+			recentVideos
+				.map((v) => v.topic || v.seoTitle || "")
+				.filter(Boolean)
 		);
+
 
 		let topic = "";
 		let trendStory = null;
@@ -3721,6 +3726,7 @@ exports.listVideos = async (req, res, next) => {
 		next(err);
 	}
 };
+
 
 
 
