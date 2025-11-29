@@ -33,17 +33,59 @@ if (CHATGPT_API_TOKEN) {
 	}
 }
 
+function normaliseImageBriefs(briefs = [], topic = "") {
+	const targets = ["1280:720", "720:1280"];
+	const byAspect = new Map(targets.map((t) => [t, null]));
+
+	if (Array.isArray(briefs)) {
+		for (const raw of briefs) {
+			if (!raw || !raw.aspectRatio) continue;
+			const ar = String(raw.aspectRatio).trim();
+			if (!byAspect.has(ar)) continue;
+			if (byAspect.get(ar)) continue;
+			byAspect.set(ar, {
+				aspectRatio: ar,
+				visualHook: String(
+					raw.visualHook || raw.idea || raw.hook || raw.description || ""
+				).trim(),
+				emotion: String(raw.emotion || "").trim(),
+				rationale: String(raw.rationale || raw.note || "").trim(),
+			});
+		}
+	}
+
+	for (const [ar, val] of byAspect.entries()) {
+		if (val) continue;
+		byAspect.set(ar, {
+			aspectRatio: ar,
+			visualHook:
+				ar === "1280:720"
+					? `Landscape viral frame about ${topic}`
+					: `Vertical viral frame about ${topic}`,
+			emotion: "High energy",
+			rationale:
+				"Auto-filled to keep both aspect ratios covered for the video orchestrator.",
+		});
+	}
+
+	return Array.from(byAspect.values());
+}
+
 /**
  * Use GPT‑5.1 to generate SEO‑optimized blog + Shorts titles per story.
  * If anything fails, we just return the original stories unchanged.
  */
-async function enhanceStoriesWithOpenAI(stories, { geo, hours, category }) {
+async function enhanceStoriesWithOpenAI(
+	stories,
+	{ geo, hours, category, language = "English" }
+) {
 	if (!openai || !stories.length) return stories;
 
 	const payload = {
 		geo,
 		hours,
 		category,
+		language,
 		topics: stories.map((s) => ({
 			term: s.title,
 			articleTitles: s.articles.map((a) => a.title),
@@ -58,14 +100,21 @@ async function enhanceStoriesWithOpenAI(stories, { geo, hours, category }) {
 				"Given trending search topics and their news article titles, " +
 				"for EACH topic create:\n" +
 				"1) A compelling yet honest blog post title (no clickbait, max ~80 chars).\n" +
-				"2) A high‑CTR YouTube Shorts title (max ~60 chars, must stay factual).\n\n" +
+				"2) A highCTR YouTube Shorts title (max ~60 chars, must stay factual).\n" +
+				"3) EXACTLY TWO viral thumbnail/image directives: one for aspectRatio 1280:720 (landscape) and one for 720:1280 (vertical). Each directive should include:\n" +
+				'   - "aspectRatio": one of those two strings\n' +
+				'   - "visualHook": a vivid, specific description of what the image shows that would grab millions of viewers (no text overlays, no logos)\n' +
+				'   - "emotion": the main emotion the image should evoke\n' +
+				'   - "rationale": a short note for the video orchestrator about why this hook works\n' +
+				"4) One short 'imageComment' explaining in plain language what the chosen viral image depicts so downstream video generation can stay on-topic.\n\n" +
+				`ALL text must be in ${language}, even if the country/geo differs. No other languages or scripts are allowed.\n` +
 				"Your entire reply MUST be valid JSON, no extra commentary.",
 			input:
 				"Here is the data as JSON:\n\n" +
 				JSON.stringify(payload) +
 				"\n\n" +
 				"Respond with a JSON object of the form:\n" +
-				'{ "topics": [ { "term": string, "blogTitle": string, "youtubeShortTitle": string } ] }',
+				'{ "topics": [ { "term": string, "blogTitle": string, "youtubeShortTitle": string, "imageComment": string, "imageDirectives": [ { "aspectRatio": "1280:720", "visualHook": string, "emotion": string, "rationale": string }, { "aspectRatio": "720:1280", "visualHook": string, "emotion": string, "rationale": string } ] } ] }',
 			// We skip response_format to avoid model/version compatibility errors
 			// and just force JSON via instructions.
 		});
@@ -98,10 +147,20 @@ async function enhanceStoriesWithOpenAI(stories, { geo, hours, category }) {
 
 			if (!match) return s;
 
+			const briefs = normaliseImageBriefs(
+				match.imageDirectives || match.viralImageBriefs || [],
+				s.title
+			);
+			const imageComment = String(
+				match.imageComment || match.imageHook || ""
+			).trim();
+
 			return {
 				...s,
 				seoTitle: match.blogTitle || s.title,
 				youtubeShortTitle: match.youtubeShortTitle || s.title,
+				imageComment,
+				viralImageBriefs: briefs,
 			};
 		});
 	} catch (err) {
