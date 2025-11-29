@@ -1,4 +1,20 @@
-/** @format */ /* videoController.js — high‑motion, trends‑driven edition (enhanced) * ✅ Uses Google Trends images per segment (non‑redundant where possible) * ✅ Cloudinary normalises aspect ratio & upscales/enhances images before Runway * ✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos * ✅ Runway image‑to‑video as the primary path; safety-only fallback to original static image * ✅ Static fallback now uses best‑quality source (original URL first) + high‑quality lanczos scaling * ✅ Runway clips always ≥ segment duration (no big freeze‑frame padding) * ✅ OpenAI plans narration + visuals dynamically from Trends + article links * ✅ Prompts emphasise clear, human‑like motion in every segment * ✅ ElevenLabs voice picked dynamically via /voices + GPT, with American accent for English * ✅ NEW: Orchestrator avoids reusing the last ElevenLabs voice for the same user when possible * ✅ NEW: Voice planning nudged towards clear, motivated, brisk American‑style delivery (non‑sensitive topics) * ✅ Background music planned via GPT (search term + voice/music gains) & metadata saved on Video * ✅ Script timing recomputed from words → far fewer long pauses * ✅ Phases kept in sync with GenerationModal (INIT → … → COMPLETED / ERROR) */
+/** @format */
+/* videoController.js — high‑motion, trends‑driven edition (enhanced, multi‑image) *
+✅ Uses multiple Google Trends images per video for visual variety (hero + article images) *
+✅ GPT is encouraged to rotate images; hard fallback enforces round‑robin variety if GPT doesn't *
+✅ Cloudinary normalises aspect ratio & cleanly crops images before Runway (no extra AI upscaling) *
+✅ 25MP Cloudinary limit handled via local downscale → always keep Trends photos *
+✅ Runway image‑to‑video as the primary path; safety-only fallback to original static image *
+✅ Static fallback now uses best‑quality source (original URL first) while respecting aspect ratio with gentle scaling *
+✅ Runway clips always ≥ segment duration (no big freeze‑frame padding) *
+✅ OpenAI plans narration + visuals dynamically from Trends + article links *
+✅ Prompts emphasise clear, human‑like motion in every segment *
+✅ ElevenLabs voice picked dynamically via /voices + GPT, with American accent for English *
+✅ Orchestrator avoids reusing the last ElevenLabs voice for the same user when possible *
+✅ Voice planning nudged towards clear, motivated, brisk American‑style delivery (non‑sensitive topics) *
+✅ Background music planned via GPT (search term + voice/music gains) & metadata saved on Video *
+✅ Script timing recomputed from words → far fewer long pauses *
+✅ Phases kept in sync with GenerationModal (INIT → … → COMPLETED / ERROR) */
 
 const fs = require("fs");
 const os = require("os");
@@ -21,9 +37,6 @@ const { OpenAI } = require("openai");
 const ffmpeg = require("fluent-ffmpeg");
 const cloudinary = require("cloudinary").v2;
 
-/* ───────────────────────────────────────────────────────────────
- *  Mongoose models & shared utils
- * ───────────────────────────────────────────────────────────── */
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
 const {
@@ -49,7 +62,6 @@ function assertExists(cond, msg) {
 	}
 }
 
-/* ffmpeg / ffprobe discovery */
 function resolveFfmpegPath() {
 	if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
 	try {
@@ -134,8 +146,8 @@ const VALID_RATIOS = [
 ];
 
 /**
- * WORDS_PER_SEC: conservative cap used when asking GPT for max words.
- * NATURAL_WPS: more realistic speed used when recomputing durations from script.
+ * WORDS_PER_SEC: cap used when asking GPT for max words.
+ * NATURAL_WPS: realistic speed used when recomputing durations from script.
  */
 const WORDS_PER_SEC = 2.35;
 const NATURAL_WPS = 2.45;
@@ -144,13 +156,12 @@ const MAX_SILENCE_PAD = 0.35;
 const MIN_ATEMPO = 0.9;
 const MAX_ATEMPO = 1.18;
 
-/* Gen‑4 Turbo everywhere for speed + fidelity */
 const T2V_MODEL = "gen4_turbo";
 const ITV_MODEL = "gen4_turbo";
 const TTI_MODEL = "gen4_image";
 
 const QUALITY_BONUS =
-	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, award‑winning, cinematic camera movement, smooth parallax, subtle subject motion, emotional body language";
+	"photorealistic, ultra‑detailed, HDR, 8K, cinema lighting, cinematic camera movement, smooth parallax, subtle subject motion, emotional body language";
 
 const RUNWAY_NEGATIVE_PROMPT = [
 	"duplicate",
@@ -282,7 +293,6 @@ const YT_CATEGORY_MAP = {
 
 const BRAND_TAG = "AiVideomatic";
 const BRAND_CREDIT = "Powered by AiVideomatic";
-
 const PROMPT_CHAR_LIMIT = 220;
 
 /* ───────────────────────────────────────────────────────────────
@@ -319,7 +329,6 @@ function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
-/** Download image from URL to a temp file (used for 25MP fallback and static clips) */
 async function downloadImageToTemp(url, ext = ".jpg") {
 	const tmp = tmpFile("trend_raw", ext);
 	const writer = fs.createWriteStream(tmp);
@@ -330,11 +339,6 @@ async function downloadImageToTemp(url, ext = ".jpg") {
 	return tmp;
 }
 
-function spokenSeconds(words) {
-	return +(words / WORDS_PER_SEC).toFixed(2);
-}
-
-/* ----------  TITLE HELPERS  ---------- */
 function toTitleCase(str = "") {
 	return str
 		.toLowerCase()
@@ -349,7 +353,6 @@ function fallbackSeoTitle(topic, category) {
 	return `${base} | Update`;
 }
 
-/* smoother numbers for TTS */
 const NUM_WORD = Object.freeze({
 	1: "one",
 	2: "two",
@@ -377,7 +380,7 @@ function improveTTSPronunciation(text) {
 	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
 }
 
-/* Voice tone classification – excited, varied, but respectful on tragedy */
+/* Voice tone classification */
 function deriveVoiceSettings(text, category = "Other") {
 	const baseStyle = ELEVEN_STYLE_BY_CATEGORY[category] ?? 0.7;
 	const lower = String(text || "").toLowerCase();
@@ -387,7 +390,7 @@ function deriveVoiceSettings(text, category = "Other") {
 	let style = baseStyle;
 	let stability = 0.15;
 	let similarityBoost = 0.92;
-	let openaiSpeed = 1.06; // a touch brisker by default
+	let openaiSpeed = 1.06;
 
 	if (isSensitive) {
 		style = 0.25;
@@ -422,7 +425,7 @@ function deriveVoiceSettings(text, category = "Other") {
 	};
 }
 
-/* Recompute segment durations from final script to avoid long pauses */
+/* Recompute segment durations from script words */
 function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	if (
 		!Array.isArray(segments) ||
@@ -453,7 +456,6 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	let total = scaled.reduce((a, b) => a + b, 0);
 	let diff = +(targetTotalSeconds - total).toFixed(2);
 
-	// distribute rounding difference across segments with tiny nudges
 	let idx = scaled.length - 1;
 	const step = diff > 0 ? 0.1 : -0.1;
 	while (Math.abs(diff) > 0.05 && scaled.length && idx >= 0) {
@@ -472,24 +474,18 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 /* ───────────────────────────────────────────────────────────────
  *  Cloudinary + resolution helpers
  * ───────────────────────────────────────────────────────────── */
+const VALID_RATIOS_TO_ASPECT = {
+	"1280:720": "16:9",
+	"1584:672": "16:9",
+	"720:1280": "9:16",
+	"832:1104": "9:16",
+	"960:960": "1:1",
+	"1104:832": "4:3",
+};
 function ratioToCloudinaryAspect(ratio) {
-	switch (ratio) {
-		case "1280:720":
-		case "1584:672":
-			return "16:9";
-		case "720:1280":
-		case "832:1104":
-			return "9:16";
-		case "960:960":
-			return "1:1";
-		case "1104:832":
-			return "4:3";
-		default:
-			return "16:9";
-	}
+	return VALID_RATIOS_TO_ASPECT[ratio] || "16:9";
 }
 
-/** Target display resolution per ratio – avoids tiny / stretched frames */
 function targetResolutionForRatio(ratio) {
 	switch (ratio) {
 		case "720:1280":
@@ -498,7 +494,7 @@ function targetResolutionForRatio(ratio) {
 		case "960:960":
 			return { width: 1080, height: 1080 };
 		case "1104:832":
-			return { width: 1440, height: 1080 }; // ~4:3
+			return { width: 1440, height: 1080 };
 		case "1584:672":
 		case "1280:720":
 		default:
@@ -506,7 +502,6 @@ function targetResolutionForRatio(ratio) {
 	}
 }
 
-/** Cloudinary transform tuned for crisp Runway seeds */
 function buildCloudinaryTransformForRatio(ratio) {
 	const aspect = ratioToCloudinaryAspect(ratio);
 	const { width, height } = targetResolutionForRatio(ratio);
@@ -514,10 +509,10 @@ function buildCloudinaryTransformForRatio(ratio) {
 	const base = {
 		crop: "fill",
 		gravity: "auto",
-		quality: "auto:best",
+		quality: "auto:good",
 		fetch_format: "auto",
-		dpr: "auto",
 	};
+
 	if (width && height) {
 		base.width = width;
 		base.height = height;
@@ -525,8 +520,7 @@ function buildCloudinaryTransformForRatio(ratio) {
 		base.aspect_ratio = aspect;
 	}
 
-	// Let Cloudinary do a smart global improvement + mild sharpen
-	return [base, { effect: "improve" }, { effect: "sharpen:60" }];
+	return [base];
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -541,12 +535,6 @@ function ffmpegPromise(cfg) {
 	});
 }
 
-/**
- * exactLen – normalises video clips:
- * - optional upscale/crop to canonical resolution per ratio
- * - optional light sharpen/contrast
- * - enforce or pad duration with tpad
- */
 async function exactLen(src, target, out, opts = {}) {
 	const { ratio = null, enhance = false } = opts;
 
@@ -569,7 +557,6 @@ async function exactLen(src, target, out, opts = {}) {
 
 		const vf = [];
 
-		// Normalise resolution only when needed
 		if (enhance && targetRes && targetRes.width && targetRes.height) {
 			const { width, height } = targetRes;
 			const needsResize =
@@ -583,24 +570,12 @@ async function exactLen(src, target, out, opts = {}) {
 			}
 		}
 
-		// Duration normalisation
 		if (Math.abs(diff) >= 0.08) {
 			if (diff < 0) {
-				// Video slightly too long → trim
 				cmd.outputOptions("-t", String(target));
 			} else {
-				// Video slightly too short → pad tail
 				vf.push(`tpad=stop_duration=${diff.toFixed(3)}`);
 			}
-		}
-
-		// Light enhancement pass (only when requested)
-		if (enhance) {
-			vf.push(
-				// IMPORTANT: lx/ly must be odd numbers between 3 and 13
-				"unsharp=lx=5:ly=5:la=0.9:cx=3:cy=3:ca=0.45",
-				"eq=contrast=1.06:saturation=1.04:gamma=0.99"
-			);
 		}
 
 		if (vf.length) {
@@ -626,12 +601,6 @@ async function exactLen(src, target, out, opts = {}) {
 	});
 }
 
-/**
- * exactLenAudio – keeps audio tightly aligned with target while avoiding big silent gaps.
- * - small diffs: untouched
- * - shorter audio: mild slow‑down + at most MAX_SILENCE_PAD silence
- * - longer audio: mild speed‑up or trim for extreme overflows
- */
 async function exactLenAudio(src, target, out) {
 	const meta = await new Promise((resolve, reject) =>
 		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
@@ -646,10 +615,9 @@ async function exactLenAudio(src, target, out) {
 		const filters = [];
 
 		if (Math.abs(diff) <= 0.08) {
-			// Durations basically match – no change
+			// match
 		} else if (diff < -0.08) {
-			// Audio longer than target → gently speed it up or trim
-			const ratio = inDur / target; // >1 means we need to play faster
+			const ratio = inDur / target;
 
 			if (ratio <= 2.0) {
 				let tempo = ratio;
@@ -659,11 +627,9 @@ async function exactLenAudio(src, target, out) {
 				const r = Math.min(MAX_ATEMPO, Math.sqrt(ratio));
 				filters.push(`atempo=${r.toFixed(3)},atempo=${r.toFixed(3)}`);
 			} else {
-				// Extreme edge case – just hard trim
 				cmd.outputOptions("-t", String(target));
 			}
 		} else {
-			// Audio shorter than target → keep speed, add small silence at end
 			const padDur = Math.min(MAX_SILENCE_PAD, diff);
 			if (padDur > 0.05) {
 				filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
@@ -688,30 +654,202 @@ function resolveTrendsCategoryId(label) {
 
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
+const TRENDS_HTTP_TIMEOUT_MS = 30000;
 
-async function fetchTrendingStory(category, geo = "US") {
+function isThumbnailHost(hostname) {
+	const h = String(hostname || "").toLowerCase();
+	return (
+		h.endsWith("gstatic.com") ||
+		h.includes("googleusercontent.com") ||
+		h.includes("ggpht.com")
+	);
+}
+
+function analyseImageUrl(url, isStoryImage = false) {
+	let score = 0;
+	let isThumbnail = false;
+
+	try {
+		const u = new URL(url);
+		const host = u.hostname.toLowerCase();
+		const search = u.search || "";
+
+		isThumbnail = isThumbnailHost(host);
+
+		if (!isThumbnail) score += 5;
+		else score -= 5;
+
+		if (isStoryImage) score += 3;
+
+		if (/\.(jpe?g|png|webp|avif)$/i.test(u.pathname)) score += 2;
+
+		const wMatch = search.match(/[?&]w=(\d{2,4})/i);
+		if (wMatch) {
+			const w = parseInt(wMatch[1], 10);
+			if (w >= 1400) score += 3;
+			else if (w >= 1000) score += 2;
+			else if (w >= 600) score += 1;
+		}
+
+		const hMatch = search.match(/[?&]h=(\d{2,4})/i);
+		if (hMatch) {
+			const h = parseInt(hMatch[1], 10);
+			if (h < 200) score -= 1;
+		}
+	} catch {
+		if (isStoryImage) score += 1;
+	}
+
+	return { score, isThumbnail };
+}
+
+/**
+ * Fetch a Trends story for this category / geo, preferring:
+ * - A story the user hasn't used yet (avoid duplicates)
+ * - High-quality hero images from real publishers (CNN, Deadline, etc.)
+ * Returns:
+ * {
+ *   title, rawTitle, seoTitle, youtubeShortTitle, entityNames[],
+ *   images: [bestFirst...],
+ *   articles: [{ title, url, image }]
+ * }
+ */
+async function fetchTrendingStory(
+	category,
+	geo = "US",
+	usedTopics = new Set()
+) {
 	const id = resolveTrendsCategoryId(category);
 	const url =
 		`${TRENDS_API_URL}?` + qs.stringify({ geo, category: id, hours: 168 });
 
+	const usedSet =
+		usedTopics instanceof Set
+			? usedTopics
+			: new Set(
+					Array.isArray(usedTopics)
+						? usedTopics.filter(Boolean)
+						: usedTopics
+						? [usedTopics]
+						: []
+			  );
+
 	try {
-		const { data } = await axios.get(url, { timeout: 12000 });
+		console.log("[Trending] fetch:", url);
+		const { data } = await axios.get(url, {
+			timeout: TRENDS_HTTP_TIMEOUT_MS,
+		});
+
 		const stories = Array.isArray(data?.stories) ? data.stories : [];
 		if (!stories.length) throw new Error("empty trends payload");
 
-		const s = stories[0];
-		const articles = Array.isArray(s.articles) ? s.articles : [];
-
-		const imgSet = new Set();
-		if (s.image) imgSet.add(s.image);
-		for (const a of articles) {
-			if (a.image) imgSet.add(a.image);
+		// Pick the first story whose title we haven't used yet
+		let picked = null;
+		for (const s of stories) {
+			const t = String(
+				s.youtubeShortTitle || s.seoTitle || s.title || ""
+			).trim();
+			if (!t) continue;
+			if (!usedSet.has(t)) {
+				picked = { story: s, effectiveTitle: t };
+				break;
+			}
 		}
 
-		const images = Array.from(imgSet);
+		if (!picked) {
+			const s = stories[0];
+			const effectiveTitle =
+				String(s.youtubeShortTitle || s.seoTitle || s.title || "").trim() ||
+				String(s.title || "").trim();
+			picked = { story: s, effectiveTitle };
+		}
+
+		const s = picked.story;
+		const effectiveTitle = picked.effectiveTitle;
+
+		const articles = Array.isArray(s.articles) ? s.articles : [];
+
+		const candidates = [];
+		if (s.image) {
+			candidates.push({
+				url: s.image,
+				isStoryImage: true,
+			});
+		}
+		for (const a of articles) {
+			if (a.image) {
+				candidates.push({
+					url: a.image,
+					isStoryImage: false,
+				});
+			}
+		}
+
+		if (!candidates.length) {
+			console.warn("[Trending] story has no images at all");
+			return {
+				title: String(effectiveTitle || s.title || "").trim(),
+				rawTitle: String(s.title || "").trim(),
+				seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
+				youtubeShortTitle: s.youtubeShortTitle
+					? String(s.youtubeShortTitle).trim()
+					: null,
+				entityNames: Array.isArray(s.entityNames)
+					? s.entityNames.map((e) => String(e || "").trim()).filter(Boolean)
+					: [],
+				images: [],
+				articles: articles.map((a) => ({
+					title: String(a.title || "").trim(),
+					url: a.url || null,
+					image: a.image || null,
+				})),
+			};
+		}
+
+		const scored = candidates.map((c, idx) => {
+			const info = analyseImageUrl(c.url, c.isStoryImage);
+			return {
+				...c,
+				...info,
+				idx,
+			};
+		});
+
+		const nonThumb = scored.filter((c) => !c.isThumbnail);
+		const activeList = nonThumb.length ? nonThumb : scored;
+
+		activeList.sort((a, b) => {
+			if (b.score !== a.score) return b.score - a.score;
+			return a.idx - b.idx;
+		});
+
+		const seen = new Set();
+		const images = [];
+		for (const c of activeList) {
+			if (!seen.has(c.url)) {
+				seen.add(c.url);
+				images.push(c.url);
+			}
+		}
+
+		console.log("[Trending] chosen hero image:", images[0]);
+		if (images.length > 1) {
+			console.log(
+				"[Trending] additional images:",
+				images.slice(1, 5).join(" | ")
+			);
+		}
 
 		return {
-			title: String(s.title || "").trim(),
+			title: String(effectiveTitle || s.title || "").trim(),
+			rawTitle: String(s.title || "").trim(),
+			seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
+			youtubeShortTitle: s.youtubeShortTitle
+				? String(s.youtubeShortTitle).trim()
+				: null,
+			entityNames: Array.isArray(s.entityNames)
+				? s.entityNames.map((e) => String(e || "").trim()).filter(Boolean)
+				: [],
 			images,
 			articles: articles.map((a) => ({
 				title: String(a.title || "").trim(),
@@ -731,7 +869,9 @@ async function fetchTrendingStory(category, geo = "US") {
 							? e.response.data.slice(0, 300)
 							: JSON.stringify(e.response.data).slice(0, 300)
 					);
-				} catch (_) {}
+				} catch (_) {
+					console.warn("[Trending] response data snippet: [unserializable]");
+				}
 			}
 		}
 		return null;
@@ -756,7 +896,7 @@ async function scrapeArticleText(url) {
 			if (e.response.data) {
 				try {
 					console.warn(
-						"[Scrape] response data snippet:",
+						"[Scrape] response data snippet: ",
 						typeof e.response.data === "string"
 							? e.response.data.slice(0, 300)
 							: JSON.stringify(e.response.data).slice(0, 300)
@@ -768,7 +908,6 @@ async function scrapeArticleText(url) {
 	}
 }
 
-/* SEO title – official, search‑friendly, non‑clickbait */
 async function generateSeoTitle(
 	headlinesOrTopic,
 	category,
@@ -800,30 +939,27 @@ Hard constraints:
 - No emojis.
 - No hashtags.
 - No quotation marks.
-- No over-hyped or tabloid adjectives like "Insane", "Crazy", "Wild", "Lightning Burst".
+- No over-hyped or tabloid adjectives like "Insane", "Crazy", "Wild".
 - The style must feel ${
 		isSports
 			? "like ESPN or an official league/NFL/NBA channel, not a meme or fan channel."
 			: "like a major newspaper or broadcaster, not a clickbait channel."
 	}
 
-SEO / search behaviour:
-- Include the core subject or matchup once.
-- Prefer phrases that match how people actually search, such as:
-  ${
+SEO behavior:
+- Include the core subject once.
+- Prefer phrases that match how people actually search, like ${
 		isSports
-			? '"Highlights", "Gameday Preview", "How To Watch", "Full Recap".'
+			? '"Highlights", "Preview", "How To Watch", "Full Recap".'
 			: '"Explained", "Update", "Analysis", "What To Know".'
 	}
-- You may use a short descriptor after a separator like "|" or "–"
-  (for example: "Team A vs Team B | Gameday Preview").
 
 Context from Google Trends and linked articles:
 ${context || "(no extra context)"}
 
 ${
 	language !== DEFAULT_LANGUAGE
-		? `Respond in ${language}, keeping any team or person names in their original language.`
+		? `Respond in ${language}, keeping any names in their original spelling.`
 		: ""
 }
 
@@ -845,7 +981,7 @@ Return only the final title, nothing else.
 }
 
 /* ───────────────────────────────────────────────────────────────
- *  Topic helpers for non‑Trends / Top‑5 mode
+ *  Topic helpers
  * ───────────────────────────────────────────────────────────── */
 const CURRENT_MONTH_YEAR = dayjs().format("MMMM YYYY");
 const CURRENT_YEAR = dayjs().year();
@@ -900,7 +1036,6 @@ Return a JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${lo
 	return [`Breaking ${category} Story – ${CURRENT_MONTH_YEAR}`];
 }
 
-/* Top‑5 outline helper so GPT is “smart” about which items it uses */
 async function generateTop5Outline(topic, language = DEFAULT_LANGUAGE) {
 	const ask = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
@@ -911,11 +1046,11 @@ Title: ${topic}
 
 Return a strict JSON array of exactly 5 objects, one per rank from 5 down to 1.
 Each object must have:
-- "rank": a number 5, 4, 3, 2 or 1
+- "rank": 5, 4, 3, 2 or 1
 - "label": a short name for the item (maximum 8 words)
 - "oneLine": one punchy sentence (maximum 18 words) explaining why it deserves this rank.
 
-Use real‑world facts and widely known names when appropriate, avoid speculation.
+Use real‑world facts and widely known names when appropriate; avoid speculation.
 Keep everything in ${language}. Do not include any other keys or free‑text.
 `.trim();
 
@@ -958,7 +1093,6 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 	const transform = buildCloudinaryTransformForRatio(ratio);
 
 	try {
-		// Normal path: let Cloudinary fetch + transform + AI‑upscale
 		const result = await cloudinary.uploader.upload(url, {
 			...baseOpts,
 			transformation: transform,
@@ -976,7 +1110,6 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 	} catch (e) {
 		const msg = String(e?.message || "");
 		if (!msg.includes("Maximum image size is 25 Megapixels")) {
-			// Some other error – bubble up
 			throw e;
 		}
 
@@ -984,25 +1117,18 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 			"[Cloudinary] 25MP limit hit, pre‑downscaling locally and retrying …"
 		);
 
-		// Fallback path: download + resize with ffmpeg, THEN upload
 		const { width, height } = targetResolutionForRatio(ratio);
 		const rawPath = await downloadImageToTemp(url, ".jpg");
 		const scaledPath = tmpFile("trend_scaled", ".jpg");
 
 		try {
 			const vf = [];
-
 			if (width && height) {
 				vf.push(
-					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
+					`scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos`,
 					`crop=${width}:${height}`
 				);
 			}
-			// light sharpening so the still looks crisp before Runway
-			vf.push(
-				"unsharp=lx=5:ly=5:la=0.65:cx=3:cy=3:ca=0.4",
-				"eq=contrast=1.04:saturation=1.03:gamma=0.99"
-			);
 
 			await ffmpegPromise((c) =>
 				c
@@ -1019,7 +1145,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 
 		const result = await cloudinary.uploader.upload(scaledPath, {
 			...baseOpts,
-			quality: "auto:best",
+			quality: "auto:good",
 			fetch_format: "auto",
 		});
 
@@ -1042,7 +1168,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 }
 
 /* ───────────────────────────────────────────────────────────────
- *  Runway poll + retry (hard‑fail on 4xx, with richer logging)
+ *  Runway poll + retry
  * ───────────────────────────────────────────────────────────── */
 async function pollRunway(id, tk, lbl) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${id}`;
@@ -1126,7 +1252,6 @@ async function retry(fn, max, lbl) {
 				}
 			}
 			last = e;
-			// Hard 4xx (except 429) are unrecoverable → do not keep retrying
 			if (status && status >= 400 && status < 500 && status !== 429) break;
 		}
 	}
@@ -1135,9 +1260,6 @@ async function retry(fn, max, lbl) {
 
 /* ───────────────────────────────────────────────────────────────
  *  Runway helpers for clips
- *  - generateItvClipFromImage: primary path (Trends image)
- *  - generateTtiItvClip: prompt-only path
- *  - generateStaticClipFromImage: non-AI fallback on SAFETY / HumanSafety
  * ───────────────────────────────────────────────────────────── */
 async function generateItvClipFromImage({
 	segmentIndex,
@@ -1279,11 +1401,7 @@ async function generateTtiItvClip({
 }
 
 /**
- * generateStaticClipFromImage – NON‑AI fallback when Runway flags SAFETY / HumanSafety
- * or any unrecoverable error. Uses the highest quality source available:
- *  - tries the original Trends image URL first
- *  - falls back to the Cloudinary‑processed URL if needed
- * Then turns it into a simple still‑frame video for the desired duration.
+ * Static fallback when Runway refuses / errors on a Trends image.
  */
 async function generateStaticClipFromImage({
 	segmentIndex,
@@ -1315,12 +1433,6 @@ async function generateStaticClipFromImage({
 					`crop=${width}:${height}`
 				);
 			}
-
-			// Subtle sharpening + contrast so the still looks crisp without halos
-			vf.push(
-				"unsharp=lx=5:ly=5:la=0.65:cx=3:cy=3:ca=0.4",
-				"eq=contrast=1.04:saturation=1.03:gamma=0.99"
-			);
 
 			await ffmpegPromise((c) => {
 				c.input(norm(localPath)).inputOptions("-loop", "1");
@@ -1465,7 +1577,7 @@ async function jamendo(term) {
 	}
 }
 
-/* Background music planning – GPT picks Jamendo search + gains */
+/* Background music planning */
 async function planBackgroundMusic(category, language, script) {
 	const ask = `
 You are a sound designer for short-form YouTube videos.
@@ -1490,9 +1602,9 @@ Return JSON:
 
 Constraints:
 - "fallbackSearchTerms" must be an array of exactly 2 short strings.
-- "voiceGain" between 1.2 and 1.7 (voice louder).
-- "musicGain" between 0.08 and 0.22 (music softer).
-- Use English for search terms so Jamendo search works well, even if the narration language is different.
+- "voiceGain" between 1.2 and 1.7.
+- "musicGain" between 0.08 and 0.22.
+- Use English for search terms even if narration language is different.
 `.trim();
 
 	try {
@@ -1532,8 +1644,6 @@ Constraints:
 /* ───────────────────────────────────────────────────────────────
  *  ElevenLabs helpers – dynamic voice selection + TTS
  * ───────────────────────────────────────────────────────────── */
-
-/** Fetches the user's ElevenLabs voices via /v1/voices */
 async function fetchElevenVoices() {
 	if (!ELEVEN_API_KEY) return null;
 	try {
@@ -1550,12 +1660,6 @@ async function fetchElevenVoices() {
 	}
 }
 
-/**
- * Ask GPT to choose the best ElevenLabs voice for this video,
- * based on category, language and script tone.
- * For English, this is constrained to American / US accents only.
- * Also tries to avoid reusing the last voice used by this user.
- */
 async function selectBestElevenVoice(
 	language,
 	category,
@@ -1567,7 +1671,6 @@ async function selectBestElevenVoice(
 	const staticLanguageVoice = ELEVEN_VOICES[language];
 	const staticDefaultVoice = ELEVEN_VOICES[DEFAULT_LANGUAGE];
 
-	// Prefer a fallback that is not in the avoid list
 	const fallbackCandidates = [staticLanguageVoice, staticDefaultVoice].filter(
 		(id, idx, arr) => id && arr.indexOf(id) === idx && !avoidSet.has(id)
 	);
@@ -1601,7 +1704,6 @@ async function selectBestElevenVoice(
 
 	let candidates = slimVoices;
 
-	// ★ Ensure English uses an American / US accent only where possible
 	if (language === "English") {
 		const americanCandidates = slimVoices.filter((v) => {
 			const labels = v.labels || {};
@@ -1638,7 +1740,6 @@ async function selectBestElevenVoice(
 		}
 	}
 
-	// Avoid the last used voice if possible
 	if (avoidSet.size) {
 		const filtered = candidates.filter((v) => !avoidSet.has(v.id));
 		if (filtered.length) {
@@ -1672,7 +1773,6 @@ Goal:
 		tone.isSensitive ? "sensitive / serious" : "neutral to energetic"
 	}
 - It should sound like a real human news or sports broadcaster, never robotic.
-- Pacing should feel clear and slightly brisk, not sleepy or dragged out, unless the topic is clearly tragic or sensitive.
 
 ${
 	language === "English"
@@ -1683,11 +1783,7 @@ ${
 ${avoidText}
 
 You are given a JSON array called "voices" with candidate voices from the ElevenLabs /voices API.
-Pick ONE best "id" to use. Prefer:
-- Narrator / storyteller voices over comedic, meme, or character voices.
-- Voices that fit the language/accent when possible.
-- Calmer, more neutral voices if the tone is sensitive.
-- Otherwise, choose a clear, warm, motivated broadcast voice that sounds confident and engaging.
+Pick ONE best "id" to use.
 
 voices:
 ${JSON.stringify(candidates).slice(0, 11000)}
@@ -1733,10 +1829,6 @@ Return ONLY JSON:
 	return null;
 }
 
-/**
- * ElevenLabs TTS helper (per‑segment), now taking explicit voiceId so that GPT
- * can choose the voice dynamically once per video.
- */
 async function elevenLabsTTS(
 	text,
 	language,
@@ -1787,8 +1879,7 @@ async function elevenLabsTTS(
 }
 
 /* ───────────────────────────────────────────────────────────────
- *  OpenAI “director” – build full video plan (segments + visuals)
- *  (Runway prompts: no real names, stay faithful to attached image)
+ *  OpenAI director – build full video plan (multi‑image aware)
  * ───────────────────────────────────────────────────────────── */
 async function buildVideoPlanWithGPT({
 	topic,
@@ -1826,7 +1917,7 @@ async function buildVideoPlanWithGPT({
 	const baseIntro = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
 
-You are an expert short‑form video editor and sports/news producer.
+You are an expert short‑form video editor and producer.
 
 We need a ${duration}s ${category} YouTube Shorts video titled "${topic}",
 split into ${segCnt} sequential segments.
@@ -1834,16 +1925,16 @@ split into ${segCnt} sequential segments.
 Segment timing:
 ${segDescLines}
 
-Narration rules (for all segments):
-- Use natural spoken language, like a professional commentator.
-- Stay accurate to the real‑world topic. Do NOT invent fake scores, injuries, or quotes.
-- Avoid generic filler like "In this video", "Smash that like button", or "subscribe".
-- Segment 1 must hook the viewer immediately.
-- Later segments should deepen the context (stakes, key players, what to watch, etc.).
-- Keep within the word caps above so that the voice‑over can fit the timing.
+Narration rules:
+- Natural spoken language, like a professional commentator.
+- Stay accurate; do NOT invent fake scores, injuries, or quotes.
+- No "In this video" / "Like and subscribe" filler.
+- Segment 1 must hook immediately.
+- Later segments deepen context: stakes, key players, what to watch, etc.
+- Stay within word caps so narration fits timing.
 - All narration MUST be in ${language}.
-- For non‑tragic topics, pacing should feel clear and slightly brisk, like a motivated American TV host, without awkward long pauses.
-- For clearly tragic or sensitive stories, slow the pacing slightly but keep it clear and respectful.
+- For non‑tragic topics, pacing should feel clear and slightly brisk.
+- For clearly tragic or sensitive stories, slow pacing slightly but keep it clear and respectful.
 ${categoryTone ? `- Tone: ${categoryTone}` : ""}
 `.trim();
 
@@ -1857,71 +1948,54 @@ You also have ${imgCount} REAL photos from Google Trends for this story.
 
 Google Trends context:
 - Story title: ${trendStory?.title || topic}
-- Article headlines (for factual grounding):
+- Article headlines:
   ${articleTitles.map((t) => `- ${t}`).join("\n  ") || "- (none)"}
 
-Article text snippet (may be truncated, use for facts only):
+Article text snippet (may be truncated):
 ${snippet || "(no article text available)"}
 
 Images:
-I have attached the ${imgCount} images to this message, in order.
 The FIRST attached image is imageIndex 0, the second is 1, etc.
 The video engine will receive an upscaled, cropped version of these photos (via Cloudinary),
-but it is still the exact same real shot and the same real people.
-Minor global adjustments such as a subtle brightness/contrast lift and slightly brighter faces
-for a consistent brand look are allowed, but the underlying people and setting must remain identical.
+but it is still the same real shot and real people.
 
 Your job:
 1) Write the voice‑over script for each segment.
 2) Decide which imageIndex to animate for each segment.
-3) For each segment, write one concise "runwayPrompt" telling a video model how to animate THAT exact real photo, as if you are a professional video director.
-4) For each segment, also write a "negativePrompt" listing visual problems that the video model must avoid for that shot.
+3) For each segment, write one concise "runwayPrompt" telling a video model how to animate THAT exact real photo.
+4) For each segment, also write a "negativePrompt" listing visual problems the video model must avoid.
 
-Critical policy and visual rules:
-- The video model ALREADY SEES the real Google Trends photo. The "runwayPrompt" is ONLY there to describe camera motion and subtle, realistic movement in the existing scene.
-- Do NOT change who the people are. Do not add new people that are not implied by the original image.
-- Do NOT change the basic setting, stadium, or composition in a drastic way. Subtle global color/brightness changes and slightly brighter faces for branding are fine, but the scene must still clearly look like the same photo.
-- NEVER mention any real person names, team names, club names, jersey numbers, or brand names in "runwayPrompt". Names are fine in the narration, but NOT in the visual prompt.
-- When referring to people or teams in "runwayPrompt", use generic roles such as "the head coach", "star quarterback", "home team in red jerseys", "away team in white jerseys", "fans in the crowd".
-- EVERY segment must have clear, visible motion: no "still photograph" look.
-- Use camera movement (slow zoom, dolly, pan, tilt) AND/OR subject motion (players walking, crowd cheering, lights flickering, flags waving).
+Critical visual rules:
+- The model ALREADY SEES the real Google Trends photo. "runwayPrompt" describes motion and subtle, realistic changes.
+- Do NOT change who the people are. Do not add new people that are not implied.
+- Do NOT change the basic setting in a drastic way.
+- NEVER mention any real person names, team names, jersey numbers, or brand names in "runwayPrompt".
+- Use generic roles like "a young woman on the street", "fans in the crowd".
+- EVERY segment must have clear motion: no still‑photo look.
+- Use camera movement (slow zoom, dolly, pan, tilt) and/or subject motion (breathing, hair moving, lights flickering).
 - Use each imageIndex at most once before reusing any image.
-- Keep the subject sharp and in focus. Avoid soft focus, heavy motion blur, or smeared details.
-- Faces must remain human and natural: no distortion, no duplicated or missing facial features, no melted or blurry faces.
-- Frame as if the video will be watched full‑screen on a phone: main subject large and centered, never tiny in the distance.
-- Never morph faces into different people.
-- No surreal or abstract effects.
+- Keep faces human and natural, no distortion.
 
 For each "runwayPrompt":
-- Describe motion that is consistent with what you actually see in that attached photo.
-- Explicitly mention at least ONE motion verb, such as "slow zoom in", "camera pans left", "coach glances toward the field", "fans wave towels", "stadium lights flicker".
-- Do NOT ask for still images; it must describe a short moving shot.
-- Do NOT restate the news headline or player names; focus purely on what the camera sees and how it moves.
+- Describe motion consistent with what you actually see in that attached photo.
+- Explicitly include at least ONE motion verb.
 
 For each "negativePrompt":
-- Explicitly list all visual defects the model must avoid, especially those that make people look "unhuman":
-  extra limbs, extra heads, missing limbs, mutated or fused fingers, distorted anatomy, broken or twisted joints,
-  twisted necks, wall‑eyed or crossed‑eyed gazes, melted or blurry faces, stretched or glitched bodies.
-- Also include technical artifacts to avoid: lowres, pixelated, blur, out of focus, soft focus, heavy motion blur,
-  overexposed, underexposed, watermark, logo, text overlay, frozen frame, static frame, no motion, surreal or abstract effects, gore, nsfw content.
-- Keep it a single comma‑separated string tailored for that segment (you may reuse core phrases across segments).
+- List defects to avoid (extra limbs, extra heads, distorted faces, lowres, pixelated, blur, heavy motion blur, watermark, logo, text overlay, static frame, no motion, gore, nsfw).
 
-Return a single JSON object with this exact shape:
-
+Return JSON:
 {
   "segments": [
     {
       "index": 1,
-      "scriptText": "spoken narration for segment 1",
+      "scriptText": "spoken narration",
       "imageIndex": 0,
-      "runwayPrompt": "how to animate the first attached photo",
-      "negativePrompt": "comma‑separated list of things to avoid for this shot"
+      "runwayPrompt": "how to animate that attached photo",
+      "negativePrompt": "comma-separated list of defects to avoid"
     }
     // exactly ${segCnt} segments, index 1..${segCnt}
   ]
 }
-
-No extra commentary.
 `.trim();
 	} else if (
 		category === "Top5" &&
@@ -1934,38 +2008,30 @@ No extra commentary.
 		promptText = `
 ${baseIntro}
 
-This is a Top 5 style countdown. Use this outline:
+This is a Top 5 countdown. Outline:
 
 ${outlineText}
 
 Rules:
-- Segment 1 should tease the countdown and hook the viewer.
-- Segments 2–6 must correspond to ranks #5, #4, #3, #2, and #1 respectively.
-- Each of those segments MUST start with "#5:", "#4:", "#3:", "#2:" or "#1:" followed by the item label.
-- After the rank label, you may add one concise sentence explaining why that item deserves this rank.
-- No images are provided, so you must imagine visuals.
+- Segment 1 teases the countdown and hooks the viewer.
+- Segments 2–6 correspond to ranks #5, #4, #3, #2, and #1.
+- Each of those segments MUST start with "#5:", "#4:", "#3:", "#2:" or "#1:".
+
+No images are provided; imagine visuals from scratch.
 
 For each segment, output:
 - "index"
 - "scriptText"
-- "runwayPrompt": a vivid but grounded description of the scene to generate from scratch. Focus on symbols (arenas, trophies, jerseys), not specific copyrighted logos.
-- "negativePrompt": a comma‑separated list of visual defects to avoid for that scene.
+- "runwayPrompt": a vivid scene description to generate.
+- "negativePrompt": comma‑separated defects to avoid.
 
 Visual rules:
-- Keep scenes realistic and grounded in today's world.
-- Keep the focal subject large and sharp; avoid tiny subjects, chaotic camera moves and heavy motion blur.
-- Avoid specific trademarks or team logos; describe them generically (for example "home team in dark jerseys").
-- If people are visible, keep faces natural and undistorted.
-- EVERY runwayPrompt must describe clear motion (camera or subject), never a static pose.
-- NEVER mention real person names, team names, club names, jersey numbers, or brand names in "runwayPrompt". Use generic roles such as "star player", "coach", "home team", "away team".
-- Faces must remain human and natural: no extra or missing limbs, no distorted anatomy, no melted or glitched faces.
+- Realistic scenes; no logos or trademarks.
+- Clear focal subject, good lighting, human faces undistorted.
+- Include explicit motion (camera or subject) in every runwayPrompt.
+- Do NOT mention real person or team names in "runwayPrompt"; use roles like "star player", "coach", "home team".
 
-For each "negativePrompt":
-- Explicitly list human‑anatomy defects and artifacts to avoid (extra limbs, extra heads, mutated or fused fingers, broken joints, twisted necks, distorted faces, etc.).
-- Also include lowres, pixelated, blur, out of focus, soft focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
-- Keep it as one comma‑separated string.
-
-Return JSON of the form:
+Return JSON:
 {
   "segments": [
     { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "..." },
@@ -1977,30 +2043,26 @@ Return JSON of the form:
 		promptText = `
 ${baseIntro}
 
-No reliable Google Trends images are available for this topic.
+No reliable Google Trends images are available.
 
-You must imagine the visuals from scratch. For each segment, output:
+You must imagine the visuals from scratch. For each segment output:
 - "index"
 - "scriptText"
-- "runwayPrompt": a short scene description that a text‑to‑image model can turn into one keyframe.
-- "negativePrompt": a comma‑separated list of visual defects to avoid for that scene.
+- "runwayPrompt"
+- "negativePrompt"
 
 Visual rules:
-- Keep scenes realistic and grounded in today's world.
-- Favour crisp, well‑lit compositions; avoid heavy motion blur or extreme camera moves.
-- Avoid specific trademarks or team logos; describe them generically (for example "home team in dark jerseys").
-- If people are visible, keep faces natural and undistorted.
-- Prefer one clear focal subject per segment.
-- EVERY runwayPrompt must include explicit motion: for example "camera slowly pushes in", "athlete jogs toward camera", "crowd claps and waves", "scoreboard lights pulse".
-- Do NOT mention any real person names, team names, club names, jersey numbers, or brand names in "runwayPrompt". Use generic roles instead.
-- Faces must remain human and natural: no extra or missing limbs, no distorted anatomy, no melted or glitched faces.
+- Realistic, grounded scenes.
+- Clear focal subject, good lighting.
+- Avoid trademarks and logos; use generic jerseys and arenas.
+- If people are visible, faces must be natural, no distortion.
+- EVERY runwayPrompt must include explicit motion.
+- Do NOT mention real names or brands in "runwayPrompt"; use roles.
 
-For each "negativePrompt":
-- Explicitly list human‑anatomy defects and artifacts to avoid (extra limbs, extra heads, mutated or fused fingers, broken joints, twisted necks, distorted faces, etc.).
-- Also include lowres, pixelated, blur, out of focus, soft focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
-- Keep it as one comma‑separated string.
+"negativePrompt":
+- Include extra limbs, extra heads, mutated/fused fingers, broken joints, twisted necks, distorted faces, lowres, pixelated, blur, out of focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
 
-Return JSON of the form:
+Return JSON:
 {
   "segments": [
     { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "..." },
@@ -2011,7 +2073,6 @@ Return JSON of the form:
 	}
 
 	const contentParts = [{ type: "text", text: promptText }];
-
 	if (hasImages) {
 		images.forEach((url) => {
 			contentParts.push({
@@ -2043,26 +2104,63 @@ Return JSON of the form:
 		);
 	}
 
-	// Normalise & clamp
-	const segments = plan.segments.map((s, idx) => {
+	// First pass: normalize text fields and carry raw imageIndex
+	let segments = plan.segments.map((s, idx) => {
 		const runwayPrompt = String(s.runwayPrompt || "").trim();
 		const negativePromptRaw = String(s.negativePrompt || "").trim();
 
-		const base = {
+		return {
 			index: typeof s.index === "number" ? s.index : idx + 1,
 			scriptText: String(s.scriptText || "").trim(),
 			runwayPrompt,
 			runwayNegativePrompt: negativePromptRaw,
+			imageIndex:
+				typeof s.imageIndex === "number" && Number.isInteger(s.imageIndex)
+					? s.imageIndex
+					: null,
 		};
-
-		if (hasImages) {
-			const imgIdxRaw = Number.isInteger(s.imageIndex) ? s.imageIndex : 0;
-			const imgIdxSafe =
-				imgIdxRaw >= 0 && imgIdxRaw < images.length ? imgIdxRaw : 0;
-			return { ...base, imageIndex: imgIdxSafe };
-		}
-		return { ...base, imageIndex: null };
 	});
+
+	// Second pass: enforce sane, non-redundant image usage
+	if (hasImages) {
+		const imgCount = images.length;
+
+		// Normalize invalid indices to null
+		segments = segments.map((seg) => {
+			let imgIdx =
+				typeof seg.imageIndex === "number" && Number.isInteger(seg.imageIndex)
+					? seg.imageIndex
+					: null;
+			if (imgIdx === null || imgIdx < 0 || imgIdx >= imgCount) {
+				imgIdx = null;
+			}
+			return { ...seg, imageIndex: imgIdx };
+		});
+
+		const validIndexes = segments
+			.map((s) => s.imageIndex)
+			.filter((v) => v !== null);
+		const distinctCount = new Set(validIndexes).size;
+
+		// If GPT barely used images (or only one image), force round‑robin variety
+		if (!validIndexes.length || distinctCount <= 1) {
+			segments = segments.map((seg, idx) => ({
+				...seg,
+				imageIndex: idx % imgCount,
+			}));
+		} else {
+			// Keep GPT's valid choices, fill nulls with round‑robin
+			let rr = 0;
+			segments = segments.map((seg) => {
+				if (seg.imageIndex !== null) return seg;
+				const imgIdx = rr % imgCount;
+				rr += 1;
+				return { ...seg, imageIndex: imgIdx };
+			});
+		}
+	} else {
+		segments = segments.map((seg) => ({ ...seg, imageIndex: null }));
+	}
 
 	return { segments };
 }
@@ -2137,78 +2235,62 @@ exports.createVideo = async (req, res) => {
 			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}`
 		);
 
-		/* ─────────────────────────────────────────────────────────
-		 *  1.  Topic resolution & Google Trends
-		 * ───────────────────────────────────────────────────────── */
+		// Preload used topics for this user/category to avoid duplicates
+		const existingVideos = await Video.find({
+			user: user._id,
+			category,
+		}).select("topic");
+		const usedTopics = new Set(
+			existingVideos.map((v) => v.topic).filter(Boolean)
+		);
+
 		let topic = "";
 		let trendStory = null;
 		let trendArticleText = null;
 
 		const userOverrides = Boolean(videoImage) || customPrompt.length > 0;
 
+		// 1) Try Trends story first (no Top5, no custom overrides)
 		if (!userOverrides && category !== "Top5") {
-			trendStory = await fetchTrendingStory(category, country);
+			trendStory = await fetchTrendingStory(category, country, usedTopics);
 			if (trendStory && trendStory.title) {
 				topic = trendStory.title;
 				console.log(`[Trending] candidate topic="${topic}"`);
+				// mark this as used so later fallbacks don't duplicate
+				usedTopics.add(topic);
 			}
 		}
 
-		if (topic) {
-			const dup = await Video.findOne({
-				user: user._id,
-				category,
-				topic,
-			}).select("_id");
-			if (dup) {
-				console.warn("[Duplicate] topic already used – picking new one");
-				topic = "";
-				trendStory = null;
-			}
-		}
-
+		// 2) Custom prompt fallback
 		if (customPrompt && !topic) {
 			try {
 				topic = await topicFromCustomPrompt(customPrompt);
 			} catch {
-				/* ignore – fallback below */
+				/* fallback below */
 			}
 		}
 
+		// 3) Generic GPT trending fallback
 		if (!topic) {
 			if (category === "Top5") {
-				const used = new Set(
-					(
-						await Video.find({ user: user._id, category: "Top5" }).select(
-							"topic"
-						)
-					).map((v) => v.topic)
-				);
-				const remaining = ALL_TOP5_TOPICS.filter((t) => !used.has(t));
+				const remaining = ALL_TOP5_TOPICS.filter((t) => !usedTopics.has(t));
 				topic = remaining.length ? remaining[0] : choose(ALL_TOP5_TOPICS);
 			} else {
 				const list = await pickTrendingTopicFresh(category, language, country);
-				const used = new Set(
-					(await Video.find({ user: user._id, category }).select("topic")).map(
-						(v) => v.topic
-					)
-				);
-				topic = list.find((t) => !used.has(t)) || list[0];
+				topic = list.find((t) => !usedTopics.has(t)) || list[0];
 			}
 		}
 
 		console.log(`[Job] final topic="${topic}"`);
 
-		// If we have a Trends story, grab a little article text for better grounding
+		// Scrape a bit of article text for richer context, if we have a Trends story
 		if (trendStory && trendStory.articles && trendStory.articles.length) {
 			trendArticleText = await scrapeArticleText(
 				trendStory.articles[0].url || null
 			);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  2.  Segment timing (Intro + body segments)
-		 * ───────────────────────────────────────────────────────── */
+		/* 2. Segment timing */
 		const INTRO = 3;
 		let segCnt =
 			category === "Top5" ? 6 : Math.ceil((duration - INTRO) / 10) + 1;
@@ -2242,18 +2324,13 @@ exports.createVideo = async (req, res) => {
 			segWordCaps,
 		});
 
-		/* ─────────────────────────────────────────────────────────
-		 *  3.  Top‑5 outline if needed
-		 * ───────────────────────────────────────────────────────── */
+		/* 3. Top‑5 outline */
 		let top5Outline = null;
 		if (category === "Top5") {
 			top5Outline = await generateTop5Outline(topic, language);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  4.  Upload Trends images to Cloudinary (if available)
-		 *      (track both original + Cloudinary URL for best quality)
-		 * ───────────────────────────────────────────────────────── */
+		/* 4. Upload Trends images to Cloudinary (if available) */
 		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
 		const canUseTrendsImages =
 			category !== "Top5" &&
@@ -2293,9 +2370,7 @@ exports.createVideo = async (req, res) => {
 
 		const hasTrendImages = trendImagePairs.length > 0;
 
-		/* ─────────────────────────────────────────────────────────
-		 *  5.  Let OpenAI orchestrate segments + visuals
-		 * ───────────────────────────────────────────────────────── */
+		/* 5. Let OpenAI orchestrate segments + visuals */
 		console.log("[GPT] building full video plan …");
 
 		const plan = await buildVideoPlanWithGPT({
@@ -2319,7 +2394,7 @@ exports.createVideo = async (req, res) => {
 			hasImages: hasTrendImages,
 		});
 
-		// Tighten narration to fit word caps using GPT when necessary
+		// Tighten narration to fit word caps
 		await Promise.all(
 			segments.map((s, i) =>
 				s.scriptText.trim().split(/\s+/).length <= segWordCaps[i]
@@ -2344,7 +2419,6 @@ One or two sentences only.
 
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 
-		// Recompute segment durations from actual script to minimise long pauses
 		const recomputed = recomputeSegmentDurationsFromScript(segments, duration);
 		if (recomputed && recomputed.length === segLens.length) {
 			console.log("[Timing] Recomputed segment durations from script:", {
@@ -2355,9 +2429,7 @@ One or two sentences only.
 		}
 		segCnt = segLens.length;
 
-		/* ─────────────────────────────────────────────────────────
-		 *  6.  Global style, SEO title, tags
-		 * ───────────────────────────────────────────────────────── */
+		/* 6. Global style, SEO title, tags */
 		let globalStyle = "";
 		try {
 			const g = await openai.chat.completions.create({
@@ -2378,10 +2450,14 @@ One or two sentences only.
 
 		let seoTitle = "";
 		try {
-			const seedHeadlines =
-				trendStory && trendStory.articles && trendStory.articles.length
-					? trendStory.articles.map((a) => a.title).filter(Boolean)
-					: [topic];
+			const seedHeadlines = trendStory
+				? [
+						trendStory.youtubeShortTitle,
+						trendStory.seoTitle,
+						trendStory.rawTitle,
+						...(trendStory.articles || []).map((a) => a.title),
+				  ].filter(Boolean)
+				: [topic];
 			const snippet = trendArticleText ? trendArticleText.slice(0, 800) : "";
 			seoTitle = await generateSeoTitle(
 				seedHeadlines,
@@ -2412,7 +2488,7 @@ One or two sentences only.
 				messages: [
 					{
 						role: "user",
-						content: `Return a JSON array of 5–8 tags for the YouTube video "${seoTitle}".`,
+						content: `Return a JSON array of 5–8 tags for the YouTube video "${seoTitle}". Focus on search terms viewers would use.`,
 					},
 				],
 			});
@@ -2425,9 +2501,7 @@ One or two sentences only.
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
 		tags = [...new Set(tags)];
 
-		/* ─────────────────────────────────────────────────────────
-		 *  7.  Load last ElevenLabs voice (to avoid repeating it)
-		 * ───────────────────────────────────────────────────────── */
+		/* 7. Load last ElevenLabs voice (avoid repetition) */
 		let lastVoiceMeta = null;
 		let avoidVoiceIds = [];
 		try {
@@ -2452,9 +2526,7 @@ One or two sentences only.
 			);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  8.  Dynamic ElevenLabs voice selection from /voices + GPT
-		 * ───────────────────────────────────────────────────────── */
+		/* 8. Dynamic ElevenLabs voice selection */
 		let chosenVoice = null;
 		try {
 			chosenVoice = await selectBestElevenVoice(
@@ -2475,9 +2547,7 @@ One or two sentences only.
 			console.warn("[TTS] Voice selection failed →", e.message);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 *  9.  Optional background music (planned by GPT)
-		 * ───────────────────────────────────────────────────────── */
+		/* 9. Background music */
 		let music = null;
 		let voiceGain = 1.4;
 		let musicGain = 0.12;
@@ -2562,10 +2632,7 @@ One or two sentences only.
 			};
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 10. PER‑SEGMENT VIDEO GENERATION
-		 *      - Use Trends image → ITV; SAFETY / HumanSafety fallback → highest‑quality static
-		 * ───────────────────────────────────────────────────────── */
+		/* 10. Per‑segment video generation */
 		const clips = [];
 		sendPhase("GENERATING_CLIPS", {
 			msg: "Generating clips",
@@ -2579,7 +2646,6 @@ One or two sentences only.
 			const seg = segments[i];
 			const segIndex = i + 1;
 
-			// Runway supports discrete durations; always generate ≥ target
 			const rw = d <= 5 ? 5 : 10;
 
 			console.log(
@@ -2623,7 +2689,6 @@ One or two sentences only.
 				});
 
 				try {
-					// Primary path: image_to_video using high‑res Cloudinary seed
 					clipPath = await generateItvClipFromImage({
 						segmentIndex: segIndex,
 						imgUrl: imgUrlCloudinary,
@@ -2665,7 +2730,6 @@ One or two sentences only.
 					}
 				}
 			} else {
-				// No Trends images at all – prompt-only path
 				console.log("[Runway] prompt preview", {
 					segment: segIndex,
 					promptPreview: promptText.slice(0, 160),
@@ -2680,7 +2744,6 @@ One or two sentences only.
 				});
 			}
 
-			// Adjust to exact segment duration + enhance / normalise resolution
 			const fixed = tmpFile(`fx_${segIndex}`, ".mp4");
 			await exactLen(clipPath, d, fixed, { ratio, enhance: true });
 			try {
@@ -2697,9 +2760,7 @@ One or two sentences only.
 			console.log("[Phase] GENERATING_CLIPS → Rendering segment", segIndex);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 11.  Concatenate silent video
-		 * ───────────────────────────────────────────────────────── */
+		/* 11. Concatenate silent video */
 		sendPhase("ASSEMBLING_VIDEO", { msg: "Concatenating clips…" });
 		console.log("[Phase] ASSEMBLING_VIDEO → Concatenating clips");
 
@@ -2725,7 +2786,6 @@ One or two sentences only.
 		});
 
 		const silentFixed = tmpFile("silent_fix", ".mp4");
-		// timing cleanup only; no extra enhancement pass
 		await exactLen(silent, duration, silentFixed, {
 			ratio,
 			enhance: false,
@@ -2734,9 +2794,7 @@ One or two sentences only.
 			fs.unlinkSync(silent);
 		} catch {}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 12.  Voice‑over & music
-		 * ───────────────────────────────────────────────────────── */
+		/* 12. Voice‑over & music */
 		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
 		console.log("[Phase] ADDING_VOICE_MUSIC → Creating audio layer");
 
@@ -2823,8 +2881,7 @@ One or two sentences only.
 					.input(norm(ttsJoin))
 					.input(norm(trim))
 					.complexFilter([
-						`
-						[0:a]volume=${voiceGain.toFixed(3)}[a0]`,
+						`[0:a]volume=${voiceGain.toFixed(3)}[a0]`,
 						`[1:a]volume=${musicGain.toFixed(3)}[a1]`,
 						"[a0][a1]amix=inputs=2:duration=first[aout]",
 					])
@@ -2852,9 +2909,7 @@ One or two sentences only.
 			fs.unlinkSync(mixedRaw);
 		} catch {}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 13.  Mux audio + video  (higher quality final encode)
-		 * ───────────────────────────────────────────────────────── */
+		/* 13. Mux audio + video */
 		sendPhase("SYNCING_VOICE_MUSIC", { msg: "Muxing final video" });
 		console.log("[Phase] SYNCING_VOICE_MUSIC → Muxing final video");
 
@@ -2894,9 +2949,7 @@ One or two sentences only.
 			fs.unlinkSync(mixed);
 		} catch {}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 14.  YouTube upload (best‑effort)
-		 * ───────────────────────────────────────────────────────── */
+		/* 14. YouTube upload */
 		let youtubeLink = "";
 		let youtubeTokens = null;
 		try {
@@ -2934,9 +2987,7 @@ One or two sentences only.
 			console.warn("[YouTube] upload skipped →", e.message);
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 15.  Prepare voice + music metadata for persistence
-		 * ───────────────────────────────────────────────────────── */
+		/* 15. Voice + music metadata */
 		const elevenLabsVoice =
 			chosenVoice || voiceToneSample
 				? {
@@ -2950,9 +3001,7 @@ One or two sentences only.
 				  }
 				: null;
 
-		/* ─────────────────────────────────────────────────────────
-		 * 16.  Persist to Mongo
-		 * ───────────────────────────────────────────────────────── */
+		/* 16. Persist to Mongo */
 		const doc = await Video.create({
 			user: user._id,
 			category,
@@ -3033,9 +3082,7 @@ One or two sentences only.
 			console.log("[Phase] VIDEO_SCHEDULED");
 		}
 
-		/* ─────────────────────────────────────────────────────────
-		 * 17.  DONE
-		 * ───────────────────────────────────────────────────────── */
+		/* 17. DONE */
 		sendPhase("COMPLETED", {
 			id: doc._id,
 			youtubeLink,

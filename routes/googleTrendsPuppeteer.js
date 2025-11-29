@@ -1,29 +1,143 @@
-/* routes/googleTrendsPuppeteer.js — bullet‑proof, tested 2025‑06‑23 */
+/* routes/googleTrendsPuppeteer.js — bullet‑proof, updated 2025‑11‑28 */
 /* eslint-disable no-console, max-len */
 
 require("dotenv").config();
 const express = require("express");
 const puppeteer = require("puppeteer-extra");
 const Stealth = require("puppeteer-extra-plugin-stealth");
+const OpenAI = require("openai");
+
 puppeteer.use(Stealth());
 
 const router = express.Router();
+
 const ROW_LIMIT = 5; // how many rising‑search rows we scrape
 const ROW_TIMEOUT_MS = 12_000; // per‑row timeout (ms)
 const PROTOCOL_TIMEOUT = 120_000; // whole‑browser cap (ms)
+const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
 const log = (...m) => console.log("[Trends]", ...m);
 
-/* ────────────────────────────────────────────────────────────────── helpers */
-const urlFor = ({ geo, hours, category }) => {
-	const hrs = Math.min(Math.max(+hours || 168, 1), 168);
-	return (
-		`https://trends.google.com/trending?geo=${geo}&hl=en&hours=168&sort=recency` +
-		(category ? `&category=${category}` : "")
-	);
+/* ───────────────────────────────────────────── OpenAI client + helpers */
+
+let openai = null;
+const CHATGPT_API_TOKEN =
+	process.env.CHATGPT_API_TOKEN || process.env.OPENAI_API_KEY || null;
+
+if (CHATGPT_API_TOKEN) {
+	try {
+		openai = new OpenAI({ apiKey: CHATGPT_API_TOKEN });
+		log("OpenAI client initialized");
+	} catch (err) {
+		console.error("[Trends] Failed to init OpenAI client:", err.message);
+		openai = null;
+	}
+}
+
+/**
+ * Use GPT‑5.1 to generate SEO‑optimized blog + Shorts titles per story.
+ * If anything fails, we just return the original stories unchanged.
+ */
+async function enhanceStoriesWithOpenAI(stories, { geo, hours, category }) {
+	if (!openai || !stories.length) return stories;
+
+	const payload = {
+		geo,
+		hours,
+		category,
+		topics: stories.map((s) => ({
+			term: s.title,
+			articleTitles: s.articles.map((a) => a.title),
+		})),
+	};
+
+	try {
+		const response = await openai.responses.create({
+			model: "gpt-5.1",
+			instructions:
+				"You are an expert SEO copywriter and YouTube Shorts strategist. " +
+				"Given trending search topics and their news article titles, " +
+				"for EACH topic create:\n" +
+				"1) A compelling yet honest blog post title (no clickbait, max ~80 chars).\n" +
+				"2) A high‑CTR YouTube Shorts title (max ~60 chars, must stay factual).\n\n" +
+				"Your entire reply MUST be valid JSON, no extra commentary.",
+			input:
+				"Here is the data as JSON:\n\n" +
+				JSON.stringify(payload) +
+				"\n\n" +
+				"Respond with a JSON object of the form:\n" +
+				'{ "topics": [ { "term": string, "blogTitle": string, "youtubeShortTitle": string } ] }',
+			// We skip response_format to avoid model/version compatibility errors
+			// and just force JSON via instructions.
+		});
+
+		const raw = response.output_text || "";
+		let parsed;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (err) {
+			log("Failed to parse OpenAI JSON:", err.message || err.toString());
+			return stories;
+		}
+
+		const byTerm = new Map();
+		if (parsed && Array.isArray(parsed.topics)) {
+			for (const t of parsed.topics) {
+				if (!t || typeof t.term !== "string") continue;
+				byTerm.set(t.term.toLowerCase(), t);
+			}
+		}
+
+		return stories.map((s) => {
+			const key = s.title.toLowerCase();
+			const match =
+				byTerm.get(key) ||
+				// fallback: GPT sometimes normalizes whitespace/case
+				Array.from(byTerm.values()).find(
+					(t) => t.term && t.term.toLowerCase().trim() === key.trim()
+				);
+
+			if (!match) return s;
+
+			return {
+				...s,
+				seoTitle: match.blogTitle || s.title,
+				youtubeShortTitle: match.youtubeShortTitle || s.title,
+			};
+		});
+	} catch (err) {
+		console.error("[Trends] OpenAI enhancement failed:", err.message || err);
+		return stories;
+	}
+}
+
+/* ───────────────────────────────────────────────────────────── helpers */
+
+const urlFor = ({ geo, hours, category, sort }) => {
+	// Clamp hours 1–168 and actually use the requested window.
+	const hrs = Math.min(Math.max(Number(hours) || 24, 1), 168);
+
+	const params = new URLSearchParams({
+		geo,
+		hl: "en-US", // matches the UI you pasted
+		hours: 4,
+		// hours: String(hrs),
+	});
+
+	if (category) params.set("category", String(category).trim());
+
+	// If caller passes an explicit sort, forward it.
+	// Otherwise we let Trends use its default sort (UI default).
+	if (sort && String(sort).trim()) {
+		params.set("sort", String(sort).trim());
+	}
+
+	return `https://trends.google.com/trending?${params.toString()}`;
 };
 
-/* ─────────────────────────────────────────────────────────── cached browser */
+/* ───────────────────────────────────────────────────── cached browser */
+
 let browser; // one instance per container / PM2 worker
+
 async function getBrowser() {
 	if (browser) return browser;
 
@@ -44,180 +158,353 @@ async function getBrowser() {
 	return browser;
 }
 
-/* ──────────────────────────────────────────────────────────────── scraper */
-async function scrape({ geo, hours, category }) {
+/* ───────────────────────────────────── article image helpers (Node side) */
+
+async function fetchHtmlWithTimeout(url, timeoutMs) {
+	// Older Node may not have global fetch; if so we just skip enrichment.
+	if (typeof fetch !== "function") return null;
+
+	const supportsAbort =
+		typeof AbortController !== "undefined" &&
+		typeof AbortController === "function";
+
+	const controller = supportsAbort ? new AbortController() : null;
+	let timeoutId;
+
+	try {
+		const fetchPromise = fetch(url, {
+			redirect: "follow",
+			signal: controller ? controller.signal : undefined,
+			headers: {
+				"User-Agent":
+					"Mozilla/5.0 (compatible; TrendsScraper/1.0; +https://trends.google.com)",
+				Accept: "text/html,application/xhtml+xml",
+			},
+		});
+
+		let response;
+		if (controller) {
+			const timeoutPromise = new Promise((_, reject) => {
+				timeoutId = setTimeout(() => {
+					controller.abort();
+					reject(new Error("timeout"));
+				}, timeoutMs);
+			});
+			response = await Promise.race([fetchPromise, timeoutPromise]);
+		} else {
+			response = await fetchPromise;
+		}
+
+		if (!response || !response.ok) return null;
+
+		const contentType = response.headers.get("content-type") || "";
+		if (!contentType.includes("text/html")) return null;
+
+		return await response.text();
+	} catch (err) {
+		log("Article fetch failed:", url, err.message || String(err));
+		return null;
+	} finally {
+		if (timeoutId) clearTimeout(timeoutId);
+	}
+}
+
+function extractBestImageFromHtml(html) {
+	if (!html) return null;
+
+	const candidates = [];
+
+	const pushMatch = (regex) => {
+		const m = regex.exec(html);
+		if (m && m[1]) candidates.push(m[1]);
+	};
+
+	// Try common Open Graph / Twitter meta tags.
+	pushMatch(
+		/<meta[^>]+property=["']og:image:secure_url["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+	);
+	pushMatch(
+		/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+	);
+	pushMatch(
+		/<meta[^>]+name=["']og:image["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+	);
+	pushMatch(
+		/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+	);
+	pushMatch(
+		/<meta[^>]+name=["']twitter:image:src["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+	);
+
+	const httpCandidates = candidates.filter((u) => /^https?:\/\//i.test(u));
+	return httpCandidates[0] || null;
+}
+
+async function fetchBestImageForArticle(url, fallbackImage) {
+	try {
+		const html = await fetchHtmlWithTimeout(
+			url,
+			ARTICLE_IMAGE_FETCH_TIMEOUT_MS
+		);
+		const ogImage = extractBestImageFromHtml(html);
+		return ogImage || fallbackImage || null;
+	} catch (err) {
+		log("Image enrichment failed:", url, err.message || String(err));
+		return fallbackImage || null;
+	}
+}
+
+/**
+ * For each article we scraped from Google Trends, try to replace the tiny
+ * Google thumbnail with the article's OpenGraph hero image. This runs in
+ * Node, not in the browser, so CORS is not an issue.
+ */
+async function hydrateArticleImages(stories) {
+	if (!stories.length) return stories;
+
+	// If fetch is missing we just return the original data.
+	if (typeof fetch !== "function") {
+		log("Global fetch not available, skipping article image hydration");
+		return stories;
+	}
+
+	return Promise.all(
+		stories.map(async (story) => {
+			const enrichedArticles = await Promise.all(
+				story.articles.map(async (art) => {
+					const bestImage = await fetchBestImageForArticle(art.url, art.image);
+					return { ...art, image: bestImage };
+				})
+			);
+
+			const hero =
+				enrichedArticles.find((a) => a.image && typeof a.image === "string")
+					?.image || story.image;
+
+			return {
+				...story,
+				image: hero,
+				articles: enrichedArticles,
+			};
+		})
+	);
+}
+
+/* ───────────────────────────────────────────────────────────── scraper */
+
+async function scrape({ geo, hours, category, sort }) {
 	const page = await (await getBrowser()).newPage();
 	page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
 
-	/* relay browser console messages for debugging */
-	page.on("console", (msg) => log("Page>", msg.text()));
-
-	/* block heavy resources for speed */
-	await page.setRequestInterception(true);
-	page.on("request", (r) =>
-		["font", "media", "stylesheet"].includes(r.resourceType())
-			? r.abort()
-			: r.continue()
-	);
-
-	const targetURL = urlFor({ geo, hours, category });
-	log("Navigate:", targetURL);
-	await page.goto(targetURL, { waitUntil: "domcontentloaded" });
-
-	await page.waitForSelector('tr[role="row"][data-row-id]', {
-		timeout: 60_000,
+	// Relay browser console messages, but drop noisy network errors.
+	page.on("console", (msg) => {
+		const text = msg.text();
+		if (/Failed to load resource/i.test(text)) return;
+		log("Page>", text);
 	});
 
-	/* extract the first ROW_LIMIT keywords */
-	const rows = await page.$$eval(
-		'tr[role="row"][data-row-id]',
-		(trs, LIM) =>
-			trs.slice(0, LIM).map((tr) => ({
-				id: tr.getAttribute("data-row-id"),
-				term: tr.querySelector("td:nth-child(2)")?.innerText.trim() ?? "",
-			})),
-		ROW_LIMIT
-	);
-	log("Row list:", rows);
+	// Block only fonts for speed; keep images and CSS so layout stays stable.
+	await page.setRequestInterception(true);
+	page.on("request", (req) => {
+		const type = req.resourceType();
+		if (type === "font") {
+			return req.abort();
+		}
+		return req.continue();
+	});
+
+	const targetURL = urlFor({ geo, hours, category, sort });
+	log("Navigate:", targetURL);
 
 	const stories = [];
 
-	for (const { id, term } of rows) {
-		if (!term) continue;
+	try {
+		await page.goto(targetURL, { waitUntil: "domcontentloaded" });
 
-		const result = await page.evaluate(
-			/* eslint-disable no-undef */
-			async (rowId, rowTerm, rowMs) => {
-				const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-				const deadline = Date.now() + rowMs;
+		await page.waitForSelector('tr[role="row"][data-row-id]', {
+			timeout: 60_000,
+		});
 
-				/* click the keyword cell ------------------------------------------------*/
-				const clickRow = () => {
-					const tr = document.querySelector(`tr[data-row-id="${rowId}"]`);
-					const cell = tr?.querySelector("td:nth-child(2)");
-					if (!cell) return false;
-					cell.scrollIntoView({ block: "center" });
-					cell.click();
-					console.log(`Clicked ${rowTerm}`);
-					return true;
-				};
-				if (!clickRow()) return { status: "row-not-found" };
+		// Extract the first ROW_LIMIT keywords exactly as shown in the table.
+		const rows = await page.$$eval(
+			'tr[role="row"][data-row-id]',
+			(trs, LIM) =>
+				trs.slice(0, LIM).map((tr) => ({
+					id: tr.getAttribute("data-row-id"),
+					term: tr.querySelector("td:nth-child(2)")?.innerText.trim() ?? "",
+				})),
+			ROW_LIMIT
+		);
+		log("Row list:", rows);
 
-				/* wait for the details dialog to appear --------------------------------*/
-				while (Date.now() < deadline) {
-					const dialog = document.querySelector(
-						'div[aria-modal="true"][role="dialog"][aria-label]'
-					);
+		for (const { id, term } of rows) {
+			if (!term) continue;
 
-					if (
-						dialog &&
-						dialog.getAttribute("aria-label").trim().toLowerCase() ===
-							rowTerm.toLowerCase()
-					) {
-						/* allow ≤1 s for news cards to render */
-						let anchors = [];
-						const t2 = Date.now() + 1_000;
-						while (Date.now() < t2) {
-							anchors = [
-								...dialog.querySelectorAll('a[target="_blank"][href^="http"]'),
-							];
-							if (anchors.length) break;
-							await sleep(120);
+			const result = await page.evaluate(
+				// eslint-disable-next-line no-undef
+				async (rowId, rowTerm, rowMs) => {
+					const sleep = (ms) =>
+						new Promise((resolve) => setTimeout(resolve, ms));
+					const deadline = Date.now() + rowMs;
+
+					const clickRow = () => {
+						const tr = document.querySelector(`tr[data-row-id="${rowId}"]`);
+						const cell = tr?.querySelector("td:nth-child(2)");
+						if (!cell) return false;
+						cell.scrollIntoView({ block: "center" });
+						cell.click();
+						console.log(`Clicked ${rowTerm}`);
+						return true;
+					};
+
+					if (!clickRow()) return { status: "row-not-found" };
+
+					while (Date.now() < deadline) {
+						const dialog = document.querySelector(
+							'div[aria-modal="true"][role="dialog"][aria-label]'
+						);
+
+						if (dialog) {
+							const label = dialog.getAttribute("aria-label") || "";
+							const normalizedLabel = label.trim().toLowerCase();
+							const normalizedTerm = rowTerm.trim().toLowerCase();
+
+							// Some dialogs prepend extra words; accept prefix match.
+							const isMatch =
+								normalizedLabel === normalizedTerm ||
+								normalizedLabel.startsWith(normalizedTerm);
+
+							if (isMatch) {
+								let anchors = [];
+								const t2 = Date.now() + 1_000;
+								while (Date.now() < t2) {
+									anchors = [
+										...dialog.querySelectorAll(
+											'a[target="_blank"][href^="http"]'
+										),
+									];
+									if (anchors.length) break;
+									// eslint-disable-next-line no-await-in-loop
+									await sleep(120);
+								}
+
+								const arts = anchors.slice(0, 3).map((a) => ({
+									title:
+										a.querySelector('[role="heading"]')?.textContent.trim() ||
+										a.querySelector("div.Q0LBCe")?.textContent.trim() ||
+										a.textContent.trim(),
+									url: a.href,
+									image: a.querySelector("img")?.src || null,
+								}));
+
+								// Close the dialog (handle layout variants).
+								(
+									dialog.querySelector(
+										'div[aria-label="Close search"], div[aria-label="Close"], button.pYTkkf-Bz112c-LgbsSe'
+									) || document.querySelector('div[aria-label="Close"]')
+								)?.click() ||
+									document.dispatchEvent(
+										new KeyboardEvent("keydown", { key: "Escape" })
+									);
+
+								return {
+									status: "ok",
+									image: arts[0]?.image || null,
+									articles: arts,
+								};
+							}
 						}
 
-						const arts = anchors.slice(0, 3).map((a) => ({
-							title:
-								a.querySelector('[role="heading"]')?.textContent.trim() ||
-								a.querySelector("div.Q0LBCe")?.textContent.trim() ||
-								a.textContent.trim(),
-							url: a.href,
-							image: a.querySelector("img")?.src || null,
-						}));
-
-						/* close the dialog (all layout variants) */
-						(
-							dialog.querySelector(
-								'div[aria-label="Close search"], div[aria-label="Close"], button.pYTkkf-Bz112c-LgbsSe'
-							) || document.querySelector('div[aria-label="Close"]')
-						)?.click() ||
-							document.dispatchEvent(
-								new KeyboardEvent("keydown", { key: "Escape" })
-							);
-
-						return {
-							status: "ok",
-							image: arts[0]?.image || null,
-							articles: arts,
-						};
+						// If dialog vanished (virtual scroll) → reclick.
+						if (!dialog) clickRow();
+						// eslint-disable-next-line no-await-in-loop
+						await sleep(200);
 					}
 
-					/* if dialog vanished (virtual scroll) → reclick */
-					if (!dialog) clickRow();
-					await sleep(200);
-				}
-				return { status: "timeout" };
-			},
-			id,
-			term,
-			ROW_TIMEOUT_MS
-			/* eslint-enable no-undef */
-		);
-
-		log(`Result for "${term}":`, result.status);
-
-		if (result.status === "ok") {
-			stories.push({
-				title: term,
-				image: result.image,
-				entityNames: [term],
-				articles: result.articles,
-			});
-		}
-
-		/* wait until dialog truly closed before next loop */
-		try {
-			await page.waitForFunction(
-				() => !document.querySelector('div[aria-modal="true"][role="dialog"]'),
-				{ timeout: 5_000 }
+					return { status: "timeout" };
+				},
+				id,
+				term,
+				ROW_TIMEOUT_MS
 			);
-			await page.waitForTimeout(250);
-		} catch {
-			/* ignored */
+
+			log(`Result for "${term}":`, result.status);
+
+			if (result.status === "ok") {
+				stories.push({
+					title: term,
+					image: result.image,
+					entityNames: [term],
+					articles: result.articles,
+				});
+			}
+
+			// Wait until dialog truly closed before next loop.
+			try {
+				await page.waitForFunction(
+					() =>
+						!document.querySelector('div[aria-modal="true"][role="dialog"]'),
+					{ timeout: 5_000 }
+				);
+				await page.waitForTimeout(250);
+			} catch (e) {
+				// ignored
+			}
 		}
+	} finally {
+		await page.close().catch(() => {});
 	}
 
-	await page.close();
 	return stories;
 }
 
 /* ───────────────────────────────────────────────────────────── express API */
+
 router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
-	if (!/^[A-Z]{2}$/.test(geo))
-		return res
-			.status(400)
-			.json({ error: "`geo` must be an ISO‑3166 alpha‑2 country code" });
+	if (!/^[A-Z]{2}$/.test(geo)) {
+		return res.status(400).json({
+			error: "`geo` must be an ISO‑3166 alpha‑2 country code",
+		});
+	}
+
+	const hours = Number(req.query.hours) || 24;
+	const category = req.query.category ?? null;
+	const sort = req.query.sort ?? null;
 
 	try {
-		const stories = await scrape({
+		let stories = await scrape({
 			geo,
-			hours: req.query.hours,
-			category: req.query.category,
+			hours,
+			category,
+			sort,
 		});
 
-		res.json({
+		// 1) Replace low‑res Google thumbnails with article OG images where possible.
+		stories = await hydrateArticleImages(stories);
+
+		// 2) Ask GPT‑5.1 for better blog + YouTube titles.
+		//    This is optional and skipped if CHATGPT_API_TOKEN / OPENAI_API_KEY
+		//    is not configured or the call fails.
+		stories = await enhanceStoriesWithOpenAI(stories, {
+			geo,
+			hours,
+			category,
+		});
+
+		return res.json({
 			generatedAt: new Date().toISOString(),
 			requestedGeo: geo,
 			effectiveGeo: geo, // Trends may redirect, but we fix geo
-			hours: +req.query.hours || 168,
-			category: req.query.category ?? null,
+			hours,
+			category,
 			stories,
 		});
 	} catch (err) {
 		console.error(err);
-		res.status(500).json({
-			error: "Google Trends scraping failed",
-			detail: err.message,
+		return res.status(500).json({
+			error: "Google Trends scraping failed",
+			detail: err.message || String(err),
 		});
 	}
 });
