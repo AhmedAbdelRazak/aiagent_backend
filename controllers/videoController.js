@@ -296,7 +296,8 @@ const YT_CATEGORY_MAP = {
 
 const BRAND_TAG = "AiVideomatic";
 const BRAND_CREDIT = "Powered by AiVideomatic";
-const MERCH_INTRO = "Support the channel & customize your own merch:\n- https://serenejannat.com/custom-gifts (choose anything)\n- https://serenejannat.com/custom-gifts/6815366fd8583c434ec42fec (Unisex Heavy Blend Hooded Sweatshirt)\n- https://serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3 (Black Mug 11oz/15oz)\n(You can add your own design - your support keeps the channel going!)\n\n";
+const MERCH_INTRO =
+	"Support the channel & customize your own merch:\n- https://serenejannat.com/custom-gifts (choose anything)\n- https://serenejannat.com/custom-gifts/6815366fd8583c434ec42fec (Unisex Heavy Blend Hooded Sweatshirt)\n- https://serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3 (Black Mug 11oz/15oz)\n(You can add your own design - your support keeps the channel going!)\n\n";
 const PROMPT_CHAR_LIMIT = 220;
 
 /* ---------------------------------------------------------------
@@ -688,8 +689,8 @@ async function concatWithTransitions(
 	const durations =
 		Array.isArray(durationsHint) && durationsHint.length === clips.length
 			? durationsHint.map((d) => Math.max(0.1, +d || 0.1))
-			: (await Promise.all(clips.map((c) => probeVideoDuration(c)))).map(
-					(d) => Math.max(0.1, d || 0.1)
+			: (await Promise.all(clips.map((c) => probeVideoDuration(c)))).map((d) =>
+					Math.max(0.1, d || 0.1)
 			  );
 
 	const transitions = [
@@ -888,12 +889,21 @@ async function fetchTrendingStory(
 		`${TRENDS_API_URL}?` +
 		qs.stringify({ geo, category: id, hours: 168, language });
 
-	const normTitle = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
+	const normTitle = (t) =>
+		String(t || "")
+			.toLowerCase()
+			.replace(/\s+/g, " ")
+			.trim();
 	const usedSet =
 		usedTopics instanceof Set
 			? new Set(Array.from(usedTopics).map(normTitle))
 			: new Set(
-					(Array.isArray(usedTopics) ? usedTopics : usedTopics ? [usedTopics] : [])
+					(Array.isArray(usedTopics)
+						? usedTopics
+						: usedTopics
+						? [usedTopics]
+						: []
+					)
 						.filter(Boolean)
 						.map(normTitle)
 			  );
@@ -1827,9 +1837,7 @@ async function planBackgroundMusic(category, language, script) {
 	const defaultVoiceGain = category === "Top5" ? 1.5 : 1.4;
 	const defaultMusicGain = category === "Top5" ? 0.18 : 0.14;
 	const upbeatHint =
-		category === "Top5"
-			? "Fun, upbeat, percussive Top 5 vibe, no vocals."
-			: "";
+		category === "Top5" ? "Fun, upbeat, percussive Top 5 vibe, no vocals." : "";
 
 	const ask = `
 You are a sound designer for short-form YouTube videos.
@@ -2218,7 +2226,7 @@ async function buildVideoPlanWithGPT({
 		.join("\n");
 
 	const categoryTone = TONE_HINTS[category] || "";
-const outroDirective = `
+	const outroDirective = `
 Segment ${segCnt} is the engagement outro (about ${
 		engagementTailSeconds || "5-6"
 	} seconds):
@@ -2272,9 +2280,24 @@ Article text snippet (may be truncated):
 ${snippet || "(no article text available)"}
 
 Image notes for the orchestrator:
-- General comment about what the lead image depicts: ${imageComment || "(none provided)"}.
-- Viral hooks by aspect ratio (use the one matching the requested ratio ${ratio || "unspecified"}):
-  ${imageBriefs.length ? imageBriefs.map((b) => `- ${b.aspectRatio}: ${b.visualHook}${b.emotion ? " | emotion: " + b.emotion : ""}`).join("\n  ") : "- (no hooks provided)"}
+- General comment about what the lead image depicts: ${
+			imageComment || "(none provided)"
+		}.
+- Viral hooks by aspect ratio (use the one matching the requested ratio ${
+			ratio || "unspecified"
+		}):
+  ${
+		imageBriefs.length
+			? imageBriefs
+					.map(
+						(b) =>
+							`- ${b.aspectRatio}: ${b.visualHook}${
+								b.emotion ? " | emotion: " + b.emotion : ""
+							}`
+					)
+					.join("\n  ")
+			: "- (no hooks provided)"
+	}
 
 Images:
 The FIRST attached image is imageIndex 0, the second is 1, etc.
@@ -2585,7 +2608,6 @@ exports.createVideo = async (req, res) => {
 			);
 		const usedTopics = new Set(normRecent);
 
-
 		let topic = "";
 		let trendStory = null;
 		let trendArticleText = null;
@@ -2626,58 +2648,61 @@ exports.createVideo = async (req, res) => {
 				const list = await pickTrendingTopicFresh(category, language, country);
 				topic = list.find((t) => !usedTopics.has(t)) || list[0];
 			}
-	}
+		}
 
-	console.log(`[Job] final topic="${topic}"`);
+		console.log(`[Job] final topic="${topic}"`);
 
-	// Scrape a bit of article text for richer context, if we have a Trends story
+		// Scrape a bit of article text for richer context, if we have a Trends story
 		if (trendStory && trendStory.articles && trendStory.articles.length) {
 			trendArticleText = await scrapeArticleText(
 				trendStory.articles[0].url || null
 			);
 		}
 
-	/* 2. Segment timing */
-	const INTRO = 3;
-	let engagementTailSeconds = Math.round(
-		Math.max(ENGAGEMENT_TAIL_MIN, Math.min(ENGAGEMENT_TAIL_MAX, duration * 0.12 || ENGAGEMENT_TAIL_MIN))
-	);
-	if (duration < 12) {
-		engagementTailSeconds = ENGAGEMENT_TAIL_MIN;
-	}
-	let segCnt =
-		category === "Top5" ? 6 : Math.ceil((duration - INTRO) / 10) + 1;
-	const totalDurationTarget = duration + engagementTailSeconds;
+		/* 2. Segment timing */
+		const INTRO = 3;
+		let engagementTailSeconds = Math.round(
+			Math.max(
+				ENGAGEMENT_TAIL_MIN,
+				Math.min(ENGAGEMENT_TAIL_MAX, duration * 0.12 || ENGAGEMENT_TAIL_MIN)
+			)
+		);
+		if (duration < 12) {
+			engagementTailSeconds = ENGAGEMENT_TAIL_MIN;
+		}
+		let segCnt =
+			category === "Top5" ? 6 : Math.ceil((duration - INTRO) / 10) + 1;
+		const totalDurationTarget = duration + engagementTailSeconds;
 
-	let segLens;
-	if (category === "Top5") {
-		const r = duration - INTRO;
-		const base = Math.floor(r / 5);
-		const extra = r % 5;
-		segLens = [
-			INTRO,
-			...Array.from({ length: 5 }, (_, i) => base + (i < extra ? 1 : 0)),
-		];
-	} else {
-		const r = duration - INTRO;
-		const n = Math.ceil(r / 10);
-		segLens = [
-			INTRO,
-			...Array.from({ length: n }, (_, i) =>
-				i === n - 1 ? r - 10 * (n - 1) : 10
-			),
-		];
-	}
+		let segLens;
+		if (category === "Top5") {
+			const r = duration - INTRO;
+			const base = Math.floor(r / 5);
+			const extra = r % 5;
+			segLens = [
+				INTRO,
+				...Array.from({ length: 5 }, (_, i) => base + (i < extra ? 1 : 0)),
+			];
+		} else {
+			const r = duration - INTRO;
+			const n = Math.ceil(r / 10);
+			segLens = [
+				INTRO,
+				...Array.from({ length: n }, (_, i) =>
+					i === n - 1 ? r - 10 * (n - 1) : 10
+				),
+			];
+		}
 
-	segLens.push(engagementTailSeconds); // dedicated engagement outro segment
-	const delta = totalDurationTarget - segLens.reduce((a, b) => a + b, 0);
-	if (Math.abs(delta) >= 1) segLens[segLens.length - 1] += delta;
+		segLens.push(engagementTailSeconds); // dedicated engagement outro segment
+		const delta = totalDurationTarget - segLens.reduce((a, b) => a + b, 0);
+		if (Math.abs(delta) >= 1) segLens[segLens.length - 1] += delta;
 
-	const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
-	console.log("[Timing] initial segment lengths", {
-		segLens,
-		segWordCaps,
-	});
+		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+		console.log("[Timing] initial segment lengths", {
+			segLens,
+			segWordCaps,
+		});
 
 		/* 3. Top-5 outline */
 		let top5Outline = null;
@@ -3062,99 +3087,99 @@ One or two sentences only.
 			let clipPath = null;
 
 			if (hasTrendImages && seg.imageIndex !== null) {
-	const candidatesIdx = [];
-	const baseIdx =
-		seg.imageIndex >= 0 && seg.imageIndex < trendImagePairs.length
-			? seg.imageIndex
-			: 0;
-	for (let k = 0; k < trendImagePairs.length; k++) {
-		const idx = (baseIdx + k) % trendImagePairs.length;
-		if (!candidatesIdx.includes(idx)) candidatesIdx.push(idx);
-	}
+				const candidatesIdx = [];
+				const baseIdx =
+					seg.imageIndex >= 0 && seg.imageIndex < trendImagePairs.length
+						? seg.imageIndex
+						: 0;
+				for (let k = 0; k < trendImagePairs.length; k++) {
+					const idx = (baseIdx + k) % trendImagePairs.length;
+					if (!candidatesIdx.includes(idx)) candidatesIdx.push(idx);
+				}
 
-	console.log("[Runway] prompt preview", {
-		segment: segIndex,
-		promptPreview: promptText.slice(0, 160),
-		hasTrendImage: true,
-		candidates: candidatesIdx.length,
-	});
+				console.log("[Runway] prompt preview", {
+					segment: segIndex,
+					promptPreview: promptText.slice(0, 160),
+					hasTrendImage: true,
+					candidates: candidatesIdx.length,
+				});
 
-	let safetyTriggered = false;
-	for (const idx of candidatesIdx) {
-		const pair = trendImagePairs[idx];
-		if (!pair || !pair.cloudinaryUrl) continue;
-		try {
-			clipPath = await generateItvClipFromImage({
-				segmentIndex: segIndex,
-				imgUrl: pair.cloudinaryUrl,
-				promptText,
-				negativePrompt,
-				ratio,
-				runwayDuration: rw,
-			});
-			break;
-		} catch (e) {
-			const msg = String(e?.message || "");
-			const failureCode =
-				e?.response?.data?.failureCode || e?.response?.data?.code || "";
-			const isSafety =
-				/SAFETY/i.test(msg) ||
-				/SAFETY/i.test(String(failureCode || "")) ||
-				/HUMAN/i.test(String(failureCode || ""));
-			safetyTriggered = safetyTriggered || isSafety;
-			console.warn(
-				`[Seg ${segIndex}] Runway image_to_video failed for image #${idx}`,
-				msg
-			);
-			continue;
-		}
-	}
+				let safetyTriggered = false;
+				for (const idx of candidatesIdx) {
+					const pair = trendImagePairs[idx];
+					if (!pair || !pair.cloudinaryUrl) continue;
+					try {
+						clipPath = await generateItvClipFromImage({
+							segmentIndex: segIndex,
+							imgUrl: pair.cloudinaryUrl,
+							promptText,
+							negativePrompt,
+							ratio,
+							runwayDuration: rw,
+						});
+						break;
+					} catch (e) {
+						const msg = String(e?.message || "");
+						const failureCode =
+							e?.response?.data?.failureCode || e?.response?.data?.code || "";
+						const isSafety =
+							/SAFETY/i.test(msg) ||
+							/SAFETY/i.test(String(failureCode || "")) ||
+							/HUMAN/i.test(String(failureCode || ""));
+						safetyTriggered = safetyTriggered || isSafety;
+						console.warn(
+							`[Seg ${segIndex}] Runway image_to_video failed for image #${idx}`,
+							msg
+						);
+						continue;
+					}
+				}
 
-	if (!clipPath && safetyTriggered) {
-		try {
-			const safePrompt = `${promptText} no celebrity likeness, generic characters, no recognisable faces`;
-			clipPath = await generateTtiItvClip({
-				segmentIndex: segIndex,
-				promptText: safePrompt,
-				negativePrompt:
-					negativePrompt || `${RUNWAY_NEGATIVE_PROMPT}, celebrity`,
-				ratio,
-				runwayDuration: rw,
-			});
-		} catch (e) {
-			console.warn(
-				`[Seg ${segIndex}] Safe TTI->ITV fallback failed:`,
-				e.message
-			);
-		}
-	}
+				if (!clipPath && safetyTriggered) {
+					try {
+						const safePrompt = `${promptText} no celebrity likeness, generic characters, no recognisable faces`;
+						clipPath = await generateTtiItvClip({
+							segmentIndex: segIndex,
+							promptText: safePrompt,
+							negativePrompt:
+								negativePrompt || `${RUNWAY_NEGATIVE_PROMPT}, celebrity`,
+							ratio,
+							runwayDuration: rw,
+						});
+					} catch (e) {
+						console.warn(
+							`[Seg ${segIndex}] Safe TTI->ITV fallback failed:`,
+							e.message
+						);
+					}
+				}
 
-	if (!clipPath) {
-		const pair = trendImagePairs[baseIdx] || trendImagePairs[0] || null;
-		const imgUrlCloudinary = pair?.cloudinaryUrl;
-		const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
-		clipPath = await generateStaticClipFromImage({
-			segmentIndex: segIndex,
-			imgUrlOriginal,
-			imgUrlCloudinary,
-			ratio,
-			targetDuration: d,
-		});
-	}
-} else {
-	console.log("[Runway] prompt preview", {
-		segment: segIndex,
-		promptPreview: promptText.slice(0, 160),
-		hasTrendImage: false,
-	});
-	clipPath = await generateTtiItvClip({
-		segmentIndex: segIndex,
-		promptText,
-		negativePrompt,
-		ratio,
-		runwayDuration: rw,
-	});
-}
+				if (!clipPath) {
+					const pair = trendImagePairs[baseIdx] || trendImagePairs[0] || null;
+					const imgUrlCloudinary = pair?.cloudinaryUrl;
+					const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
+					clipPath = await generateStaticClipFromImage({
+						segmentIndex: segIndex,
+						imgUrlOriginal,
+						imgUrlCloudinary,
+						ratio,
+						targetDuration: d,
+					});
+				}
+			} else {
+				console.log("[Runway] prompt preview", {
+					segment: segIndex,
+					promptPreview: promptText.slice(0, 160),
+					hasTrendImage: false,
+				});
+				clipPath = await generateTtiItvClip({
+					segmentIndex: segIndex,
+					promptText,
+					negativePrompt,
+					ratio,
+					runwayDuration: rw,
+				});
+			}
 
 			const fixed = tmpFile(`fx_${segIndex}`, ".mp4");
 			await exactLen(clipPath, d, fixed, { ratio, enhance: true });
@@ -3738,49 +3763,3 @@ exports.listVideos = async (req, res, next) => {
 		next(err);
 	}
 };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
