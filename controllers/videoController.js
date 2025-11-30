@@ -3516,6 +3516,7 @@ One or two sentences only.
 
 			await new Schedule({
 				user: user._id,
+				category,
 				video: doc._id,
 				scheduleType: type,
 				timeOfDay,
