@@ -1,5 +1,5 @@
-/** @format */
-/* videoController.js — high-motion, trends-driven edition (enhanced, multi-image) *
+ï»¿/** @format */
+/* videoController.js â€” high-motion, trends-driven edition (enhanced, multi-image) *
 ? Uses multiple Google Trends images per video for visual variety (hero + article images) *
 ? GPT is encouraged to rotate images; hard fallback enforces round-robin variety if GPT doesn't *
 ? Cloudinary normalises aspect ratio & cleanly crops images before Runway (no extra AI upscaling) *
@@ -14,7 +14,7 @@
 ? Voice planning nudged towards clear, motivated, brisk American-style delivery (non-sensitive topics) *
 ? Background music planned via GPT (search term + voice/music gains) & metadata saved on Video *
 ? Script timing recomputed from words ? far fewer long pauses *
-? Phases kept in sync with GenerationModal (INIT ? … ? COMPLETED / ERROR) */
+? Phases kept in sync with GenerationModal (INIT ? â€¦ ? COMPLETED / ERROR) */
 
 const fs = require("fs");
 const os = require("os");
@@ -57,7 +57,7 @@ const PST_TZ = "America/Los_Angeles";
  * ------------------------------------------------------------- */
 function assertExists(cond, msg) {
 	if (!cond) {
-		console.error(`[Startup] FATAL – ${msg}`);
+		console.error(`[Startup] FATAL â€“ ${msg}`);
 		process.exit(1);
 	}
 }
@@ -81,7 +81,7 @@ assertExists(
 			return false;
 		}
 	})(),
-	"FFmpeg binary not found – install ffmpeg or set FFMPEG_PATH."
+	"FFmpeg binary not found â€“ install ffmpeg or set FFMPEG_PATH."
 );
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -120,7 +120,7 @@ function resolveFontPath() {
 const FONT_PATH = resolveFontPath();
 assertExists(
 	FONT_PATH,
-	"No valid TTF font found – set FFMPEG_FONT_PATH or install DejaVu/Arial."
+	"No valid TTF font found â€“ set FFMPEG_FONT_PATH or install DejaVu/Arial."
 );
 const FONT_PATH_FFMPEG = FONT_PATH.replace(/\\/g, "/").replace(/:/g, "\\:");
 
@@ -325,7 +325,7 @@ const goodDur = (n) =>
 const escTxt = (t) =>
 	String(t || "")
 		.replace(/\\/g, "\\\\")
-		.replace(/[’']/g, "\\'")
+		.replace(/[â€™']/g, "\\'")
 		.replace(/:/g, "\\:")
 		.replace(/,/g, "\\,");
 
@@ -687,14 +687,10 @@ async function concatWithTransitions(
 
 	const durations =
 		Array.isArray(durationsHint) && durationsHint.length === clips.length
-			? durationsHint.map((d) => Math.max(0, +d || 0))
-			: await Promise.all(clips.map((c) => probeVideoDuration(c)));
-
-	const validDurations = durations.filter((d) => d > 0.1);
-	const minDur = validDurations.length
-		? Math.min(...validDurations)
-		: transitionDuration;
-	const xfadeDur = Math.max(0.5, Math.min(transitionDuration, minDur * 0.55));
+			? durationsHint.map((d) => Math.max(0.1, +d || 0.1))
+			: (await Promise.all(clips.map((c) => probeVideoDuration(c)))).map(
+					(d) => Math.max(0.1, d || 0.1)
+			  );
 
 	const transitions = [
 		"fade",
@@ -709,42 +705,48 @@ async function concatWithTransitions(
 	];
 
 	const graph = [];
-	let acc = Math.max(0, durations[0] - xfadeDur);
+	let acc = Math.max(0, durations[0] * 0.5);
 	let prevLabel = "[0:v]";
 
 	for (let i = 1; i < clips.length; i++) {
 		const label = i === clips.length - 1 ? "[vout]" : `[v${i}]`;
 		const trans = transitions[(i - 1) % transitions.length];
+		const prevDur = durations[i - 1];
+		const currDur = durations[i];
+		const xfadeDur = Math.max(
+			0.35,
+			Math.min(transitionDuration, prevDur * 0.45, currDur * 0.45)
+		);
+		const offset = Math.max(0, acc - xfadeDur * 0.5);
+
 		graph.push(
 			`${prevLabel}[${i}:v]xfade=transition=${trans}:duration=${xfadeDur.toFixed(
 				3
-			)}:offset=${acc.toFixed(3)}${label}`
+			)}:offset=${offset.toFixed(3)}${label}`
 		);
 		prevLabel = label;
-		acc += Math.max(0.05, durations[i] - xfadeDur);
+		acc += Math.max(0.05, currDur - xfadeDur * 0.5);
 	}
 
 	await ffmpegPromise((cmd) => {
 		clips.forEach((p) => cmd.input(norm(p)));
 
-		let finalLabel = prevLabel;
+		cmd.complexFilter(graph.join(";"));
+
 		if (ratio) {
 			const targetRes = targetResolutionForRatio(ratio);
 			if (targetRes.width && targetRes.height) {
-				const scaledLabel = "[vscaled]";
-				graph.push(
-					`${prevLabel}scale=${targetRes.width}:${targetRes.height}:flags=lanczos+accurate_rnd+full_chroma_int${scaledLabel}`
+				cmd.outputOptions(
+					"-vf",
+					`scale=${targetRes.width}:${targetRes.height}:flags=lanczos+accurate_rnd+full_chroma_int`
 				);
-				finalLabel = scaledLabel;
 			}
 		}
-
-		cmd.complexFilter(graph.join(";"));
 
 		return cmd
 			.outputOptions(
 				"-map",
-				finalLabel,
+				prevLabel,
 				"-c:v",
 				"libx264",
 				"-preset",
@@ -886,15 +888,14 @@ async function fetchTrendingStory(
 		`${TRENDS_API_URL}?` +
 		qs.stringify({ geo, category: id, hours: 168, language });
 
+	const normTitle = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
 	const usedSet =
 		usedTopics instanceof Set
-			? usedTopics
+			? new Set(Array.from(usedTopics).map(normTitle))
 			: new Set(
-					Array.isArray(usedTopics)
-						? usedTopics.filter(Boolean)
-						: usedTopics
-						? [usedTopics]
-						: []
+					(Array.isArray(usedTopics) ? usedTopics : usedTopics ? [usedTopics] : [])
+						.filter(Boolean)
+						.map(normTitle)
 			  );
 
 	try {
@@ -918,14 +919,19 @@ async function fetchTrendingStory(
 		const stories = Array.isArray(data?.stories) ? data.stories : [];
 		if (!stories.length) throw new Error("empty trends payload");
 
-		// Pick the first story whose title we haven't used yet
+		// Pick the first story whose title we haven't used yet (keep Trends order)
 		let picked = null;
 		for (const s of stories) {
 			const t = String(
 				s.youtubeShortTitle || s.seoTitle || s.title || ""
 			).trim();
 			if (!t) continue;
-			if (!usedSet.has(t)) {
+			const raw = String(s.title || "").trim();
+			const normT = normTitle(t);
+			const normRaw = normTitle(raw);
+			const alreadyUsed =
+				usedSet.has(normT) || (normRaw && usedSet.has(normRaw));
+			if (!alreadyUsed) {
 				picked = { story: s, effectiveTitle: t };
 				break;
 			}
@@ -1115,7 +1121,7 @@ You are an experienced YouTube editor writing titles for ${
 		isSports ? "an official sports league channel" : "a serious news channel"
 	}.
 
-Write ONE highly searchable, professional YouTube Shorts title.
+Write ONE highly searchable, professional YouTube Shorts title that mirrors how people actually search.
 
 Hard constraints:
 - Maximum 65 characters.
@@ -1131,12 +1137,13 @@ Hard constraints:
 	}
 
 SEO behavior:
-- Include the core subject once.
-- Prefer phrases that match how people actually search, like ${
+- Include the core subject once, close to the start.
+- Prefer exact search phrases users type, like ${
 		isSports
-			? '"Highlights", "Preview", "How To Watch", "Full Recap".'
-			: '"Explained", "Update", "Analysis", "What To Know".'
+			? '"start time", "how to watch", "full card", "highlights", "preview", "results".'
+			: '"explained", "update", "analysis", "what to know", "timeline", "breaking news".'
 	}
+- Avoid filler words; every word should boost search intent or clarity.
 
 Context from Google Trends and linked articles:
 ${context || "(no extra context)"}
@@ -1156,7 +1163,7 @@ Return only the final title, nothing else.
 			messages: [{ role: "user", content: ask }],
 		});
 
-		const raw = choices[0].message.content.replace(/["“”]/g, "").trim();
+		const raw = choices[0].message.content.replace(/["â€œâ€]/g, "").trim();
 		return toTitleCase(raw);
 	} catch (e) {
 		console.warn("[SEO title] generation failed ?", e.message);
@@ -1184,7 +1191,7 @@ Do not mention years before ${CURRENT_YEAR}.
 			model: CHAT_MODEL,
 			messages: [{ role: "user", content: make(a) }],
 		});
-		const t = choices[0].message.content.replace(/["“”]/g, "").trim();
+		const t = choices[0].message.content.replace(/["â€œâ€]/g, "").trim();
 		if (!/20\d{2}/.test(t) || new RegExp(`\\b${CURRENT_YEAR}\\b`).test(t))
 			return t;
 	}
@@ -1217,7 +1224,7 @@ Return a JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${lo
 			/* ignore */
 		}
 	}
-	return [`Breaking ${category} Story – ${CURRENT_MONTH_YEAR}`];
+	return [`Breaking ${category} Story â€“ ${CURRENT_MONTH_YEAR}`];
 }
 
 async function generateTop5Outline(topic, language = DEFAULT_LANGUAGE) {
@@ -1298,7 +1305,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 		}
 
 		console.warn(
-			"[Cloudinary] 25MP limit hit, pre-downscaling locally and retrying …"
+			"[Cloudinary] 25MP limit hit, pre-downscaling locally and retrying â€¦"
 		);
 
 		const { width, height } = targetResolutionForRatio(ratio);
@@ -1888,7 +1895,7 @@ Constraints:
 }
 
 /* ---------------------------------------------------------------
- *  ElevenLabs helpers – dynamic voice selection + TTS
+ *  ElevenLabs helpers â€“ dynamic voice selection + TTS
  * ------------------------------------------------------------- */
 async function fetchElevenVoices() {
 	if (!ELEVEN_API_KEY) return null;
@@ -2014,7 +2021,7 @@ async function selectBestElevenVoice(
 			);
 		} else if (fallbackId) {
 			console.warn(
-				"[Eleven] No explicit American English voices detected in /voices – using static fallback voice."
+				"[Eleven] No explicit American English voices detected in /voices â€“ using static fallback voice."
 			);
 			return {
 				voiceId: fallbackId,
@@ -2035,7 +2042,7 @@ async function selectBestElevenVoice(
 			candidates = filtered;
 		} else {
 			console.warn(
-				"[Eleven] All candidate voices are in the avoid list – keeping full candidate set."
+				"[Eleven] All candidate voices are in the avoid list â€“ keeping full candidate set."
 			);
 		}
 	}
@@ -2165,7 +2172,7 @@ async function elevenLabsTTS(
 }
 
 /* ---------------------------------------------------------------
- *  OpenAI director – build full video plan (multi-image aware)
+ *  OpenAI director â€“ build full video plan (multi-image aware)
  * ------------------------------------------------------------- */
 async function buildVideoPlanWithGPT({
 	topic,
@@ -2318,7 +2325,7 @@ Return JSON:
 		top5Outline.length
 	) {
 		const outlineText = top5Outline
-			.map((it) => `#${it.rank}: ${it.label || ""} — ${it.oneLine || ""}`)
+			.map((it) => `#${it.rank}: ${it.label || ""} â€” ${it.oneLine || ""}`)
 			.join("\n");
 		promptText = `
 ${baseIntro}
@@ -2491,7 +2498,7 @@ Return JSON:
 }
 
 /* ---------------------------------------------------------------
- *  Main controller – createVideo
+ *  Main controller â€“ createVideo
  * ------------------------------------------------------------- */
 exports.createVideo = async (req, res) => {
 	const { category, ratio: ratioIn, duration: durIn } = req.body;
@@ -2567,11 +2574,16 @@ exports.createVideo = async (req, res) => {
 			category,
 			createdAt: { $gte: threeDaysAgo },
 		}).select("topic seoTitle");
-		const usedTopics = new Set(
-			recentVideos
-				.map((v) => v.topic || v.seoTitle || "")
-				.filter(Boolean)
-		);
+		const normRecent = recentVideos
+			.map((v) => v.topic || v.seoTitle || "")
+			.filter(Boolean)
+			.map((t) =>
+				String(t || "")
+					.toLowerCase()
+					.replace(/\s+/g, " ")
+					.trim()
+			);
+		const usedTopics = new Set(normRecent);
 
 
 		let topic = "";
@@ -2706,7 +2718,7 @@ exports.createVideo = async (req, res) => {
 			}
 			if (!trendImagePairs.length) {
 				console.warn(
-					"[Cloudinary] All Trends uploads failed – falling back to prompt-only mode"
+					"[Cloudinary] All Trends uploads failed â€“ falling back to prompt-only mode"
 				);
 			}
 		}
@@ -2714,7 +2726,7 @@ exports.createVideo = async (req, res) => {
 		let hasTrendImages = trendImagePairs.length > 0;
 
 		/* 5. Let OpenAI orchestrate segments + visuals */
-		console.log("[GPT] building full video plan …");
+		console.log("[GPT] building full video plan â€¦");
 
 		const plan = await buildVideoPlanWithGPT({
 			topic,
@@ -2818,7 +2830,7 @@ One or two sentences only.
 				],
 			});
 			globalStyle = g.choices[0].message.content
-				.replace(/^[-–•\s]+/, "")
+				.replace(/^[-â€“â€¢\s]+/, "")
 				.trim();
 		} catch (e) {
 			console.warn("[GPT] global style generation failed ?", e.message);
@@ -2851,7 +2863,7 @@ One or two sentences only.
 			messages: [
 				{
 					role: "user",
-					content: `Write a YouTube description (at most 150 words) for the video titled "${seoTitle}". End with 5–7 relevant hashtags.`,
+					content: `Write a YouTube description (at most 150 words) for the video titled "${seoTitle}". Make the first 2 lines keyword-rich so they rank in search; include the core query (time/date/how to watch/card/lineup/etc. as appropriate). Use short sentences, no fluff. Add 1 quick CTA. End with 5-7 relevant, high-volume hashtags.`,
 				},
 			],
 		});
@@ -2864,7 +2876,7 @@ One or two sentences only.
 				messages: [
 					{
 						role: "user",
-						content: `Return a JSON array of 5–8 tags for the YouTube video "${seoTitle}". Focus on search terms viewers would use.`,
+						content: `Return a JSON array of 5-8 SHORT tags for the YouTube video "${seoTitle}". Use high-volume search terms viewers actually type (1-3 words each). No hashtags, no duplicates.`,
 					},
 				],
 			});
@@ -3140,9 +3152,9 @@ One or two sentences only.
 		promptText,
 		negativePrompt,
 		ratio,
-					runwayDuration: rw,
-				});
-			}
+		runwayDuration: rw,
+	});
+}
 
 			const fixed = tmpFile(`fx_${segIndex}`, ".mp4");
 			await exactLen(clipPath, d, fixed, { ratio, enhance: true });
@@ -3726,6 +3738,10 @@ exports.listVideos = async (req, res, next) => {
 		next(err);
 	}
 };
+
+
+
+
 
 
 
