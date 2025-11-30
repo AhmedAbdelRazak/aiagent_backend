@@ -6,7 +6,8 @@ const dayjs = require("dayjs");
 
 exports.createSchedule = async (req, res, next) => {
 	try {
-		const { videoId, scheduleType, timeOfDay, startDate, endDate } = req.body;
+		const { videoId, scheduleType, timeOfDay, startDate, endDate, category } =
+			req.body;
 		if (!videoId || !scheduleType || !timeOfDay || !startDate)
 			return res.status(400).json({ error: "Missing fields" });
 
@@ -34,8 +35,16 @@ exports.createSchedule = async (req, res, next) => {
 			else next = next.add(1, "month");
 		}
 
+		const effectiveCategory = category || video.category;
+		if (!effectiveCategory) {
+			return res
+				.status(400)
+				.json({ error: "Category is required for schedules." });
+		}
+
 		const sched = new Schedule({
 			user: req.user._id,
+			category: effectiveCategory,
 			video: video._id,
 			scheduleType,
 			timeOfDay,
@@ -98,7 +107,7 @@ exports.getScheduleById = async (req, res, next) => {
 exports.updateSchedule = async (req, res, next) => {
 	try {
 		const { scheduleId } = req.params;
-		const { scheduleType, timeOfDay, active } = req.body;
+		const { scheduleType, timeOfDay, active, category } = req.body;
 
 		const schedule = await Schedule.findById(scheduleId);
 		if (!schedule) {
@@ -123,6 +132,7 @@ exports.updateSchedule = async (req, res, next) => {
 
 		if (scheduleType) schedule.scheduleType = scheduleType;
 		if (timeOfDay) schedule.timeOfDay = timeOfDay;
+		if (category) schedule.category = category;
 		if (active !== undefined) schedule.active = active;
 
 		// Recompute nextRun if timeOfDay or type changed

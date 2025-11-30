@@ -8,9 +8,10 @@ const scheduleSchema = new mongoose.Schema(
 			ref: "User",
 			required: true,
 		},
-		// Optional: direct category for this schedule (used when generating new videos per run)
+		// Category driving Trends fetch (mandatory for new schedules)
 		category: {
 			type: String,
+			required: true,
 		},
 		video: {
 			type: mongoose.Schema.Types.ObjectId,
