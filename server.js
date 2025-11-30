@@ -137,19 +137,47 @@ async function handleSchedule(sched) {
 	const { user, video, scheduleType, timeOfDay } = sched;
 
 	/* 2 ▸ build request for createVideo */
+	// Resolve a base video seed: prefer populated video, then last of videos[], then most recent video for user/category
+	let baseVideo = video || null;
+	if (!baseVideo && Array.isArray(sched.videos) && sched.videos.length) {
+		baseVideo = sched.videos[sched.videos.length - 1];
+	}
+
+	const resolvedCategory =
+		sched.category ||
+		(baseVideo && baseVideo.category) ||
+		"Entertainment";
+
+	if (!baseVideo || !baseVideo.category) {
+		// fetch latest video matching user + category as fallback
+		try {
+			baseVideo = await Video.findOne({
+				user: user._id || user,
+				category: resolvedCategory,
+			})
+				.sort({ createdAt: -1 })
+				.lean();
+		} catch (e) {
+			console.warn(
+				"[Queue] No base video found for schedule, using defaults:",
+				e.message
+			);
+		}
+	}
+
 	const body = {
-		category: video.category,
-		ratio: video.ratio,
-		duration: video.duration,
-		language: video.language,
-		country: video.country,
+		category: resolvedCategory,
+		ratio: baseVideo?.ratio || "720:1280",
+		duration: baseVideo?.duration || 20,
+		language: baseVideo?.language || "English",
+		country: baseVideo?.country || "US",
 		customPrompt: "",
-		videoImage: video.videoImage,
+		videoImage: baseVideo?.videoImage,
 		schedule: null, // don't schedule a schedule-run
-		youtubeAccessToken: video.youtubeAccessToken,
-		youtubeRefreshToken: video.youtubeRefreshToken,
-		youtubeTokenExpiresAt: video.youtubeTokenExpiresAt,
-		youtubeEmail: video.youtubeEmail,
+		youtubeAccessToken: baseVideo?.youtubeAccessToken,
+		youtubeRefreshToken: baseVideo?.youtubeRefreshToken,
+		youtubeTokenExpiresAt: baseVideo?.youtubeTokenExpiresAt,
+		youtubeEmail: baseVideo?.youtubeEmail,
 	};
 
 	const reqMock = { body, user };
@@ -222,6 +250,7 @@ cron.schedule("* * * * *", async () => {
 			active: true,
 		})
 			.populate("video")
+			.populate("videos")
 			.populate("user");
 
 		let newlyEnqueued = 0;

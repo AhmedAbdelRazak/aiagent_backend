@@ -8,11 +8,24 @@ const scheduleSchema = new mongoose.Schema(
 			ref: "User",
 			required: true,
 		},
+		// Optional: direct category for this schedule (used when generating new videos per run)
+		category: {
+			type: String,
+		},
 		video: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: "Video",
-			required: true,
 		},
+		// Optional: array of seed videos to rotate through (new field; keeps backward compatibility)
+		videos: [
+			{
+				type: mongoose.Schema.Types.ObjectId,
+				ref: "Video",
+			},
+		],
+		// Deprecated: use category + videos; kept for compatibility
+		// required: true removed to allow category-only schedules
+		// required: true,
 		scheduleType: {
 			type: String,
 			enum: ["daily", "weekly", "monthly"],
