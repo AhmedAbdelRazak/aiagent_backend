@@ -688,9 +688,9 @@ async function concatWithTransitions(
 
 	const durations =
 		Array.isArray(durationsHint) && durationsHint.length === clips.length
-			? durationsHint.map((d) => Math.max(0.1, +d || 0.1))
+			? durationsHint.map((d) => Math.max(0.3, +d || 0.3))
 			: (await Promise.all(clips.map((c) => probeVideoDuration(c)))).map((d) =>
-					Math.max(0.1, d || 0.1)
+					Math.max(0.3, d || 0.3)
 			  );
 
 	const transitions = [
@@ -706,7 +706,7 @@ async function concatWithTransitions(
 	];
 
 	const graph = [];
-	let acc = Math.max(0, durations[0] * 0.5);
+	let cumulative = durations[0];
 	let prevLabel = "[0:v]";
 
 	for (let i = 1; i < clips.length; i++) {
@@ -716,9 +716,9 @@ async function concatWithTransitions(
 		const currDur = durations[i];
 		const xfadeDur = Math.max(
 			0.35,
-			Math.min(transitionDuration, prevDur * 0.45, currDur * 0.45)
+			Math.min(transitionDuration, prevDur * 0.4, currDur * 0.4)
 		);
-		const offset = Math.max(0, acc - xfadeDur * 0.5);
+		const offset = Math.max(0, cumulative - xfadeDur);
 
 		graph.push(
 			`${prevLabel}[${i}:v]xfade=transition=${trans}:duration=${xfadeDur.toFixed(
@@ -726,7 +726,7 @@ async function concatWithTransitions(
 			)}:offset=${offset.toFixed(3)}${label}`
 		);
 		prevLabel = label;
-		acc += Math.max(0.05, currDur - xfadeDur * 0.5);
+		cumulative += currDur - xfadeDur;
 	}
 
 	await ffmpegPromise((cmd) => {
