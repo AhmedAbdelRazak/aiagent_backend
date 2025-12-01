@@ -382,6 +382,7 @@ async function scrape({ geo, hours, category, sort }) {
 	log("Navigate:", targetURL);
 
 	const stories = [];
+	const seenTerms = new Set();
 
 	try {
 		await page.goto(targetURL, { waitUntil: "domcontentloaded" });
@@ -404,6 +405,11 @@ async function scrape({ geo, hours, category, sort }) {
 
 		for (const { id, term } of rows) {
 			if (!term) continue;
+			const normTerm = term.toLowerCase().trim();
+			if (seenTerms.has(normTerm)) {
+				log(`Skip duplicate term "${term}"`);
+				continue;
+			}
 
 			const result = await page.evaluate(
 				// eslint-disable-next-line no-undef
@@ -496,6 +502,7 @@ async function scrape({ geo, hours, category, sort }) {
 			log(`Result for "${term}":`, result.status);
 
 			if (result.status === "ok") {
+				seenTerms.add(normTerm);
 				stories.push({
 					title: term,
 					image: result.image,

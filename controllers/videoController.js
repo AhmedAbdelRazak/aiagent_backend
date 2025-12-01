@@ -166,6 +166,8 @@ const QUALITY_BONUS =
 	"photorealistic, ultra-detailed, HDR, 8K, cinema lighting, cinematic camera movement, smooth parallax, subtle subject motion, emotional body language";
 const PHYSICAL_REALISM_HINT =
 	"single cohesive shot, realistic physics, natural hand-object contact, consistent lighting and shadows, no collage artifacts, no floating props";
+const SOFT_SAFETY_PAD =
+	"fully clothed, respectful framing, wholesome, safe for work, no sexualised framing, no injuries";
 
 const RUNWAY_NEGATIVE_PROMPT = [
 	"duplicate",
@@ -201,6 +203,7 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"collage look",
 	"weird physics",
 	"mismatched lighting",
+	"unsafe text prompt",
 	"awkward pose",
 	"mismatched gaze",
 	"crossed eyes",
@@ -304,7 +307,7 @@ const YT_CATEGORY_MAP = {
 const BRAND_TAG = "AiVideomatic";
 const BRAND_CREDIT = "Powered by AiVideomatic";
 const MERCH_INTRO =
-	"Support the channel & customize your own merch:\n- https://serenejannat.com/custom-gifts (choose anything)\n- https://serenejannat.com/custom-gifts/6815366fd8583c434ec42fec (Unisex Heavy Blend Hooded Sweatshirt)\n- https://serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3 (Black Mug 11oz/15oz)\n(You can add your own design - your support keeps the channel going!)\n\n";
+	"Support the channel & customize your own merch:\nhttps://www.serenejannat.com/custom-gifts (choose anything)\nhttps://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec (Unisex Heavy Blend Hooded Sweatshirt)\nhttps://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3 (Black Mug 11oz/15oz)\n(You can add your own design - your support keeps the channel going!)\n\n";
 const PROMPT_CHAR_LIMIT = 220;
 
 /* ---------------------------------------------------------------
@@ -328,7 +331,31 @@ function stripCodeFence(s) {
 
 function ensureClickableLinks(text) {
 	if (!text || typeof text !== "string") return "";
-	return text.replace(/(^|\s)(www\.[^\s]+)/gi, "$1https://$2");
+	return text
+		// add https to bare www URLs
+		.replace(/(^|\s)(www\.[^\s]+)/gi, "$1https://$2")
+		// add https to bare serenejannat domains
+		.replace(
+			/(^|\s)(serenejannat\.com[^\s]*)/gi,
+			(_m, prefix, url) => `${prefix}https://${url.replace(/^https?:\/\//i, "")}`
+		);
+}
+
+function scrubPromptForSafety(text) {
+	if (!text || typeof text !== "string") return "";
+	let t = text;
+	const replacements = [
+		{ find: /pregnan(t|cy|cies)/gi, replace: "expectant fashion moment" },
+		{ find: /baby\s*bump/gi, replace: "fashion silhouette" },
+		{ find: /\bbelly\b/gi, replace: "silhouette" },
+		{ find: /\bnude\b/gi, replace: "fully clothed" },
+		{ find: /\bskin\b/gi, replace: "outfit" },
+		{ find: /\bsheer\b/gi, replace: "tasteful fabric" },
+	];
+	replacements.forEach(({ find, replace }) => {
+		t = t.replace(find, replace);
+	});
+	return `${t}. ${SOFT_SAFETY_PAD}`.trim();
 }
 const strip = (s) => stripCodeFence(String(s || "").trim());
 
@@ -698,12 +725,13 @@ async function concatWithTransitions(
 		return out;
 	}
 
-	const durations =
-		Array.isArray(durationsHint) && durationsHint.length === clips.length
-			? durationsHint.map((d) => Math.max(0.3, +d || 0.3))
-			: (await Promise.all(clips.map((c) => probeVideoDuration(c)))).map((d) =>
-					Math.max(0.3, d || 0.3)
-			  );
+	const durations = (
+		await Promise.all(clips.map((c) => probeVideoDuration(c)))
+	).map((d, i) => {
+		const hint = Array.isArray(durationsHint) ? +durationsHint[i] || 0 : 0;
+		const val = d || hint || 0.3;
+		return Math.max(0.3, val);
+	});
 
 	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
 	const prepFilters = [];
@@ -746,10 +774,16 @@ async function concatWithTransitions(
 		const prevDur = durations[i - 1];
 		const currDur = durations[i];
 		const xfadeDur = Math.max(
-			0.35,
-			Math.min(transitionDuration, prevDur * 0.4, currDur * 0.4)
+			0.25,
+			Math.min(
+				transitionDuration,
+				Math.max(0.25, prevDur - 0.1),
+				Math.max(0.25, currDur - 0.1),
+				prevDur * 0.35,
+				currDur * 0.35
+			)
 		);
-		const offset = Math.max(0, cumulative - xfadeDur);
+		const offset = Math.max(0, cumulative - xfadeDur - 0.05);
 		const currLabel = preparedLabels[i] || `[${i}:v]`;
 
 		graph.push(
@@ -761,33 +795,87 @@ async function concatWithTransitions(
 		cumulative += currDur - xfadeDur;
 	}
 
-	await ffmpegPromise((cmd) => {
-		clips.forEach((p) => cmd.input(norm(p)));
+	try {
+		await ffmpegPromise((cmd) => {
+			clips.forEach((p) => cmd.input(norm(p)));
 
-		cmd.complexFilter(graph.join(";"));
+			cmd.complexFilter(graph.join(";"));
 
-		return cmd
-			.outputOptions(
-				"-map",
-				prevLabel,
-				"-c:v",
-				"libx264",
-				"-preset",
-				"slow",
-				"-crf",
-				"16",
-				"-profile:v",
-				"high",
-				"-pix_fmt",
-				"yuv420p",
-				"-movflags",
-				"+faststart",
-				"-vsync",
-				"vfr",
-				"-y"
-			)
-			.save(norm(out));
-	});
+			return cmd
+				.outputOptions(
+					"-map",
+					prevLabel,
+					"-c:v",
+					"libx264",
+					"-preset",
+					"slow",
+					"-crf",
+					"16",
+					"-profile:v",
+					"high",
+					"-pix_fmt",
+					"yuv420p",
+					"-movflags",
+					"+faststart",
+					"-vsync",
+					"vfr",
+					"-y"
+				)
+				.save(norm(out));
+		});
+	} catch (err) {
+		console.warn(
+			"[Transitions] primary xfade failed, retrying with simple fade:",
+			err.message
+		);
+
+		const simpleGraph = [];
+		let prev = preparedLabels[0] || "[0:v]";
+		let cum = durations[0];
+		for (let i = 1; i < clips.length; i++) {
+			const label = i === clips.length - 1 ? "[vout]" : `[vs${i}]`;
+			const dur = Math.min(
+				transitionDuration,
+				Math.max(0.25, durations[i - 1] * 0.3),
+				Math.max(0.25, durations[i] * 0.3)
+			);
+			const off = Math.max(0, cum - dur - 0.05);
+			const curr = preparedLabels[i] || `[${i}:v]`;
+			simpleGraph.push(
+				`${prev}${curr}xfade=transition=fade:duration=${dur.toFixed(
+					3
+				)}:offset=${off.toFixed(3)}${label}`
+			);
+			prev = label;
+			cum += durations[i] - dur;
+		}
+
+		await ffmpegPromise((cmd) => {
+			clips.forEach((p) => cmd.input(norm(p)));
+			cmd.complexFilter([...prepFilters, ...simpleGraph].join(";"));
+			return cmd
+				.outputOptions(
+					"-map",
+					prev,
+					"-c:v",
+					"libx264",
+					"-preset",
+					"slow",
+					"-crf",
+					"16",
+					"-profile:v",
+					"high",
+					"-pix_fmt",
+					"yuv420p",
+					"-movflags",
+					"+faststart",
+					"-vsync",
+					"vfr",
+					"-y"
+				)
+				.save(norm(out));
+		});
+	}
 
 	return out;
 }
@@ -1493,9 +1581,12 @@ async function pollRunway(id, tk, lbl) {
 				failureCode: data.failureCode,
 				failure: data.failure,
 			});
-			throw new Error(
+			const err = new Error(
 				`${lbl} failed (Runway: ${data.failureCode || "FAILED"})`
 			);
+			if (/SAFETY/i.test(String(data.failureCode || ""))) err.isSafety = true;
+			err.failureCode = data.failureCode || null;
+			throw err;
 		}
 	}
 	console.error("[Runway] task TIMED OUT", { label: lbl, taskId: id });
@@ -1529,6 +1620,8 @@ async function retry(fn, max, lbl) {
 				}
 			}
 			last = e;
+			const isSafety = Boolean(e?.isSafety) || /SAFETY/i.test(e?.message || "");
+			if (isSafety) break;
 			if (status && status >= 400 && status < 500 && status !== 429) break;
 		}
 	}
@@ -3102,11 +3195,13 @@ One or two sentences only.
 
 			const promptBase = `${
 				seg.runwayPrompt || ""
-			}, ${globalStyle}, ${QUALITY_BONUS}, ${PHYSICAL_REALISM_HINT}, ${HUMAN_SAFETY}, ${BRAND_ENHANCEMENT_HINT}`;
-			const promptText =
-				promptBase.length > PROMPT_CHAR_LIMIT
-					? promptBase.slice(0, PROMPT_CHAR_LIMIT)
-					: promptBase;
+			}, ${globalStyle}, ${QUALITY_BONUS}, ${PHYSICAL_REALISM_HINT}, ${SOFT_SAFETY_PAD}, ${HUMAN_SAFETY}, ${BRAND_ENHANCEMENT_HINT}`;
+			const promptText = (() => {
+				const cleaned = scrubPromptForSafety(promptBase);
+				return cleaned.length > PROMPT_CHAR_LIMIT
+					? cleaned.slice(0, PROMPT_CHAR_LIMIT)
+					: cleaned;
+			})();
 
 			const negativeBase =
 				seg.runwayNegativePrompt && seg.runwayNegativePrompt.trim().length
