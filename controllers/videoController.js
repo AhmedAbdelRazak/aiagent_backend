@@ -318,6 +318,11 @@ function stripCodeFence(s) {
 	inner = inner.replace(/^\s*json/i, "").trim();
 	return inner || s;
 }
+
+function ensureClickableLinks(text) {
+	if (!text || typeof text !== "string") return "";
+	return text.replace(/(^|\s)(www\.[^\s]+)/gi, "$1https://$2");
+}
 const strip = (s) => stripCodeFence(String(s || "").trim());
 
 const goodDur = (n) =>
@@ -693,6 +698,23 @@ async function concatWithTransitions(
 					Math.max(0.3, d || 0.3)
 			  );
 
+	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
+	const prepFilters = [];
+	const preparedLabels = [];
+	for (let i = 0; i < clips.length; i++) {
+		const label = `[p${i}]`;
+		const steps = [];
+		if (targetRes?.width && targetRes?.height) {
+			steps.push(
+				`scale=${targetRes.width}:${targetRes.height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+				`crop=${targetRes.width}:${targetRes.height}`
+			);
+		}
+		steps.push("format=yuv420p", "setsar=1", "fps=30");
+		prepFilters.push(`[${i}:v]${steps.join(",")}${label}`);
+		preparedLabels.push(label);
+	}
+
 	const transitions = [
 		"fade",
 		"fadeblack",
@@ -706,8 +728,10 @@ async function concatWithTransitions(
 	];
 
 	const graph = [];
+	graph.push(...prepFilters);
+
 	let cumulative = durations[0];
-	let prevLabel = "[0:v]";
+	let prevLabel = preparedLabels[0] || "[0:v]";
 
 	for (let i = 1; i < clips.length; i++) {
 		const label = i === clips.length - 1 ? "[vout]" : `[v${i}]`;
@@ -719,9 +743,10 @@ async function concatWithTransitions(
 			Math.min(transitionDuration, prevDur * 0.4, currDur * 0.4)
 		);
 		const offset = Math.max(0, cumulative - xfadeDur);
+		const currLabel = preparedLabels[i] || `[${i}:v]`;
 
 		graph.push(
-			`${prevLabel}[${i}:v]xfade=transition=${trans}:duration=${xfadeDur.toFixed(
+			`${prevLabel}${currLabel}xfade=transition=${trans}:duration=${xfadeDur.toFixed(
 				3
 			)}:offset=${offset.toFixed(3)}${label}`
 		);
@@ -733,16 +758,6 @@ async function concatWithTransitions(
 		clips.forEach((p) => cmd.input(norm(p)));
 
 		cmd.complexFilter(graph.join(";"));
-
-		if (ratio) {
-			const targetRes = targetResolutionForRatio(ratio);
-			if (targetRes.width && targetRes.height) {
-				cmd.outputOptions(
-					"-vf",
-					`scale=${targetRes.width}:${targetRes.height}:flags=lanczos+accurate_rnd+full_chroma_int`
-				);
-			}
-		}
 
 		return cmd
 			.outputOptions(
@@ -2231,8 +2246,9 @@ Segment ${segCnt} is the engagement outro (about ${
 		engagementTailSeconds || "5-6"
 	} seconds):
 - Ask one crisp, on-topic question to spark comments.
-- Immediately follow with a warm, slightly funny like/subscribe/comment nudge for an American audience.
+- Immediately follow with a warm, slightly funny like/subscribe/comment nudge for an American audience that feels tailored to this topic.
 - Keep it concise and entirely in ${language}.
+- Make it sound human and upbeat, not robotic; a friendly host riffing on the story.
 - This extra outro is appended on top of the requested duration, so treat it like an add-on bumper.
 `.trim();
 
@@ -2892,7 +2908,8 @@ One or two sentences only.
 				},
 			],
 		});
-		const seoDescription = `${MERCH_INTRO}${descResp.choices[0].message.content.trim()}\n\n${BRAND_CREDIT}`;
+		const seoDescriptionRaw = `${MERCH_INTRO}${descResp.choices[0].message.content.trim()}\n\n${BRAND_CREDIT}`;
+		const seoDescription = ensureClickableLinks(seoDescriptionRaw);
 
 		let tags = ["shorts"];
 		try {
@@ -3054,6 +3071,9 @@ One or two sentences only.
 		});
 		console.log("[Phase] GENERATING_CLIPS ? Generating clips");
 
+		const runwaySafetyBans = new Set(); // image indexes that hit Runway safety and should not be retried
+		const staticOnlyImages = new Set(); // images we will use only as static fallback going forward
+
 		for (let i = 0; i < segCnt; i++) {
 			const d = segLens[i];
 			const seg = segments[i];
@@ -3096,16 +3116,20 @@ One or two sentences only.
 					const idx = (baseIdx + k) % trendImagePairs.length;
 					if (!candidatesIdx.includes(idx)) candidatesIdx.push(idx);
 				}
+				const runwayCandidates = candidatesIdx.filter(
+					(idx) => !staticOnlyImages.has(idx)
+				);
 
 				console.log("[Runway] prompt preview", {
 					segment: segIndex,
 					promptPreview: promptText.slice(0, 160),
 					hasTrendImage: true,
-					candidates: candidatesIdx.length,
+					candidates: runwayCandidates.length,
+					staticOnly: Array.from(staticOnlyImages),
 				});
 
 				let safetyTriggered = false;
-				for (const idx of candidatesIdx) {
+				for (const idx of runwayCandidates) {
 					const pair = trendImagePairs[idx];
 					if (!pair || !pair.cloudinaryUrl) continue;
 					try {
@@ -3127,6 +3151,10 @@ One or two sentences only.
 							/SAFETY/i.test(String(failureCode || "")) ||
 							/HUMAN/i.test(String(failureCode || ""));
 						safetyTriggered = safetyTriggered || isSafety;
+						if (isSafety) {
+							runwaySafetyBans.add(idx);
+							staticOnlyImages.add(idx);
+						}
 						console.warn(
 							`[Seg ${segIndex}] Runway image_to_video failed for image #${idx}`,
 							msg
@@ -3155,7 +3183,13 @@ One or two sentences only.
 				}
 
 				if (!clipPath) {
-					const pair = trendImagePairs[baseIdx] || trendImagePairs[0] || null;
+					const fallbackIdx =
+						candidatesIdx.find((idx) => staticOnlyImages.has(idx)) ??
+						candidatesIdx.find((idx) => !runwaySafetyBans.has(idx)) ??
+						candidatesIdx[0] ??
+						baseIdx;
+					const pair =
+						trendImagePairs[fallbackIdx] || trendImagePairs[0] || null;
 					const imgUrlCloudinary = pair?.cloudinaryUrl;
 					const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
 					clipPath = await generateStaticClipFromImage({

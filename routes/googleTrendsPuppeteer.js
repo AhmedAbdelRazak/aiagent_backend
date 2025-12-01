@@ -102,11 +102,11 @@ async function enhanceStoriesWithOpenAI(
 				"1) A compelling yet honest blog post title (no clickbait, max ~80 chars).\n" +
 				"2) A highCTR YouTube Shorts title (max ~60 chars, must stay factual).\n" +
 				"3) EXACTLY TWO viral thumbnail/image directives: one for aspectRatio 1280:720 (landscape) and one for 720:1280 (vertical). Each directive should include:\n" +
-				'   - "aspectRatio": one of those two strings\n' +
-				'   - "visualHook": a vivid, specific description of what the image shows that would grab millions of viewers (no text overlays, no logos)\n' +
+				'   - "aspectRatio": one of those two strings (landscape MUST be 1280:720, vertical MUST be 720:1280)\n' +
+				'   - "visualHook": a vivid, specific description of what the image shows (clear subject, camera framing, and motion-friendly composition, no text overlays, no logos)\n' +
 				'   - "emotion": the main emotion the image should evoke\n' +
-				'   - "rationale": a short note for the video orchestrator about why this hook works\n' +
-				"4) One short 'imageComment' explaining in plain language what the chosen viral image depicts so downstream video generation can stay on-topic.\n\n" +
+				'   - "rationale": a short note for the video orchestrator about why this hook works for that aspect ratio\n' +
+				"4) One short 'imageComment' that plainly describes what the recommended hero shot should look like so downstream video generation can pick the right image for Runway (mention subject + setting, no extra fluff).\n\n" +
 				`ALL text must be in ${language}, even if the country/geo differs. No other languages or scripts are allowed.\n` +
 				"Your entire reply MUST be valid JSON, no extra commentary.",
 			input:
@@ -151,9 +151,15 @@ async function enhanceStoriesWithOpenAI(
 				match.imageDirectives || match.viralImageBriefs || [],
 				s.title
 			);
-			const imageComment = String(
-				match.imageComment || match.imageHook || ""
-			).trim();
+			const imageComment =
+				String(match.imageComment || match.imageHook || "").trim() ||
+				(briefs[0]?.visualHook
+					? `Lead image for ${s.title}: ${briefs[0].visualHook}`
+					: `Lead image for ${s.title}, framed for ${
+							briefs[0]?.aspectRatio === "720:1280"
+								? "vertical"
+								: "landscape"
+					  } video.`);
 
 			return {
 				...s,
