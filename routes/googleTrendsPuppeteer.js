@@ -453,7 +453,7 @@ async function scrape({ geo, hours, category, sort }) {
 									await sleep(120);
 								}
 
-								const arts = anchors.slice(0, 3).map((a) => ({
+								const arts = anchors.slice(0, 6).map((a) => ({
 									title:
 										a.querySelector('[role="heading"]')?.textContent.trim() ||
 										a.querySelector("div.Q0LBCe")?.textContent.trim() ||

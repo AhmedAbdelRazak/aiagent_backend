@@ -164,6 +164,8 @@ const TTI_MODEL = "gen4_image";
 
 const QUALITY_BONUS =
 	"photorealistic, ultra-detailed, HDR, 8K, cinema lighting, cinematic camera movement, smooth parallax, subtle subject motion, emotional body language";
+const PHYSICAL_REALISM_HINT =
+	"single cohesive shot, realistic physics, natural hand-object contact, consistent lighting and shadows, no collage artifacts, no floating props";
 
 const RUNWAY_NEGATIVE_PROMPT = [
 	"duplicate",
@@ -194,6 +196,11 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"text overlay",
 	"nsfw",
 	"gore",
+	"floating props",
+	"sticker edges",
+	"collage look",
+	"weird physics",
+	"mismatched lighting",
 	"awkward pose",
 	"mismatched gaze",
 	"crossed eyes",
@@ -2334,6 +2341,8 @@ Critical visual rules:
 - Use generic roles like "a young woman on the street", "fans in the crowd".
 - EVERY segment must have clear motion: no still-photo look.
 - Use camera movement (slow zoom, dolly, pan, tilt) and/or subject motion (breathing, hair moving, lights flickering).
+- Physical realism: body poses must be possible; props (mics, belts, ropes) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.
+- Choose the imageIndex that visually matches the script beat (setting, action, subject); avoid lazy repeats.
 - Use each imageIndex at most once before reusing any image.
 - Keep faces human and natural, no distortion.
 
@@ -2391,6 +2400,7 @@ For each segment, output:
 Visual rules:
 - Realistic scenes; no logos or trademarks.
 - Clear focal subject, good lighting.
+- Physical realism: body poses must be possible; props (mics, gear, objects) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.
 - Avoid trademarks and logos; use generic jerseys and arenas.
 - If people are visible, faces must be natural, no distortion.
 - EVERY runwayPrompt must include explicit motion.
@@ -2424,6 +2434,7 @@ You must imagine the visuals from scratch. For each segment output:
 Visual rules:
 - Realistic, grounded scenes.
 - Clear focal subject, good lighting.
+- Physical realism: body poses must be possible; props (mics, tools, objects) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.
 - Avoid trademarks and logos; use generic jerseys and arenas.
 - If people are visible, faces must be natural, no distortion.
 - EVERY runwayPrompt must include explicit motion.
@@ -3073,6 +3084,8 @@ One or two sentences only.
 
 		const runwaySafetyBans = new Set(); // image indexes that hit Runway safety and should not be retried
 		const staticOnlyImages = new Set(); // images we will use only as static fallback going forward
+		const staticFallbackUsed = new Set(); // track which images already used as static fallback to avoid repeats until all tried
+		let firstSafetyBan = null;
 
 		for (let i = 0; i < segCnt; i++) {
 			const d = segLens[i];
@@ -3089,7 +3102,7 @@ One or two sentences only.
 
 			const promptBase = `${
 				seg.runwayPrompt || ""
-			}, ${globalStyle}, ${QUALITY_BONUS}, ${HUMAN_SAFETY}, ${BRAND_ENHANCEMENT_HINT}`;
+			}, ${globalStyle}, ${QUALITY_BONUS}, ${PHYSICAL_REALISM_HINT}, ${HUMAN_SAFETY}, ${BRAND_ENHANCEMENT_HINT}`;
 			const promptText =
 				promptBase.length > PROMPT_CHAR_LIMIT
 					? promptBase.slice(0, PROMPT_CHAR_LIMIT)
@@ -3154,6 +3167,7 @@ One or two sentences only.
 						if (isSafety) {
 							runwaySafetyBans.add(idx);
 							staticOnlyImages.add(idx);
+							if (firstSafetyBan === null) firstSafetyBan = idx;
 						}
 						console.warn(
 							`[Seg ${segIndex}] Runway image_to_video failed for image #${idx}`,
@@ -3183,11 +3197,17 @@ One or two sentences only.
 				}
 
 				if (!clipPath) {
+					const unusedStatic = candidatesIdx.filter(
+						(idx) => !staticFallbackUsed.has(idx)
+					);
 					const fallbackIdx =
-						candidatesIdx.find((idx) => staticOnlyImages.has(idx)) ??
-						candidatesIdx.find((idx) => !runwaySafetyBans.has(idx)) ??
+						unusedStatic.find((idx) => staticOnlyImages.has(idx)) ??
+						unusedStatic.find((idx) => runwaySafetyBans.has(idx)) ??
+						unusedStatic[0] ??
+						firstSafetyBan ??
 						candidatesIdx[0] ??
 						baseIdx;
+					staticFallbackUsed.add(fallbackIdx);
 					const pair =
 						trendImagePairs[fallbackIdx] || trendImagePairs[0] || null;
 					const imgUrlCloudinary = pair?.cloudinaryUrl;
