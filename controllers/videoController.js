@@ -1017,6 +1017,15 @@ async function fetchTrendingStory(
 						.filter(Boolean)
 						.map(normTitle)
 			  );
+	const usedList = Array.from(usedSet);
+	const isTermUsed = (term) => {
+		if (!term) return false;
+		const n = normTitle(term);
+		if (!n) return false;
+		if (usedSet.has(n)) return true;
+		// catch near-duplicates where the base term is contained in prior titles
+		return usedList.some((u) => u.includes(n) || n.includes(u));
+	};
 
 	try {
 		console.log("[Trending] fetch:", baseUrl);
@@ -1039,7 +1048,7 @@ async function fetchTrendingStory(
 		const stories = Array.isArray(data?.stories) ? data.stories : [];
 		if (!stories.length) throw new Error("empty trends payload");
 
-		// Pick the first story whose title we haven't used yet (keep Trends order)
+		// Pick the first story whose title / entity we haven't used yet (keep Trends order)
 		let picked = null;
 		for (const s of stories) {
 			const t = String(
@@ -1049,8 +1058,13 @@ async function fetchTrendingStory(
 			const raw = String(s.title || "").trim();
 			const normT = normTitle(t);
 			const normRaw = normTitle(raw);
+			const usedByEntity =
+				Array.isArray(s.entityNames) &&
+				s.entityNames.some((e) => isTermUsed(String(e || "")));
 			const alreadyUsed =
-				usedSet.has(normT) || (normRaw && usedSet.has(normRaw));
+				isTermUsed(normT) ||
+				(normRaw && isTermUsed(normRaw)) ||
+				usedByEntity;
 			if (!alreadyUsed) {
 				picked = { story: s, effectiveTitle: t };
 				break;
@@ -2717,15 +2731,20 @@ exports.createVideo = async (req, res) => {
 			category,
 			createdAt: { $gte: threeDaysAgo },
 		}).select("topic seoTitle");
-		const normRecent = recentVideos
-			.map((v) => v.topic || v.seoTitle || "")
-			.filter(Boolean)
-			.map((t) =>
-				String(t || "")
-					.toLowerCase()
-					.replace(/\s+/g, " ")
-					.trim()
-			);
+		const normRecent = [];
+		for (const v of recentVideos) {
+			const base = String(v.topic || v.seoTitle || "").trim();
+			if (!base) continue;
+			const normFull = base
+				.toLowerCase()
+				.replace(/\s+/g, " ")
+				.trim();
+			if (normFull) normRecent.push(normFull);
+			const firstTwo = normFull.split(" ").slice(0, 2).join(" ");
+			if (firstTwo && firstTwo.length >= 4) normRecent.push(firstTwo);
+			const firstThree = normFull.split(" ").slice(0, 3).join(" ");
+			if (firstThree && firstThree.length >= 6) normRecent.push(firstThree);
+		}
 		const usedTopics = new Set(normRecent);
 
 		let topic = "";
