@@ -2386,6 +2386,7 @@ async function buildVideoPlanWithGPT({
 	trendImageBriefs,
 	engagementTailSeconds,
 	country,
+	forceStaticVisuals = false,
 }) {
 	const segCnt = segLens.length;
 	const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
