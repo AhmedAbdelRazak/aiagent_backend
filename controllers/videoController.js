@@ -313,7 +313,7 @@ const YT_CATEGORY_MAP = {
 const BRAND_TAG = "AiVideomatic";
 const BRAND_CREDIT = "Powered by Serene Jannat";
 const MERCH_INTRO =
-	"Support the channel & customize your own merch:\n\nhttps://www.serenejannat.com/custom-gifts (choose anything)\nhttps://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec (Unisex Heavy Blend Hooded Sweatshirt)\nhttps://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3 (Black Mug 11oz/15oz)\n\n(You can add your own design - your support keeps the channel going!)\n\n";
+	"Support the channel & customize your own merch:\nhttps://www.serenejannat.com/custom-gifts\nhttps://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec\nhttps://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n\n";
 const PROMPT_CHAR_LIMIT = 220;
 
 /* ---------------------------------------------------------------
@@ -337,18 +337,25 @@ function stripCodeFence(s) {
 
 function ensureClickableLinks(text) {
 	if (!text || typeof text !== "string") return "";
-	let out = text
-		// add https to bare www URLs
-		.replace(/(^|\s)(www\.[^\s]+)/gi, "$1https://$2")
-		// add https to bare serenejannat domains
-		.replace(
-			/(^|\s)(serenejannat\.com[^\s]*)/gi,
-			(_m, prefix, url) => `${prefix}https://${url.replace(/^https?:\/\//i, "")}`
+	const lines = text.split(/\r?\n/);
+	const fixed = lines.map((line) => {
+		let s = line.trim();
+		// remove trailing parenthetical labels
+		s = s.replace(/\s*\([^)]*\)\s*$/, "");
+		// fix bare domains
+		s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
+		s = s.replace(
+			/(^|\s)(serenejannat\.com[^\s)]*)/gi,
+			(_m, prefix, url) =>
+				`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
 		);
-
-	// ensure URLs are separated by whitespace for YouTube linkification
-	out = out.replace(/(https?:\/\/[^\s]+)(?=[^\s])/g, "$1 ");
-	return out;
+		// strip trailing punctuation that breaks linkification
+		s = s.replace(/(https?:\/\/[^\s)]+)[).,;:]+$/g, "$1");
+		// enforce a newline separation after any URL chain to avoid trailing text sticking
+		s = s.replace(/(https?:\/\/[^\s)]+)/g, "$1");
+		return s;
+	});
+	return fixed.join("\n");
 }
 
 function scrubPromptForSafety(text) {
@@ -760,17 +767,7 @@ async function concatWithTransitions(
 		preparedLabels.push(label);
 	}
 
-	const transitions = [
-		"fade",
-		"fadeblack",
-		"fadewhite",
-		"slideleft",
-		"slideright",
-		"smoothleft",
-		"smoothright",
-		"wipeup",
-		"wipedown",
-	];
+	const transitions = ["fade", "fadeblack"];
 
 	const graph = [];
 	graph.push(...prepFilters);
@@ -902,6 +899,46 @@ const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
 const TRENDS_HTTP_TIMEOUT_MS = 60000;
 
+function isSportsTopic(topic = "", category = "", trendStory = null) {
+	if (category && category.toLowerCase().includes("sport")) return true;
+	const haystack = [topic]
+		.concat(trendStory?.title || [], trendStory?.seoTitle || [])
+		.concat(trendStory?.entityNames || [])
+		.map((t) => String(t || "").toLowerCase());
+	return haystack.some((t) =>
+		Array.from(SPORTS_KEYWORDS_SET).some((k) => t.includes(k))
+	);
+}
+const SPORTS_KEYWORDS = [
+	"soccer",
+	"football",
+	"nfl",
+	"nba",
+	"mlb",
+	"mls",
+	"nhl",
+	"ufc",
+	"mma",
+	"f1",
+	"formula 1",
+	"motogp",
+	"rugby",
+	"cricket",
+	"golf",
+	"tennis",
+	"baseball",
+	"basketball",
+	"hockey",
+	"volleyball",
+	"champions league",
+	"world cup",
+	"euros",
+	"super bowl",
+	"playoffs",
+	"finals",
+];
+const SPORTS_KEYWORDS_SET = new Set(SPORTS_KEYWORDS);
+
 function isThumbnailHost(hostname) {
 	const h = String(hostname || "").toLowerCase();
 	return (
@@ -919,6 +956,7 @@ function analyseImageUrl(url, isStoryImage = false) {
 		const u = new URL(url);
 		const host = u.hostname.toLowerCase();
 		const search = u.search || "";
+		const path = u.pathname || "";
 
 		isThumbnail = isThumbnailHost(host);
 
@@ -941,6 +979,14 @@ function analyseImageUrl(url, isStoryImage = false) {
 		if (hMatch) {
 			const h = parseInt(hMatch[1], 10);
 			if (h < 200) score -= 1;
+		}
+
+		// bonus for high-res hints in path
+		const resMatch = path.match(/(\d{3,4})x(\d{3,4})/);
+		if (resMatch) {
+			const w = parseInt(resMatch[1], 10);
+			const h = parseInt(resMatch[2], 10);
+			if (w >= 1400 || h >= 1400) score += 2;
 		}
 	} catch {
 		if (isStoryImage) score += 1;
@@ -1072,9 +1118,7 @@ async function fetchTrendingStory(
 				Array.isArray(s.entityNames) &&
 				s.entityNames.some((e) => isTermUsed(String(e || "")));
 			const alreadyUsed =
-				isTermUsed(normT) ||
-				(normRaw && isTermUsed(normRaw)) ||
-				usedByEntity;
+				isTermUsed(normT) || (normRaw && isTermUsed(normRaw)) || usedByEntity;
 			if (!alreadyUsed) {
 				picked = { story: s, effectiveTitle: t };
 				break;
@@ -1803,6 +1847,7 @@ async function generateStaticClipFromImage({
 	imgUrlCloudinary,
 	ratio,
 	targetDuration,
+	zoomPan = false,
 }) {
 	const candidates = [imgUrlOriginal, imgUrlCloudinary].filter(Boolean);
 	if (!candidates.length) throw new Error("Missing image URL for static clip");
@@ -1825,6 +1870,12 @@ async function generateStaticClipFromImage({
 				vf.push(
 					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
 					`crop=${width}:${height}`
+				);
+			}
+
+			if (zoomPan && width && height) {
+				vf.push(
+					`zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
 				);
 			}
 
@@ -2449,7 +2500,11 @@ but it is still the same real shot and real people.
 Your job:
 1) Write the voice-over script for each segment.
 2) Decide which imageIndex to animate for each segment.
-3) For each segment, write one concise "runwayPrompt" telling a video model how to animate THAT exact real photo.
+3) ${
+			forceStaticVisuals
+				? "We will only use static photos with gentle camera movement (no AI video generation)."
+				: 'For each segment, write one concise "runwayPrompt" telling a video model how to animate THAT exact real photo.'
+		}
 4) For each segment, also write a "negativePrompt" listing visual problems the video model must avoid.
 
 Critical visual rules:
@@ -2469,6 +2524,11 @@ Critical visual rules:
 For each "runwayPrompt":
 - Describe motion consistent with what you actually see in that attached photo.
 - Explicitly include at least ONE motion verb.
+${
+	forceStaticVisuals
+		? "- Keep motions to gentle camera moves (subtle zoom/pan) since we will not synthesize new video frames for sports topics."
+		: ""
+}
 
 For each "negativePrompt":
 - List defects to avoid (extra limbs, extra heads, distorted faces, lowres, pixelated, blur, heavy motion blur, watermark, logo, text overlay, static frame, no motion, gore, nsfw).
@@ -2750,10 +2810,7 @@ exports.createVideo = async (req, res) => {
 		for (const v of recentVideos) {
 			const base = String(v.topic || v.seoTitle || "").trim();
 			if (!base) continue;
-			const normFull = base
-				.toLowerCase()
-				.replace(/\s+/g, " ")
-				.trim();
+			const normFull = base.toLowerCase().replace(/\s+/g, " ").trim();
 			if (normFull) normRecent.push(normFull);
 			const firstTwo = normFull.split(" ").slice(0, 2).join(" ");
 			if (firstTwo && firstTwo.length >= 4) normRecent.push(firstTwo);
@@ -2903,6 +2960,7 @@ exports.createVideo = async (req, res) => {
 		}
 
 		let hasTrendImages = trendImagePairs.length > 0;
+		const forceStaticVisuals = isSportsTopic(topic, category, trendStory);
 
 		/* 5. Let OpenAI orchestrate segments + visuals */
 		console.log("[GPT] building full video plan …");
@@ -2923,6 +2981,7 @@ exports.createVideo = async (req, res) => {
 			trendImageBriefs: trendStory?.viralImageBriefs || [],
 			engagementTailSeconds,
 			country,
+			forceStaticVisuals,
 		});
 
 		let segments = plan.segments;
@@ -3248,7 +3307,28 @@ One or two sentences only.
 
 			let clipPath = null;
 
-			if (hasTrendImages && seg.imageIndex !== null) {
+			if (forceStaticVisuals && hasTrendImages && seg.imageIndex !== null) {
+				const baseIdx =
+					seg.imageIndex >= 0 && seg.imageIndex < trendImagePairs.length
+						? seg.imageIndex
+						: 0;
+				const idx =
+					Array.from({ length: trendImagePairs.length }, (_, k) => k).find(
+						(k) => !staticFallbackUsed.has(k)
+					) ?? baseIdx;
+				staticFallbackUsed.add(idx);
+				const pair = trendImagePairs[idx] || trendImagePairs[0] || null;
+				const imgUrlCloudinary = pair?.cloudinaryUrl;
+				const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
+				clipPath = await generateStaticClipFromImage({
+					segmentIndex: segIndex,
+					imgUrlOriginal,
+					imgUrlCloudinary,
+					ratio,
+					targetDuration: d,
+					zoomPan: true,
+				});
+			} else if (hasTrendImages && seg.imageIndex !== null) {
 				const candidatesIdx = [];
 				const baseIdx =
 					seg.imageIndex >= 0 && seg.imageIndex < trendImagePairs.length
