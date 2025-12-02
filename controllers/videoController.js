@@ -732,9 +732,61 @@ async function concatWithTransitions(
 	clips,
 	durationsHint = [],
 	ratio = null,
-	transitionDuration = 0.85
+	transitionDuration = 0.85,
+	options = {}
 ) {
+	/**
+	 * KNOBS YOU CARE ABOUT:
+	 *
+	 * 1) transitionDuration  (4th argument at call-site)
+	 *    - You currently call: concatWithTransitions(clips, segLens, ratio, 0.9)
+	 *    - LOWER this number (e.g. 0.3) -> much faster fade in/out.
+	 *    - HIGHER this number (e.g. 1.2) -> slower/longer fades.
+	 *
+	 * 2) options.maxFadeFraction
+	 *    - Fraction of each clip we are allowed to spend fading.
+	 *    - Smaller = snappier transitions.
+	 *
+	//  * 3) options.fadeIn*/ fadeOut * booleans;
+	//  *    - Control where fades are applied:
+	//  *      - fadeInFirst:  fade in segment 1 from black.
+	//  *      - fadeOutLast:  fade out final segment to black.
+	//  *      - fadeInMiddle: fade in segments 2..N from black.
+	//  *      - fadeOutMiddle:fade out segments 1..N-1 to black.
+	//  *
+	//  * EXAMPLES:
+	//  *
+	//  *  - Faster fades everywhere:
+	//  *      concatWithTransitions(clips, segLens, ratio, 0.3);
+	//  *
+	//  *  - Fade OUT segment 1, then HARD CUT to segment 2 (no fade-in on 2):
+	//  *      concatWithTransitions(clips, segLens, ratio, 0.3, {
+	//  *        fadeInMiddle: false
+	//  *      });
+	//  *
+	//  *  - No fades between segments at all (only fade-in at start, fade-out at end):
+	//  *      concatWithTransitions(clips, segLens, ratio, 0.3, {
+	//  *        fadeInMiddle: false,
+	//  *        fadeOutMiddle: false
+	//  *      });
+	//  /
+
 	if (!clips || !clips.length) throw new Error("No clips to stitch");
+
+	const {
+		// Global “where to fade” behaviour
+		fadeInFirst = true,
+		fadeOutLast = true,
+		fadeInMiddle = true,
+		fadeOutMiddle = true,
+
+		// How aggressive fades can be relative to each clip duration.
+		// Smaller maxFadeFraction + smaller transitionDuration => snappier fades.
+		maxFadeFraction = 0.18, // <= 18% of each clip duration
+		minFadeSeconds = 0.12, // minimum fade length so it’s not a 1‑frame flash
+	} = options;
+
+	const maxFadeSeconds = transitionDuration || 0.85;
 
 	// 1) Normalize all clips first to identical geometry/timestamps
 	const normalized = [];
@@ -775,39 +827,61 @@ async function concatWithTransitions(
 		normalized.push(normOut);
 	}
 
-	// Helper: apply fade in/out to a single normalized clip
-	async function fadeOne(srcPath, idx) {
+	// Helper: apply fade-in/out to a single normalized clip
+	async function fadeOne(srcPath, idx, totalClips) {
 		const outFade = tmpFile(`fade_${idx + 1}`, ".mp4");
 
 		const durHint =
 			typeof durationsHint[idx] === "number"
 				? Number(durationsHint[idx])
 				: null;
+
 		const realDur =
 			durHint && Number.isFinite(durHint)
 				? durHint
 				: (await probeVideoDuration(srcPath)) || 1;
 
-		// Safe fade duration: at most transitionDuration, at most 25% of clip,
-		// and not more than half the clip length, with a 0.2s floor.
+		// Compute base fade duration:
+		// - Cannot exceed maxFadeSeconds (from transitionDuration arg)
+		// - Cannot exceed maxFadeFraction * clip length
+		// - Cannot exceed half the clip
 		let fadeDur = Math.min(
-			transitionDuration || 0.85,
-			Math.max(0.2, realDur * 0.25),
+			maxFadeSeconds,
+			realDur * maxFadeFraction,
 			realDur / 2
 		);
-		if (!Number.isFinite(fadeDur) || fadeDur <= 0) fadeDur = 0.2;
 
-		const fadeStartOut = Math.max(0, realDur - fadeDur);
+		// Enforce a sensible floor
+		if (!Number.isFinite(fadeDur) || fadeDur <= 0) {
+			fadeDur = minFadeSeconds;
+		} else if (fadeDur < minFadeSeconds) {
+			fadeDur = minFadeSeconds;
+		}
+
+		const isFirst = idx === 0;
+		const isLast = idx === totalClips - 1;
+
+		const doFadeIn = isFirst ? fadeInFirst : fadeInMiddle;
+		const doFadeOut = isLast ? fadeOutLast : fadeOutMiddle;
+
+		const filters = [];
+
+		if (doFadeIn) {
+			filters.push(`fade=t=in:st=0:d=${fadeDur.toFixed(3)}`);
+		}
+		if (doFadeOut) {
+			const fadeStartOut = Math.max(0, realDur - fadeDur);
+			filters.push(
+				`fade=t=out:st=${fadeStartOut.toFixed(3)}:d=${fadeDur.toFixed(3)}`
+			);
+		}
 
 		await ffmpegPromise((cmd) => {
 			cmd.input(norm(srcPath));
 
-			cmd.videoFilters(
-				[
-					`fade=t=in:st=0:d=${fadeDur.toFixed(3)}`,
-					`fade=t=out:st=${fadeStartOut.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
-				].join(",")
-			);
+			if (filters.length) {
+				cmd.videoFilters(filters.join(","));
+			}
 
 			cmd.outputOptions(
 				"-c:v",
@@ -829,36 +903,15 @@ async function concatWithTransitions(
 		return outFade;
 	}
 
-	// 2) If there is only one clip, still normalize + fade it and return
-	if (normalized.length === 1) {
-		const singleSrc = normalized[0];
-		const singleOut = tmpFile("transitioned", ".mp4");
-
-		const faded = await fadeOne(singleSrc, 0);
-
-		// Just copy faded clip to final output (no concat needed)
-		fs.copyFileSync(faded, singleOut);
-
-		// cleanup temps
-		try {
-			fs.unlinkSync(singleSrc);
-		} catch (_) {}
-		try {
-			fs.unlinkSync(faded);
-		} catch (_) {}
-
-		return singleOut;
-	}
-
-	// 3) Apply fade in/out to each normalized clip
+	// 2) Apply fade logic to every normalized clip
 	const fadedClips = [];
 	for (let i = 0; i < normalized.length; i++) {
 		const src = normalized[i];
-		const faded = await fadeOne(src, i);
+		const faded = await fadeOne(src, i, normalized.length);
 		fadedClips.push(faded);
 	}
 
-	// 4) Concat all faded clips using the concat demuxer (no complex xfade graph)
+	// 3) Concat all faded clips using the concat demuxer (no xfade, no complex graph)
 	const listFile = tmpFile("list_concat", ".txt");
 	fs.writeFileSync(
 		listFile,
@@ -871,13 +924,13 @@ async function concatWithTransitions(
 		cmd
 			.input(norm(listFile))
 			.inputOptions("-f", "concat", "-safe", "0")
-			// Streams are all encoded with the same settings above,
-			// so we can safely stream-copy video.
+			// All clips are re-encoded the same way above,
+			// so we can safely stream-copy video here.
 			.outputOptions("-c:v", "copy", "-y")
 			.save(norm(out))
 	);
 
-	// 5) Cleanup temp files
+	// 4) Cleanup temp files
 	fadedClips.forEach((p) => {
 		try {
 			fs.unlinkSync(p);
@@ -3481,7 +3534,7 @@ One or two sentences only.
 
 		let silent;
 		try {
-			silent = await concatWithTransitions(clips, segLens, ratio, 0.9);
+			silent = await concatWithTransitions(clips, segLens, ratio, 0.35);
 		} catch (err) {
 			console.warn(
 				"[Transitions] Failed to xfade, falling back to direct concat:",
