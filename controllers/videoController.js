@@ -149,14 +149,14 @@ const VALID_RATIOS = [
  * WORDS_PER_SEC: cap used when asking GPT for max words.
  * NATURAL_WPS: realistic speed used when recomputing durations from script.
  */
-const WORDS_PER_SEC = 2.35;
-const NATURAL_WPS = 2.45;
+const WORDS_PER_SEC = 2.2;
+const NATURAL_WPS = 2.25;
 const ENGAGEMENT_TAIL_MIN = 5;
 const ENGAGEMENT_TAIL_MAX = 6;
 
 const MAX_SILENCE_PAD = 0.35;
 const MIN_ATEMPO = 0.9;
-const MAX_ATEMPO = 1.18;
+const MAX_ATEMPO = 1.08;
 
 const T2V_MODEL = "gen4_turbo";
 const ITV_MODEL = "gen4_turbo";
@@ -311,9 +311,9 @@ const YT_CATEGORY_MAP = {
 };
 
 const BRAND_TAG = "AiVideomatic";
-const BRAND_CREDIT = "Powered by AiVideomatic";
+const BRAND_CREDIT = "Powered by Serene Jannat";
 const MERCH_INTRO =
-	"Support the channel & customize your own merch:\nhttps://www.serenejannat.com/custom-gifts (choose anything)\nhttps://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec (Unisex Heavy Blend Hooded Sweatshirt)\nhttps://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3 (Black Mug 11oz/15oz)\n(You can add your own design - your support keeps the channel going!)\n\n";
+	"Support the channel & customize your own merch:\n\nhttps://www.serenejannat.com/custom-gifts (choose anything)\nhttps://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec (Unisex Heavy Blend Hooded Sweatshirt)\nhttps://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3 (Black Mug 11oz/15oz)\n\n(You can add your own design - your support keeps the channel going!)\n\n";
 const PROMPT_CHAR_LIMIT = 220;
 
 /* ---------------------------------------------------------------
@@ -337,7 +337,7 @@ function stripCodeFence(s) {
 
 function ensureClickableLinks(text) {
 	if (!text || typeof text !== "string") return "";
-	return text
+	let out = text
 		// add https to bare www URLs
 		.replace(/(^|\s)(www\.[^\s]+)/gi, "$1https://$2")
 		// add https to bare serenejannat domains
@@ -345,6 +345,10 @@ function ensureClickableLinks(text) {
 			/(^|\s)(serenejannat\.com[^\s]*)/gi,
 			(_m, prefix, url) => `${prefix}https://${url.replace(/^https?:\/\//i, "")}`
 		);
+
+	// ensure URLs are separated by whitespace for YouTube linkification
+	out = out.replace(/(https?:\/\/[^\s]+)(?=[^\s])/g, "$1 ");
+	return out;
 }
 
 function scrubPromptForSafety(text) {
@@ -2394,6 +2398,8 @@ Narration rules:
 - Ignore the country's native language; keep EVERY word in ${language} even if geo/country differs.
 - For nontragic topics, pacing should feel clear and slightly brisk.
 - For clearly tragic or sensitive stories, slow pacing slightly but keep it clear and respectful.
+- Avoid speculation or hallucinations; if a detail is unconfirmed, state that it's unconfirmed rather than inventing facts.
+- Keep pacing human and coherent; do not cram unnatural speed-reading into segments.
 - Keep every segment directly on-topic for "${topic}"; no unrelated tangents.
 ${categoryTone ? `- Tone: ${categoryTone}` : ""}
 ${outroDirective}
