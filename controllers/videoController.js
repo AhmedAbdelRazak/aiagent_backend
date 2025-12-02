@@ -767,7 +767,7 @@ async function concatWithTransitions(
 		preparedLabels.push(label);
 	}
 
-	const transitions = ["fade", "fadeblack"];
+const transitions = ["fade", "fadeblack"];
 
 	const graph = [];
 	graph.push(...prepFilters);
@@ -1600,6 +1600,40 @@ async function generateOpenAIImagesForTop5(segments, ratio, topic) {
 	return outputs;
 }
 
+async function uploadReferenceImagesForTop5(segments, ratio, topic) {
+	const pairs = [];
+	const urlToIdx = new Map();
+	const safeSlug = String(topic || "top5")
+		.toLowerCase()
+		.replace(/[^\w]+/g, "_")
+		.replace(/^_+|_+$/g, "")
+		.slice(0, 40);
+
+	for (let i = 0; i < segments.length; i++) {
+		const url = String(segments[i].referenceImageUrl || "").trim();
+		if (!url || urlToIdx.has(url)) continue;
+		try {
+			const up = await uploadTrendImageToCloudinary(
+				url,
+				ratio,
+				`aivideomatic/top5_refs/${safeSlug}_${i}`
+			);
+			const idx = pairs.length;
+			pairs.push({ originalUrl: url, cloudinaryUrl: up.url });
+			urlToIdx.set(url, idx);
+		} catch (e) {
+			console.warn("[Top5] Upload reference image failed ?", e.message);
+		}
+	}
+
+	const segImageIndex = segments.map((s) => {
+		const url = String(s.referenceImageUrl || "").trim();
+		return urlToIdx.has(url) ? urlToIdx.get(url) : null;
+	});
+
+	return { pairs, segImageIndex };
+}
+
 /* ---------------------------------------------------------------
  *  Runway poll + retry
  * ------------------------------------------------------------- */
@@ -1760,82 +1794,7 @@ async function generateTtiItvClip({
 	ratio,
 	runwayDuration,
 }) {
-	const ttiLabel = `tti_seg${segmentIndex}`;
-	const pollTtiLabel = `poll_tti_seg${segmentIndex}`;
-	const itvLabel = `itv_from_tti_seg${segmentIndex}`;
-	const pollItvLabel = `poll_itv_from_tti_seg${segmentIndex}`;
-
-	const ttiId = await retry(
-		async () => {
-			const { data } = await axios.post(
-				"https://api.dev.runwayml.com/v1/text_to_image",
-				{
-					model: TTI_MODEL,
-					promptText,
-					ratio,
-					promptStrength: 0.9,
-					negativePrompt: negativePrompt || RUNWAY_NEGATIVE_PROMPT,
-				},
-				{
-					headers: {
-						Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
-						"X-Runway-Version": RUNWAY_VERSION,
-					},
-				}
-			);
-			return data.id;
-		},
-		2,
-		ttiLabel
-	);
-
-	const imgUrl = await retry(
-		() => pollRunway(ttiId, RUNWAY_ADMIN_KEY, pollTtiLabel),
-		3,
-		pollTtiLabel
-	);
-
-	const idVid = await retry(
-		async () => {
-			const { data } = await axios.post(
-				"https://api.dev.runwayml.com/v1/image_to_video",
-				{
-					model: ITV_MODEL,
-					promptImage: imgUrl,
-					promptText,
-					ratio,
-					duration: runwayDuration,
-					promptStrength: 0.85,
-					negativePrompt: negativePrompt || RUNWAY_NEGATIVE_PROMPT,
-				},
-				{
-					headers: {
-						Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
-						"X-Runway-Version": RUNWAY_VERSION,
-					},
-				}
-			);
-			return data.id;
-		},
-		2,
-		itvLabel
-	);
-
-	const vidUrl = await retry(
-		() => pollRunway(idVid, RUNWAY_ADMIN_KEY, pollItvLabel),
-		3,
-		pollItvLabel
-	);
-
-	const p = tmpFile(`seg_tti_itv_${segmentIndex}`, ".mp4");
-	await new Promise((r, j) =>
-		axios
-			.get(vidUrl, { responseType: "stream" })
-			.then(({ data }) =>
-				data.pipe(fs.createWriteStream(p)).on("finish", r).on("error", j)
-			)
-	);
-	return p;
+	throw new Error("Text-to-image disabled for this pipeline");
 }
 
 /**
@@ -1926,6 +1885,45 @@ async function generateStaticClipFromImage({
 	throw lastErr || new Error("Failed to build static clip from any image URL");
 }
 
+async function generatePlaceholderClip({
+	segmentIndex,
+	ratio,
+	targetDuration,
+	color = "gray",
+}) {
+	const { width, height } = targetResolutionForRatio(ratio);
+	const size = width && height ? `${width}x${height}` : "1080x1920";
+	const out = tmpFile(`seg_placeholder_${segmentIndex}`, ".mp4");
+	await ffmpegPromise((c) =>
+		c
+			.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
+			.inputOptions("-f", "lavfi")
+			.videoFilters(
+				[
+					"format=yuv420p",
+					"setsar=1",
+					`zoompan=z='min(1.0+0.001*n,1.04)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${size}:fps=30`,
+				].join(",")
+			)
+			.outputOptions(
+				"-t",
+				String(targetDuration),
+				"-c:v",
+				"libx264",
+				"-preset",
+				"slow",
+				"-crf",
+				"17",
+				"-pix_fmt",
+				"yuv420p",
+				"-r",
+				"30",
+				"-y"
+			)
+			.save(norm(out))
+	);
+	return out;
+}
 /* ---------------------------------------------------------------
  *  YouTube & Jamendo helpers
  * ------------------------------------------------------------- */
@@ -2577,6 +2575,7 @@ For each segment, output:
 - "runwayPrompt": a vivid scene description to generate, explicitly tailored to the requested aspect ratio ${ratio}. Include camera motion and subject motion and keep it photorealistic.
 - "negativePrompt": comma-separated defects to avoid.
 - "overlayText": 4-7 word on-screen text that fits the aspect ratio ${ratio} and stays perfectly in sync with the voiceover line for that segment.
+- "referenceImageUrl": a DIRECT URL to a high-quality photo online that matches the script beat and aspect ratio ${ratio}. Use real editorial-style photos (no watermarks, no logos). Do not invent; pick URLs that look like newsy, realistic shots.
 
 Visual rules:
 - Realistic scenes; no logos or trademarks.
@@ -2596,7 +2595,7 @@ Visual rules:
 Return JSON:
 {
   "segments": [
-    { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "..." },
+    { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "...", "overlayText": "...", "referenceImageUrl": "https://..." },
     ...
   ]
 }
@@ -2679,6 +2678,7 @@ Return JSON:
 			runwayPrompt,
 			runwayNegativePrompt: negativePromptRaw,
 			overlayText: String(s.overlayText || s.overlay || "").trim(),
+			referenceImageUrl: String(s.referenceImageUrl || "").trim(),
 			imageIndex:
 				typeof s.imageIndex === "number" && Number.isInteger(s.imageIndex)
 					? s.imageIndex
@@ -2991,6 +2991,31 @@ exports.createVideo = async (req, res) => {
 			segments: segments.length,
 			hasImages: hasTrendImages,
 		});
+
+		// For Top5, ingest reference images from GPT plan
+		if (category === "Top5" && !hasTrendImages) {
+			const uploaded = await uploadReferenceImagesForTop5(
+				segments,
+				ratio,
+				topic
+			);
+			if (uploaded.pairs.length) {
+				trendImagePairs = uploaded.pairs;
+				hasTrendImages = true;
+				segments = segments.map((s, idx) => ({
+					...s,
+					imageIndex:
+						typeof uploaded.segImageIndex[idx] === "number"
+							? uploaded.segImageIndex[idx]
+							: s.imageIndex,
+				}));
+				console.log("[Top5] Reference images uploaded", {
+					count: uploaded.pairs.length,
+				});
+			} else {
+				console.warn("[Top5] No reference images could be uploaded");
+			}
+		}
 
 		// Tighten narration to fit word caps
 		await Promise.all(
@@ -3387,25 +3412,6 @@ One or two sentences only.
 					}
 				}
 
-				if (!clipPath && safetyTriggered) {
-					try {
-						const safePrompt = `${promptText} no celebrity likeness, generic characters, no recognisable faces`;
-						clipPath = await generateTtiItvClip({
-							segmentIndex: segIndex,
-							promptText: safePrompt,
-							negativePrompt:
-								negativePrompt || `${RUNWAY_NEGATIVE_PROMPT}, celebrity`,
-							ratio,
-							runwayDuration: rw,
-						});
-					} catch (e) {
-						console.warn(
-							`[Seg ${segIndex}] Safe TTI->ITV fallback failed:`,
-							e.message
-						);
-					}
-				}
-
 				if (!clipPath) {
 					const unusedStatic = candidatesIdx.filter(
 						(idx) => !staticFallbackUsed.has(idx)
@@ -3436,12 +3442,10 @@ One or two sentences only.
 					promptPreview: promptText.slice(0, 160),
 					hasTrendImage: false,
 				});
-				clipPath = await generateTtiItvClip({
+				clipPath = await generatePlaceholderClip({
 					segmentIndex: segIndex,
-					promptText,
-					negativePrompt,
 					ratio,
-					runwayDuration: rw,
+					targetDuration: d,
 				});
 			}
 
