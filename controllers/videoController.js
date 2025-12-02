@@ -736,14 +736,17 @@ async function concatWithTransitions(
 ) {
 	if (!clips || !clips.length) throw new Error("No clips to stitch");
 
-	// Normalize all clips first to identical geometry/timestamps
+	// 1) Normalize all clips first to identical geometry/timestamps
 	const normalized = [];
 	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
+
 	for (let i = 0; i < clips.length; i++) {
 		const src = clips[i];
 		const normOut = tmpFile(`norm_${i + 1}`, ".mp4");
+
 		await ffmpegPromise((cmd) => {
 			cmd.input(norm(src));
+
 			const vf = [];
 			if (targetRes?.width && targetRes?.height) {
 				vf.push(
@@ -752,6 +755,7 @@ async function concatWithTransitions(
 				);
 			}
 			vf.push("format=yuv420p", "setsar=1", "fps=30", "setpts=PTS-STARTPTS");
+
 			cmd.videoFilters(vf.join(","));
 			cmd.outputOptions(
 				"-c:v",
@@ -764,117 +768,129 @@ async function concatWithTransitions(
 				"+faststart",
 				"-y"
 			);
+
 			return cmd.save(norm(normOut));
 		});
+
 		normalized.push(normOut);
 	}
 
-	if (normalized.length === 1) {
-		const outSingle = tmpFile("transitioned", ".mp4");
-		fs.copyFileSync(normalized[0], outSingle);
-		return outSingle;
-	}
+	// Helper: apply fade in/out to a single normalized clip
+	async function fadeOne(srcPath, idx) {
+		const outFade = tmpFile(`fade_${idx + 1}`, ".mp4");
 
-	// Sequential pairwise xfade
-	let current = normalized[0];
-	const xfadeTrans = ["fade", "fadeblack"];
-	for (let i = 1; i < normalized.length; i++) {
-		const next = normalized[i];
-		const pairOut = tmpFile(`xfade_seq_${i}`, ".mp4");
+		const durHint =
+			typeof durationsHint[idx] === "number"
+				? Number(durationsHint[idx])
+				: null;
+		const realDur =
+			durHint && Number.isFinite(durHint)
+				? durHint
+				: (await probeVideoDuration(srcPath)) || 1;
 
-		const aDur =
-			(durationsHint[i - 1] && +durationsHint[i - 1]) ||
-			(await probeVideoDuration(current)) ||
-			1;
-		const bDur =
-			(durationsHint[i] && +durationsHint[i]) ||
-			(await probeVideoDuration(next)) ||
-			1;
-		const dur = Math.max(
-			0.25,
-			Math.min(
-				transitionDuration,
-				aDur * 0.35,
-				bDur * 0.35,
-				Math.max(0.25, aDur - 0.1),
-				Math.max(0.25, bDur - 0.1)
-			)
+		// Safe fade duration: at most transitionDuration, at most 25% of clip,
+		// and not more than half the clip length, with a 0.2s floor.
+		let fadeDur = Math.min(
+			transitionDuration || 0.85,
+			Math.max(0.2, realDur * 0.25),
+			realDur / 2
 		);
-		const off = Math.max(0, aDur - dur);
-		const trans = xfadeTrans[(i - 1) % xfadeTrans.length];
+		if (!Number.isFinite(fadeDur) || fadeDur <= 0) fadeDur = 0.2;
 
-		try {
-			await ffmpegPromise((cmd) => {
-				cmd.input(norm(current));
-				cmd.input(norm(next));
-				cmd.complexFilter(
-					`[0:v][1:v]xfade=transition=${trans}:duration=${dur.toFixed(
-						3
-					)}:offset=${off.toFixed(3)}[vout]`
-				);
-				return cmd
-					.outputOptions(
-						"-map",
-						"[vout]",
-						"-c:v",
-						"libx264",
-						"-preset",
-						"slow",
-						"-crf",
-						"16",
-						"-pix_fmt",
-						"yuv420p",
-						"-movflags",
-						"+faststart",
-						"-vsync",
-						"vfr",
-						"-y"
-					)
-					.save(norm(pairOut));
-			});
-		} catch (e) {
-			console.warn(
-				"[Transitions] pairwise xfade failed, falling back to concat for this pair:",
-				e.message
-			);
-			const listFile = tmpFile(`pair_concat_${i}`, ".txt");
-			fs.writeFileSync(
-				listFile,
-				`file '${norm(current)}'\nfile '${norm(next)}'\n`
-			);
-			await ffmpegPromise((cmd) =>
-				cmd
-					.input(norm(listFile))
-					.inputOptions("-f", "concat", "-safe", "0")
-					.outputOptions("-c", "copy", "-y")
-					.save(norm(pairOut))
-			);
-			try {
-				fs.unlinkSync(listFile);
-			} catch (_) {}
-		}
+		const fadeStartOut = Math.max(0, realDur - fadeDur);
 
-		if (current !== normalized[0]) {
-			try {
-				fs.unlinkSync(current);
-			} catch (_) {}
-		}
-		current = pairOut;
+		await ffmpegPromise((cmd) => {
+			cmd.input(norm(srcPath));
+
+			cmd.videoFilters(
+				[
+					`fade=t=in:st=0:d=${fadeDur.toFixed(3)}`,
+					`fade=t=out:st=${fadeStartOut.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
+				].join(",")
+			);
+
+			cmd.outputOptions(
+				"-c:v",
+				"libx264",
+				"-preset",
+				"slow",
+				"-crf",
+				"16",
+				"-pix_fmt",
+				"yuv420p",
+				"-movflags",
+				"+faststart",
+				"-y"
+			);
+
+			return cmd.save(norm(outFade));
+		});
+
+		return outFade;
 	}
+
+	// 2) If there is only one clip, still normalize + fade it and return
+	if (normalized.length === 1) {
+		const singleSrc = normalized[0];
+		const singleOut = tmpFile("transitioned", ".mp4");
+
+		const faded = await fadeOne(singleSrc, 0);
+
+		// Just copy faded clip to final output (no concat needed)
+		fs.copyFileSync(faded, singleOut);
+
+		// cleanup temps
+		try {
+			fs.unlinkSync(singleSrc);
+		} catch (_) {}
+		try {
+			fs.unlinkSync(faded);
+		} catch (_) {}
+
+		return singleOut;
+	}
+
+	// 3) Apply fade in/out to each normalized clip
+	const fadedClips = [];
+	for (let i = 0; i < normalized.length; i++) {
+		const src = normalized[i];
+		const faded = await fadeOne(src, i);
+		fadedClips.push(faded);
+	}
+
+	// 4) Concat all faded clips using the concat demuxer (no complex xfade graph)
+	const listFile = tmpFile("list_concat", ".txt");
+	fs.writeFileSync(
+		listFile,
+		fadedClips.map((p) => `file '${norm(p)}'`).join("\n")
+	);
 
 	const out = tmpFile("transitioned", ".mp4");
-	fs.copyFileSync(current, out);
-	try {
-		fs.unlinkSync(current);
-	} catch (_) {}
-	normalized.forEach((p, idx) => {
-		if (idx === 0) return;
-		if (p && fs.existsSync(p)) {
-			try {
-				fs.unlinkSync(p);
-			} catch (_) {}
-		}
+
+	await ffmpegPromise((cmd) =>
+		cmd
+			.input(norm(listFile))
+			.inputOptions("-f", "concat", "-safe", "0")
+			// Streams are all encoded with the same settings above,
+			// so we can safely stream-copy video.
+			.outputOptions("-c:v", "copy", "-y")
+			.save(norm(out))
+	);
+
+	// 5) Cleanup temp files
+	fadedClips.forEach((p) => {
+		try {
+			fs.unlinkSync(p);
+		} catch (_) {}
 	});
+	normalized.forEach((p) => {
+		try {
+			fs.unlinkSync(p);
+		} catch (_) {}
+	});
+	try {
+		fs.unlinkSync(listFile);
+	} catch (_) {}
 
 	return out;
 }
