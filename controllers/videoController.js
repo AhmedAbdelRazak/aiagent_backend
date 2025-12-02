@@ -166,6 +166,8 @@ const QUALITY_BONUS =
 	"photorealistic, ultra-detailed, HDR, 8K, cinema lighting, cinematic camera movement, smooth parallax, subtle subject motion, emotional body language";
 const PHYSICAL_REALISM_HINT =
 	"single cohesive shot, realistic physics, natural hand-object contact, consistent lighting and shadows, no collage artifacts, no floating props";
+const EYE_REALISM_HINT =
+	"natural eye focus and blinking, subtle micro-expressions, no jittering pupils, no crossed or wall-eyed look";
 const SOFT_SAFETY_PAD =
 	"fully clothed, respectful framing, wholesome, safe for work, no sexualised framing, no injuries";
 
@@ -203,6 +205,10 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"collage look",
 	"weird physics",
 	"mismatched lighting",
+	"unnatural eye movement",
+	"jittering pupils",
+	"dead eyes",
+	"lazy eye",
 	"unsafe text prompt",
 	"awkward pose",
 	"mismatched gaze",
@@ -745,7 +751,7 @@ async function concatWithTransitions(
 				`crop=${targetRes.width}:${targetRes.height}`
 			);
 		}
-		steps.push("format=yuv420p", "setsar=1", "fps=30");
+		steps.push("format=yuv420p", "setsar=1", "fps=30", "setpts=PTS-STARTPTS");
 		prepFilters.push(`[${i}:v]${steps.join(",")}${label}`);
 		preparedLabels.push(label);
 	}
@@ -2449,6 +2455,7 @@ Critical visual rules:
 - EVERY segment must have clear motion: no still-photo look.
 - Use camera movement (slow zoom, dolly, pan, tilt) and/or subject motion (breathing, hair moving, lights flickering).
 - Physical realism: body poses must be possible; props (mics, belts, ropes) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.
+- Eyes and faces must feel alive: natural blinks, gentle gaze shifts, no jittering pupils or crossed eyes.
 - Choose the imageIndex that visually matches the script beat (setting, action, subject); avoid lazy repeats.
 - Use each imageIndex at most once before reusing any image.
 - Keep faces human and natural, no distortion.
@@ -2508,6 +2515,7 @@ Visual rules:
 - Realistic scenes; no logos or trademarks.
 - Clear focal subject, good lighting.
 - Physical realism: body poses must be possible; props (mics, gear, objects) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.
+- Eyes and faces must feel alive: natural blinks, gentle gaze shifts, no jittering pupils or crossed eyes.
 - Avoid trademarks and logos; use generic jerseys and arenas.
 - If people are visible, faces must be natural, no distortion.
 - EVERY runwayPrompt must include explicit motion.
@@ -2542,6 +2550,7 @@ Visual rules:
 - Realistic, grounded scenes.
 - Clear focal subject, good lighting.
 - Physical realism: body poses must be possible; props (mics, tools, objects) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.
+- Eyes and faces must feel alive: natural blinks, gentle gaze shifts, no jittering pupils or crossed eyes.
 - Avoid trademarks and logos; use generic jerseys and arenas.
 - If people are visible, faces must be natural, no distortion.
 - EVERY runwayPrompt must include explicit motion.
@@ -3214,7 +3223,7 @@ One or two sentences only.
 
 			const promptBase = `${
 				seg.runwayPrompt || ""
-			}, ${globalStyle}, ${QUALITY_BONUS}, ${PHYSICAL_REALISM_HINT}, ${SOFT_SAFETY_PAD}, ${HUMAN_SAFETY}, ${BRAND_ENHANCEMENT_HINT}`;
+			}, ${globalStyle}, ${QUALITY_BONUS}, ${PHYSICAL_REALISM_HINT}, ${EYE_REALISM_HINT}, ${SOFT_SAFETY_PAD}, ${HUMAN_SAFETY}, ${BRAND_ENHANCEMENT_HINT}`;
 			const promptText = (() => {
 				const cleaned = scrubPromptForSafety(promptBase);
 				return cleaned.length > PROMPT_CHAR_LIMIT
