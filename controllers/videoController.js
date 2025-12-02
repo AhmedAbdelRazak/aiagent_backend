@@ -736,143 +736,92 @@ async function concatWithTransitions(
 ) {
 	if (!clips || !clips.length) throw new Error("No clips to stitch");
 
-	const out = tmpFile("transitioned", ".mp4");
-	if (clips.length === 1) {
-		fs.copyFileSync(clips[0], out);
-		return out;
-	}
-
-	const durations = (
-		await Promise.all(clips.map((c) => probeVideoDuration(c)))
-	).map((d, i) => {
-		const hint = Array.isArray(durationsHint) ? +durationsHint[i] || 0 : 0;
-		const val = d || hint || 0.3;
-		return Math.max(0.3, val);
-	});
-
+	// Normalize all clips first to identical geometry/timestamps
+	const normalized = [];
 	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
-	const prepFilters = [];
-	const preparedLabels = [];
 	for (let i = 0; i < clips.length; i++) {
-		const label = `[p${i}]`;
-		const steps = [];
-		if (targetRes?.width && targetRes?.height) {
-			steps.push(
-				`scale=${targetRes.width}:${targetRes.height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
-				`crop=${targetRes.width}:${targetRes.height}`
+		const src = clips[i];
+		const normOut = tmpFile(`norm_${i + 1}`, ".mp4");
+		await ffmpegPromise((cmd) => {
+			cmd.input(norm(src));
+			const vf = [];
+			if (targetRes?.width && targetRes?.height) {
+				vf.push(
+					`scale=${targetRes.width}:${targetRes.height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+					`crop=${targetRes.width}:${targetRes.height}`
+				);
+			}
+			vf.push("format=yuv420p", "setsar=1", "fps=30", "setpts=PTS-STARTPTS");
+			cmd.videoFilters(vf.join(","));
+			cmd.outputOptions(
+				"-c:v",
+				"libx264",
+				"-preset",
+				"fast",
+				"-crf",
+				"18",
+				"-movflags",
+				"+faststart",
+				"-y"
 			);
-		}
-		steps.push("format=yuv420p", "setsar=1", "fps=30", "setpts=PTS-STARTPTS");
-		prepFilters.push(`[${i}:v]${steps.join(",")}${label}`);
-		preparedLabels.push(label);
+			return cmd.save(norm(normOut));
+		});
+		normalized.push(normOut);
 	}
 
-const transitions = ["fade", "fadeblack"];
+	if (normalized.length === 1) {
+		const outSingle = tmpFile("transitioned", ".mp4");
+		fs.copyFileSync(normalized[0], outSingle);
+		return outSingle;
+	}
 
-	const graph = [];
-	graph.push(...prepFilters);
+	// Sequential pairwise xfade
+	let current = normalized[0];
+	const xfadeTrans = ["fade", "fadeblack"];
+	for (let i = 1; i < normalized.length; i++) {
+		const next = normalized[i];
+		const pairOut = tmpFile(`xfade_seq_${i}`, ".mp4");
 
-	let cumulative = durations[0];
-	let prevLabel = preparedLabels[0] || "[0:v]";
-
-	for (let i = 1; i < clips.length; i++) {
-		const label = i === clips.length - 1 ? "[vout]" : `[v${i}]`;
-		const trans = transitions[(i - 1) % transitions.length];
-		const prevDur = durations[i - 1];
-		const currDur = durations[i];
-		const xfadeDur = Math.max(
+		const aDur =
+			(durationsHint[i - 1] && +durationsHint[i - 1]) ||
+			(await probeVideoDuration(current)) ||
+			1;
+		const bDur =
+			(durationsHint[i] && +durationsHint[i]) ||
+			(await probeVideoDuration(next)) ||
+			1;
+		const dur = Math.max(
 			0.25,
 			Math.min(
 				transitionDuration,
-				Math.max(0.25, prevDur - 0.1),
-				Math.max(0.25, currDur - 0.1),
-				prevDur * 0.35,
-				currDur * 0.35
+				aDur * 0.35,
+				bDur * 0.35,
+				Math.max(0.25, aDur - 0.1),
+				Math.max(0.25, bDur - 0.1)
 			)
 		);
-		const offset = Math.max(0, cumulative - xfadeDur - 0.05);
-		const currLabel = preparedLabels[i] || `[${i}:v]`;
-
-		graph.push(
-			`${prevLabel}${currLabel}xfade=transition=${trans}:duration=${xfadeDur.toFixed(
-				3
-			)}:offset=${offset.toFixed(3)}${label}`
-		);
-		prevLabel = label;
-		cumulative += currDur - xfadeDur;
-	}
-
-	try {
-		await ffmpegPromise((cmd) => {
-			clips.forEach((p) => cmd.input(norm(p)));
-
-			cmd.complexFilter(graph.join(";"));
-
-			return cmd
-				.outputOptions(
-					"-map",
-					prevLabel,
-					"-c:v",
-					"libx264",
-					"-preset",
-					"slow",
-					"-crf",
-					"16",
-					"-profile:v",
-					"high",
-					"-pix_fmt",
-					"yuv420p",
-					"-movflags",
-					"+faststart",
-					"-vsync",
-					"vfr",
-					"-y"
-				)
-				.save(norm(out));
-		});
-	} catch (err) {
-		console.warn(
-			"[Transitions] primary xfade failed, retrying with simple fade:",
-			err.message
-		);
+		const off = Math.max(0, aDur - dur);
+		const trans = xfadeTrans[(i - 1) % xfadeTrans.length];
 
 		try {
-			const simpleGraph = [];
-			let prev = preparedLabels[0] || "[0:v]";
-			let cum = durations[0];
-			for (let i = 1; i < clips.length; i++) {
-				const label = i === clips.length - 1 ? "[vout]" : `[vs${i}]`;
-				const dur = Math.min(
-					transitionDuration,
-					Math.max(0.25, durations[i - 1] * 0.3),
-					(Math.max(0.25, durations[i] * 0.3))
-				);
-				const off = Math.max(0, cum - dur - 0.05);
-				const curr = preparedLabels[i] || `[${i}:v]`;
-				simpleGraph.push(
-					`${prev}${curr}xfade=transition=fade:duration=${dur.toFixed(
-						3
-					)}:offset=${off.toFixed(3)}${label}`
-				);
-				prev = label;
-				cum += durations[i] - dur;
-			}
-
 			await ffmpegPromise((cmd) => {
-				clips.forEach((p) => cmd.input(norm(p)));
-				cmd.complexFilter([...prepFilters, ...simpleGraph].join(";"));
+				cmd.input(norm(current));
+				cmd.input(norm(next));
+				cmd.complexFilter(
+					`[0:v][1:v]xfade=transition=${trans}:duration=${dur.toFixed(
+						3
+					)}:offset=${off.toFixed(3)}[vout]`
+				);
 				return cmd
 					.outputOptions(
 						"-map",
-						prev,
+						"[vout]",
 						"-c:v",
 						"libx264",
 						"-preset",
 						"slow",
 						"-crf",
 						"16",
-						"-profile:v",
-						"high",
 						"-pix_fmt",
 						"yuv420p",
 						"-movflags",
@@ -881,101 +830,51 @@ const transitions = ["fade", "fadeblack"];
 						"vfr",
 						"-y"
 					)
-					.save(norm(out));
+					.save(norm(pairOut));
 			});
-		} catch (err2) {
+		} catch (e) {
 			console.warn(
-				"[Transitions] simple xfade failed, falling back to sequential:",
-				err2.message
+				"[Transitions] pairwise xfade failed, falling back to concat for this pair:",
+				e.message
 			);
-
-			// Sequential xfade per-pair to avoid complex graph issues
-			let current = clips[0];
-			for (let i = 1; i < clips.length; i++) {
-				const next = clips[i];
-				const pairOut = tmpFile(`xfade_seq_${i}`, ".mp4");
-
-				const aDur =
-					(durationsHint[i - 1] && +durationsHint[i - 1]) ||
-					(await probeVideoDuration(current)) ||
-					1;
-				const bDur =
-					(durationsHint[i] && +durationsHint[i]) ||
-					(await probeVideoDuration(next)) ||
-					1;
-				const dur = Math.max(
-					0.25,
-					Math.min(
-						transitionDuration,
-						aDur * 0.35,
-						bDur * 0.35,
-						Math.max(0.25, aDur - 0.1),
-						Math.max(0.25, bDur - 0.1)
-					)
-				);
-				const off = Math.max(0, aDur - dur);
-
-				await ffmpegPromise((cmd) => {
-					cmd.input(norm(current));
-					cmd.input(norm(next));
-					const vf = [];
-					const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
-					if (targetRes?.width && targetRes?.height) {
-						vf.push(
-							`[0:v]scale=${targetRes.width}:${targetRes.height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int,crop=${targetRes.width}:${targetRes.height},format=yuv420p,setsar=1,fps=30,setpts=PTS-STARTPTS[a0]`,
-							`[1:v]scale=${targetRes.width}:${targetRes.height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int,crop=${targetRes.width}:${targetRes.height},format=yuv420p,setsar=1,fps=30,setpts=PTS-STARTPTS[a1]`,
-							`[a0][a1]xfade=transition=fade:duration=${dur.toFixed(
-								3
-							)}:offset=${off.toFixed(3)}[vout]`
-						);
-					} else {
-						vf.push(
-							"[0:v]format=yuv420p,setsar=1,fps=30,setpts=PTS-STARTPTS[a0]",
-							"[1:v]format=yuv420p,setsar=1,fps=30,setpts=PTS-STARTPTS[a1]",
-							`[a0][a1]xfade=transition=fade:duration=${dur.toFixed(
-								3
-							)}:offset=${off.toFixed(3)}[vout]`
-						);
-					}
-
-					cmd.complexFilter(vf.join(";"));
-					return cmd
-						.outputOptions(
-							"-map",
-							"[vout]",
-							"-c:v",
-							"libx264",
-							"-preset",
-							"slow",
-							"-crf",
-							"16",
-							"-pix_fmt",
-							"yuv420p",
-							"-movflags",
-							"+faststart",
-							"-vsync",
-							"vfr",
-							"-y"
-						)
-						.save(norm(pairOut));
-				});
-
-				if (current !== clips[0]) {
-					try {
-						fs.unlinkSync(current);
-					} catch (_) {}
-				}
-				current = pairOut;
-			}
-
-			fs.copyFileSync(current, out);
-			if (current !== clips[0]) {
-				try {
-					fs.unlinkSync(current);
-				} catch (_) {}
-			}
+			const listFile = tmpFile(`pair_concat_${i}`, ".txt");
+			fs.writeFileSync(
+				listFile,
+				`file '${norm(current)}'\nfile '${norm(next)}'\n`
+			);
+			await ffmpegPromise((cmd) =>
+				cmd
+					.input(norm(listFile))
+					.inputOptions("-f", "concat", "-safe", "0")
+					.outputOptions("-c", "copy", "-y")
+					.save(norm(pairOut))
+			);
+			try {
+				fs.unlinkSync(listFile);
+			} catch (_) {}
 		}
+
+		if (current !== normalized[0]) {
+			try {
+				fs.unlinkSync(current);
+			} catch (_) {}
+		}
+		current = pairOut;
 	}
+
+	const out = tmpFile("transitioned", ".mp4");
+	fs.copyFileSync(current, out);
+	try {
+		fs.unlinkSync(current);
+	} catch (_) {}
+	normalized.forEach((p, idx) => {
+		if (idx === 0) return;
+		if (p && fs.existsSync(p)) {
+			try {
+				fs.unlinkSync(p);
+			} catch (_) {}
+		}
+	});
 
 	return out;
 }
