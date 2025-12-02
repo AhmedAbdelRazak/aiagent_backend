@@ -836,52 +836,145 @@ const transitions = ["fade", "fadeblack"];
 			err.message
 		);
 
-		const simpleGraph = [];
-		let prev = preparedLabels[0] || "[0:v]";
-		let cum = durations[0];
-		for (let i = 1; i < clips.length; i++) {
-			const label = i === clips.length - 1 ? "[vout]" : `[vs${i}]`;
-			const dur = Math.min(
-				transitionDuration,
-				Math.max(0.25, durations[i - 1] * 0.3),
-				Math.max(0.25, durations[i] * 0.3)
-			);
-			const off = Math.max(0, cum - dur - 0.05);
-			const curr = preparedLabels[i] || `[${i}:v]`;
-			simpleGraph.push(
-				`${prev}${curr}xfade=transition=fade:duration=${dur.toFixed(
-					3
-				)}:offset=${off.toFixed(3)}${label}`
-			);
-			prev = label;
-			cum += durations[i] - dur;
-		}
+		try {
+			const simpleGraph = [];
+			let prev = preparedLabels[0] || "[0:v]";
+			let cum = durations[0];
+			for (let i = 1; i < clips.length; i++) {
+				const label = i === clips.length - 1 ? "[vout]" : `[vs${i}]`;
+				const dur = Math.min(
+					transitionDuration,
+					Math.max(0.25, durations[i - 1] * 0.3),
+					(Math.max(0.25, durations[i] * 0.3))
+				);
+				const off = Math.max(0, cum - dur - 0.05);
+				const curr = preparedLabels[i] || `[${i}:v]`;
+				simpleGraph.push(
+					`${prev}${curr}xfade=transition=fade:duration=${dur.toFixed(
+						3
+					)}:offset=${off.toFixed(3)}${label}`
+				);
+				prev = label;
+				cum += durations[i] - dur;
+			}
 
-		await ffmpegPromise((cmd) => {
-			clips.forEach((p) => cmd.input(norm(p)));
-			cmd.complexFilter([...prepFilters, ...simpleGraph].join(";"));
-			return cmd
-				.outputOptions(
-					"-map",
-					prev,
-					"-c:v",
-					"libx264",
-					"-preset",
-					"slow",
-					"-crf",
-					"16",
-					"-profile:v",
-					"high",
-					"-pix_fmt",
-					"yuv420p",
-					"-movflags",
-					"+faststart",
-					"-vsync",
-					"vfr",
-					"-y"
-				)
-				.save(norm(out));
-		});
+			await ffmpegPromise((cmd) => {
+				clips.forEach((p) => cmd.input(norm(p)));
+				cmd.complexFilter([...prepFilters, ...simpleGraph].join(";"));
+				return cmd
+					.outputOptions(
+						"-map",
+						prev,
+						"-c:v",
+						"libx264",
+						"-preset",
+						"slow",
+						"-crf",
+						"16",
+						"-profile:v",
+						"high",
+						"-pix_fmt",
+						"yuv420p",
+						"-movflags",
+						"+faststart",
+						"-vsync",
+						"vfr",
+						"-y"
+					)
+					.save(norm(out));
+			});
+		} catch (err2) {
+			console.warn(
+				"[Transitions] simple xfade failed, falling back to sequential:",
+				err2.message
+			);
+
+			// Sequential xfade per-pair to avoid complex graph issues
+			let current = clips[0];
+			for (let i = 1; i < clips.length; i++) {
+				const next = clips[i];
+				const pairOut = tmpFile(`xfade_seq_${i}`, ".mp4");
+
+				const aDur =
+					(durationsHint[i - 1] && +durationsHint[i - 1]) ||
+					(await probeVideoDuration(current)) ||
+					1;
+				const bDur =
+					(durationsHint[i] && +durationsHint[i]) ||
+					(await probeVideoDuration(next)) ||
+					1;
+				const dur = Math.max(
+					0.25,
+					Math.min(
+						transitionDuration,
+						aDur * 0.35,
+						bDur * 0.35,
+						Math.max(0.25, aDur - 0.1),
+						Math.max(0.25, bDur - 0.1)
+					)
+				);
+				const off = Math.max(0, aDur - dur);
+
+				await ffmpegPromise((cmd) => {
+					cmd.input(norm(current));
+					cmd.input(norm(next));
+					const vf = [];
+					const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
+					if (targetRes?.width && targetRes?.height) {
+						vf.push(
+							`[0:v]scale=${targetRes.width}:${targetRes.height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int,crop=${targetRes.width}:${targetRes.height},format=yuv420p,setsar=1,fps=30,setpts=PTS-STARTPTS[a0]`,
+							`[1:v]scale=${targetRes.width}:${targetRes.height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int,crop=${targetRes.width}:${targetRes.height},format=yuv420p,setsar=1,fps=30,setpts=PTS-STARTPTS[a1]`,
+							`[a0][a1]xfade=transition=fade:duration=${dur.toFixed(
+								3
+							)}:offset=${off.toFixed(3)}[vout]`
+						);
+					} else {
+						vf.push(
+							"[0:v]format=yuv420p,setsar=1,fps=30,setpts=PTS-STARTPTS[a0]",
+							"[1:v]format=yuv420p,setsar=1,fps=30,setpts=PTS-STARTPTS[a1]",
+							`[a0][a1]xfade=transition=fade:duration=${dur.toFixed(
+								3
+							)}:offset=${off.toFixed(3)}[vout]`
+						);
+					}
+
+					cmd.complexFilter(vf.join(";"));
+					return cmd
+						.outputOptions(
+							"-map",
+							"[vout]",
+							"-c:v",
+							"libx264",
+							"-preset",
+							"slow",
+							"-crf",
+							"16",
+							"-pix_fmt",
+							"yuv420p",
+							"-movflags",
+							"+faststart",
+							"-vsync",
+							"vfr",
+							"-y"
+						)
+						.save(norm(pairOut));
+				});
+
+				if (current !== clips[0]) {
+					try {
+						fs.unlinkSync(current);
+					} catch (_) {}
+				}
+				current = pairOut;
+			}
+
+			fs.copyFileSync(current, out);
+			if (current !== clips[0]) {
+				try {
+					fs.unlinkSync(current);
+				} catch (_) {}
+			}
+		}
 	}
 
 	return out;

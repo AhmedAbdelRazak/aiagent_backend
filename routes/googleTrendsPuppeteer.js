@@ -156,9 +156,7 @@ async function enhanceStoriesWithOpenAI(
 				(briefs[0]?.visualHook
 					? `Lead image for ${s.title}: ${briefs[0].visualHook}`
 					: `Lead image for ${s.title}, framed for ${
-							briefs[0]?.aspectRatio === "720:1280"
-								? "vertical"
-								: "landscape"
+							briefs[0]?.aspectRatio === "720:1280" ? "vertical" : "landscape"
 					  } video.`);
 
 			return {
@@ -184,7 +182,8 @@ const urlFor = ({ geo, hours, category, sort }) => {
 	const params = new URLSearchParams({
 		geo,
 		hl: "en-US", // matches the UI you pasted
-		hours: 4,
+		hours: 24,
+		status: "active",
 		// hours: String(hrs),
 	});
 
