@@ -296,6 +296,8 @@ const BRAND_CREDIT = "Powered by Serene Jannat";
 const MERCH_INTRO =
 	"Support the channel & customize your own merch:\nhttps://www.serenejannat.com/custom-gifts\nhttps://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec\nhttps://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n\n";
 const PROMPT_CHAR_LIMIT = 220;
+const AI_TOPIC_RE =
+	/\b(ai|artificial intelligence|machine learning|genai|chatgpt|gpt-?\d*(?:\.\d+)?|openai|sora)\b/i;
 
 /* ---------------------------------------------------------------
  *  Small helpers
@@ -326,16 +328,64 @@ function ensureClickableLinks(text) {
 		// fix bare domains
 		s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
 		s = s.replace(
-			/(^|\s)(serenejannat\.com[^\s)]*)/gi,
-			(_m, prefix, url) =>
-				`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
+			/(https?:\/\/)?(www\.)?(serenejannat\.com[^\s)]*)/gi,
+			(_m, _scheme, _www, domain) => `https://${domain}`
 		);
 		// strip trailing punctuation that breaks linkification
 		s = s.replace(/(https?:\/\/[^\s)]+)[).,;:]+$/g, "$1");
-		s = s.replace(/(https?:\/\/[^\s)]+)/g, "$1");
+		// ensure a space before links so YouTube auto-linking works even after punctuation
+		s = s.replace(/([^ \t\r\n])(https?:\/\/[^\s)]+)/g, "$1 $2");
 		return s;
 	});
-	return fixed.join("\n");
+	const joined = fixed.join("\n").replace(/\n{3,}/g, "\n\n");
+	return joined;
+}
+
+function looksLikeAITopic(text) {
+	if (!text) return false;
+	return AI_TOPIC_RE.test(String(text));
+}
+
+function sanitizeAudienceFacingText(text, { allowAITopic = false } = {}) {
+	if (!text || typeof text !== "string") return "";
+	let cleaned = text;
+
+	const alwaysReplace = [
+		{
+			find: /\bAI\s+(voiceover|voice over|narration|script)\b/gi,
+			replace: "narration",
+		},
+	];
+
+	alwaysReplace.forEach(({ find, replace }) => {
+		cleaned = cleaned.replace(find, replace);
+	});
+
+	if (!allowAITopic) {
+		const softReplacements = [
+			{ find: /\bAI[-\s]?generated\b/gi, replace: "hand-crafted" },
+			{ find: /\bAI[-\s]?powered\b/gi, replace: "expert-led" },
+			{ find: /\bAI[-\s]?based\b/gi, replace: "data-led" },
+			{ find: /\bAI\s+(model|system|engine)\b/gi, replace: "our analysis" },
+			{
+				find: /\bAI['’]?\s*(prediction|predictions|forecast|pick|call|take|preview)\b/gi,
+				replace: "our $1",
+			},
+			{ find: /\bgenerative AI\b/gi, replace: "modern tools" },
+			{ find: /\bchatgpt\b/gi, replace: "our newsroom" },
+			{ find: /\bgpt[-\s]?\d+(?:\.\d+)?\b/gi, replace: "our newsroom" },
+			{ find: /\bopenai\b/gi, replace: "the newsroom" },
+			{ find: /\bsora\b/gi, replace: "the crew" },
+			{ find: /\bartificial intelligence\b/gi, replace: "smart insight" },
+			{ find: /\bAI['’]?\b/gi, replace: "our" },
+		];
+
+		softReplacements.forEach(({ find, replace }) => {
+			cleaned = cleaned.replace(find, replace);
+		});
+	}
+
+	return cleaned.trim();
 }
 
 function scrubPromptForSafety(text) {
@@ -1535,6 +1585,7 @@ Hard constraints:
 - No hashtags.
 - No quotation marks.
 - No over-hyped or tabloid adjectives like "Insane", "Crazy", "Wild".
+- Never mention AI, bots, generative tools, or "AI predictions" unless the subject itself is AI technology, and even then do NOT imply the video is automated.
 - The style must feel ${
 		isSports
 			? "like ESPN or an official league/NFL/NBA channel, not a meme or fan channel."
@@ -2617,6 +2668,8 @@ ${segDescLines}
 
 Narration rules:
 - Natural spoken language, like a professional commentator.
+- Speak as a human host; do NOT mention AI, algorithms, bots, or that a model generated or predicted anything. If the story itself involves AI tech, cover it plainly without any meta disclaimers.
+- Keep the tone warm, fun, and personable rather than clinical.
 - Stay accurate; do NOT invent fake scores, injuries, or quotes.
 - No "In this video" filler; keep like/subscribe wording ONLY in the final engagement segment.
 - Segment 1 must hook immediately.
@@ -3030,6 +3083,7 @@ exports.createVideoSoraPro = async (req, res) => {
 		}
 
 		console.log(`[Job] final topic="${topic}"`);
+		const topicIsAITopic = looksLikeAITopic(topic);
 
 		// Scrape article text for richer context
 		if (trendStory && trendStory.articles && trendStory.articles.length) {
@@ -3209,6 +3263,16 @@ One or two sentences only.
 			)
 		);
 
+		segments = segments.map((seg) => ({
+			...seg,
+			scriptText: sanitizeAudienceFacingText(seg.scriptText, {
+				allowAITopic: topicIsAITopic,
+			}),
+			overlayText: sanitizeAudienceFacingText(seg.overlayText, {
+				allowAITopic: topicIsAITopic,
+			}),
+		}));
+
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 		const recomputed = recomputeSegmentDurationsFromScript(
 			segments,
@@ -3333,31 +3397,44 @@ One or two sentences only.
 		} catch (e) {
 			console.warn("[SEO title] generation outer failed ?", e.message);
 		}
-		if (!seoTitle) seoTitle = fallbackSeoTitle(topic, category);
+		const fallbackTitle = fallbackSeoTitle(topic, category);
+		if (!seoTitle) seoTitle = fallbackTitle;
+		seoTitle =
+			sanitizeAudienceFacingText(seoTitle, {
+				allowAITopic: topicIsAITopic,
+			}) ||
+			sanitizeAudienceFacingText(fallbackTitle, {
+				allowAITopic: topicIsAITopic,
+			}) ||
+			fallbackTitle;
 
 		const descResp = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [
 				{
 					role: "user",
-					content: `Write a YouTube description (at most 150 words) for the video titled "${seoTitle}". Make the first 2 lines keyword-rich so they rank in search; include the core query (time/date/how to watch/card/lineup/etc. as appropriate). Use short sentences, no fluff. Add 1 quick CTA. End with 5-7 relevant, high-volume hashtags.`,
+					content: `Write a YouTube description (at most 150 words) for the video titled "${seoTitle}". Make the first 2 lines keyword-rich so they rank in search; include the core query (time/date/how to watch/card/lineup/etc. as appropriate). Use short sentences, no fluff. Add 1 quick CTA. Keep it friendly and human; never mention AI, bots, algorithms, or that anything here is generated. End with 5-7 relevant, high-volume hashtags (avoid AI/generative hashtags unless the subject is AI tech).`,
 				},
 			],
 		});
 		const seoDescriptionRaw = `${MERCH_INTRO}${descResp.choices[0].message.content.trim()}\n\n${BRAND_CREDIT}`;
-		const seoDescription = ensureClickableLinks(seoDescriptionRaw);
+		const seoDescription = ensureClickableLinks(
+			sanitizeAudienceFacingText(seoDescriptionRaw, {
+				allowAITopic: topicIsAITopic,
+			})
+		);
 
 		let tags = ["shorts"];
 		try {
 			const tagResp = await openai.chat.completions.create({
 				model: CHAT_MODEL,
-				messages: [
-					{
-						role: "user",
-						content: `Return a JSON array of 5-8 SHORT tags for the YouTube video "${seoTitle}". Use high-volume search terms viewers actually type (1-3 words each). No hashtags, no duplicates.`,
-					},
-				],
-			});
+			messages: [
+				{
+					role: "user",
+					content: `Return a JSON array of 5-8 SHORT tags for the YouTube video "${seoTitle}". Use high-volume search terms viewers actually type (1-3 words each). No hashtags, no duplicates. Avoid AI/generative/ChatGPT tags unless the topic is literally about that tech.`,
+				},
+			],
+		});
 			const parsed = JSON.parse(strip(tagResp.choices[0].message.content));
 			if (Array.isArray(parsed)) tags.push(...parsed);
 		} catch (e) {
@@ -3365,6 +3442,15 @@ One or two sentences only.
 		}
 		if (category === "Top5") tags.unshift("Top5");
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
+		tags = [...new Set(tags)];
+		tags = tags
+			.map(
+				(t) =>
+					sanitizeAudienceFacingText(t, {
+						allowAITopic: topicIsAITopic,
+					}) || t
+			)
+			.filter(Boolean);
 		tags = [...new Set(tags)];
 
 		/* 7. Load last ElevenLabs voice (avoid repetition) */
