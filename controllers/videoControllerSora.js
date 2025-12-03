@@ -393,6 +393,30 @@ function planImageIndexes(segments, imgCount) {
 	const segCnt = segments.length;
 	if (!segCnt) return segments;
 
+	// If we have enough images, prefer giving each segment a unique index.
+	if (imgCount >= segCnt) {
+		const used = new Set();
+		const planned = new Array(segCnt).fill(null);
+		// keep valid existing assignments
+		segments.forEach((s, i) => {
+			const idx = Number.isInteger(s.imageIndex) ? s.imageIndex : null;
+			if (idx !== null && idx >= 0 && idx < imgCount && !used.has(idx)) {
+				planned[i] = idx;
+				used.add(idx);
+			}
+		});
+		// fill blanks with unused indexes
+		let fillIdx = 0;
+		for (let i = 0; i < segCnt; i++) {
+			if (planned[i] !== null) continue;
+			while (fillIdx < imgCount && used.has(fillIdx)) fillIdx += 1;
+			const val = fillIdx < imgCount ? fillIdx : i % imgCount;
+			planned[i] = val;
+			used.add(val);
+		}
+		return segments.map((seg, idx) => ({ ...seg, imageIndex: planned[idx] }));
+	}
+
 	const existing = segments.map((s) => {
 		const idx = s.imageIndex;
 		return Number.isInteger(idx) && idx >= 0 && idx < imgCount ? idx : null;
@@ -1357,6 +1381,34 @@ function analyseImageUrl(url, isStoryImage = false) {
 	return { score, isThumbnail };
 }
 
+function inferAspectFromUrl(url) {
+	try {
+		const u = new URL(url);
+		const search = u.search || "";
+		const path = u.pathname || "";
+		let w = null;
+		let h = null;
+		const qW = search.match(/[?&]w=(\d{2,4})/i);
+		const qH = search.match(/[?&]h=(\d{2,4})/i);
+		if (qW) w = parseInt(qW[1], 10);
+		if (qH) h = parseInt(qH[1], 10);
+		if (!w || !h) {
+			const m = path.match(/(\d{3,4})x(\d{3,4})/);
+			if (m) {
+				w = parseInt(m[1], 10);
+				h = parseInt(m[2], 10);
+			}
+		}
+		if (!w || !h || h === 0) return "unknown";
+		const r = w / h;
+		if (r >= 1.1) return "landscape";
+		if (r <= 0.9) return "portrait";
+		return "square";
+	} catch {
+		return "unknown";
+	}
+}
+
 function normaliseTrendImageBriefs(briefs = [], topic = "") {
 	const targets = ["1280:720", "720:1280"];
 	const byAspect = new Map(targets.map((t) => [t, null]));
@@ -1399,7 +1451,8 @@ async function fetchTrendingStory(
 	category,
 	geo = "US",
 	usedTopics = new Set(),
-	language = DEFAULT_LANGUAGE
+	language = DEFAULT_LANGUAGE,
+	targetRatio = null
 ) {
 	const id = resolveTrendsCategoryId(category);
 	const baseUrl =
@@ -1499,6 +1552,11 @@ async function fetchTrendingStory(
 				isStoryImage: true,
 			});
 		}
+		if (Array.isArray(s.images)) {
+			s.images.forEach((u) =>
+				candidates.push({ url: u, isStoryImage: true })
+			);
+		}
 		for (const a of articles) {
 			if (a.image) {
 				candidates.push({
@@ -1533,9 +1591,32 @@ async function fetchTrendingStory(
 
 		const scored = candidates.map((c, idx) => {
 			const info = analyseImageUrl(c.url, c.isStoryImage);
+			const aspect = inferAspectFromUrl(c.url);
+			const ratioOrientation = (() => {
+				if (!targetRatio) return null;
+				const parts = String(targetRatio).split(":").map(Number);
+				if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
+					return parts[0] > parts[1]
+						? "landscape"
+						: parts[0] < parts[1]
+						? "portrait"
+						: "square";
+				}
+				return null;
+			})();
+			const orientBonus =
+				ratioOrientation && aspect === ratioOrientation
+					? 3
+					: ratioOrientation === "portrait" && aspect === "square"
+					? 1
+					: ratioOrientation === "landscape" && aspect === "square"
+					? 1
+					: 0;
 			return {
 				...c,
 				...info,
+				aspect,
+				score: info.score + orientBonus + (c.isStoryImage ? 1 : 0),
 				idx,
 			};
 		});
@@ -3173,7 +3254,8 @@ exports.createVideoSoraPro = async (req, res) => {
 				category,
 				country,
 				usedTopics,
-				language
+				language,
+				ratio
 			);
 			if (trendStory && trendStory.title) {
 				topic = trendStory.title;

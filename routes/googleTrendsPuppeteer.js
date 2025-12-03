@@ -590,6 +590,7 @@ function decorateStoriesWithImages(stories) {
 		images: buildStoryImages(s),
 	}));
 }
+
 router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
 	if (!/^[A-Z]{2}$/.test(geo)) {
