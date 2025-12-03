@@ -531,6 +531,65 @@ async function scrape({ geo, hours, category, sort }) {
 
 /* ───────────────────────────────────────────────────────────── express API */
 
+function inferAspectFromUrl(url) {
+	try {
+		const u = new URL(url);
+		const search = u.search || "";
+		const path = u.pathname || "";
+		let w = null;
+		let h = null;
+		const qW = search.match(/[?&]w=(\d{2,4})/i);
+		const qH = search.match(/[?&]h=(\d{2,4})/i);
+		if (qW) w = parseInt(qW[1], 10);
+		if (qH) h = parseInt(qH[1], 10);
+		if (!w || !h) {
+			const m = path.match(/(\d{3,4})x(\d{3,4})/);
+			if (m) {
+				w = parseInt(m[1], 10);
+				h = parseInt(m[2], 10);
+			}
+		}
+		if (!w || !h || h === 0) return "unknown";
+		const r = w / h;
+		if (r >= 1.1) return "landscape";
+		if (r <= 0.9) return "portrait";
+		return "square";
+	} catch {
+		return "unknown";
+	}
+}
+
+function buildStoryImages(story) {
+	const seen = new Set();
+	const pool = [];
+	const push = (u) => {
+		if (!u || typeof u !== "string") return;
+		if (!/^https?:\/\//i.test(u)) return;
+		if (seen.has(u)) return;
+		seen.add(u);
+		pool.push(u);
+	};
+	push(story.image);
+	(story.articles || []).forEach((a) => push(a.image));
+
+	const landscape = pool.find((u) => inferAspectFromUrl(u) === "landscape");
+	const portrait = pool.find((u) => inferAspectFromUrl(u) === "portrait");
+	const square = pool.find((u) => inferAspectFromUrl(u) === "square");
+
+	const ordered = [];
+	if (landscape) ordered.push(landscape);
+	if (portrait && portrait !== landscape) ordered.push(portrait);
+	if (!portrait && square && square !== landscape) ordered.push(square);
+	for (const u of pool) if (!ordered.includes(u)) ordered.push(u);
+	return ordered;
+}
+
+function decorateStoriesWithImages(stories) {
+	return stories.map((s) => ({
+		...s,
+		images: buildStoryImages(s),
+	}));
+}
 router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
 	if (!/^[A-Z]{2}$/.test(geo)) {
@@ -562,6 +621,9 @@ router.get("/google-trends", async (req, res) => {
 			hours,
 			category,
 		});
+
+		// 3) Ensure we always surface multiple images per topic (mixing aspect hints).
+		stories = decorateStoriesWithImages(stories);
 
 		return res.json({
 			generatedAt: new Date().toISOString(),

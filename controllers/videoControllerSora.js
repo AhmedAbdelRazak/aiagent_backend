@@ -388,6 +388,53 @@ function sanitizeAudienceFacingText(text, { allowAITopic = false } = {}) {
 	return cleaned.trim();
 }
 
+function planImageIndexes(segments, imgCount) {
+	if (!imgCount || imgCount <= 0 || !Array.isArray(segments)) return segments;
+	const segCnt = segments.length;
+	if (!segCnt) return segments;
+
+	const existing = segments.map((s) => {
+		const idx = s.imageIndex;
+		return Number.isInteger(idx) && idx >= 0 && idx < imgCount ? idx : null;
+	});
+
+	const baseSeq = [];
+	while (baseSeq.length < segCnt) {
+		for (let i = 0; i < imgCount && baseSeq.length < segCnt; i++) {
+			baseSeq.push(i);
+		}
+	}
+
+	const takeNextDifferent = (arr, last) => {
+		for (let i = 0; i < arr.length; i++) {
+			const v = arr.shift();
+			if (v === undefined) return null;
+			if (v !== last) return v;
+			arr.push(v);
+		}
+		return null;
+	};
+
+	const planned = [];
+	let last = null;
+	for (let i = 0; i < segCnt; i++) {
+		let val = existing[i];
+		if (val === null || val < 0 || val >= imgCount) {
+			val = takeNextDifferent(baseSeq, last);
+		}
+		if (val === null) {
+			val = last === null ? 0 : (last + 1) % imgCount;
+		}
+		planned.push(val);
+		last = val;
+	}
+
+	return segments.map((seg, idx) => ({
+		...seg,
+		imageIndex: planned[idx],
+	}));
+}
+
 function enforceEngagementOutroText(text, { topic, wordCap }) {
 	const existing = String(text || "").trim();
 	const hasQuestion = /\?/.test(existing);
@@ -3010,25 +3057,7 @@ Return JSON:
 			return { ...seg, imageIndex: imgIdx };
 		});
 
-		const validIndexes = segments
-			.map((s) => s.imageIndex)
-			.filter((v) => v !== null);
-		const distinctCount = new Set(validIndexes).size;
-
-		if (!validIndexes.length || distinctCount <= 1) {
-			segments = segments.map((seg, idx) => ({
-				...seg,
-				imageIndex: idx % imgCount,
-			}));
-		} else {
-			let rr = 0;
-			segments = segments.map((seg) => {
-				if (seg.imageIndex !== null) return seg;
-				const imgIdx = rr % imgCount;
-				rr += 1;
-				return { ...seg, imageIndex: imgIdx };
-			});
-		}
+		segments = planImageIndexes(segments, imgCount);
 	} else {
 		segments = segments.map((seg) => ({ ...seg, imageIndex: null }));
 	}
