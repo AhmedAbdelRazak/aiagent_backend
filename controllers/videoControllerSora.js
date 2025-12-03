@@ -413,7 +413,10 @@ function enforceEngagementOutroText(text, { topic, wordCap }) {
 	if (wordCap && Number.isFinite(wordCap) && wordCap > 3) {
 		const words = combined.split(/\s+/);
 		if (words.length > wordCap) {
-			combined = words.slice(0, wordCap).join(" ").replace(/[.,;:]?$/, ".");
+			combined = words
+				.slice(0, wordCap)
+				.join(" ")
+				.replace(/[.,;:]?$/, ".");
 		}
 	}
 
@@ -2076,26 +2079,52 @@ async function generateStaticClipFromImage({
 				zoomPan && width && height
 					? `zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
 					: null;
+			const fpsFilter = width && height ? "fps=30" : null;
 
-			// Safer primary: pad with aspect_ratio=decrease to avoid rare crop/zoom failures.
-			const vfPrimary =
-				width && height
-					? [
-							`scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos`,
-							`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,
-							...(zoompanFilter ? [zoompanFilter] : []),
-					  ]
-					: vf;
-
-			// Secondary: original crop-first path (kept as fallback for consistency with prior look).
-			const vfSecondary =
-				width && height
-					? [
-							`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
-							`crop=${width}:${height}`,
-							...(zoompanFilter ? [zoompanFilter] : []),
-					  ]
-					: [];
+			// We try a sequence of filter stacks, progressively simpler, to avoid filter reinit errors.
+			const filterVariants = [];
+			if (width && height) {
+				// Pad without zoom (safest)
+				filterVariants.push(
+					[
+						`scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos`,
+						`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,
+						"setsar=1",
+						...(fpsFilter ? [fpsFilter] : []),
+					].filter(Boolean)
+				);
+				// Pad-first with zoom
+				filterVariants.push(
+					[
+						`scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos`,
+						`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,
+						"setsar=1",
+						...(zoompanFilter ? [zoompanFilter] : []),
+						...(fpsFilter && !zoompanFilter ? [fpsFilter] : []),
+					].filter(Boolean)
+				);
+				// Crop-first (legacy look)
+				filterVariants.push(
+					[
+						`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
+						`crop=${width}:${height}`,
+						"setsar=1",
+						...(zoompanFilter ? [zoompanFilter] : []),
+						...(fpsFilter && !zoompanFilter ? [fpsFilter] : []),
+					].filter(Boolean)
+				);
+				// Crop without zoom
+				filterVariants.push(
+					[
+						`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
+						`crop=${width}:${height}`,
+						"setsar=1",
+						...(fpsFilter ? [fpsFilter] : []),
+					].filter(Boolean)
+				);
+			} else {
+				filterVariants.push(vf);
+			}
 
 			const encode = async (filters) =>
 				ffmpegPromise((c) => {
@@ -2120,15 +2149,22 @@ async function generateStaticClipFromImage({
 						.save(norm(out));
 				});
 
-			try {
-				await encode(vfPrimary);
-			} catch (primaryErr) {
-				console.warn(
-					`[Seg ${segmentIndex}] Static fallback primary filters failed, retrying alternate filters`,
-					primaryErr.message
-				);
-				await encode(vfSecondary);
+			let encoded = false;
+			let encodeErr = null;
+			for (const variant of filterVariants) {
+				try {
+					await encode(variant);
+					encoded = true;
+					break;
+				} catch (variantErr) {
+					encodeErr = variantErr;
+					console.warn(
+						`[Seg ${segmentIndex}] Static fallback variant failed, trying next`,
+						variantErr.message
+					);
+				}
 			}
+			if (!encoded) throw encodeErr || new Error("All static variants failed");
 
 			try {
 				fs.unlinkSync(localPath);
@@ -2164,34 +2200,53 @@ async function generatePlaceholderClip({
 	const { width, height } = targetResolutionForRatio(ratio);
 	const size = width && height ? `${width}x${height}` : "1080x1920";
 	const out = tmpFile(`seg_placeholder_${segmentIndex}`, ".mp4");
-	await ffmpegPromise((c) =>
-		c
-			.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
-			.inputOptions("-f", "lavfi")
-			.videoFilters(
-				[
-					"format=yuv420p",
-					"setsar=1",
-					`zoompan=z='min(1.0+0.001*n,1.04)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${size}:fps=30`,
-				].join(",")
-			)
-			.outputOptions(
-				"-t",
-				String(targetDuration),
-				"-c:v",
-				"libx264",
-				"-preset",
-				"slow",
-				"-crf",
-				"17",
-				"-pix_fmt",
-				"yuv420p",
-				"-r",
-				"30",
-				"-y"
-			)
-			.save(norm(out))
-	);
+	const filterVariants = [
+		[
+			"format=yuv420p",
+			"setsar=1",
+			`zoompan=z='min(1.0+0.001*n,1.04)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${size}:fps=30`,
+		],
+		["format=yuv420p", "setsar=1", "fps=30"],
+		["format=yuv420p", "setsar=1"],
+	];
+
+	let lastErr = null;
+	for (const filters of filterVariants) {
+		try {
+			await ffmpegPromise((c) =>
+				c
+					.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
+					.inputOptions("-f", "lavfi")
+					.videoFilters(filters.join(","))
+					.outputOptions(
+						"-t",
+						String(targetDuration),
+						"-c:v",
+						"libx264",
+						"-preset",
+						"slow",
+						"-crf",
+						"17",
+						"-pix_fmt",
+						"yuv420p",
+						"-r",
+						"30",
+						"-y"
+					)
+					.save(norm(out))
+			);
+			return out;
+		} catch (e) {
+			lastErr = e;
+		}
+	}
+	if (lastErr) {
+		console.warn(
+			"[Placeholder] All placeholder variants failed",
+			lastErr.message
+		);
+		throw lastErr;
+	}
 	return out;
 }
 
