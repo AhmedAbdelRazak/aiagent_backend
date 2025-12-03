@@ -1,0 +1,4011 @@
+/** @format */
+/* videoControllerSora.js — Sora 2 Pro edition (multi-image, long-form, cost-optimized)
+ * Uses OpenAI Sora 2 / Sora 2 Pro (`sora-2` / `sora-2-pro`) for clip generation.
+ * - Multiple Google Trends images per video remain supported.
+ * - GPT still plans script + visual beats.
+ * - Sora is now used strictly as TEXT-TO-VIDEO (no input_reference images).
+ * - GPT studies the Trends images and writes cinematic, realistic text prompts
+ *   so Sora clips feel like moving versions of those images.
+ * - Orchestrator guarantees (budget permitting) at least TWO segments use Sora text-to-video.
+ * - Remaining segments use static Ken Burns clips (cheap, still look good).
+ * - ElevenLabs TTS + Jamendo music + YouTube upload + scheduling all preserved.
+ */
+
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const crypto = require("crypto");
+const child_process = require("child_process");
+const mongoose = require("mongoose");
+const axios = require("axios");
+const dayjs = require("dayjs");
+const utc = require("dayjs/plugin/utc");
+const timezone = require("dayjs/plugin/timezone");
+const cheerio = require("cheerio");
+const qs = require("querystring");
+
+// Polyfill File for OpenAI uploads on Node < 20 (still harmless even though Sora is text-only now)
+if (typeof globalThis.File === "undefined") {
+	globalThis.File = require("node:buffer").File;
+}
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+const { google } = require("googleapis");
+const OpenAI = require("openai");
+const ffmpeg = require("fluent-ffmpeg");
+const cloudinary = require("cloudinary").v2;
+
+const Video = require("../models/Video");
+const Schedule = require("../models/Schedule");
+const {
+	ALL_TOP5_TOPICS,
+	googleTrendingCategoriesId,
+} = require("../assets/utils");
+
+/* ---------------------------------------------------------------
+ *  Cloudinary (still used for Trends image normalization/cache)
+ * ------------------------------------------------------------- */
+cloudinary.config({
+	cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+	api_key: process.env.CLOUDINARY_API_KEY,
+	api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+const PST_TZ = "America/Los_Angeles";
+
+/* ---------------------------------------------------------------
+ *  Runtime guards + ffmpeg bootstrap
+ * ------------------------------------------------------------- */
+function assertExists(cond, msg) {
+	if (!cond) {
+		console.error(`[Startup] FATAL – ${msg}`);
+		process.exit(1);
+	}
+}
+
+function resolveFfmpegPath() {
+	if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+	try {
+		return require("ffmpeg-static");
+	} catch {
+		/* ignore */
+	}
+	return process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+}
+const ffmpegPath = resolveFfmpegPath();
+assertExists(
+	(() => {
+		try {
+			child_process.execSync(`"${ffmpegPath}" -version`, { stdio: "ignore" });
+			return true;
+		} catch {
+			return false;
+		}
+	})(),
+	"FFmpeg binary not found – install ffmpeg or set FFMPEG_PATH."
+);
+ffmpeg.setFfmpegPath(ffmpegPath);
+
+const ffprobePath = process.env.FFPROBE_PATH || "ffprobe";
+ffmpeg.setFfprobePath(ffprobePath);
+console.log(`[FFprobe]  binary : ${ffprobePath}`);
+
+function ffmpegSupportsLavfi() {
+	try {
+		child_process.execSync(
+			`"${ffmpegPath}" -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:d=0.1 -frames:v 1 -f null -`,
+			{ stdio: "ignore" }
+		);
+		return true;
+	} catch {
+		return false;
+	}
+}
+const hasLavfi = ffmpegSupportsLavfi();
+console.log(`[FFmpeg]   binary : ${ffmpegPath}`);
+console.log(`[FFmpeg]   lavfi  ? ${hasLavfi}`);
+
+/* font discovery (for any future overlays) */
+function resolveFontPath() {
+	const env = process.env.FFMPEG_FONT_PATH;
+	if (env && fs.existsSync(env)) return env;
+	const candidates = [
+		path.join(__dirname, "../assets/fonts/DejaVuSans.ttf"),
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+		"/usr/share/fonts/dejavu/DejaVuSans.ttf",
+		"C:\\Windows\\Fonts\\arial.ttf",
+	];
+	for (const c of candidates) if (fs.existsSync(c)) return c;
+	return null;
+}
+const FONT_PATH = resolveFontPath();
+assertExists(
+	FONT_PATH,
+	"No valid TTF font found – set FFMPEG_FONT_PATH or install DejaVu/Arial."
+);
+const FONT_PATH_FFMPEG = FONT_PATH.replace(/\\/g, "/").replace(/:/g, "\\:");
+
+/* ---------------------------------------------------------------
+ *  Global constants
+ * ------------------------------------------------------------- */
+
+const POLL_INTERVAL_MS = 2000;
+const MAX_POLL_ATTEMPTS = 180; // ~6 mins at 2s
+
+const openai = new OpenAI({
+	apiKey: process.env.CHATGPT_API_TOKEN,
+});
+
+const JAMENDO_ID = process.env.JAMENDO_CLIENT_ID;
+const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY;
+
+/** Sora model + cost control
+ *  Sora is billed per generated second. Official pricing (approx):
+ *    - sora-2      720p: ~$0.10 / second
+ *    - sora-2-pro  720p: ~$0.30 / second
+ *    - sora-2-pro  1080p: ~$0.50 / second
+ *  We default to sora-2-pro but add strong guardrails to avoid bill shock.
+ */
+const SORA_MODEL = process.env.SORA_MODEL || "sora-2-pro";
+
+/**
+ * How aggressively to use Sora per video.
+ * - "economy"  ~60% of final duration
+ * - "balanced" ~80%
+ * - "premium"  ~120%
+ * Remaining segments use cheaper static clips (Ken Burns from stills).
+ */
+const SORA_USAGE_MODE = (process.env.SORA_USAGE_MODE || "economy")
+	.toString()
+	.toLowerCase();
+
+/**
+ * Hard per‑video cap of raw Sora seconds. 0 = no explicit cap.
+ * Example: SORA_MAX_SECONDS_PER_VIDEO=12
+ *   → 20s video with Sora‑2‑Pro 720p ≈ 12 * $0.30 = $3.60.
+ */
+const SORA_MAX_SECONDS_PER_VIDEO = Number(
+	process.env.SORA_MAX_SECONDS_PER_VIDEO || 0
+);
+
+/**
+ * Approximate price per second, just for logs / SSE estimates.
+ * Defaults assume 720p tier from OpenAI's pricing page.
+ */
+const SORA_PRICE_PER_SECOND =
+	process.env.SORA_PRICE_PER_SECOND !== undefined
+		? Number(process.env.SORA_PRICE_PER_SECOND)
+		: SORA_MODEL === "sora-2-pro"
+		? 0.3
+		: 0.1;
+
+/** Ratios supported by your orchestrator (UI contract) */
+const VALID_RATIOS = [
+	"1280:720",
+	"720:1280",
+	"1104:832",
+	"832:1104",
+	"960:960",
+	"1584:672",
+];
+
+/**
+ * WORDS_PER_SEC: cap used when asking GPT for max words.
+ * NATURAL_WPS: realistic speed used when recomputing durations from script.
+ */
+const WORDS_PER_SEC = 2.2;
+const NATURAL_WPS = 2.25;
+const ENGAGEMENT_TAIL_MIN = 5;
+const ENGAGEMENT_TAIL_MAX = 6;
+
+const MAX_SILENCE_PAD = 0.35;
+const MIN_ATEMPO = 0.9;
+const MAX_ATEMPO = 1.08;
+
+const QUALITY_BONUS =
+	"photorealistic, ultra-detailed, HDR, cinematic lighting, smooth camera motion, subtle subject motion, emotional body language";
+const PHYSICAL_REALISM_HINT =
+	"realistic physics, natural hand-object contact, consistent lighting and shadows, no collage artifacts, no floating props";
+const EYE_REALISM_HINT =
+	"natural eye focus and blinking, subtle micro-expressions, no jittering pupils, no crossed or wall-eyed look";
+const SOFT_SAFETY_PAD =
+	"fully clothed, respectful framing, wholesome, safe for work, no sexualised framing, no injuries";
+
+const DEFECTS_TO_AVOID =
+	"extra limbs, extra heads, mutated hands, fused fingers, missing limbs, contorted, twisted neck, bad anatomy, lowres, pixelated, blurry, motion blur, overexposed, underexposed, watermark, logo, text overlay, nsfw, gore, floating props, collage look, weird physics, mismatched lighting, unnatural eye movement, jittering pupils, dead eyes, awkward pose, crossed eyes, wall-eyed, sliding feet, static frame, frozen frame, deformed face, melted face, distorted face, warped face, plastic skin, doll-like face, oversharpened, grainy, compression artifacts, glitch, ghosting";
+
+const HUMAN_SAFETY =
+	"anatomically correct, natural human faces, one natural-looking head, two eyes, normal limbs, realistic body proportions, natural head position, natural skin texture, sharp and in-focus facial features, no distortion, no warping, no blurring";
+
+const BRAND_ENHANCEMENT_HINT =
+	"subtle global brightness and contrast boost, slightly brighter and clearer faces while preserving natural skin tones, consistent AiVideomatic brand color grading";
+
+const CHAT_MODEL = "gpt-5.1";
+
+const ELEVEN_VOICES = {
+	English: "21m00Tcm4TlvDq8ikWAM",
+	Spanish: "CYw3kZ02Hs0563khs1Fj",
+	Francais: "gqjD3Awy6ZnJf2el9DnG",
+	Deutsch: "IFHEeWG1IGkfXpxmB1vN",
+	Hindi: "ykoxtvL6VZTyas23mE9F",
+	Arabic: "", // leave blank to force dynamic Egyptian/Arabic pick
+};
+const ELEVEN_STYLE_BY_CATEGORY = {
+	Sports: 1.0,
+	Politics: 0.7,
+	Finance: 0.7,
+	Entertainment: 0.9,
+	Technology: 0.8,
+	Health: 0.7,
+	World: 0.7,
+	Lifestyle: 0.9,
+	Science: 0.8,
+	Other: 0.7,
+	Top5: 1.0,
+};
+
+const SENSITIVE_TONE_RE =
+	/\b(died|dead|death|killed|slain|shot dead|massacre|tragedy|tragic|funeral|mourning|mourner|passed away|succumbed|fatal|fatalities|casualty|casualties|victim|victims|hospitalized|in intensive care|on life support|critically ill|coma|cancer|tumor|tumour|leukemia|stroke|heart attack|illness|terminal|pandemic|epidemic|outbreak|bombing|explosion|airstrike|air strike|genocide)\b/i;
+
+const HYPE_TONE_RE =
+	/\b(breaking|incredible|amazing|unbelievable|huge|massive|record|historic|epic|insane|wild|stunning|shocking|explodes|erupt(s|ed)?|surge(s|d)?|soar(s|ed)?|smashes|crushes|upset|thriller|last-second|overtime|buzzer-beater|comeback)\b/i;
+
+const DEFAULT_LANGUAGE = "English";
+const TONE_HINTS = {
+	Sports: "Use an energetic, but professional broadcast tone.",
+	Politics:
+		"Maintain an authoritative yet neutral tone, like a high-end documentary voiceover.",
+	Finance: "Speak in a confident, analytical tone.",
+	Entertainment: "Keep it upbeat and engaging.",
+	Technology: "Adopt a forward-looking, curious tone.",
+	Health: "Stay reassuring and informative.",
+	Lifestyle: "Be friendly and encouraging.",
+	Science: "Convey wonder and clarity.",
+	World: "Maintain an objective, international outlook.",
+	Top5: "Keep each item snappy and clearly ranked.",
+};
+
+const YT_CATEGORY_MAP = {
+	Sports: "17",
+	Politics: "25",
+	Finance: "25",
+	Entertainment: "24",
+	Technology: "28",
+	Health: "0",
+	World: "0",
+	Lifestyle: "0",
+	Science: "0",
+	Other: "0",
+	Top5: "0",
+	Gaming: "20",
+	PetsAndAnimals: "15",
+	Business: "21",
+	Travel: "19",
+	FoodDrink: "0",
+	CelebrityNews: "25",
+	Climate: "0",
+	SocialIssues: "22",
+	Education: "27",
+	Fashion: "22",
+};
+
+const BRAND_TAG = "AiVideomatic";
+const BRAND_CREDIT = "Powered by Serene Jannat";
+const MERCH_INTRO =
+	"Support the channel & customize your own merch:\nhttps://www.serenejannat.com/custom-gifts\nhttps://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec\nhttps://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n\n";
+const PROMPT_CHAR_LIMIT = 220;
+
+/* ---------------------------------------------------------------
+ *  Small helpers
+ * ------------------------------------------------------------- */
+const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
+const choose = (a) => a[Math.floor(Math.random() * a.length)];
+
+const TICK_CHAR = String.fromCharCode(96);
+function stripCodeFence(s) {
+	const marker = TICK_CHAR + TICK_CHAR + TICK_CHAR;
+	const first = s.indexOf(marker);
+	if (first === -1) return s;
+	const after = s.slice(first + marker.length);
+	const second = after.lastIndexOf(marker);
+	if (second === -1) return s;
+	let inner = after.slice(0, second);
+	inner = inner.replace(/^\s*json/i, "").trim();
+	return inner || s;
+}
+
+function ensureClickableLinks(text) {
+	if (!text || typeof text !== "string") return "";
+	const lines = text.split(/\r?\n/);
+	const fixed = lines.map((line) => {
+		let s = line.trim();
+		// remove trailing parenthetical labels
+		s = s.replace(/\s*\([^)]*\)\s*$/, "");
+		// fix bare domains
+		s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
+		s = s.replace(
+			/(^|\s)(serenejannat\.com[^\s)]*)/gi,
+			(_m, prefix, url) =>
+				`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
+		);
+		// strip trailing punctuation that breaks linkification
+		s = s.replace(/(https?:\/\/[^\s)]+)[).,;:]+$/g, "$1");
+		s = s.replace(/(https?:\/\/[^\s)]+)/g, "$1");
+		return s;
+	});
+	return fixed.join("\n");
+}
+
+function scrubPromptForSafety(text) {
+	if (!text || typeof text !== "string") return "";
+	let t = text;
+	const replacements = [
+		{ find: /pregnan(t|cy|cies)/gi, replace: "expectant fashion moment" },
+		{ find: /baby\s*bump/gi, replace: "fashion silhouette" },
+		{ find: /\bbelly\b/gi, replace: "silhouette" },
+		{ find: /\bnude\b/gi, replace: "fully clothed" },
+		{ find: /\bskin\b/gi, replace: "outfit" },
+		{ find: /\bsheer\b/gi, replace: "tasteful fabric" },
+	];
+	replacements.forEach(({ find, replace }) => {
+		t = t.replace(find, replace);
+	});
+	return `${t}. ${SOFT_SAFETY_PAD}`.trim();
+}
+const strip = (s) => stripCodeFence(String(s || "").trim());
+
+const goodDur = (n) =>
+	Number.isInteger(+n) && +n >= 5 && +n <= 90 && +n % 5 === 0;
+
+const escTxt = (t) =>
+	String(t || "")
+		.replace(/\\/g, "\\\\")
+		.replace(/[’']/g, "\\'")
+		.replace(/:/g, "\\:")
+		.replace(/,/g, "\\,");
+
+function tmpFile(tag, ext = "") {
+	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
+}
+
+async function downloadImageToTemp(url, ext = ".jpg") {
+	const tmp = tmpFile("trend_raw", ext);
+	const writer = fs.createWriteStream(tmp);
+	const resp = await axios.get(url, { responseType: "stream" });
+	await new Promise((resolve, reject) => {
+		resp.data.pipe(writer).on("finish", resolve).on("error", reject);
+	});
+	return tmp;
+}
+
+function toTitleCase(str = "") {
+	return str
+		.toLowerCase()
+		.replace(/(^\w|\s\w)/g, (m) => m.toUpperCase())
+		.trim();
+}
+
+function fallbackSeoTitle(topic, category) {
+	const base = toTitleCase(topic || "Breaking Update");
+	if (category === "Top5") return `${base} | Top 5`;
+	if (category === "Sports") return `${base} | Highlights & Preview`;
+	return `${base} | Update`;
+}
+
+const NUM_WORD = Object.freeze({
+	1: "one",
+	2: "two",
+	3: "three",
+	4: "four",
+	5: "five",
+	6: "six",
+	7: "seven",
+	8: "eight",
+	9: "nine",
+	10: "ten",
+	11: "eleven",
+	12: "twelve",
+	13: "thirteen",
+	14: "fourteen",
+	15: "fifteen",
+	16: "sixteen",
+	17: "seventeen",
+	18: "eighteen",
+	19: "nineteen",
+	20: "twenty",
+});
+function improveTTSPronunciation(text) {
+	text = text.replace(/#\s*([1-5])\s*:/g, (_, n) => `Number ${NUM_WORD[n]}:`);
+	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
+}
+
+/* Voice tone classification */
+function deriveVoiceSettings(text, category = "Other") {
+	const baseStyle = ELEVEN_STYLE_BY_CATEGORY[category] ?? 0.7;
+	const lower = String(text || "").toLowerCase();
+
+	const isSensitive = SENSITIVE_TONE_RE.test(lower);
+
+	let style = baseStyle;
+	let stability = 0.15;
+	let similarityBoost = 0.92;
+	let openaiSpeed = 1.0;
+
+	if (isSensitive) {
+		style = 0.25;
+		stability = 0.55;
+		similarityBoost = 0.9;
+		openaiSpeed = 0.94;
+	} else {
+		const isHype =
+			HYPE_TONE_RE.test(lower) ||
+			/[!?]/.test(text) ||
+			category === "Sports" ||
+			category === "Top5" ||
+			category === "Entertainment";
+
+		if (isHype) {
+			style = Math.min(1, baseStyle + 0.3);
+			stability = 0.13;
+			openaiSpeed = 1.06;
+		} else {
+			style = Math.min(1, baseStyle + 0.15);
+			stability = 0.17;
+			openaiSpeed = 1.02;
+		}
+	}
+
+	return {
+		style,
+		stability,
+		similarityBoost,
+		openaiSpeed,
+		isSensitive,
+	};
+}
+
+/* Recompute segment durations from script words */
+function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
+	if (
+		!Array.isArray(segments) ||
+		!segments.length ||
+		!targetTotalSeconds ||
+		!Number.isFinite(targetTotalSeconds)
+	)
+		return null;
+
+	const MIN_SEGMENT_SECONDS = 2.5;
+
+	const est = segments.map((s, idx) => {
+		const words = String(s.scriptText || "")
+			.trim()
+			.split(/\s+/)
+			.filter(Boolean).length;
+		const basePause = idx === segments.length - 1 ? 0.35 : 0.25;
+		const raw = (words || 1) / NATURAL_WPS + basePause;
+		return Math.max(MIN_SEGMENT_SECONDS, raw);
+	});
+
+	const estTotal = est.reduce((a, b) => a + b, 0) || targetTotalSeconds;
+	let scale = targetTotalSeconds / estTotal;
+	if (scale < 0.8) scale = 0.8;
+	if (scale > 1.25) scale = 1.25;
+
+	let scaled = est.map((v) => v * scale);
+	let total = scaled.reduce((a, b) => a + b, 0);
+	let diff = +(targetTotalSeconds - total).toFixed(2);
+
+	let idx = scaled.length - 1;
+	const step = diff > 0 ? 0.1 : -0.1;
+	while (Math.abs(diff) > 0.05 && scaled.length && idx >= 0) {
+		const candidate = scaled[idx] + step;
+		if (candidate >= MIN_SEGMENT_SECONDS) {
+			scaled[idx] = candidate;
+			diff -= step;
+		}
+		idx--;
+		if (idx < 0 && Math.abs(diff) > 0.05) idx = scaled.length - 1;
+	}
+
+	return scaled.map((v) => +v.toFixed(2));
+}
+
+/* ---------------------------------------------------------------
+ *  Cloudinary + resolution helpers
+ * ------------------------------------------------------------- */
+const VALID_RATIOS_TO_ASPECT = {
+	"1280:720": "16:9",
+	"1584:672": "16:9",
+	"720:1280": "9:16",
+	"832:1104": "9:16",
+	"960:960": "1:1",
+	"1104:832": "4:3",
+};
+function ratioToCloudinaryAspect(ratio) {
+	return VALID_RATIOS_TO_ASPECT[ratio] || "16:9";
+}
+
+function targetResolutionForRatio(ratio) {
+	switch (ratio) {
+		case "720:1280":
+		case "832:1104":
+			return { width: 1080, height: 1920 };
+		case "960:960":
+			return { width: 1080, height: 1080 };
+		case "1104:832":
+			return { width: 1440, height: 1080 };
+		case "1584:672":
+		case "1280:720":
+		default:
+			return { width: 1920, height: 1080 };
+	}
+}
+
+function buildCloudinaryTransformForRatio(ratio) {
+	const aspect = ratioToCloudinaryAspect(ratio);
+	const { width, height } = targetResolutionForRatio(ratio);
+
+	const base = {
+		crop: "fill",
+		gravity: "auto",
+		quality: "auto:good",
+		fetch_format: "auto",
+	};
+
+	if (width && height) {
+		base.width = width;
+		base.height = height;
+	} else {
+		base.aspect_ratio = aspect;
+	}
+
+	return [base];
+}
+
+function openAIImageSizeForRatio(ratio) {
+	switch (ratio) {
+		case "720:1280":
+		case "832:1104":
+			return "1024x1792";
+		case "960:960":
+			return "1024x1024";
+		default:
+			return "1792x1024";
+	}
+}
+
+/* ---------------------------------------------------------------
+ *  Sora helpers – duration + size + cost planning
+ * ------------------------------------------------------------- */
+
+/** Map your logical ratio to closest Sora size (Sora currently supports 4 sizes at 720p/1080p) */
+function soraSizeForRatio(ratio) {
+	switch (ratio) {
+		case "720:1280":
+		case "832:1104":
+			return "720x1280"; // vertical
+		case "960:960":
+		case "1104:832":
+		case "1584:672":
+		case "1280:720":
+		default:
+			return "1280x720"; // horizontal
+	}
+}
+
+/** Map segment target seconds → closest Sora clip seconds ('4' | '8' | '12') */
+function soraSecondsForSegment(targetSeconds) {
+	const t = Number(targetSeconds) || 4;
+	if (t <= 4.5) return "4";
+	if (t <= 8.5) return "8";
+	return "12";
+}
+
+function soraDimensions(size) {
+	if (!size || typeof size !== "string") return { width: 1280, height: 720 };
+	const [w, h] = size.split("x").map((v) => parseInt(v, 10));
+	if (!Number.isFinite(w) || !Number.isFinite(h))
+		return { width: 1280, height: 720 };
+	return { width: w, height: h };
+}
+
+/**
+ * Decide how many raw Sora seconds we're willing to spend on this video.
+ * This is independent from the final edited duration (we trim/pad with ffmpeg).
+ */
+function computeSoraBudgetSeconds(videoDurationSeconds) {
+	const dur = Math.max(4, Math.min(60, Number(videoDurationSeconds) || 0));
+
+	let factor;
+	switch (SORA_USAGE_MODE) {
+		case "premium":
+			factor = 1.2; // more Sora, closer to "everything is animated"
+			break;
+		case "balanced":
+			factor = 0.8;
+			break;
+		case "economy":
+		default:
+			factor = 0.6;
+			break;
+	}
+
+	let budget = Math.round(dur * factor);
+
+	if (SORA_MAX_SECONDS_PER_VIDEO > 0) {
+		budget = Math.min(budget, SORA_MAX_SECONDS_PER_VIDEO);
+	}
+
+	// Clamp to a reasonable range; actual "at least 2 segments" enforcement happens later.
+	budget = Math.max(4, Math.min(60, budget));
+	return budget;
+}
+
+/**
+ * Given segment target durations and a Sora seconds budget,
+ * choose which segments will actually call Sora, and with which
+ * clip lengths (4 / 8 / 12 seconds).
+ *
+ * IMPORTANT: We now try hard to get AT LEAST TWO Sora segments
+ * (4s each) whenever the budget allows >= 8 Sora seconds.
+ */
+function planSoraAllocation(segLens, soraBudgetSeconds) {
+	const n = Array.isArray(segLens) ? segLens.length : 0;
+	if (!n || !Number.isFinite(soraBudgetSeconds) || soraBudgetSeconds <= 0) {
+		return {
+			useSora: new Array(n).fill(false),
+			perSegSeconds: new Array(n).fill(0),
+			totalSeconds: 0,
+		};
+	}
+
+	const metas = segLens.map((len, idx) => {
+		const soraSec = Number(soraSecondsForSegment(len));
+		let priority = 50;
+
+		if (idx === 0) priority = 100; // hook
+		else if (idx === n - 1) priority = 40; // outro
+		else {
+			const center = (n - 1) / 2;
+			priority = 80 - Math.abs(idx - center) * 3;
+		}
+
+		return { index: idx, soraSec, priority };
+	});
+
+	// Higher priority first
+	metas.sort((a, b) => b.priority - a.priority);
+
+	const use = new Array(n).fill(false);
+	const perSegSeconds = new Array(n).fill(0);
+	let used = 0;
+
+	// Greedy within budget
+	for (const m of metas) {
+		if (!Number.isFinite(m.soraSec) || m.soraSec <= 0) continue;
+		if (used + m.soraSec > soraBudgetSeconds) continue;
+		use[m.index] = true;
+		perSegSeconds[m.index] = m.soraSec;
+		used += m.soraSec;
+	}
+
+	const MIN_CLIPS = 2;
+	const MIN_SECONDS_PER_CLIP = 4;
+	const soraCount = use.filter(Boolean).length;
+
+	// If we ended up with < 2 Sora clips but the budget supports >= 8 seconds,
+	// force two 4-second clips on the highest-priority segments.
+	if (
+		n >= MIN_CLIPS &&
+		soraCount < MIN_CLIPS &&
+		soraBudgetSeconds >= MIN_CLIPS * MIN_SECONDS_PER_CLIP
+	) {
+		use.fill(false);
+		perSegSeconds.fill(0);
+
+		const chosen = metas.slice(0, MIN_CLIPS);
+		for (const m of chosen) {
+			use[m.index] = true;
+			perSegSeconds[m.index] = MIN_SECONDS_PER_CLIP;
+		}
+		used = MIN_CLIPS * MIN_SECONDS_PER_CLIP;
+	} else if (
+		soraCount === 0 &&
+		n >= 1 &&
+		soraBudgetSeconds >= MIN_SECONDS_PER_CLIP
+	) {
+		// Extremely tiny budgets: at least one Sora segment if we can afford 4 seconds.
+		const best = metas[0];
+		use[best.index] = true;
+		perSegSeconds[best.index] = MIN_SECONDS_PER_CLIP;
+		used = MIN_SECONDS_PER_CLIP;
+	}
+
+	return { useSora: use, perSegSeconds, totalSeconds: used };
+}
+
+/* --------------------------------------------------------------- */
+/*  Logging helpers                                                */
+/* --------------------------------------------------------------- */
+function logSoraError(err, ctx = {}) {
+	const base = { stage: ctx.stage, seg: ctx.seg, msg: err?.message };
+	try {
+		const data = err?.response?.data;
+		const status = err?.response?.status;
+		if (status) base.status = status;
+		if (data) {
+			base.responseSnippet =
+				typeof data === "string"
+					? data.slice(0, 400)
+					: JSON.stringify(data).slice(0, 400);
+		}
+	} catch (_) {}
+	if (err?.code) base.code = err.code;
+	console.error("[Sora] error", base);
+}
+
+function isModerationBlock(err) {
+	const code =
+		err?.code ||
+		err?.response?.data?.error?.code ||
+		err?.response?.data?.error?.type;
+	if (code && String(code).toLowerCase().includes("moderation")) return true;
+	const msg = String(err?.message || "").toLowerCase();
+	return msg.includes("moderation");
+}
+
+function softenPromptForModeration(promptText, topicHint = "") {
+	/* Kept for potential future use, but we no longer auto-retry Sora after moderation blocks.
+	   Instead we fall back to static clips to avoid double-charging. */
+	const safeTopic = String(topicHint || "")
+		.replace(/[^\w\s]/g, " ")
+		.trim();
+
+	let cleaned = String(promptText || "")
+		.replace(/[^\w\s.,-]/g, " ")
+		.replace(/\b[A-Z][a-z]{2,}\b/g, "") // drop proper-noun-looking tokens
+		.replace(/\s{2,}/g, " ")
+		.trim();
+
+	if (!cleaned || cleaned.length < 20) {
+		cleaned =
+			"Cinematic phone UI scene with colorful gradients, diverse people and music visuals";
+	}
+
+	const generic =
+		"generic music app interface on a phone, diverse people, lively atmosphere, no logos, no brand names, no text, no watermarks, high detail, smooth camera move";
+	const topic = safeTopic ? ` Topic: ${safeTopic}.` : "";
+	return `${cleaned}. ${generic}${topic}`.trim();
+}
+
+function sanitizeSoraPrompt(promptText, topicHint = "") {
+	const safeTopic = String(topicHint || "")
+		.replace(/[^\w\s]/g, " ")
+		.trim();
+	let p = String(promptText || "")
+		.replace(/[^\w\s.,-]/g, " ")
+		.replace(/\b[A-Z][a-z]{2,}\b/g, "")
+		.replace(/\s{2,}/g, " ")
+		.trim();
+
+	const guard =
+		"no logos, no brand names, no trademarks, no on-screen text, no watermarks, cinematic, high detail, smooth camera move";
+	const topic = safeTopic ? ` Topic: ${safeTopic}.` : "";
+
+	if (!p || p.length < 20) {
+		p = "Cinematic phone UI scene with abstract music visuals";
+	}
+
+	return `${p}. ${guard}${topic}`.trim();
+}
+
+/* ---------------------------------------------------------------
+ *  ffmpeg helpers
+ * ------------------------------------------------------------- */
+function ffmpegPromise(cfg) {
+	return new Promise((res, rej) => {
+		const p = cfg(ffmpeg()) || ffmpeg();
+		p.on("start", (cmd) => console.log(`[FFmpeg] ${cmd}`))
+			.on("end", () => res())
+			.on("error", (e) => rej(e));
+	});
+}
+
+async function resizeImageToExact(src, width, height) {
+	const out = tmpFile("sora_ref", path.extname(src) || ".jpg");
+	const vf = [
+		`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+		`crop=${width}:${height}`,
+	];
+	await ffmpegPromise((c) =>
+		c
+			.input(norm(src))
+			.videoFilters(vf.join(","))
+			.outputOptions("-frames:v", "1", "-y")
+			.save(norm(out))
+	);
+	return out;
+}
+
+async function exactLen(src, target, out, opts = {}) {
+	const { ratio = null, enhance = false } = opts;
+
+	const meta = await new Promise((resolve, reject) =>
+		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
+	);
+
+	const inDur = meta.format?.duration || target;
+	const diff = +(target - inDur).toFixed(3);
+
+	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
+	const videoStream = Array.isArray(meta.streams)
+		? meta.streams.find((s) => s.codec_type === "video")
+		: null;
+	const inW = videoStream?.width;
+	const inH = videoStream?.height;
+
+	await ffmpegPromise((cmd) => {
+		cmd.input(norm(src));
+
+		const vf = [];
+
+		if (enhance && targetRes && targetRes.width && targetRes.height) {
+			const { width, height } = targetRes;
+			const needsResize =
+				!inW || !inH || Math.abs(inW - width) > 8 || Math.abs(inH - height) > 8;
+
+			if (needsResize) {
+				vf.push(
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+					`crop=${width}:${height}`
+				);
+			}
+		}
+
+		if (Math.abs(diff) >= 0.08) {
+			if (diff < 0) {
+				cmd.outputOptions("-t", String(target));
+			} else {
+				vf.push(`tpad=stop_duration=${diff.toFixed(3)}`);
+			}
+		}
+
+		if (vf.length) {
+			cmd.videoFilters(vf.join(","));
+		}
+
+		const preset = enhance ? "slow" : "fast";
+		const crf = enhance ? 16 : 17;
+
+		return cmd
+			.outputOptions(
+				"-c:v",
+				"libx264",
+				"-preset",
+				preset,
+				"-crf",
+				String(crf),
+				"-profile:v",
+				"high",
+				"-pix_fmt",
+				"yuv420p",
+				"-movflags",
+				"+faststart",
+				"-y"
+			)
+			.save(norm(out));
+	});
+}
+
+async function exactLenAudio(src, target, out) {
+	const meta = await new Promise((resolve, reject) =>
+		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
+	);
+
+	const inDur = meta.format?.duration || target;
+	const diff = +(target - inDur).toFixed(3);
+
+	await ffmpegPromise((cmd) => {
+		cmd.input(norm(src));
+
+		const filters = [];
+
+		if (Math.abs(diff) <= 0.08) {
+			// match
+		} else if (diff < -0.08) {
+			const ratio = inDur / target;
+
+			if (ratio <= 2.0) {
+				let tempo = ratio;
+				if (tempo > MAX_ATEMPO) tempo = MAX_ATEMPO;
+				filters.push(`atempo=${tempo.toFixed(3)}`);
+			} else if (ratio <= 4.0) {
+				const r = Math.min(MAX_ATEMPO, Math.sqrt(ratio));
+				filters.push(`atempo=${r.toFixed(3)},atempo=${r.toFixed(3)}`);
+			} else {
+				cmd.outputOptions("-t", String(target));
+			}
+		} else {
+			const padDur = Math.min(MAX_SILENCE_PAD, diff);
+			if (padDur > 0.05) {
+				filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
+			}
+		}
+
+		if (filters.length) {
+			cmd.audioFilters(filters.join(","));
+		}
+
+		return cmd.outputOptions("-y").save(norm(out));
+	});
+}
+
+async function probeVideoDuration(file) {
+	const meta = await new Promise((resolve, reject) =>
+		ffmpeg.ffprobe(file, (err, data) => (err ? reject(err) : resolve(data)))
+	);
+	return meta.format?.duration || 0;
+}
+
+async function concatWithTransitions(
+	clips,
+	durationsHint = [],
+	ratio = null,
+	transitionDuration = 0.35,
+	options = {}
+) {
+	if (!clips || !clips.length) throw new Error("No clips to stitch");
+
+	const {
+		fadeInFirst = true,
+		fadeOutLast = true,
+		fadeInMiddle = true,
+		fadeOutMiddle = true,
+		maxFadeFraction = 0.18,
+		minFadeSeconds = 0.12,
+	} = options;
+
+	const maxFadeSeconds = transitionDuration || 0.35;
+
+	// 1) Normalize all clips
+	const normalized = [];
+	const targetRes = ratio ? targetResolutionForRatio(ratio) : null;
+
+	for (let i = 0; i < clips.length; i++) {
+		const src = clips[i];
+		const normOut = tmpFile(`norm_${i + 1}`, ".mp4");
+
+		await ffmpegPromise((cmd) => {
+			cmd.input(norm(src));
+
+			const vf = [];
+			if (targetRes?.width && targetRes?.height) {
+				vf.push(
+					`scale=${targetRes.width}:${targetRes.height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
+					`crop=${targetRes.width}:${targetRes.height}`
+				);
+			}
+			vf.push("format=yuv420p", "setsar=1", "fps=30", "setpts=PTS-STARTPTS");
+
+			cmd.videoFilters(vf.join(","));
+			cmd.outputOptions(
+				"-c:v",
+				"libx264",
+				"-preset",
+				"fast",
+				"-crf",
+				"18",
+				"-movflags",
+				"+faststart",
+				"-y"
+			);
+
+			return cmd.save(norm(normOut));
+		});
+
+		normalized.push(normOut);
+	}
+
+	async function fadeOne(srcPath, idx, totalClips) {
+		const outFade = tmpFile(`fade_${idx + 1}`, ".mp4");
+
+		const durHint =
+			typeof durationsHint[idx] === "number"
+				? Number(durationsHint[idx])
+				: null;
+
+		const realDur =
+			durHint && Number.isFinite(durHint)
+				? durHint
+				: (await probeVideoDuration(srcPath)) || 1;
+
+		let fadeDur = Math.min(
+			maxFadeSeconds,
+			realDur * maxFadeFraction,
+			realDur / 2
+		);
+
+		if (!Number.isFinite(fadeDur) || fadeDur <= 0) {
+			fadeDur = minFadeSeconds;
+		} else if (fadeDur < minFadeSeconds) {
+			fadeDur = minFadeSeconds;
+		}
+
+		const isFirst = idx === 0;
+		const isLast = idx === totalClips - 1;
+
+		const doFadeIn = isFirst ? fadeInFirst : fadeInMiddle;
+		const doFadeOut = isLast ? fadeOutLast : fadeOutMiddle;
+
+		const filters = [];
+
+		if (doFadeIn) {
+			filters.push(`fade=t=in:st=0:d=${fadeDur.toFixed(3)}`);
+		}
+		if (doFadeOut) {
+			const fadeStartOut = Math.max(0, realDur - fadeDur);
+			filters.push(
+				`fade=t=out:st=${fadeStartOut.toFixed(3)}:d=${fadeDur.toFixed(3)}`
+			);
+		}
+
+		await ffmpegPromise((cmd) => {
+			cmd.input(norm(srcPath));
+
+			if (filters.length) {
+				cmd.videoFilters(filters.join(","));
+			}
+
+			cmd.outputOptions(
+				"-c:v",
+				"libx264",
+				"-preset",
+				"slow",
+				"-crf",
+				"16",
+				"-pix_fmt",
+				"yuv420p",
+				"-movflags",
+				"+faststart",
+				"-y"
+			);
+
+			return cmd.save(norm(outFade));
+		});
+
+		return outFade;
+	}
+
+	const fadedClips = [];
+	for (let i = 0; i < normalized.length; i++) {
+		const src = normalized[i];
+		const faded = await fadeOne(src, i, normalized.length);
+		fadedClips.push(faded);
+	}
+
+	const listFile = tmpFile("list_concat", ".txt");
+	fs.writeFileSync(
+		listFile,
+		fadedClips.map((p) => `file '${norm(p)}'`).join("\n")
+	);
+
+	const out = tmpFile("transitioned", ".mp4");
+
+	await ffmpegPromise((cmd) =>
+		cmd
+			.input(norm(listFile))
+			.inputOptions("-f", "concat", "-safe", "0")
+			.outputOptions("-c:v", "copy", "-y")
+			.save(norm(out))
+	);
+
+	fadedClips.forEach((p) => {
+		try {
+			fs.unlinkSync(p);
+		} catch (_) {}
+	});
+	normalized.forEach((p) => {
+		try {
+			fs.unlinkSync(p);
+		} catch (_) {}
+	});
+	try {
+		fs.unlinkSync(listFile);
+	} catch (_) {}
+
+	return out;
+}
+
+/* ---------------------------------------------------------------
+ *  Google Trends helpers & SEO title
+ * ------------------------------------------------------------- */
+function resolveTrendsCategoryId(label) {
+	const e = googleTrendingCategoriesId.find((c) => c.category === label);
+	return e ? e.ids[0] : 0;
+}
+
+const TRENDS_API_URL =
+	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
+const TRENDS_HTTP_TIMEOUT_MS = 60000;
+
+function isSportsTopic(topic = "", category = "", trendStory = null) {
+	if (category && category.toLowerCase().includes("sport")) return true;
+	const SPORTS_KEYWORDS = [
+		"soccer",
+		"football",
+		"nfl",
+		"nba",
+		"mlb",
+		"mls",
+		"nhl",
+		"ufc",
+		"mma",
+		"f1",
+		"formula 1",
+		"motogp",
+		"rugby",
+		"cricket",
+		"golf",
+		"tennis",
+		"baseball",
+		"basketball",
+		"hockey",
+		"volleyball",
+		"champions league",
+		"world cup",
+		"euros",
+		"super bowl",
+		"playoffs",
+		"finals",
+	];
+	const SPORTS_KEYWORDS_SET = new Set(SPORTS_KEYWORDS);
+	const haystack = [topic]
+		.concat(trendStory?.title || [], trendStory?.seoTitle || [])
+		.concat(trendStory?.entityNames || [])
+		.map((t) => String(t || "").toLowerCase());
+	return haystack.some((t) =>
+		Array.from(SPORTS_KEYWORDS_SET).some((k) => t.includes(k))
+	);
+}
+
+function isThumbnailHost(hostname) {
+	const h = String(hostname || "").toLowerCase();
+	return (
+		h.endsWith("gstatic.com") ||
+		h.includes("googleusercontent.com") ||
+		h.includes("ggpht.com")
+	);
+}
+
+function analyseImageUrl(url, isStoryImage = false) {
+	let score = 0;
+	let isThumbnail = false;
+
+	try {
+		const u = new URL(url);
+		const host = u.hostname.toLowerCase();
+		const search = u.search || "";
+		const pathName = u.pathname || "";
+
+		isThumbnail = isThumbnailHost(host);
+
+		if (!isThumbnail) score += 5;
+		else score -= 5;
+
+		if (isStoryImage) score += 3;
+
+		if (/\.(jpe?g|png|webp|avif)$/i.test(u.pathname)) score += 2;
+
+		const wMatch = search.match(/[?&]w=(\d{2,4})/i);
+		if (wMatch) {
+			const w = parseInt(wMatch[1], 10);
+			if (w >= 1400) score += 3;
+			else if (w >= 1000) score += 2;
+			else if (w >= 600) score += 1;
+		}
+
+		const hMatch = search.match(/[?&]h=(\d{2,4})/i);
+		if (hMatch) {
+			const h = parseInt(hMatch[1], 10);
+			if (h < 200) score -= 1;
+		}
+
+		const resMatch = pathName.match(/(\d{3,4})x(\d{3,4})/);
+		if (resMatch) {
+			const w = parseInt(resMatch[1], 10);
+			const h = parseInt(resMatch[2], 10);
+			if (w >= 1400 || h >= 1400) score += 2;
+		}
+	} catch {
+		if (isStoryImage) score += 1;
+	}
+
+	return { score, isThumbnail };
+}
+
+function normaliseTrendImageBriefs(briefs = [], topic = "") {
+	const targets = ["1280:720", "720:1280"];
+	const byAspect = new Map(targets.map((t) => [t, null]));
+
+	if (Array.isArray(briefs)) {
+		for (const raw of briefs) {
+			if (!raw || !raw.aspectRatio) continue;
+			const ar = String(raw.aspectRatio).trim();
+			if (!byAspect.has(ar)) continue;
+			if (byAspect.get(ar)) continue;
+			byAspect.set(ar, {
+				aspectRatio: ar,
+				visualHook: String(
+					raw.visualHook || raw.idea || raw.hook || raw.description || ""
+				).trim(),
+				emotion: String(raw.emotion || "").trim(),
+				rationale: String(raw.rationale || raw.note || "").trim(),
+			});
+		}
+	}
+
+	for (const [ar, val] of byAspect.entries()) {
+		if (val) continue;
+		byAspect.set(ar, {
+			aspectRatio: ar,
+			visualHook:
+				ar === "1280:720"
+					? `Landscape viral frame about ${topic}`
+					: `Vertical viral frame about ${topic}`,
+			emotion: "High energy",
+			rationale:
+				"Auto-filled to keep both aspect ratios covered for the video orchestrator.",
+		});
+	}
+
+	return Array.from(byAspect.values());
+}
+
+async function fetchTrendingStory(
+	category,
+	geo = "US",
+	usedTopics = new Set(),
+	language = DEFAULT_LANGUAGE
+) {
+	const id = resolveTrendsCategoryId(category);
+	const baseUrl =
+		`${TRENDS_API_URL}?` +
+		qs.stringify({ geo, category: id, hours: 168, language });
+
+	const normTitle = (t) =>
+		String(t || "")
+			.toLowerCase()
+			.replace(/\s+/g, " ")
+			.trim();
+	const usedSet =
+		usedTopics instanceof Set
+			? new Set(Array.from(usedTopics).map(normTitle))
+			: new Set(
+					(Array.isArray(usedTopics)
+						? usedTopics
+						: usedTopics
+						? [usedTopics]
+						: []
+					)
+						.filter(Boolean)
+						.map(normTitle)
+			  );
+	const usedList = Array.from(usedSet);
+	const isTermUsed = (term) => {
+		if (!term) return false;
+		const n = normTitle(term);
+		if (!n) return false;
+		if (usedSet.has(n)) return true;
+		return usedList.some((u) => u.includes(n) || n.includes(u));
+	};
+
+	try {
+		console.log("[Trending] fetch:", baseUrl);
+
+		const fetchOnce = async (timeoutMs) =>
+			axios.get(baseUrl, {
+				timeout: timeoutMs,
+			});
+
+		let data;
+		try {
+			({ data } = await fetchOnce(TRENDS_HTTP_TIMEOUT_MS));
+		} catch (e) {
+			const isTimeout = /timeout/i.test(e.message || "");
+			if (!isTimeout) throw e;
+			console.warn("[Trending] timeout, retrying once with extended window");
+			({ data } = await fetchOnce(TRENDS_HTTP_TIMEOUT_MS * 1.5));
+		}
+
+		const stories = Array.isArray(data?.stories) ? data.stories : [];
+		if (!stories.length) throw new Error("empty trends payload");
+
+		let picked = null;
+		for (const s of stories) {
+			const t = String(
+				s.youtubeShortTitle || s.seoTitle || s.title || ""
+			).trim();
+			if (!t) continue;
+			const raw = String(s.title || "").trim();
+			const normT = normTitle(t);
+			const normRaw = normTitle(raw);
+			const usedByEntity =
+				Array.isArray(s.entityNames) &&
+				s.entityNames.some((e) => isTermUsed(String(e || "")));
+			const alreadyUsed =
+				isTermUsed(normT) || (normRaw && isTermUsed(normRaw)) || usedByEntity;
+			if (!alreadyUsed) {
+				picked = { story: s, effectiveTitle: t };
+				break;
+			}
+		}
+
+		if (!picked) {
+			const s = stories[0];
+			const effectiveTitle =
+				String(s.youtubeShortTitle || s.seoTitle || s.title || "").trim() ||
+				String(s.title || "").trim();
+			picked = { story: s, effectiveTitle };
+		}
+
+		const s = picked.story;
+		const effectiveTitle = picked.effectiveTitle;
+
+		const articles = Array.isArray(s.articles) ? s.articles : [];
+		const viralBriefs = normaliseTrendImageBriefs(
+			s.viralImageBriefs || s.imageDirectives || [],
+			effectiveTitle
+		);
+		const imageComment = String(s.imageComment || s.imageHook || "").trim();
+
+		const candidates = [];
+		if (s.image) {
+			candidates.push({
+				url: s.image,
+				isStoryImage: true,
+			});
+		}
+		for (const a of articles) {
+			if (a.image) {
+				candidates.push({
+					url: a.image,
+					isStoryImage: false,
+				});
+			}
+		}
+
+		if (!candidates.length) {
+			console.warn("[Trending] story has no images at all");
+			return {
+				title: String(effectiveTitle || s.title || "").trim(),
+				rawTitle: String(s.title || "").trim(),
+				seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
+				youtubeShortTitle: s.youtubeShortTitle
+					? String(s.youtubeShortTitle).trim()
+					: null,
+				entityNames: Array.isArray(s.entityNames)
+					? s.entityNames.map((e) => String(e || "").trim()).filter(Boolean)
+					: [],
+				imageComment,
+				viralImageBriefs: viralBriefs,
+				images: [],
+				articles: articles.map((a) => ({
+					title: String(a.title || "").trim(),
+					url: a.url || null,
+					image: a.image || null,
+				})),
+			};
+		}
+
+		const scored = candidates.map((c, idx) => {
+			const info = analyseImageUrl(c.url, c.isStoryImage);
+			return {
+				...c,
+				...info,
+				idx,
+			};
+		});
+
+		const nonThumb = scored.filter((c) => !c.isThumbnail);
+		const activeList = nonThumb.length ? nonThumb : scored;
+
+		activeList.sort((a, b) => {
+			if (b.score !== a.score) return b.score - a.score;
+			return a.idx - b.idx;
+		});
+
+		const seen = new Set();
+		const images = [];
+		for (const c of activeList) {
+			if (!seen.has(c.url)) {
+				seen.add(c.url);
+				images.push(c.url);
+			}
+		}
+
+		console.log("[Trending] chosen hero image:", images[0]);
+		if (images.length > 1) {
+			console.log(
+				"[Trending] additional images:",
+				images.slice(1, 5).join(" | ")
+			);
+		}
+
+		return {
+			title: String(effectiveTitle || s.title || "").trim(),
+			rawTitle: String(s.title || "").trim(),
+			seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
+			youtubeShortTitle: s.youtubeShortTitle
+				? String(s.youtubeShortTitle).trim()
+				: null,
+			entityNames: Array.isArray(s.entityNames)
+				? s.entityNames.map((e) => String(e || "").trim()).filter(Boolean)
+				: [],
+			imageComment,
+			viralImageBriefs: viralBriefs,
+			images,
+			articles: articles.map((a) => ({
+				title: String(a.title || "").trim(),
+				url: a.url || null,
+				image: a.image || null,
+			})),
+		};
+	} catch (e) {
+		console.warn("[Trending] fetch failed ?", e.message);
+		if (e.response) {
+			console.warn("[Trending] HTTP status:", e.response.status);
+			if (e.response.data) {
+				try {
+					console.warn(
+						"[Trending] response data snippet:",
+						typeof e.response.data === "string"
+							? e.response.data.slice(0, 300)
+							: JSON.stringify(e.response.data).slice(0, 300)
+					);
+				} catch (_) {
+					console.warn("[Trending] response data snippet: [unserializable]");
+				}
+			}
+		}
+		return null;
+	}
+}
+
+async function scrapeArticleText(url) {
+	if (!url) return null;
+	try {
+		const { data: html } = await axios.get(url, { timeout: 10000 });
+		const $ = cheerio.load(html);
+		const body = $("article").text() || $("body").text();
+		const cleaned = body
+			.replace(/\s+/g, " ")
+			.replace(/(Advertisement|Subscribe now|Sign up for.*?newsletter).*/gi, "")
+			.trim();
+		return cleaned.slice(0, 12000) || null;
+	} catch (e) {
+		console.warn("[Scrape] article failed ?", e.message);
+		if (e.response) {
+			console.warn("[Scrape] HTTP status:", e.response.status);
+			if (e.response.data) {
+				try {
+					console.warn(
+						"[Scrape] response data snippet: ",
+						typeof e.response.data === "string"
+							? e.response.data.slice(0, 300)
+							: JSON.stringify(e.response.data).slice(0, 300)
+					);
+				} catch (_) {}
+			}
+		}
+		return null;
+	}
+}
+
+async function generateSeoTitle(
+	headlinesOrTopic,
+	category,
+	language = DEFAULT_LANGUAGE,
+	articleTextSnippet = ""
+) {
+	const items = Array.isArray(headlinesOrTopic)
+		? headlinesOrTopic
+		: [headlinesOrTopic];
+
+	const joinedHeadlines = items.filter(Boolean).join(" | ");
+
+	const context = articleTextSnippet
+		? `${joinedHeadlines} | ${articleTextSnippet.slice(0, 600)}`
+		: joinedHeadlines;
+
+	const isSports = category === "Sports";
+
+	const ask = `
+You are an experienced YouTube editor writing titles for ${
+		isSports ? "an official sports league channel" : "a serious news channel"
+	}.
+
+Write ONE highly searchable, professional YouTube Shorts title that mirrors how people actually search.
+
+Hard constraints:
+- Maximum 65 characters.
+- Title Case.
+- No emojis.
+- No hashtags.
+- No quotation marks.
+- No over-hyped or tabloid adjectives like "Insane", "Crazy", "Wild".
+- The style must feel ${
+		isSports
+			? "like ESPN or an official league/NFL/NBA channel, not a meme or fan channel."
+			: "like a major newspaper or broadcaster, not a clickbait channel."
+	}
+
+SEO behavior:
+- Include the core subject once, close to the start.
+- Prefer exact search phrases users type, like ${
+		isSports
+			? '"start time", "how to watch", "full card", "highlights", "preview", "results".'
+			: '"explained", "update", "analysis", "what to know", "timeline", "breaking news".'
+	}
+- Avoid filler words; every word should boost search intent or clarity.
+
+Context from Google Trends and linked articles:
+${context || "(no extra context)"}
+
+${
+	language !== DEFAULT_LANGUAGE
+		? `Respond in ${language}, keeping any names in their original spelling.`
+		: ""
+}
+
+Return only the final title, nothing else.
+`.trim();
+
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask }],
+		});
+
+		const raw = choices[0].message.content.replace(/["“”]/g, "").trim();
+		return toTitleCase(raw);
+	} catch (e) {
+		console.warn("[SEO title] generation failed ?", e.message);
+		return "";
+	}
+}
+
+/* ---------------------------------------------------------------
+ *  Topic helpers
+ * ------------------------------------------------------------- */
+const CURRENT_MONTH_YEAR = dayjs().format("MMMM YYYY");
+const CURRENT_YEAR = dayjs().year();
+
+async function topicFromCustomPrompt(text) {
+	const make = (a) =>
+		`
+Attempt ${a}:
+Give one click-worthy title (at most 70 characters, no hashtags, no quotes) set in ${CURRENT_MONTH_YEAR}.
+Do not mention years before ${CURRENT_YEAR}.
+<<<${text}>>>
+`.trim();
+
+	for (let a = 1; a <= 2; a++) {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: make(a) }],
+		});
+		const t = choices[0].message.content.replace(/["“”]/g, "").trim();
+		if (!/20\d{2}/.test(t) || new RegExp(`\\b${CURRENT_YEAR}\\b`).test(t))
+			return t;
+	}
+	throw new Error("Cannot distil topic");
+}
+
+async function pickTrendingTopicFresh(category, language, country) {
+	const loc =
+		country && country.toLowerCase() !== "all countries"
+			? ` in ${country}`
+			: "US";
+	const langLn =
+		language !== DEFAULT_LANGUAGE ? ` Respond in ${language}.` : "";
+	const base = (a) =>
+		`
+Attempt ${a}:
+Return a JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${loc}), no hashtags, at most 70 characters per title.${langLn}
+`.trim();
+
+	for (let a = 1; a <= 2; a++) {
+		try {
+			const g = await openai.chat.completions.create({
+				model: CHAT_MODEL,
+				messages: [{ role: "user", content: base(a) }],
+			});
+			const raw = strip(g.choices[0].message.content);
+			const list = JSON.parse(raw || "[]");
+			if (Array.isArray(list) && list.length) return list;
+		} catch {
+			/* ignore */
+		}
+	}
+	return [`Breaking ${category} Story – ${CURRENT_MONTH_YEAR}`];
+}
+
+async function generateTop5Outline(topic, language = DEFAULT_LANGUAGE) {
+	const ask = `
+Current date: ${dayjs().format("YYYY-MM-DD")}
+
+You are planning a Top 5 countdown video.
+
+Title: ${topic}
+
+Return a strict JSON array of exactly 5 objects, one per rank from 5 down to 1.
+Each object must have:
+- "rank": 5, 4, 3, 2 or 1
+- "label": a short name for the item (maximum 8 words)
+- "oneLine": one punchy sentence (maximum 18 words) explaining why it deserves this rank.
+
+Use real-world facts and widely known names when appropriate; avoid speculation.
+Keep everything in ${language}. Do not include any other keys or free-text.
+`.trim();
+
+	for (let attempt = 1; attempt <= 2; attempt++) {
+		try {
+			const { choices } = await openai.chat.completions.create({
+				model: CHAT_MODEL,
+				messages: [{ role: "user", content: ask }],
+			});
+			const raw = strip(choices[0].message.content);
+			const parsed = JSON.parse(raw);
+			if (Array.isArray(parsed) && parsed.length === 5) {
+				return parsed.sort((a, b) => (b.rank || 0) - (a.rank || 0));
+			}
+		} catch (err) {
+			console.warn(
+				`[GPT] Top-5 outline attempt ${attempt} failed ? ${err.message}`
+			);
+		}
+	}
+	return null;
+}
+
+/* ---------------------------------------------------------------
+ *  Cloudinary helpers for Trends images
+ * ------------------------------------------------------------- */
+async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
+	if (!url) throw new Error("Missing Trends image URL");
+
+	const publicIdBase =
+		slugBase || `aivideomatic/trend_seeds/${Date.now()}_${crypto.randomUUID()}`;
+
+	const baseOpts = {
+		public_id: publicIdBase,
+		resource_type: "image",
+		overwrite: false,
+		folder: "aivideomatic/trend_seeds",
+	};
+
+	const transform = buildCloudinaryTransformForRatio(ratio);
+
+	try {
+		const result = await cloudinary.uploader.upload(url, {
+			...baseOpts,
+			transformation: transform,
+		});
+		console.log("[Cloudinary] Seed image uploaded ?", {
+			public_id: result.public_id,
+			width: result.width,
+			height: result.height,
+			format: result.format,
+		});
+		return {
+			public_id: result.public_id,
+			url: result.secure_url,
+		};
+	} catch (e) {
+		const msg = String(e?.message || "");
+		if (!msg.includes("Maximum image size is 25 Megapixels")) {
+			throw e;
+		}
+
+		console.warn(
+			"[Cloudinary] 25MP limit hit, pre-downscaling locally and retrying …"
+		);
+
+		const { width, height } = targetResolutionForRatio(ratio);
+		const rawPath = await downloadImageToTemp(url, ".jpg");
+		const scaledPath = tmpFile("trend_scaled", ".jpg");
+
+		try {
+			const vf = [];
+			if (width && height) {
+				vf.push(
+					`scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos`,
+					`crop=${width}:${height}`
+				);
+			}
+
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(rawPath))
+					.videoFilters(vf.join(","))
+					.outputOptions("-frames:v", "1", "-y")
+					.save(norm(scaledPath))
+			);
+		} finally {
+			try {
+				fs.unlinkSync(rawPath);
+			} catch (_) {}
+		}
+
+		const result = await cloudinary.uploader.upload(scaledPath, {
+			...baseOpts,
+			quality: "auto:good",
+			fetch_format: "auto",
+		});
+
+		try {
+			fs.unlinkSync(scaledPath);
+		} catch (_) {}
+
+		console.log("[Cloudinary] Seed image uploaded (fallback path) ?", {
+			public_id: result.public_id,
+			width: result.width,
+			height: result.height,
+			format: result.format,
+		});
+
+		return {
+			public_id: result.public_id,
+			url: result.secure_url,
+		};
+	}
+}
+
+async function generateOpenAIImagesForTop5(segments, ratio, topic) {
+	if (!openai || !segments || !segments.length) return [];
+
+	const size = openAIImageSizeForRatio(ratio);
+	const maxSegs = Math.min(segments.length, 8);
+	const outputs = [];
+
+	for (let i = 0; i < maxSegs; i++) {
+		const seg = segments[i];
+		const segLabel = seg?.scriptText
+			? seg.scriptText.slice(0, 120)
+			: `Segment ${i + 1}`;
+
+		const prompt = [
+			`Cinematic, photorealistic keyframe for Top 5 segment #${i + 1}`,
+			`Topic: ${topic}`,
+			`Narration: ${segLabel}`,
+			`Style: ${QUALITY_BONUS}`,
+			"Sharp focus, realistic faces, clean lighting, bold composition, zero text, no logos.",
+		]
+			.filter(Boolean)
+			.join(". ");
+
+		try {
+			const resp = await openai.images.generate({
+				model: "gpt-image-1",
+				prompt,
+				size,
+				quality: "hd",
+				response_format: "url",
+			});
+			const imgUrl = resp?.data?.[0]?.url || null;
+			if (!imgUrl) continue;
+
+			const uploaded = await uploadTrendImageToCloudinary(
+				imgUrl,
+				ratio,
+				`aivideomatic/top5_${i}_${Date.now()}`
+			);
+			outputs.push({
+				originalUrl: imgUrl,
+				cloudinaryUrl: uploaded.url,
+			});
+		} catch (e) {
+			console.warn(
+				`[OpenAI Image] Top5 segment ${i + 1} image generation failed:`,
+				e.message || e
+			);
+		}
+	}
+
+	return outputs;
+}
+
+async function uploadReferenceImagesForTop5(segments, ratio, topic) {
+	const pairs = [];
+	const urlToIdx = new Map();
+	const safeSlug = String(topic || "top5")
+		.toLowerCase()
+		.replace(/[^\w]+/g, "_")
+		.replace(/^_+|_+$/g, "")
+		.slice(0, 40);
+
+	for (let i = 0; i < segments.length; i++) {
+		const url = String(segments[i].referenceImageUrl || "").trim();
+		if (!url || urlToIdx.has(url)) continue;
+		try {
+			const up = await uploadTrendImageToCloudinary(
+				url,
+				ratio,
+				`aivideomatic/top5_refs/${safeSlug}_${i}`
+			);
+			const idx = pairs.length;
+			pairs.push({ originalUrl: url, cloudinaryUrl: up.url });
+			urlToIdx.set(url, idx);
+		} catch (e) {
+			console.warn("[Top5] Upload reference image failed ?", e.message);
+		}
+	}
+
+	const segImageIndex = segments.map((s) => {
+		const url = String(s.referenceImageUrl || "").trim();
+		return urlToIdx.has(url) ? urlToIdx.get(url) : null;
+	});
+
+	return { pairs, segImageIndex };
+}
+
+/* ---------------------------------------------------------------
+ *  Sora helpers for clips (TEXT → VIDEO ONLY)
+ * ------------------------------------------------------------- */
+
+/**
+ * Create a Sora clip (4/8/12 seconds) from TEXT ONLY.
+ * We deliberately DO NOT send `input_reference` images to avoid:
+ * - double billing when moderation blocks reference-photo prompts
+ * - weirdness around real-person imagery
+ *
+ * GPT has already seen the Google Trends images and writes a detailed
+ * cinematic prompt so this feels like a moving version of that photo.
+ *
+ * Returns the path to a local MP4 file.
+ */
+async function generateSoraClip({
+	segmentIndex,
+	promptText,
+	ratio,
+	targetDuration,
+	// referenceImageUrl is intentionally ignored now to stay text-only
+	soraSecondsOverride,
+}) {
+	const soraSeconds =
+		soraSecondsOverride && Number(soraSecondsOverride)
+			? String(Number(soraSecondsOverride))
+			: soraSecondsForSegment(targetDuration);
+	const soraSize = soraSizeForRatio(ratio);
+	const primaryPrompt = sanitizeSoraPrompt(promptText);
+
+	console.log(
+		`[Sora] seg ${segmentIndex}: TEXT-ONLY seconds=${soraSeconds} size=${soraSize}`
+	);
+
+	const body = {
+		model: SORA_MODEL,
+		prompt: primaryPrompt,
+		seconds: soraSeconds,
+		size: soraSize,
+	};
+
+	const runOnce = async (bodyToUse, label = "primary") => {
+		let job;
+		try {
+			job = await openai.videos.create(bodyToUse);
+		} catch (err) {
+			logSoraError(err, {
+				stage: `create:${label}`,
+				seg: segmentIndex,
+			});
+			throw err;
+		}
+
+		let status = job.status;
+		const id = job.id;
+
+		let attempts = 0;
+		while (status === "queued" || status === "in_progress") {
+			if (attempts >= MAX_POLL_ATTEMPTS) {
+				throw new Error(
+					`[Sora] seg ${segmentIndex} video job timed out (status=${status})`
+				);
+			}
+			await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+			job = await openai.videos.retrieve(id);
+			status = job.status;
+			attempts++;
+		}
+
+		if (status !== "completed") {
+			console.error("[Sora] job failure detail", {
+				seg: segmentIndex,
+				id,
+				status,
+				error: job.error || null,
+			});
+			const errMsg = job.error?.message || `Sora job ${id} failed`;
+			const err = new Error(errMsg);
+			err.code = job.error?.code;
+			throw err;
+		}
+
+		const response = await openai.videos.downloadContent(id, {
+			variant: "video",
+		});
+		const buf = Buffer.from(await response.arrayBuffer());
+		const outPath = tmpFile(`sora_seg_${segmentIndex}`, ".mp4");
+		fs.writeFileSync(outPath, buf);
+		return outPath;
+	};
+
+	try {
+		// Single call per segment. If moderation blocks, we fall back to static clips.
+		const outPath = await runOnce(body, "primary");
+		return outPath;
+	} catch (err) {
+		if (isModerationBlock(err)) {
+			console.warn(
+				`[Sora] seg ${segmentIndex}: moderation_blocked – skipping Sora and falling back to static visuals.`
+			);
+		} else {
+			console.warn(
+				`[Sora] seg ${segmentIndex}: generation failed – falling back to static.`,
+				err.message
+			);
+		}
+		throw err;
+	}
+}
+
+/**
+ * Static fallback if Sora errors or is skipped for cost reasons.
+ * Uses best available URL (Cloudinary first, then original) with gentle Ken Burns.
+ */
+async function generateStaticClipFromImage({
+	segmentIndex,
+	imgUrlOriginal,
+	imgUrlCloudinary,
+	ratio,
+	targetDuration,
+	zoomPan = false,
+}) {
+	const candidates = [imgUrlCloudinary, imgUrlOriginal].filter(Boolean);
+	if (!candidates.length) throw new Error("Missing image URL for static clip");
+
+	console.log(
+		`[Seg ${segmentIndex}] Using static image fallback. Candidates:`,
+		candidates
+	);
+
+	let lastErr;
+
+	for (const url of candidates) {
+		try {
+			const localPath = await downloadImageToTemp(url, ".jpg");
+			const out = tmpFile(`seg_static_${segmentIndex}`, ".mp4");
+			const { width, height } = targetResolutionForRatio(ratio);
+			const vf = [];
+
+			if (width && height) {
+				vf.push(
+					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
+					`crop=${width}:${height}`
+				);
+			}
+
+			if (zoomPan && width && height) {
+				vf.push(
+					`zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
+				);
+			}
+
+			const encode = async (filters) =>
+				ffmpegPromise((c) => {
+					c.input(norm(localPath)).inputOptions("-loop", "1");
+					if (filters.length) c.videoFilters(filters.join(","));
+					return c
+						.outputOptions(
+							"-t",
+							String(targetDuration),
+							"-c:v",
+							"libx264",
+							"-preset",
+							"slow",
+							"-crf",
+							"17",
+							"-pix_fmt",
+							"yuv420p",
+							"-r",
+							"30",
+							"-y"
+						)
+						.save(norm(out));
+				});
+
+			try {
+				await encode(vf);
+			} catch (primaryErr) {
+				console.warn(
+					`[Seg ${segmentIndex}] Static fallback primary filters failed, retrying padded`,
+					primaryErr.message
+				);
+				const vfSafe =
+					width && height
+						? [
+								`scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos`,
+								`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,
+						  ]
+						: [];
+				await encode(vfSafe);
+			}
+
+			try {
+				fs.unlinkSync(localPath);
+			} catch (_) {}
+
+			console.log(
+				`[Seg ${segmentIndex}] Static fallback clip created from ${url}`
+			);
+
+			return out;
+		} catch (e) {
+			lastErr = e;
+			console.warn(
+				`[Seg ${segmentIndex}] Static fallback failed for ${url} ?`,
+				e.message
+			);
+		}
+	}
+
+	console.warn(
+		`[Seg ${segmentIndex}] Static fallback failed for all candidates ? using placeholder`,
+		lastErr?.message
+	);
+	return generatePlaceholderClip({ segmentIndex, ratio, targetDuration });
+}
+
+async function generatePlaceholderClip({
+	segmentIndex,
+	ratio,
+	targetDuration,
+	color = "gray",
+}) {
+	const { width, height } = targetResolutionForRatio(ratio);
+	const size = width && height ? `${width}x${height}` : "1080x1920";
+	const out = tmpFile(`seg_placeholder_${segmentIndex}`, ".mp4");
+	await ffmpegPromise((c) =>
+		c
+			.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
+			.inputOptions("-f", "lavfi")
+			.videoFilters(
+				[
+					"format=yuv420p",
+					"setsar=1",
+					`zoompan=z='min(1.0+0.001*n,1.04)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${size}:fps=30`,
+				].join(",")
+			)
+			.outputOptions(
+				"-t",
+				String(targetDuration),
+				"-c:v",
+				"libx264",
+				"-preset",
+				"slow",
+				"-crf",
+				"17",
+				"-pix_fmt",
+				"yuv420p",
+				"-r",
+				"30",
+				"-y"
+			)
+			.save(norm(out))
+	);
+	return out;
+}
+
+/* ---------------------------------------------------------------
+ *  YouTube & Jamendo helpers
+ * ------------------------------------------------------------- */
+function resolveYouTubeTokens(req, user) {
+	const bodyTok = {
+		access_token: req.body.youtubeAccessToken,
+		refresh_token: req.body.youtubeRefreshToken,
+		expiry_date: req.body.youtubeTokenExpiresAt
+			? new Date(req.body.youtubeTokenExpiresAt).getTime()
+			: undefined,
+	};
+	const userTok = {
+		access_token: user.youtubeAccessToken,
+		refresh_token: user.youtubeRefreshToken,
+		expiry_date: user.youtubeTokenExpiresAt
+			? new Date(user.youtubeTokenExpiresAt).getTime()
+			: undefined,
+	};
+	return bodyTok.refresh_token &&
+		(!userTok.refresh_token ||
+			(userTok.expiry_date || 0) < (bodyTok.expiry_date || 0))
+		? bodyTok
+		: userTok;
+}
+function buildYouTubeOAuth2Client(source) {
+	const creds =
+		source && source.access_token !== undefined
+			? source
+			: resolveYouTubeTokens({ body: {} }, source);
+	if (!creds.refresh_token) return null;
+	const o = new google.auth.OAuth2(
+		process.env.YOUTUBE_CLIENT_ID,
+		process.env.YOUTUBE_CLIENT_SECRET,
+		process.env.YOUTUBE_REDIRECT_URI
+	);
+	o.setCredentials(creds);
+	return o;
+}
+async function refreshYouTubeTokensIfNeeded(user, req) {
+	const tokens = resolveYouTubeTokens(req, user);
+	const o = buildYouTubeOAuth2Client(tokens);
+	if (!o) return tokens;
+	try {
+		const { token } = await o.getAccessToken();
+		if (token) {
+			const fresh = {
+				access_token: o.credentials.access_token,
+				refresh_token: o.credentials.refresh_token || tokens.refresh_token,
+				expiry_date: o.credentials.expiry_date,
+			};
+			user.youtubeAccessToken = fresh.access_token;
+			user.youtubeRefreshToken = fresh.refresh_token;
+			user.youtubeTokenExpiresAt = fresh.expiry_date;
+			if (user.isModified && user.isModified() && user.role !== "admin")
+				await user.save();
+			return fresh;
+		}
+	} catch {}
+	return tokens;
+}
+async function uploadToYouTube(u, fp, { title, description, tags, category }) {
+	const o = buildYouTubeOAuth2Client(u);
+	if (!o) throw new Error("YouTube OAuth missing");
+	const yt = google.youtube({ version: "v3", auth: o });
+	const { data } = await yt.videos.insert(
+		{
+			part: ["snippet", "status"],
+			requestBody: {
+				snippet: {
+					title,
+					description,
+					tags,
+					categoryId:
+						YT_CATEGORY_MAP[category] === "0"
+							? "22"
+							: YT_CATEGORY_MAP[category],
+				},
+				status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
+			},
+			media: { body: fs.createReadStream(fp) },
+		},
+		{ maxContentLength: Infinity, maxBodyLength: Infinity }
+	);
+	return `https://www.youtube.com/watch?v=${data.id}`;
+}
+async function jamendo(term) {
+	try {
+		const { data } = await axios.get("https://api.jamendo.com/v3.0/tracks", {
+			params: { client_id: JAMENDO_ID, format: "json", limit: 1, search: term },
+		});
+		return data.results?.length ? data.results[0].audio : null;
+	} catch {
+		return null;
+	}
+}
+
+/* Background music planning */
+async function planBackgroundMusic(category, language, script) {
+	const defaultVoiceGain = category === "Top5" ? 1.5 : 1.4;
+	const defaultMusicGain = category === "Top5" ? 0.18 : 0.14;
+	const upbeatHint =
+		category === "Top5" ? "Fun, upbeat, percussive Top 5 vibe, no vocals." : "";
+
+	const ask = `
+You are a sound designer for short-form YouTube videos.
+
+Goal:
+- Category: ${category}
+- Language: ${language}
+- Script (excerpt): ${String(script || "").slice(0, 600)}
+
+Pick background music that:
+- Has NO vocals (instrumental only).
+- Fits the pacing and emotion of the script.
+- Never overpowers the narration.
+${upbeatHint ? "- " + upbeatHint : ""}
+
+Return JSON:
+{
+  "jamendoSearch": "one concise search term for Jamendo, including genre and mood, must imply no vocals",
+  "fallbackSearchTerms": ["term1", "term2"],
+  "voiceGain": ${defaultVoiceGain},
+  "musicGain": ${defaultMusicGain}
+}
+
+Constraints:
+- "fallbackSearchTerms" must be an array of exactly 2 short strings.
+- "voiceGain" between 1.2 and 1.7.
+- "musicGain" between 0.08 and 0.22.
+- Use English for search terms even if narration language is different.
+`.trim();
+
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask }],
+		});
+		const raw = strip(choices[0].message.content);
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed !== "object") return null;
+
+		let voiceGain = Number(parsed.voiceGain) || 1.4;
+		let musicGain = Number(parsed.musicGain) || 0.14;
+
+		voiceGain = Math.max(1.2, Math.min(1.7, voiceGain));
+		musicGain = Math.max(0.08, Math.min(0.22, musicGain));
+
+		const fallbackSearchTerms = Array.isArray(parsed.fallbackSearchTerms)
+			? parsed.fallbackSearchTerms
+					.map((t) => String(t || "").trim())
+					.filter(Boolean)
+					.slice(0, 2)
+			: [];
+
+		return {
+			jamendoSearch: String(parsed.jamendoSearch || "").slice(0, 120),
+			fallbackSearchTerms,
+			voiceGain,
+			musicGain,
+		};
+	} catch (e) {
+		console.warn("[MusicPlan] planning failed ?", e.message);
+		return null;
+	}
+}
+
+/* ---------------------------------------------------------------
+ *  ElevenLabs helpers – dynamic voice selection + TTS
+ * ------------------------------------------------------------- */
+async function fetchElevenVoices() {
+	if (!ELEVEN_API_KEY) return null;
+	try {
+		const { data } = await axios.get("https://api.elevenlabs.io/v1/voices", {
+			headers: { "xi-api-key": ELEVEN_API_KEY },
+			timeout: 8000,
+		});
+		const voices = Array.isArray(data?.voices) ? data.voices : [];
+		if (!voices.length) return null;
+		return voices;
+	} catch (e) {
+		console.warn("[Eleven] fetch voices failed ?", e.message);
+		return null;
+	}
+}
+
+async function selectBestElevenVoice(
+	language,
+	category,
+	sampleText,
+	avoidVoiceIds = []
+) {
+	const avoidSet = new Set((avoidVoiceIds || []).filter(Boolean));
+
+	const staticLanguageVoice = ELEVEN_VOICES[language];
+	const staticDefaultVoice = ELEVEN_VOICES[DEFAULT_LANGUAGE];
+
+	const fallbackCandidates = [staticLanguageVoice, staticDefaultVoice].filter(
+		(id, idx, arr) => id && arr.indexOf(id) === idx && !avoidSet.has(id)
+	);
+	const fallbackId =
+		fallbackCandidates[0] || staticLanguageVoice || staticDefaultVoice || null;
+
+	const voices = await fetchElevenVoices();
+	if (!voices || !voices.length) {
+		if (fallbackId) {
+			return {
+				voiceId: fallbackId,
+				name: "default",
+				source: "static",
+				reason:
+					"ElevenLabs /voices unavailable, using static fallback map (avoiding previous voice where possible).",
+			};
+		}
+		return null;
+	}
+
+	const slimVoices = voices
+		.filter((v) => v && (v.voice_id || v.voiceId))
+		.slice(0, 30)
+		.map((v) => ({
+			id: v.voice_id || v.voiceId,
+			name: v.name || "",
+			category: v.category || "",
+			labels: v.labels || {},
+			description: v.description || "",
+		}));
+
+	let candidates = slimVoices;
+
+	if (language === "Arabic") {
+		const isEgyptian = (v) => {
+			const labels = v.labels || {};
+			const labelStr = JSON.stringify(labels).toLowerCase();
+			const desc = String(v.description || "").toLowerCase();
+			const name = String(v.name || "").toLowerCase();
+			return (
+				labelStr.includes("egypt") ||
+				desc.includes("egypt") ||
+				name.includes("egypt") ||
+				name.includes("masri") ||
+				desc.includes("masri")
+			);
+		};
+
+		const isArabic = (v) => {
+			const labels = v.labels || {};
+			const labelStr = JSON.stringify(labels).toLowerCase();
+			const desc = String(v.description || "").toLowerCase();
+			const name = String(v.name || "").toLowerCase();
+			return (
+				labelStr.includes("arabic") ||
+				desc.includes("arabic") ||
+				name.includes("arabic")
+			);
+		};
+
+		const egyptian = slimVoices.filter(isEgyptian);
+		const arabic = slimVoices.filter(isArabic);
+		if (egyptian.length) {
+			candidates = egyptian;
+			console.log(
+				`[Eleven] Prioritising Egyptian Arabic voices (${egyptian.length})`
+			);
+		} else if (arabic.length) {
+			candidates = arabic;
+			console.log(`[Eleven] Prioritising Arabic voices (${arabic.length})`);
+		}
+	}
+
+	if (language === "English") {
+		const americanCandidates = slimVoices.filter((v) => {
+			const labels = v.labels || {};
+			const labelStr = JSON.stringify(labels).toLowerCase();
+			const accent = String(labels.accent || labels.Accent || "").toLowerCase();
+			const desc = String(v.description || "").toLowerCase();
+			const name = String(v.name || "").toLowerCase();
+
+			if (accent.includes("american") || accent.includes("us")) return true;
+			if (labelStr.includes("american") || labelStr.includes("us english"))
+				return true;
+			if (desc.includes("american accent") || desc.includes("us accent"))
+				return true;
+			if (name.includes("us ") || name.includes("usa")) return true;
+			return false;
+		});
+
+		if (americanCandidates.length) {
+			candidates = americanCandidates;
+			console.log(
+				`[Eleven] Restricted to ${americanCandidates.length} American English voices`
+			);
+		} else if (fallbackId) {
+			console.warn(
+				"[Eleven] No explicit American English voices detected in /voices – using static fallback voice."
+			);
+			return {
+				voiceId: fallbackId,
+				name: "default",
+				source: "static-fallback-no-american-tag",
+				reason:
+					"Could not confidently find an American-accent English voice in /voices; using predefined US voice.",
+			};
+		}
+	}
+
+	if (avoidSet.size) {
+		const filtered = candidates.filter((v) => !avoidSet.has(v.id));
+		if (filtered.length) {
+			console.log(
+				`[Eleven] Avoiding previously used voice(s) ${[...avoidSet].join(", ")}`
+			);
+			candidates = filtered;
+		} else {
+			console.warn(
+				"[Eleven] All candidate voices are in the avoid list – keeping full candidate set."
+			);
+		}
+	}
+
+	const tone = deriveVoiceSettings(sampleText || "", category);
+
+	const avoidText = avoidSet.size
+		? `
+The last video used these voice IDs: ${Array.from(avoidSet).join(", ")}.
+You MUST choose a different "id" than any of these from the voices array below.
+`
+		: "";
+
+	const ask = `
+You are selecting the MOST natural-sounding ElevenLabs voice for a YouTube Shorts narration.
+
+Goal:
+- Category: ${category}
+- Language preference label: ${language}
+- Script tone: ${
+		tone.isSensitive ? "sensitive / serious" : "neutral to energetic"
+	}
+- It should sound like a real human news or sports broadcaster, never robotic.
+
+${
+	language === "English"
+		? "- IMPORTANT: Only select a voice with a clearly American / US English accent.\n- Do NOT pick British, Australian or other non-US accents."
+		: ""
+}
+
+${avoidText}
+
+You are given a JSON array called "voices" with candidate voices from the ElevenLabs /voices API.
+Pick ONE best "id" to use.
+
+voices:
+${JSON.stringify(candidates).slice(0, 11000)}
+
+Return ONLY JSON:
+{ "voiceId": "<id>", "name": "<readable name>", "reason": "short explanation" }
+`.trim();
+
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask }],
+		});
+		const parsed = JSON.parse(strip(choices[0].message.content));
+		if (parsed && parsed.voiceId) {
+			return {
+				voiceId: parsed.voiceId,
+				name: parsed.name || "",
+				source: "dynamic-gpt",
+				reason: parsed.reason || "",
+			};
+		}
+	} catch (e) {
+		console.warn("[Eleven] GPT voice selection failed ?", e.message);
+	}
+
+	if (fallbackId) {
+		const reused = avoidSet.has(fallbackId);
+		if (reused) {
+			console.warn(
+				`[Eleven] Fallback voice ${fallbackId} is the same as last used; no alternative available.`
+			);
+		}
+		return {
+			voiceId: fallbackId,
+			name: "default",
+			source: reused ? "static-fallback-reused" : "static-fallback",
+			reason: reused
+				? "Only one suitable voice available; reusing previous voice."
+				: "Falling back to predefined voice mapping.",
+		};
+	}
+	return null;
+}
+
+async function elevenLabsTTS(
+	text,
+	language,
+	outPath,
+	category = "Other",
+	voiceIdOverride = null
+) {
+	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
+	const voiceId =
+		voiceIdOverride ||
+		ELEVEN_VOICES[language] ||
+		ELEVEN_VOICES[DEFAULT_LANGUAGE];
+
+	const tone = deriveVoiceSettings(text, category);
+
+	const payload = {
+		text,
+		model_id: "eleven_multilingual_v2",
+		voice_settings: {
+			stability: tone.stability,
+			similarity_boost: tone.similarityBoost,
+			style: tone.style,
+			use_speaker_boost: true,
+		},
+	};
+	const opts = {
+		headers: {
+			"xi-api-key": ELEVEN_API_KEY,
+			"Content-Type": "application/json",
+			accept: "audio/mpeg",
+		},
+		responseType: "stream",
+		validateStatus: (s) => s < 500,
+	};
+	const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`;
+	let res = await axios.post(url, payload, opts);
+	if (res.status === 422) {
+		delete payload.voice_settings.style;
+		res = await axios.post(url, payload, opts);
+	}
+	if (res.status >= 300)
+		throw new Error(`ElevenLabs TTS failed (${res.status})`);
+	await new Promise((r, j) =>
+		res.data.pipe(fs.createWriteStream(outPath)).on("finish", r).on("error", j)
+	);
+
+	return tone;
+}
+
+/* ---------------------------------------------------------------
+ *  OpenAI director – build full video plan (multi-image aware)
+ * ------------------------------------------------------------- */
+async function buildVideoPlanWithGPT({
+	topic,
+	category,
+	language,
+	duration,
+	segLens,
+	trendStory,
+	trendImagesForPlanning,
+	articleText,
+	top5Outline,
+	ratio,
+	trendImageBriefs,
+	engagementTailSeconds,
+	country,
+	forceStaticVisuals = false,
+}) {
+	const segCnt = segLens.length;
+	const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+	const hasImages =
+		trendImagesForPlanning &&
+		Array.isArray(trendImagesForPlanning) &&
+		trendImagesForPlanning.length > 0;
+	const images = hasImages ? trendImagesForPlanning.slice(0, 8) : [];
+	const articleTitles = (trendStory?.articles || [])
+		.map((a) => a.title)
+		.filter(Boolean);
+	const snippet = articleText ? articleText.slice(0, 1800) : "";
+	const imageBriefs = Array.isArray(trendImageBriefs) ? trendImageBriefs : [];
+	const imageComment = String(trendStory?.imageComment || "").trim();
+	const segDescLines = segLens
+		.map(
+			(sec, i) =>
+				`Segment ${i + 1}: ~${sec.toFixed(1)}s, = ${
+					segWordCaps[i]
+				} spoken words.`
+		)
+		.join("\n");
+
+	const categoryTone = TONE_HINTS[category] || "";
+	const outroDirective = `
+Segment ${segCnt} is the engagement outro (about ${
+		engagementTailSeconds || "5-6"
+	} seconds):
+- Ask one crisp, on-topic question to spark comments.
+- Immediately follow with a warm, slightly funny like/subscribe/comment nudge for an American audience that feels tailored to this topic.
+- Keep it concise and entirely in ${language}.
+- Make it sound human and upbeat, not robotic; a friendly host riffing on the story.
+- This extra outro is appended on top of the requested duration, so treat it like an add-on bumper.
+`.trim();
+
+	const baseIntro = `
+Current date: ${dayjs().format("YYYY-MM-DD")}
+
+You are an expert short-form video editor and producer.
+
+We need a ${duration}s ${category} YouTube Shorts video titled "${topic}",
+split into ${segCnt} sequential segments.
+
+Segment timing:
+${segDescLines}
+
+Narration rules:
+- Natural spoken language, like a professional commentator.
+- Stay accurate; do NOT invent fake scores, injuries, or quotes.
+- No "In this video" filler; keep like/subscribe wording ONLY in the final engagement segment.
+- Segment 1 must hook immediately.
+- Later segments deepen context: stakes, key players, what to watch, etc.
+- Stay within word caps so narration fits timing.
+- All narration MUST be in ${language}.
+- Ignore the country's native language; keep EVERY word in ${language} even if geo/country differs.
+- For nontragic topics, pacing should feel clear and slightly brisk.
+- For clearly tragic or sensitive stories, slow pacing slightly but keep it clear and respectful.
+- Avoid speculation or hallucinations; if a detail is unconfirmed, state that it's unconfirmed rather than inventing facts.
+- Keep pacing human and coherent; do not cram unnatural speed-reading into segments.
+- Keep every segment directly on-topic for "${topic}"; no unrelated tangents.
+${categoryTone ? `- Tone: ${categoryTone}` : ""}
+${outroDirective}
+`.trim();
+
+	let promptText;
+	if (hasImages) {
+		const imgCount = images.length;
+		promptText = `
+${baseIntro}
+
+You also have ${imgCount} REAL photos from Google Trends for this story.
+
+Google Trends context:
+- Story title: ${trendStory?.title || topic}
+- Article headlines:
+  ${articleTitles.map((t) => `- ${t}`).join("\n  ") || "- (none)"}
+
+Article text snippet (may be truncated):
+${snippet || "(no article text available)"}
+
+Image notes for the orchestrator:
+- General comment about what the lead image depicts: ${
+			imageComment || "(none provided)"
+		}.
+- Viral hooks by aspect ratio (the UI will request ratio ${
+			ratio || "unspecified"
+		}):
+  ${
+		imageBriefs.length
+			? imageBriefs
+					.map(
+						(b) =>
+							`- ${b.aspectRatio}: ${b.visualHook}${
+								b.emotion ? " | emotion: " + b.emotion : ""
+							}`
+					)
+					.join("\n  ")
+			: "- (no hooks provided)"
+	}
+
+Images:
+The FIRST attached image is imageIndex 0, the second is 1, etc.
+
+VERY IMPORTANT: Sora will receive ONLY your text prompts.
+It will NOT see these images directly. You, however, can see them.
+
+Your job:
+1) Write the voice-over script for each segment.
+2) Decide which imageIndex best matches each segment.
+3) For each segment, write one concise "runwayPrompt" describing a cinematic, realistic moving shot that:
+   - feels like a direct continuation of the chosen Google Trends photo,
+   - matches its setting, subjects, clothing, lighting, and mood,
+   - is described clearly enough that Sora can recreate that vibe from TEXT ONLY.
+4) Also write a "negativePrompt" listing visual defects to avoid.
+
+Important visual constraints:
+- Imagine Sora is re-shooting the same moment as the photo, but from scratch using only your description.
+- Use the photo you see to guide composition, camera angle, lighting, and key objects.
+- Do NOT change who the people are in essence, but NEVER mention real person names, teams, brands, or logos.
+- Use generic roles like "a young woman on the street", "fans in the crowd", "a luxury ring on a hand".
+- Do NOT add new major characters unrelated to the image.
+- Do NOT drastically change the setting (no teleporting to random locations).
+- EVERY segment must have clear motion: no still-photo look.
+- Use camera movement (slow zoom, dolly, pan, tilt) and/or subject motion (breathing, turning, hair moving, lights flickering).
+- Physical realism: body poses must be possible; props are held naturally; no floating objects; lighting and shadows must match a single scene.
+- Eyes and faces must feel alive: natural blinks, gentle gaze shifts, no jittering pupils, no crossed eyes.
+- Choose the imageIndex that visually matches the script beat (setting, action, subject); avoid lazy repeats.
+- Use each imageIndex at most once before reusing, so visuals feel varied but still coherent with the real images.
+
+${
+	forceStaticVisuals
+		? "- If this is a very sensitive or sports topic, keep motions to gentle camera moves (subtle zoom/pan)."
+		: ""
+}
+
+For each "negativePrompt":
+- List defects to avoid (extra limbs, extra heads, distorted faces, lowres, pixelated, blur, heavy motion blur, watermark, logo, text overlay, static frame, no motion, gore, nsfw).
+
+Return JSON:
+{
+  "segments": [
+    {
+      "index": 1,
+      "scriptText": "spoken narration",
+      "imageIndex": 0,
+      "runwayPrompt": "how to animate a cinematic shot that matches that attached photo (TEXT-ONLY SORA)",
+      "negativePrompt": "comma-separated list of defects to avoid"
+    }
+    // exactly ${segCnt} segments, index 1..${segCnt}
+  ]
+}
+`.trim();
+	} else if (
+		category === "Top5" &&
+		Array.isArray(top5Outline) &&
+		top5Outline.length
+	) {
+		const outlineText = top5Outline
+			.map((it) => `#${it.rank}: ${it.label || ""} — ${it.oneLine || ""}`)
+			.join("\n");
+		promptText = `
+${baseIntro}
+
+This is a Top 5 countdown. Outline:
+
+${outlineText}
+
+Rules:
+- Segment 1 teases the countdown and hooks the viewer.
+- Segments 2-6 correspond to ranks #5, #4, #3, #2, and #1.
+- Segment ${segCnt} is reserved for the engagement outro; keep it short, question-driven, and include a friendly like/subscribe nudge.
+- Each of those segments MUST start with "#5:", "#4:", "#3:", "#2:" or "#1:".
+
+No images are provided; imagine visuals from scratch.
+
+For each segment, output:
+- "index"
+- "scriptText"
+- "runwayPrompt": a vivid, cinematic scene description to generate, tailored to aspect ratio ${ratio}.
+- "negativePrompt": comma-separated defects to avoid.
+- "overlayText": 4-7 word on-screen text that fits the aspect ratio ${ratio} and stays perfectly in sync with the voiceover line for that segment.
+- "referenceImageUrl": a DIRECT URL to a high-quality photo online that matches the script beat and aspect ratio ${ratio}. Use real editorial-style photos (no watermarks, no logos).
+
+Visual rules:
+- Realistic scenes; no logos or trademarks.
+- Clear focal subject, good lighting.
+- Physical realism and natural faces.
+- EVERY runwayPrompt must include explicit motion.
+- Do NOT mention real names or brands in "runwayPrompt"; use roles.
+
+"negativePrompt":
+- Include extra limbs, extra heads, mutated/fused fingers, broken joints, twisted necks, distorted faces, lowres, pixelated, blur, out of focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
+
+Return JSON:
+{
+  "segments": [
+    { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "...", "overlayText": "...", "referenceImageUrl": "https://..." },
+    ...
+  ]
+}
+`.trim();
+	} else {
+		promptText = `
+${baseIntro}
+
+No reliable Google Trends images are available.
+
+You must imagine the visuals from scratch. For each segment output:
+- "index"
+- "scriptText"
+- "runwayPrompt"
+- "negativePrompt"
+
+Visual rules:
+- Realistic, grounded scenes.
+- Clear focal subject, good lighting.
+- Physical realism; natural faces.
+- EVERY runwayPrompt must include explicit motion.
+- Do NOT mention real names or brands in "runwayPrompt"; use generic roles.
+
+"negativePrompt":
+- Include extra limbs, extra heads, mutated/fused fingers, broken joints, twisted necks, distorted faces, lowres, pixelated, blur, out of focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
+
+Return JSON:
+{
+  "segments": [
+    { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "..." },
+    ...
+  ]
+}
+`.trim();
+	}
+
+	const contentParts = [{ type: "text", text: promptText }];
+	if (hasImages) {
+		images.forEach((url) => {
+			contentParts.push({
+				type: "image_url",
+				image_url: { url },
+			});
+		});
+	}
+
+	const { choices } = await openai.chat.completions.create({
+		model: CHAT_MODEL,
+		messages: [{ role: "user", content: contentParts }],
+	});
+
+	const raw = strip(choices[0].message.content);
+	let plan;
+	try {
+		plan = JSON.parse(raw);
+	} catch (e) {
+		console.error("[GPT] plan JSON parse failed:", raw);
+		throw new Error("GPT video plan JSON malformed");
+	}
+
+	if (!Array.isArray(plan.segments) || plan.segments.length !== segCnt) {
+		throw new Error(
+			`GPT plan returned ${
+				plan.segments?.length || 0
+			} segments, expected ${segCnt}`
+		);
+	}
+
+	let segments = plan.segments.map((s, idx) => {
+		const runwayPrompt = String(s.runwayPrompt || "").trim();
+		const negativePromptRaw = String(s.negativePrompt || "").trim();
+
+		return {
+			index: typeof s.index === "number" ? s.index : idx + 1,
+			scriptText: String(s.scriptText || "").trim(),
+			runwayPrompt,
+			runwayNegativePrompt: negativePromptRaw,
+			overlayText: String(s.overlayText || s.overlay || "").trim(),
+			referenceImageUrl: String(s.referenceImageUrl || "").trim(),
+			imageIndex:
+				typeof s.imageIndex === "number" && Number.isInteger(s.imageIndex)
+					? s.imageIndex
+					: null,
+		};
+	});
+
+	if (hasImages) {
+		const imgCount = images.length;
+
+		segments = segments.map((seg) => {
+			let imgIdx =
+				typeof seg.imageIndex === "number" && Number.isInteger(seg.imageIndex)
+					? seg.imageIndex
+					: null;
+			if (imgIdx === null || imgIdx < 0 || imgIdx >= imgCount) {
+				imgIdx = null;
+			}
+			return { ...seg, imageIndex: imgIdx };
+		});
+
+		const validIndexes = segments
+			.map((s) => s.imageIndex)
+			.filter((v) => v !== null);
+		const distinctCount = new Set(validIndexes).size;
+
+		if (!validIndexes.length || distinctCount <= 1) {
+			segments = segments.map((seg, idx) => ({
+				...seg,
+				imageIndex: idx % imgCount,
+			}));
+		} else {
+			let rr = 0;
+			segments = segments.map((seg) => {
+				if (seg.imageIndex !== null) return seg;
+				const imgIdx = rr % imgCount;
+				rr += 1;
+				return { ...seg, imageIndex: imgIdx };
+			});
+		}
+	} else {
+		segments = segments.map((seg) => ({ ...seg, imageIndex: null }));
+	}
+
+	return { segments };
+}
+
+/* ---------------------------------------------------------------
+ *  Main controller – createVideo (Sora 2 / Sora 2 Pro)
+ * ------------------------------------------------------------- */
+exports.createVideoSoraPro = async (req, res) => {
+	const { category, ratio: ratioIn, duration: durIn } = req.body;
+
+	if (!category || !YT_CATEGORY_MAP[category])
+		return res.status(400).json({ error: "Bad category" });
+	if (!VALID_RATIOS.includes(ratioIn))
+		return res.status(400).json({ error: "Bad ratio" });
+	if (!goodDur(durIn)) return res.status(400).json({ error: "Bad duration" });
+
+	const ratio = ratioIn;
+	const duration = +durIn;
+
+	/* SSE bootstrap */
+	res.setHeader("Content-Type", "text/event-stream");
+	res.setHeader("Cache-Control", "no-cache");
+	res.setHeader("Connection", "keep-alive");
+	res.setHeader("X-Accel-Buffering", "no");
+	if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+	const history = [];
+	const sendPhase = (phase, extra = {}) => {
+		const safe =
+			phase === "COMPLETED" && extra.phases
+				? { ...extra, phases: JSON.parse(JSON.stringify(extra.phases)) }
+				: extra;
+		res.write(`data:${JSON.stringify({ phase, extra: safe })}\n\n`);
+		if (typeof res.flush === "function") res.flush();
+		history.push({ phase, ts: Date.now(), extra: safe });
+	};
+	const sendErr = (m) => {
+		sendPhase("ERROR", { msg: m });
+		try {
+			if (!res.headersSent) {
+				res.status(500).json({ error: m });
+			}
+		} catch {}
+		try {
+			res.end();
+		} catch {}
+	};
+
+	sendPhase("INIT");
+	console.log("[Phase] INIT ? Starting Sora pipeline");
+	res.setTimeout(0);
+
+	try {
+		const {
+			language: langIn,
+			country: countryIn,
+			customPrompt: customPromptRaw = "",
+			videoImage,
+			schedule,
+			youtubeEmail,
+			useSora: useSoraIn,
+		} = req.body;
+
+		const user = req.user;
+		const language = (langIn || DEFAULT_LANGUAGE).trim();
+		const country =
+			countryIn && countryIn.toLowerCase() !== "all countries"
+				? countryIn.trim()
+				: "US";
+		const customPrompt = customPromptRaw.trim();
+		const useSora =
+			useSoraIn === true ||
+			useSoraIn === "true" ||
+			useSoraIn === 1 ||
+			useSoraIn === "1";
+
+		console.log(
+			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}  via ${SORA_MODEL} (cost mode=${SORA_USAGE_MODE}) useSora=${useSora}`
+		);
+
+		// Preload recent topics for this user/category (last 3 days) to avoid duplicates
+		const threeDaysAgo = dayjs().subtract(3, "day").toDate();
+		const recentVideos = await Video.find({
+			user: user._id,
+			category,
+			createdAt: { $gte: threeDaysAgo },
+		}).select("topic seoTitle");
+		const normRecent = [];
+		for (const v of recentVideos) {
+			const base = String(v.topic || v.seoTitle || "").trim();
+			if (!base) continue;
+			const normFull = base.toLowerCase().replace(/\s+/g, " ").trim();
+			if (normFull) normRecent.push(normFull);
+			const firstTwo = normFull.split(" ").slice(0, 2).join(" ");
+			if (firstTwo && firstTwo.length >= 4) normRecent.push(firstTwo);
+			const firstThree = normFull.split(" ").slice(0, 3).join(" ");
+			if (firstThree && firstThree.length >= 6) normRecent.push(firstThree);
+		}
+		const usedTopics = new Set(normRecent);
+
+		let topic = "";
+		let trendStory = null;
+		let trendArticleText = null;
+
+		const userOverrides = Boolean(videoImage) || customPrompt.length > 0;
+
+		// 1) Try Trends first (unless Top5 or custom override)
+		if (!userOverrides && category !== "Top5") {
+			trendStory = await fetchTrendingStory(
+				category,
+				country,
+				usedTopics,
+				language
+			);
+			if (trendStory && trendStory.title) {
+				topic = trendStory.title;
+				console.log(`[Trending] candidate topic="${topic}"`);
+				usedTopics.add(topic.toLowerCase().replace(/\s+/g, " ").trim());
+			}
+		}
+
+		// 2) Custom prompt fallback
+		if (customPrompt && !topic) {
+			try {
+				topic = await topicFromCustomPrompt(customPrompt);
+			} catch {
+				/* fallback below */
+			}
+		}
+
+		// 3) Generic GPT trending fallback
+		if (!topic) {
+			if (category === "Top5") {
+				const remaining = ALL_TOP5_TOPICS.filter((t) => !usedTopics.has(t));
+				topic = remaining.length ? remaining[0] : choose(ALL_TOP5_TOPICS);
+			} else {
+				const list = await pickTrendingTopicFresh(category, language, country);
+				topic = list.find((t) => !usedTopics.has(t)) || list[0];
+			}
+		}
+
+		console.log(`[Job] final topic="${topic}"`);
+
+		// Scrape article text for richer context
+		if (trendStory && trendStory.articles && trendStory.articles.length) {
+			trendArticleText = await scrapeArticleText(
+				trendStory.articles[0].url || null
+			);
+		}
+
+		/* 2. Segment timing */
+		const INTRO = 3;
+		let engagementTailSeconds = Math.round(
+			Math.max(
+				ENGAGEMENT_TAIL_MIN,
+				Math.min(ENGAGEMENT_TAIL_MAX, duration * 0.12 || ENGAGEMENT_TAIL_MIN)
+			)
+		);
+		if (duration < 12) {
+			engagementTailSeconds = ENGAGEMENT_TAIL_MIN;
+		}
+		let segCnt =
+			category === "Top5" ? 6 : Math.ceil((duration - INTRO) / 10) + 1;
+		const totalDurationTarget = duration + engagementTailSeconds;
+
+		let segLens;
+		if (category === "Top5") {
+			const r = duration - INTRO;
+			const base = Math.floor(r / 5);
+			const extra = r % 5;
+			segLens = [
+				INTRO,
+				...Array.from({ length: 5 }, (_, i) => base + (i < extra ? 1 : 0)),
+			];
+		} else {
+			const r = duration - INTRO;
+			const n = Math.ceil(r / 10);
+			segLens = [
+				INTRO,
+				...Array.from({ length: n }, (_, i) =>
+					i === n - 1 ? r - 10 * (n - 1) : 10
+				),
+			];
+		}
+
+		segLens.push(engagementTailSeconds);
+		const delta = totalDurationTarget - segLens.reduce((a, b) => a + b, 0);
+		if (Math.abs(delta) >= 1) segLens[segLens.length - 1] += delta;
+
+		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+		console.log("[Timing] initial segment lengths", {
+			segLens,
+			segWordCaps,
+		});
+
+		/* 3. Top-5 outline */
+		let top5Outline = null;
+		if (category === "Top5") {
+			top5Outline = await generateTop5Outline(topic, language);
+		}
+
+		/* 4. Upload Trends images to Cloudinary (optional, still used for static + planning) */
+		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
+		const canUseTrendsImages =
+			category !== "Top5" &&
+			!userOverrides &&
+			trendStory &&
+			Array.isArray(trendStory.images) &&
+			trendStory.images.length > 0;
+
+		if (canUseTrendsImages) {
+			const slugBase = topic
+				.toLowerCase()
+				.replace(/[^\w]+/g, "_")
+				.replace(/^_+|_+$/g, "")
+				.slice(0, 40);
+			for (let i = 0; i < Math.min(trendStory.images.length, 6); i++) {
+				const url = trendStory.images[i];
+				try {
+					const up = await uploadTrendImageToCloudinary(
+						url,
+						ratio,
+						`aivideomatic/trend_seeds/${slugBase}_${i}`
+					);
+					trendImagePairs.push({
+						originalUrl: url,
+						cloudinaryUrl: up.url,
+					});
+				} catch (e) {
+					console.warn("[Cloudinary] upload failed ?", e.message);
+				}
+			}
+			if (!trendImagePairs.length) {
+				console.warn(
+					"[Cloudinary] All Trends uploads failed – falling back to prompt-only mode"
+				);
+			}
+		}
+
+		let hasTrendImages = trendImagePairs.length > 0;
+
+		// With Sora we animate chosen segments; sports are allowed too.
+		const forceStaticVisuals = false;
+
+		/* 5. Let OpenAI orchestrate segments + visuals */
+		console.log("[GPT] building full video plan …");
+
+		const plan = await buildVideoPlanWithGPT({
+			topic,
+			category,
+			language,
+			duration,
+			segLens,
+			trendStory: hasTrendImages ? trendStory : null,
+			trendImagesForPlanning: hasTrendImages
+				? trendImagePairs.map((p) => p.cloudinaryUrl)
+				: null,
+			articleText: trendArticleText,
+			top5Outline,
+			ratio,
+			trendImageBriefs: trendStory?.viralImageBriefs || [],
+			engagementTailSeconds,
+			country,
+			forceStaticVisuals,
+		});
+
+		let segments = plan.segments;
+
+		console.log("[GPT] buildVideoPlanWithGPT ? plan ready", {
+			segments: segments.length,
+			hasImages: hasTrendImages,
+		});
+
+		// For Top5, ingest reference images from GPT plan
+		if (category === "Top5" && !hasTrendImages) {
+			const uploaded = await uploadReferenceImagesForTop5(
+				segments,
+				ratio,
+				topic
+			);
+			if (uploaded.pairs.length) {
+				trendImagePairs = uploaded.pairs;
+				hasTrendImages = true;
+				segments = segments.map((s, idx) => ({
+					...s,
+					imageIndex:
+						typeof uploaded.segImageIndex[idx] === "number"
+							? uploaded.segImageIndex[idx]
+							: s.imageIndex,
+				}));
+				console.log("[Top5] Reference images uploaded", {
+					count: uploaded.pairs.length,
+				});
+			} else {
+				console.warn("[Top5] No reference images could be uploaded");
+			}
+		}
+
+		// Tighten narration to fit word caps
+		await Promise.all(
+			segments.map((s, i) =>
+				s.scriptText.trim().split(/\s+/).length <= segWordCaps[i]
+					? s
+					: (async () => {
+							const ask = `
+Rewrite the following narration in active voice.
+Keep all important facts, remove filler.
+Maximum ${segWordCaps[i]} words.
+One or two sentences only.
+
+"${s.scriptText}"
+`.trim();
+							const { choices } = await openai.chat.completions.create({
+								model: CHAT_MODEL,
+								messages: [{ role: "user", content: ask }],
+							});
+							s.scriptText = choices[0].message.content.trim();
+					  })()
+			)
+		);
+
+		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
+		const recomputed = recomputeSegmentDurationsFromScript(
+			segments,
+			totalDurationTarget
+		);
+		if (recomputed && recomputed.length === segLens.length) {
+			console.log("[Timing] Recomputed segment durations from script:", {
+				before: segLens,
+				after: recomputed,
+			});
+			segLens = recomputed;
+		}
+		segCnt = segLens.length;
+
+		// 6a. Plan Sora usage (cost-aware, but ensure >= 2 clips when budget allows)
+		const soraBudgetSeconds = useSora ? computeSoraBudgetSeconds(duration) : 0;
+		const soraPlan = useSora
+			? planSoraAllocation(segLens, soraBudgetSeconds)
+			: {
+					useSora: new Array(segLens.length).fill(false),
+					perSegSeconds: new Array(segLens.length).fill(0),
+					totalSeconds: 0,
+			  };
+
+		segments = segments.map((s, idx) => ({
+			...s,
+			useSora: soraPlan.useSora[idx],
+		}));
+
+		const effectivePrice =
+			Number.isFinite(SORA_PRICE_PER_SECOND) && SORA_PRICE_PER_SECOND > 0
+				? SORA_PRICE_PER_SECOND
+				: SORA_MODEL === "sora-2-pro"
+				? 0.3
+				: 0.1;
+		const soraCostEstimateUSD = Number.isFinite(soraPlan.totalSeconds)
+			? +(soraPlan.totalSeconds * effectivePrice).toFixed(2)
+			: null;
+
+		console.log("[SoraBudget] planned", {
+			model: SORA_MODEL,
+			usageMode: SORA_USAGE_MODE,
+			useSora,
+			videoDurationSeconds: duration,
+			segLens,
+			budgetSeconds: soraBudgetSeconds,
+			soraSecondsPlanned: soraPlan.totalSeconds,
+			soraCostEstimateUSD,
+		});
+
+		sendPhase("SORA_BUDGET", {
+			usageMode: SORA_USAGE_MODE,
+			useSora,
+			budgetSeconds: soraBudgetSeconds,
+			soraSecondsPlanned: soraPlan.totalSeconds,
+			soraCostEstimateUSD,
+		});
+
+		// Top5: generate fresh images via DALL·E if still nothing (for static backgrounds)
+		if (category === "Top5" && !hasTrendImages) {
+			try {
+				const aiImages = await generateOpenAIImagesForTop5(
+					segments,
+					ratio,
+					topic
+				);
+				if (aiImages.length) {
+					trendImagePairs = aiImages;
+					hasTrendImages = true;
+					segments = segments.map((seg, idx) => ({
+						...seg,
+						imageIndex: idx % aiImages.length,
+					}));
+					console.log(
+						`[Top5] Generated ${aiImages.length} OpenAI images for segments`
+					);
+				}
+			} catch (e) {
+				console.warn(
+					"[Top5] OpenAI image generation failed, staying with text-only Sora:",
+					e.message
+				);
+			}
+		}
+
+		/* 6. Global style, SEO title, tags */
+		let globalStyle = "";
+		try {
+			const g = await openai.chat.completions.create({
+				model: CHAT_MODEL,
+				messages: [
+					{
+						role: "user",
+						content: `Give one short cinematic style phrase describing the visual mood, camera movement, and pacing for the video topic "${topic}". Do NOT include any real person names, team names, or brand names in this phrase.`,
+					},
+				],
+			});
+			globalStyle = g.choices[0].message.content
+				.replace(/^[-–•\s]+/, "")
+				.trim();
+		} catch (e) {
+			console.warn("[GPT] global style generation failed ?", e.message);
+		}
+
+		let seoTitle = "";
+		try {
+			const seedHeadlines = trendStory
+				? [
+						trendStory.youtubeShortTitle,
+						trendStory.seoTitle,
+						trendStory.rawTitle,
+						...(trendStory.articles || []).map((a) => a.title),
+				  ].filter(Boolean)
+				: [topic];
+			const snippet = trendArticleText ? trendArticleText.slice(0, 800) : "";
+			seoTitle = await generateSeoTitle(
+				seedHeadlines,
+				category,
+				language,
+				snippet
+			);
+		} catch (e) {
+			console.warn("[SEO title] generation outer failed ?", e.message);
+		}
+		if (!seoTitle) seoTitle = fallbackSeoTitle(topic, category);
+
+		const descResp = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [
+				{
+					role: "user",
+					content: `Write a YouTube description (at most 150 words) for the video titled "${seoTitle}". Make the first 2 lines keyword-rich so they rank in search; include the core query (time/date/how to watch/card/lineup/etc. as appropriate). Use short sentences, no fluff. Add 1 quick CTA. End with 5-7 relevant, high-volume hashtags.`,
+				},
+			],
+		});
+		const seoDescriptionRaw = `${MERCH_INTRO}${descResp.choices[0].message.content.trim()}\n\n${BRAND_CREDIT}`;
+		const seoDescription = ensureClickableLinks(seoDescriptionRaw);
+
+		let tags = ["shorts"];
+		try {
+			const tagResp = await openai.chat.completions.create({
+				model: CHAT_MODEL,
+				messages: [
+					{
+						role: "user",
+						content: `Return a JSON array of 5-8 SHORT tags for the YouTube video "${seoTitle}". Use high-volume search terms viewers actually type (1-3 words each). No hashtags, no duplicates.`,
+					},
+				],
+			});
+			const parsed = JSON.parse(strip(tagResp.choices[0].message.content));
+			if (Array.isArray(parsed)) tags.push(...parsed);
+		} catch (e) {
+			console.warn("[Tags] generation failed ?", e.message);
+		}
+		if (category === "Top5") tags.unshift("Top5");
+		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
+		tags = [...new Set(tags)];
+
+		/* 7. Load last ElevenLabs voice (avoid repetition) */
+		let lastVoiceMeta = null;
+		let avoidVoiceIds = [];
+		try {
+			lastVoiceMeta = await Video.findOne({
+				user: user._id,
+				"elevenLabsVoice.voiceId": { $exists: true },
+			})
+				.sort({ createdAt: -1 })
+				.select("elevenLabsVoice category language");
+			if (lastVoiceMeta?.elevenLabsVoice?.voiceId) {
+				avoidVoiceIds.push(lastVoiceMeta.elevenLabsVoice.voiceId);
+				console.log("[TTS] Last used ElevenLabs voice", {
+					voiceId: lastVoiceMeta.elevenLabsVoice.voiceId,
+					language: lastVoiceMeta.language,
+					category: lastVoiceMeta.category,
+				});
+			}
+		} catch (e) {
+			console.warn(
+				"[TTS] Unable to load last ElevenLabs voice metadata ?",
+				e.message
+			);
+		}
+
+		/* 8. Dynamic ElevenLabs voice selection */
+		let chosenVoice = null;
+		try {
+			chosenVoice = await selectBestElevenVoice(
+				language,
+				category,
+				fullScript,
+				avoidVoiceIds
+			);
+			if (chosenVoice) {
+				console.log("[TTS] Using ElevenLabs voice", {
+					id: chosenVoice.voiceId,
+					name: chosenVoice.name,
+					source: chosenVoice.source,
+					reason: chosenVoice.reason,
+				});
+			}
+		} catch (e) {
+			console.warn("[TTS] Voice selection failed ?", e.message);
+		}
+
+		/* 9. Background music */
+		let music = null;
+		let voiceGain = 1.4;
+		let musicGain = 0.12;
+		let musicPlan = null;
+		let backgroundMusicMeta = null;
+		let jamendoUrl = null;
+		let jamendoSearchUsed = null;
+		let jamendoSearchTermsTried = [];
+
+		try {
+			musicPlan = await planBackgroundMusic(category, language, fullScript);
+			if (musicPlan) {
+				console.log("[MusicPlan] planned", musicPlan);
+				if (typeof musicPlan.voiceGain === "number") {
+					voiceGain = Math.min(1.8, Math.max(1.1, musicPlan.voiceGain));
+				}
+				if (typeof musicPlan.musicGain === "number") {
+					musicGain = Math.min(0.25, Math.max(0.06, musicPlan.musicGain));
+				}
+			}
+		} catch (e) {
+			console.warn("[MusicPlan] planning failed ?", e.message);
+		}
+
+		try {
+			const searchTerms = [];
+			if (musicPlan?.jamendoSearch) {
+				searchTerms.push(musicPlan.jamendoSearch);
+			}
+			if (Array.isArray(musicPlan?.fallbackSearchTerms)) {
+				musicPlan.fallbackSearchTerms.forEach((t) => {
+					if (t && typeof t === "string") searchTerms.push(t);
+				});
+			}
+			if (!searchTerms.length) {
+				searchTerms.push(
+					topic.split(" ")[0],
+					`${category.toLowerCase()} instrumental`,
+					"ambient instrumental no vocals"
+				);
+			}
+
+			jamendoSearchTermsTried = searchTerms.slice();
+			let jamUrl = null;
+			let usedSearch = null;
+			for (const term of searchTerms) {
+				if (!term) continue;
+				const uUrl = await jamendo(term);
+				if (uUrl) {
+					jamUrl = uUrl;
+					usedSearch = term;
+					break;
+				}
+			}
+
+			if (jamUrl) {
+				console.log("[Music] Jamendo match", usedSearch);
+				jamendoUrl = jamUrl;
+				jamendoSearchUsed = usedSearch;
+				music = tmpFile("bg", ".mp3");
+				const ws = fs.createWriteStream(music);
+				const { data } = await axios.get(jamUrl, { responseType: "stream" });
+				await new Promise((r, j) =>
+					data.pipe(ws).on("finish", r).on("error", j)
+				);
+			}
+		} catch (e) {
+			console.warn("[Music] Jamendo failed ?", e.message);
+		}
+
+		if (musicPlan || jamendoUrl || jamendoSearchTermsTried.length) {
+			backgroundMusicMeta = {
+				plan: musicPlan || null,
+				jamendoUrl: jamendoUrl || null,
+				searchTerm:
+					jamendoSearchUsed ||
+					(musicPlan ? musicPlan.jamendoSearch : null) ||
+					null,
+				searchTermsTried: jamendoSearchTermsTried,
+				voiceGain,
+				musicGain,
+			};
+		}
+
+		/* 10. Per-segment video generation (TEXT-TO-VIDEO Sora + static fallbacks) */
+		const clips = [];
+		const soraPerSegSeconds = soraPlan.perSegSeconds || [];
+		sendPhase("GENERATING_CLIPS", {
+			msg: "Generating Sora + static clips",
+			total: segCnt,
+			done: 0,
+		});
+		console.log(
+			"[Phase] GENERATING_CLIPS ? Generating clips via Sora + static"
+		);
+
+		for (let i = 0; i < segCnt; i++) {
+			const d = segLens[i];
+			const seg = segments[i];
+			const segIndex = i + 1;
+
+			console.log(
+				`[Seg ${segIndex}/${segCnt}] targetDuration=${d.toFixed(2)}s useSora=${
+					seg.useSora ? "yes (TEXT-ONLY)" : "no"
+				}`
+			);
+
+			const promptBase = [
+				seg.runwayPrompt || "",
+				globalStyle,
+				QUALITY_BONUS,
+				PHYSICAL_REALISM_HINT,
+				EYE_REALISM_HINT,
+				SOFT_SAFETY_PAD,
+				HUMAN_SAFETY,
+				BRAND_ENHANCEMENT_HINT,
+				`Avoid: ${DEFECTS_TO_AVOID}`,
+			]
+				.filter(Boolean)
+				.join(". ");
+
+			let promptText = scrubPromptForSafety(promptBase);
+			if (promptText.length > PROMPT_CHAR_LIMIT) {
+				promptText = promptText.slice(0, PROMPT_CHAR_LIMIT);
+			}
+
+			const negativeBase =
+				seg.runwayNegativePrompt && seg.runwayNegativePrompt.trim().length
+					? seg.runwayNegativePrompt.trim()
+					: DEFECTS_TO_AVOID;
+			const negativePrompt =
+				negativeBase.length > PROMPT_CHAR_LIMIT
+					? negativeBase.slice(0, PROMPT_CHAR_LIMIT)
+					: negativeBase;
+
+			let clipPath = null;
+
+			// Primary: Sora text-to-video clip, but only for segments the budget allowed.
+			if (seg.useSora) {
+				try {
+					const mergedPrompt =
+						promptText +
+						(negativePrompt ? `. Strictly avoid: ${negativePrompt}.` : "");
+
+					const soraSecondsOverride =
+						Array.isArray(soraPerSegSeconds) && Number(soraPerSegSeconds[i]) > 0
+							? Number(soraPerSegSeconds[i])
+							: null;
+
+					clipPath = await generateSoraClip({
+						segmentIndex: segIndex,
+						promptText: mergedPrompt,
+						ratio,
+						targetDuration: d,
+						soraSecondsOverride,
+					});
+				} catch (e) {
+					console.warn(
+						`[Seg ${segIndex}] Sora failed, will fall back to static/placeholder ?`,
+						e.message
+					);
+				}
+			}
+
+			// Cheaper: static / Ken Burns from stills.
+			if (!clipPath) {
+				if (hasTrendImages && seg.imageIndex !== null) {
+					const pair =
+						trendImagePairs[seg.imageIndex] || trendImagePairs[0] || null;
+					const imgUrlCloudinary = pair?.cloudinaryUrl;
+					const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
+					if (imgUrlOriginal || imgUrlCloudinary) {
+						clipPath = await generateStaticClipFromImage({
+							segmentIndex: segIndex,
+							imgUrlOriginal,
+							imgUrlCloudinary,
+							ratio,
+							targetDuration: d,
+							zoomPan: true,
+						});
+					}
+				} else if (seg.referenceImageUrl) {
+					clipPath = await generateStaticClipFromImage({
+						segmentIndex: segIndex,
+						imgUrlOriginal: seg.referenceImageUrl,
+						imgUrlCloudinary: null,
+						ratio,
+						targetDuration: d,
+						zoomPan: true,
+					});
+				}
+			}
+
+			// If no image at all, fallback to a neutral card.
+			if (!clipPath) {
+				clipPath = await generatePlaceholderClip({
+					segmentIndex: segIndex,
+					ratio,
+					targetDuration: d,
+				});
+			}
+
+			const fixed = tmpFile(`fx_${segIndex}`, ".mp4");
+			await exactLen(clipPath, d, fixed, { ratio, enhance: true });
+			try {
+				fs.unlinkSync(clipPath);
+			} catch {}
+
+			clips.push(fixed);
+
+			sendPhase("GENERATING_CLIPS", {
+				msg: `Rendering segment ${segIndex}/${segCnt}`,
+				total: segCnt,
+				done: segIndex,
+			});
+			console.log("[Phase] GENERATING_CLIPS ? Rendering segment", segIndex);
+		}
+
+		/* 11. Concatenate silent video */
+		sendPhase("ASSEMBLING_VIDEO", {
+			msg: "Blending clips with cinematic transitions...",
+		});
+		console.log(
+			"[Phase] ASSEMBLING_VIDEO + Blending Sora/static clips with transitions"
+		);
+
+		let silent;
+		try {
+			silent = await concatWithTransitions(clips, segLens, ratio, 0.35);
+		} catch (err) {
+			console.warn(
+				"[Transitions] Failed to xfade, falling back to direct concat:",
+				err.message
+			);
+			const listFile = tmpFile("list", ".txt");
+			fs.writeFileSync(
+				listFile,
+				clips.map((p) => `file '${norm(p)}'`).join("\n")
+			);
+
+			silent = tmpFile("silent", ".mp4");
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(listFile))
+					.inputOptions("-f", "concat", "-safe", "0")
+					.outputOptions("-c", "copy", "-y")
+					.save(norm(silent))
+			);
+			try {
+				fs.unlinkSync(listFile);
+			} catch {}
+		}
+		clips.forEach((p) => {
+			try {
+				fs.unlinkSync(p);
+			} catch {}
+		});
+		const silentFixed = tmpFile("silent_fix", ".mp4");
+		await exactLen(silent, totalDurationTarget, silentFixed, {
+			ratio,
+			enhance: false,
+		});
+		try {
+			fs.unlinkSync(silent);
+		} catch {}
+
+		/* 12. Voice-over & music */
+		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
+		console.log("[Phase] ADDING_VOICE_MUSIC ? Creating audio layer");
+
+		const fixedPieces = [];
+		let voiceToneSample = null;
+
+		for (let i = 0; i < segCnt; i++) {
+			const raw = tmpFile(`tts_raw_${i + 1}`, ".mp3");
+			const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
+			const txt = improveTTSPronunciation(segments[i].scriptText);
+
+			const localTone = deriveVoiceSettings(txt, category);
+			if (!voiceToneSample) voiceToneSample = localTone;
+
+			try {
+				await elevenLabsTTS(
+					txt,
+					language,
+					raw,
+					category,
+					chosenVoice?.voiceId || null
+				);
+			} catch (e) {
+				console.warn(
+					`[TTS] ElevenLabs failed for seg ${i + 1}, falling back to OpenAI ?`,
+					e.message
+				);
+
+				const tts = await openai.audio.speech.create({
+					model: "tts-1-hd",
+					voice: "shimmer",
+					speed: localTone.openaiSpeed,
+					input: txt,
+					format: "mp3",
+				});
+				fs.writeFileSync(raw, Buffer.from(await tts.arrayBuffer()));
+			}
+
+			await exactLenAudio(raw, segLens[i], fixed);
+			try {
+				fs.unlinkSync(raw);
+			} catch {}
+			fixedPieces.push(fixed);
+		}
+
+		const audioConcatList = tmpFile("audio_list", ".txt");
+		fs.writeFileSync(
+			audioConcatList,
+			fixedPieces.map((p) => `file '${norm(p)}'`).join("\n")
+		);
+		const ttsJoin = tmpFile("tts_join", ".wav");
+		await ffmpegPromise((c) =>
+			c
+				.input(norm(audioConcatList))
+				.inputOptions("-f", "concat", "-safe", "0")
+				.outputOptions("-c", "copy", "-y")
+				.save(norm(ttsJoin))
+		);
+		try {
+			fs.unlinkSync(audioConcatList);
+		} catch {}
+		fixedPieces.forEach((p) => {
+			try {
+				fs.unlinkSync(p);
+			} catch {}
+		});
+
+		const mixedRaw = tmpFile("mix_raw", ".wav");
+		const mixed = tmpFile("mix_fix", ".wav");
+		if (music) {
+			const trim = tmpFile("trim", ".mp3");
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(music))
+					.outputOptions("-t", String(totalDurationTarget), "-y")
+					.save(norm(trim))
+			);
+			try {
+				fs.unlinkSync(music);
+			} catch {}
+
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(ttsJoin))
+					.input(norm(trim))
+					.complexFilter([
+						`[0:a]volume=${voiceGain.toFixed(3)}[a0]`,
+						`[1:a]volume=${musicGain.toFixed(3)}[a1]`,
+						"[a0][a1]amix=inputs=2:duration=first[aout]",
+					])
+					.outputOptions("-map", "[aout]", "-c:a", "pcm_s16le", "-y")
+					.save(norm(mixedRaw))
+			);
+			try {
+				fs.unlinkSync(trim);
+			} catch {}
+		} else {
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(ttsJoin))
+					.audioFilters("volume=1.4")
+					.outputOptions("-c:a", "pcm_s16le", "-y")
+					.save(norm(mixedRaw))
+			);
+		}
+		try {
+			fs.unlinkSync(ttsJoin);
+		} catch {}
+
+		await exactLenAudio(mixedRaw, totalDurationTarget, mixed);
+		try {
+			fs.unlinkSync(mixedRaw);
+		} catch {}
+
+		/* 13. Mux audio + video */
+		sendPhase("SYNCING_VOICE_MUSIC", { msg: "Muxing final video" });
+		console.log("[Phase] SYNCING_VOICE_MUSIC ? Muxing final video");
+
+		const safeTitle = seoTitle
+			.toLowerCase()
+			.replace(/[^\w\d]+/g, "_")
+			.replace(/^_+|_+$/g, "");
+		const finalPath = tmpFile(safeTitle || "video", ".mp4");
+
+		await ffmpegPromise((c) =>
+			c
+				.input(norm(silentFixed))
+				.input(norm(mixed))
+				.outputOptions(
+					"-map",
+					"0:v",
+					"-map",
+					"1:a",
+					"-c:v",
+					"libx264",
+					"-preset",
+					"slow",
+					"-crf",
+					"17",
+					"-c:a",
+					"aac",
+					"-t",
+					String(totalDurationTarget),
+					"-y"
+				)
+				.save(norm(finalPath))
+		);
+		try {
+			fs.unlinkSync(silentFixed);
+		} catch {}
+		try {
+			fs.unlinkSync(mixed);
+		} catch {}
+
+		/* 14. YouTube upload */
+		// let youtubeLink = "";
+		// let youtubeTokens = null;
+		// try {
+		// 	youtubeTokens = await refreshYouTubeTokensIfNeeded(user, req);
+		// 	const oauth2 = buildYouTubeOAuth2Client(youtubeTokens);
+		// 	if (oauth2) {
+		// 		const yt = google.youtube({ version: "v3", auth: oauth2 });
+		// 		const { data } = await yt.videos.insert(
+		// 			{
+		// 				part: ["snippet", "status"],
+		// 				requestBody: {
+		// 					snippet: {
+		// 						title: seoTitle,
+		// 						description: seoDescription,
+		// 						tags,
+		// 						categoryId:
+		// 							YT_CATEGORY_MAP[category] === "0"
+		// 								? "22"
+		// 								: YT_CATEGORY_MAP[category],
+		// 					},
+		// 					status: {
+		// 						privacyStatus: "public",
+		// 						selfDeclaredMadeForKids: false,
+		// 					},
+		// 				},
+		// 				media: { body: fs.createReadStream(finalPath) },
+		// 			},
+		// 			{ maxContentLength: Infinity, maxBodyLength: Infinity }
+		// 		);
+		// 		youtubeLink = `https://www.youtube.com/watch?v=${data.id}`;
+		// 		sendPhase("VIDEO_UPLOADED", { youtubeLink });
+		// 		console.log("[Phase] VIDEO_UPLOADED", youtubeLink);
+		// 	}
+		// } catch (e) {
+		// 	console.warn("[YouTube] upload skipped ?", e.message);
+		// }
+
+		/* 15. Voice + music metadata */
+		const elevenLabsVoice =
+			chosenVoice || voiceToneSample
+				? {
+						voiceId: chosenVoice?.voiceId || null,
+						name: chosenVoice?.name || null,
+						source: chosenVoice?.source || null,
+						reason: chosenVoice?.reason || null,
+						category,
+						language,
+						tone: voiceToneSample || null,
+				  }
+				: null;
+
+		/* 16. Persist to Mongo */
+		const doc = await Video.create({
+			user: user._id,
+			category,
+			topic,
+			seoTitle,
+			seoDescription,
+			tags,
+			script: fullScript,
+			ratio,
+			duration,
+			model: SORA_MODEL,
+			useSora,
+			status: "SUCCEEDED",
+			youtubeLink,
+			language,
+			country,
+			customPrompt,
+			refinedRunwayStub: customPrompt,
+			videoImage,
+			youtubeEmail,
+			youtubeAccessToken:
+				youtubeTokens?.access_token || req.body.youtubeAccessToken || "",
+			youtubeRefreshToken:
+				youtubeTokens?.refresh_token || req.body.youtubeRefreshToken || "",
+			youtubeTokenExpiresAt: youtubeTokens?.expiry_date
+				? new Date(youtubeTokens.expiry_date)
+				: req.body.youtubeTokenExpiresAt
+				? new Date(req.body.youtubeTokenExpiresAt)
+				: undefined,
+			elevenLabsVoice,
+			backgroundMusic: backgroundMusicMeta,
+		});
+
+		/* optional scheduling */
+		if (schedule) {
+			const { type, timeOfDay, startDate, endDate } = schedule;
+
+			const startDateStr = dayjs(startDate).format("YYYY-MM-DD");
+
+			let next = dayjs.tz(
+				`${startDateStr} ${timeOfDay}`,
+				"YYYY-MM-DD HH:mm",
+				PST_TZ
+			);
+
+			const nowPST = dayjs().tz(PST_TZ);
+
+			while (next.isBefore(nowPST)) {
+				if (type === "daily") next = next.add(1, "day");
+				else if (type === "weekly") next = next.add(1, "week");
+				else if (type === "monthly") next = next.add(1, "month");
+				else break;
+			}
+
+			const startPST = dayjs
+				.tz(startDateStr, "YYYY-MM-DD", PST_TZ)
+				.startOf("day");
+			const endPST =
+				endDate && dayjs(endDate).isValid()
+					? dayjs
+							.tz(dayjs(endDate).format("YYYY-MM-DD"), "YYYY-MM-DD", PST_TZ)
+							.startOf("day")
+					: null;
+
+			await new Schedule({
+				user: user._id,
+				category,
+				video: doc._id,
+				scheduleType: type,
+				timeOfDay,
+				startDate: startPST.toDate(),
+				endDate: endPST ? endPST.toDate() : undefined,
+				nextRun: next.toDate(),
+				active: true,
+			}).save();
+
+			doc.scheduled = true;
+			await doc.save();
+			sendPhase("VIDEO_SCHEDULED", { msg: "Scheduled" });
+			console.log("[Phase] VIDEO_SCHEDULED");
+		}
+
+		/* 17. DONE */
+		sendPhase("COMPLETED", {
+			id: doc._id,
+			youtubeLink,
+			phases: JSON.parse(JSON.stringify(history)),
+		});
+		console.log("[Phase] COMPLETED", doc._id, youtubeLink);
+		res.end();
+	} catch (err) {
+		console.error("[createVideo] ERROR", {
+			message: err?.message,
+			stack: err?.stack,
+		});
+		if (err?.response) {
+			console.error(
+				"[createVideo] ERROR response status:",
+				err.response.status
+			);
+			try {
+				console.error(
+					"[createVideo] ERROR response data snippet:",
+					typeof err.response.data === "string"
+						? err.response.data.slice(0, 500)
+						: JSON.stringify(err.response.data).slice(0, 500)
+				);
+			} catch (_) {
+				console.error(
+					"[createVideo] ERROR response data snippet: [unserializable]"
+				);
+			}
+		}
+		sendErr(err.message || "Internal error");
+	}
+};
+
+/* expose helpers for tests / cli */
+exports.buildYouTubeOAuth2Client = buildYouTubeOAuth2Client;
+exports.refreshYouTubeTokensIfNeeded = refreshYouTubeTokensIfNeeded;
+exports.uploadToYouTube = uploadToYouTube;

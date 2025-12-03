@@ -127,6 +127,10 @@ const videoSchema = new mongoose.Schema(
 			type: String,
 			default: "gen4_turbo",
 		},
+		useSora: {
+			type: Boolean,
+			default: false,
+		},
 		seed: {
 			type: Number,
 		},
