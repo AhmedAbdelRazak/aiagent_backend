@@ -388,6 +388,38 @@ function sanitizeAudienceFacingText(text, { allowAITopic = false } = {}) {
 	return cleaned.trim();
 }
 
+function enforceEngagementOutroText(text, { topic, wordCap }) {
+	const existing = String(text || "").trim();
+	const hasQuestion = /\?/.test(existing);
+	const hasCTA = /(comment|subscribe|follow|like)/i.test(existing);
+	const safeTopic =
+		sanitizeAudienceFacingText(topic, { allowAITopic: true }) || topic || "";
+	const question = safeTopic
+		? `What do you think about ${safeTopic}?`
+		: "What do you think?";
+	const cta = "Comment below and subscribe for more.";
+
+	let combined = existing;
+	if (!hasQuestion && !hasCTA) {
+		combined = `${question} ${cta}`;
+	} else if (!hasQuestion) {
+		combined = `${existing} ${question}`;
+	} else if (!hasCTA) {
+		combined = `${existing} ${cta}`;
+	}
+
+	combined = combined.replace(/\s+/g, " ").trim();
+
+	if (wordCap && Number.isFinite(wordCap) && wordCap > 3) {
+		const words = combined.split(/\s+/);
+		if (words.length > wordCap) {
+			combined = words.slice(0, wordCap).join(" ").replace(/[.,;:]?$/, ".");
+		}
+	}
+
+	return combined;
+}
+
 function scrubPromptForSafety(text) {
 	if (!text || typeof text !== "string") return "";
 	let t = text;
@@ -2040,19 +2072,30 @@ async function generateStaticClipFromImage({
 			const out = tmpFile(`seg_static_${segmentIndex}`, ".mp4");
 			const { width, height } = targetResolutionForRatio(ratio);
 			const vf = [];
+			const zoompanFilter =
+				zoomPan && width && height
+					? `zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
+					: null;
 
-			if (width && height) {
-				vf.push(
-					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
-					`crop=${width}:${height}`
-				);
-			}
+			// Safer primary: pad with aspect_ratio=decrease to avoid rare crop/zoom failures.
+			const vfPrimary =
+				width && height
+					? [
+							`scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos`,
+							`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,
+							...(zoompanFilter ? [zoompanFilter] : []),
+					  ]
+					: vf;
 
-			if (zoomPan && width && height) {
-				vf.push(
-					`zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
-				);
-			}
+			// Secondary: original crop-first path (kept as fallback for consistency with prior look).
+			const vfSecondary =
+				width && height
+					? [
+							`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
+							`crop=${width}:${height}`,
+							...(zoompanFilter ? [zoompanFilter] : []),
+					  ]
+					: [];
 
 			const encode = async (filters) =>
 				ffmpegPromise((c) => {
@@ -2078,20 +2121,13 @@ async function generateStaticClipFromImage({
 				});
 
 			try {
-				await encode(vf);
+				await encode(vfPrimary);
 			} catch (primaryErr) {
 				console.warn(
-					`[Seg ${segmentIndex}] Static fallback primary filters failed, retrying padded`,
+					`[Seg ${segmentIndex}] Static fallback primary filters failed, retrying alternate filters`,
 					primaryErr.message
 				);
-				const vfSafe =
-					width && height
-						? [
-								`scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos`,
-								`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,
-						  ]
-						: [];
-				await encode(vfSafe);
+				await encode(vfSecondary);
 			}
 
 			try {
@@ -3273,6 +3309,22 @@ One or two sentences only.
 			}),
 		}));
 
+		// Ensure the final engagement tail always has a topical question + friendly CTA.
+		if (segments.length) {
+			const tailCap =
+				segLens && segLens.length
+					? Math.floor(segLens[segLens.length - 1] * WORDS_PER_SEC)
+					: null;
+			const lastIdx = segments.length - 1;
+			segments[lastIdx] = {
+				...segments[lastIdx],
+				scriptText: enforceEngagementOutroText(segments[lastIdx].scriptText, {
+					topic,
+					wordCap: tailCap,
+				}),
+			};
+		}
+
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 		const recomputed = recomputeSegmentDurationsFromScript(
 			segments,
@@ -3428,13 +3480,13 @@ One or two sentences only.
 		try {
 			const tagResp = await openai.chat.completions.create({
 				model: CHAT_MODEL,
-			messages: [
-				{
-					role: "user",
-					content: `Return a JSON array of 5-8 SHORT tags for the YouTube video "${seoTitle}". Use high-volume search terms viewers actually type (1-3 words each). No hashtags, no duplicates. Avoid AI/generative/ChatGPT tags unless the topic is literally about that tech.`,
-				},
-			],
-		});
+				messages: [
+					{
+						role: "user",
+						content: `Return a JSON array of 5-8 SHORT tags for the YouTube video "${seoTitle}". Use high-volume search terms viewers actually type (1-3 words each). No hashtags, no duplicates. Avoid AI/generative/ChatGPT tags unless the topic is literally about that tech.`,
+					},
+				],
+			});
 			const parsed = JSON.parse(strip(tagResp.choices[0].message.content));
 			if (Array.isArray(parsed)) tags.push(...parsed);
 		} catch (e) {
