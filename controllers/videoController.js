@@ -145,6 +145,17 @@ const VALID_RATIOS = [
 	"1584:672",
 ];
 
+const AI_TOPIC_RE =
+	/\b(ai|artificial intelligence|machine learning|genai|chatgpt|gpt-?\d*(?:\.\d+)?|openai|sora)\b/i;
+
+const ARTICLE_FETCH_HEADERS = Object.freeze({
+	"User-Agent":
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+	Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+	"Accept-Language": "en-US,en;q=0.9",
+	Referer: "https://www.google.com/",
+});
+
 /**
  * WORDS_PER_SEC: cap used when asking GPT for max words.
  * NATURAL_WPS: realistic speed used when recomputing durations from script.
@@ -321,6 +332,82 @@ const PROMPT_CHAR_LIMIT = 220;
  * ------------------------------------------------------------- */
 const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
+const toBool = (v) => v === true || v === "true" || v === 1 || v === "1";
+const looksLikeAITopic = (t) => AI_TOPIC_RE.test(String(t || ""));
+
+function sanitizeAudienceFacingText(text, { allowAITopic = false } = {}) {
+	if (!text || typeof text !== "string") return "";
+	let cleaned = text;
+
+	cleaned = cleaned.replace(
+		/\bAI\s+(voiceover|voice over|narration|script)\b/gi,
+		"narration"
+	);
+
+	if (!allowAITopic) {
+		const swaps = [
+			[/\bAI[-\s]?generated\b/gi, "hand-crafted"],
+			[/\bAI[-\s]?powered\b/gi, "expert-led"],
+			[/\bAI[-\s]?based\b/gi, "data-led"],
+			[/\bAI\s+(model|system|engine)\b/gi, "our analysis"],
+			[
+				/\bAI['"]?\s*(prediction|predictions|forecast|pick|call|take|preview)\b/gi,
+				"our $1",
+			],
+			[/\bgenerative AI\b/gi, "modern tools"],
+			[/\bchatgpt\b/gi, "our newsroom"],
+			[/\bgpt[-\s]?\d+(?:\.\d+)?\b/gi, "our newsroom"],
+			[/\bopenai\b/gi, "the newsroom"],
+			[/\bsora\b/gi, "the crew"],
+			[/\bartificial intelligence\b/gi, "smart insight"],
+			[/\bAI['"]?\b/gi, "our"],
+		];
+		for (const [re, rep] of swaps) cleaned = cleaned.replace(re, rep);
+	}
+
+	return cleaned.trim();
+}
+
+function enforceEngagementOutroText(text, { topic, wordCap }) {
+	const existing = String(text || "").trim();
+	const hasQuestion = /\?/.test(existing);
+	const hasCTA = /(comment|subscribe|follow|like)/i.test(existing);
+	const hasSignOff =
+		/(see you|thanks for|catch you|stay curious|next time)/i.test(existing);
+
+	const safeTopic =
+		sanitizeAudienceFacingText(topic, { allowAITopic: true }) || topic || "";
+	const question = safeTopic
+		? `What do you think about ${safeTopic}?`
+		: "What do you think?";
+	const cta = "Comment below, tap like, and subscribe for more quick updates!";
+	const signOffs = [
+		"See you tomorrow!",
+		"Catch you next time!",
+		"Thanks for watching!",
+		"Stay curious!",
+	];
+	const signOff = choose(signOffs);
+
+	let combined = existing;
+	if (!hasQuestion && !hasCTA) combined = `${question} ${cta}`;
+	else if (!hasQuestion) combined = `${existing} ${question}`;
+	else if (!hasCTA) combined = `${existing} ${cta}`;
+	if (!hasSignOff) combined = `${combined} ${signOff}`;
+
+	combined = combined.replace(/\s+/g, " ").trim();
+
+	if (wordCap && Number.isFinite(wordCap) && wordCap > 3) {
+		const words = combined.split(/\s+/);
+		if (words.length > wordCap) {
+			combined = words
+				.slice(0, wordCap)
+				.join(" ")
+				.replace(/[.,;:]?$/, ".");
+		}
+	}
+	return combined;
+}
 
 const TICK_CHAR = String.fromCharCode(96);
 function stripCodeFence(s) {
@@ -530,6 +617,48 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	}
 
 	return scaled.map((v) => +v.toFixed(2));
+}
+
+function computeEngagementTail(duration) {
+	let tail = Math.round(
+		Math.max(
+			ENGAGEMENT_TAIL_MIN,
+			Math.min(ENGAGEMENT_TAIL_MAX, duration * 0.12 || ENGAGEMENT_TAIL_MIN)
+		)
+	);
+	if (duration < 12) tail = ENGAGEMENT_TAIL_MIN;
+	return tail;
+}
+
+function computeInitialSegLens(category, duration, tailSeconds) {
+	const INTRO = 3;
+	const segLens = [];
+
+	if (category === "Top5") {
+		const r = duration - INTRO;
+		const base = Math.floor(r / 5);
+		const extra = r % 5;
+		segLens.push(
+			INTRO,
+			...Array.from({ length: 5 }, (_, i) => base + (i < extra ? 1 : 0))
+		);
+	} else {
+		const r = duration - INTRO;
+		const n = Math.ceil(r / 10);
+		segLens.push(
+			INTRO,
+			...Array.from({ length: n }, (_, i) =>
+				i === n - 1 ? r - 10 * (n - 1) : 10
+			)
+		);
+	}
+
+	segLens.push(tailSeconds);
+	const targetTotal = duration + tailSeconds;
+	const delta = targetTotal - segLens.reduce((a, b) => a + b, 0);
+	if (Math.abs(delta) >= 1) segLens[segLens.length - 1] += delta;
+
+	return segLens;
 }
 
 /* ---------------------------------------------------------------
@@ -1320,7 +1449,10 @@ async function fetchTrendingStory(
 async function scrapeArticleText(url) {
 	if (!url) return null;
 	try {
-		const { data: html } = await axios.get(url, { timeout: 10000 });
+		const { data: html } = await axios.get(url, {
+			timeout: 10000,
+			headers: ARTICLE_FETCH_HEADERS,
+		});
 		const $ = cheerio.load(html);
 		const body = $("article").text() || $("body").text();
 		const cleaned = body
@@ -1985,6 +2117,38 @@ async function generatePlaceholderClip({
 	);
 	return out;
 }
+
+function buildRunwayPrompt(seg, globalStyle) {
+	const parts = [
+		seg.runwayPrompt || "",
+		globalStyle,
+		"cinematic, cohesive single shot with smooth camera motion",
+		QUALITY_BONUS,
+		PHYSICAL_REALISM_HINT,
+		EYE_REALISM_HINT,
+		SOFT_SAFETY_PAD,
+		HUMAN_SAFETY,
+		BRAND_ENHANCEMENT_HINT,
+	]
+		.filter(Boolean)
+		.join(". ");
+
+	let promptText = scrubPromptForSafety(parts);
+	if (promptText.length > PROMPT_CHAR_LIMIT)
+		promptText = promptText.slice(0, PROMPT_CHAR_LIMIT);
+
+	const negativeBase =
+		seg.runwayNegativePrompt && seg.runwayNegativePrompt.trim().length
+			? seg.runwayNegativePrompt.trim()
+			: RUNWAY_NEGATIVE_PROMPT;
+	const negativePrompt =
+		negativeBase.length > PROMPT_CHAR_LIMIT
+			? negativeBase.slice(0, PROMPT_CHAR_LIMIT)
+			: negativeBase;
+
+	return { promptText, negativePrompt };
+}
+
 /* ---------------------------------------------------------------
  *  YouTube & Jamendo helpers
  * ------------------------------------------------------------- */
@@ -2847,6 +3011,7 @@ exports.createVideo = async (req, res) => {
 			videoImage,
 			schedule,
 			youtubeEmail,
+			useSora: useSoraIn,
 		} = req.body;
 
 		const user = req.user;
@@ -2856,9 +3021,10 @@ exports.createVideo = async (req, res) => {
 				? countryIn.trim()
 				: "US";
 		const customPrompt = customPromptRaw.trim();
+		const useSora = toBool(useSoraIn); // reuse frontend flag: true => allow Runway clips
 
 		console.log(
-			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}`
+			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}  useRunway=${useSora}`
 		);
 
 		// Preload recent topics for this user/category (last 3 days) to avoid duplicates
@@ -2924,6 +3090,7 @@ exports.createVideo = async (req, res) => {
 		}
 
 		console.log(`[Job] final topic="${topic}"`);
+		const topicIsAITopic = looksLikeAITopic(topic);
 
 		// Scrape a bit of article text for richer context, if we have a Trends story
 		if (trendStory && trendStory.articles && trendStory.articles.length) {
@@ -2933,44 +3100,14 @@ exports.createVideo = async (req, res) => {
 		}
 
 		/* 2. Segment timing */
-		const INTRO = 3;
-		let engagementTailSeconds = Math.round(
-			Math.max(
-				ENGAGEMENT_TAIL_MIN,
-				Math.min(ENGAGEMENT_TAIL_MAX, duration * 0.12 || ENGAGEMENT_TAIL_MIN)
-			)
-		);
-		if (duration < 12) {
-			engagementTailSeconds = ENGAGEMENT_TAIL_MIN;
-		}
-		let segCnt =
-			category === "Top5" ? 6 : Math.ceil((duration - INTRO) / 10) + 1;
+		const engagementTailSeconds = computeEngagementTail(duration);
 		const totalDurationTarget = duration + engagementTailSeconds;
-
-		let segLens;
-		if (category === "Top5") {
-			const r = duration - INTRO;
-			const base = Math.floor(r / 5);
-			const extra = r % 5;
-			segLens = [
-				INTRO,
-				...Array.from({ length: 5 }, (_, i) => base + (i < extra ? 1 : 0)),
-			];
-		} else {
-			const r = duration - INTRO;
-			const n = Math.ceil(r / 10);
-			segLens = [
-				INTRO,
-				...Array.from({ length: n }, (_, i) =>
-					i === n - 1 ? r - 10 * (n - 1) : 10
-				),
-			];
-		}
-
-		segLens.push(engagementTailSeconds); // dedicated engagement outro segment
-		const delta = totalDurationTarget - segLens.reduce((a, b) => a + b, 0);
-		if (Math.abs(delta) >= 1) segLens[segLens.length - 1] += delta;
-
+		let segLens = computeInitialSegLens(
+			category,
+			duration,
+			engagementTailSeconds
+		);
+		let segCnt = segLens.length;
 		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 		console.log("[Timing] initial segment lengths", {
 			segLens,
@@ -3022,7 +3159,8 @@ exports.createVideo = async (req, res) => {
 		}
 
 		let hasTrendImages = trendImagePairs.length > 0;
-		const forceStaticVisuals = isSportsTopic(topic, category, trendStory);
+		const forceStaticVisuals =
+			!useSora || isSportsTopic(topic, category, trendStory);
 
 		/* 5. Let OpenAI orchestrate segments + visuals */
 		console.log("[GPT] building full video plan …");
@@ -3100,6 +3238,28 @@ One or two sentences only.
 					  })()
 			)
 		);
+
+		segments = segments.map((seg) => ({
+			...seg,
+			scriptText: sanitizeAudienceFacingText(seg.scriptText, {
+				allowAITopic: topicIsAITopic,
+			}),
+			overlayText: sanitizeAudienceFacingText(seg.overlayText, {
+				allowAITopic: topicIsAITopic,
+			}),
+		}));
+
+		if (segments.length) {
+			const tailCap = Math.floor(segLens[segLens.length - 1] * WORDS_PER_SEC);
+			const lastIdx = segments.length - 1;
+			segments[lastIdx] = {
+				...segments[lastIdx],
+				scriptText: enforceEngagementOutroText(segments[lastIdx].scriptText, {
+					topic,
+					wordCap: tailCap,
+				}),
+			};
+		}
 
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 		const recomputed = recomputeSegmentDurationsFromScript(
@@ -3359,6 +3519,7 @@ One or two sentences only.
 		const staticOnlyImages = new Set(); // images we will use only as static fallback going forward
 		const staticFallbackUsed = new Set(); // track which images already used as static fallback to avoid repeats until all tried
 		let firstSafetyBan = null;
+		const allowRunway = useSora && !forceStaticVisuals;
 
 		for (let i = 0; i < segCnt; i++) {
 			const d = segLens[i];
@@ -3366,31 +3527,18 @@ One or two sentences only.
 			const segIndex = i + 1;
 
 			const rw = d <= 5 ? 5 : 10;
+			const { promptText, negativePrompt } = buildRunwayPrompt(
+				seg,
+				globalStyle
+			);
+			const canUseRunway =
+				allowRunway && hasTrendImages && seg.imageIndex !== null;
 
 			console.log(
 				`[Seg ${segIndex}/${segCnt}] targetDuration=${d.toFixed(
 					2
-				)}s runwayDuration=${rw}s`
+				)}s runwayDuration=${rw}s useRunway=${canUseRunway ? "yes" : "no"}`
 			);
-
-			const promptBase = `${
-				seg.runwayPrompt || ""
-			}, ${globalStyle}, ${QUALITY_BONUS}, ${PHYSICAL_REALISM_HINT}, ${EYE_REALISM_HINT}, ${SOFT_SAFETY_PAD}, ${HUMAN_SAFETY}, ${BRAND_ENHANCEMENT_HINT}`;
-			const promptText = (() => {
-				const cleaned = scrubPromptForSafety(promptBase);
-				return cleaned.length > PROMPT_CHAR_LIMIT
-					? cleaned.slice(0, PROMPT_CHAR_LIMIT)
-					: cleaned;
-			})();
-
-			const negativeBase =
-				seg.runwayNegativePrompt && seg.runwayNegativePrompt.trim().length
-					? seg.runwayNegativePrompt.trim()
-					: RUNWAY_NEGATIVE_PROMPT;
-			const negativePrompt =
-				negativeBase.length > PROMPT_CHAR_LIMIT
-					? negativeBase.slice(0, PROMPT_CHAR_LIMIT)
-					: negativeBase;
 
 			let clipPath = null;
 
@@ -3415,7 +3563,7 @@ One or two sentences only.
 					targetDuration: d,
 					zoomPan: true,
 				});
-			} else if (hasTrendImages && seg.imageIndex !== null) {
+			} else if (canUseRunway) {
 				const candidatesIdx = [];
 				const baseIdx =
 					seg.imageIndex >= 0 && seg.imageIndex < trendImagePairs.length
@@ -3497,12 +3645,41 @@ One or two sentences only.
 						targetDuration: d,
 					});
 				}
+			} else if (hasTrendImages) {
+				const baseIdx =
+					Number.isInteger(seg.imageIndex) &&
+					seg.imageIndex >= 0 &&
+					seg.imageIndex < trendImagePairs.length
+						? seg.imageIndex
+						: 0;
+				const pair = trendImagePairs[baseIdx] || trendImagePairs[0] || null;
+				const imgUrlCloudinary = pair?.cloudinaryUrl;
+				const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
+
+				if (imgUrlOriginal || imgUrlCloudinary) {
+					clipPath = await generateStaticClipFromImage({
+						segmentIndex: segIndex,
+						imgUrlOriginal,
+						imgUrlCloudinary,
+						ratio,
+						targetDuration: d,
+						zoomPan: true,
+					});
+				}
 			} else {
 				console.log("[Runway] prompt preview", {
 					segment: segIndex,
 					promptPreview: promptText.slice(0, 160),
 					hasTrendImage: false,
 				});
+				clipPath = await generatePlaceholderClip({
+					segmentIndex: segIndex,
+					ratio,
+					targetDuration: d,
+				});
+			}
+
+			if (!clipPath) {
 				clipPath = await generatePlaceholderClip({
 					segmentIndex: segIndex,
 					ratio,
@@ -3791,6 +3968,7 @@ One or two sentences only.
 			ratio,
 			duration,
 			model: ITV_MODEL,
+			useSora,
 			status: "SUCCEEDED",
 			youtubeLink,
 			language,

@@ -227,6 +227,15 @@ const BROWSER_HEADERS = Object.freeze({
 	Referer: "https://trends.google.com/",
 });
 
+const HTML_SCRAPE_HEADERS = Object.freeze({
+	"User-Agent":
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+	Accept:
+		"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+	"Accept-Language": "en-US,en;q=0.9",
+	Referer: "https://www.google.com/",
+});
+
 /* -------------------------------------------------------------------------- */
 /*  Small utils                                                                */
 /* -------------------------------------------------------------------------- */
@@ -1605,7 +1614,10 @@ async function fetchTrendingStory(
 async function scrapeArticleText(url) {
 	if (!url) return null;
 	try {
-		const { data: html } = await axios.get(url, { timeout: 10000 });
+		const { data: html } = await axios.get(url, {
+			timeout: 10000,
+			headers: HTML_SCRAPE_HEADERS,
+		});
 		const $ = cheerio.load(html);
 		const body = $("article").text() || $("body").text();
 		const cleaned = String(body || "")
