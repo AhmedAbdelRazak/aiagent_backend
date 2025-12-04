@@ -1775,7 +1775,6 @@ async function generateOpenAIEditorialFallbackImages({
 				prompt,
 				size,
 				quality: "hd",
-				response_format: "url",
 			});
 			const imgUrl = resp?.data?.[0]?.url;
 			if (!imgUrl) continue;
