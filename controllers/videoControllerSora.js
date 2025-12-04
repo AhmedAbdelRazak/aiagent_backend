@@ -410,18 +410,28 @@ function enforceEngagementOutroText(text, { topic, wordCap }) {
 	const existing = String(text || "").trim();
 	const hasQuestion = /\?/.test(existing);
 	const hasCTA = /(comment|subscribe|follow|like)/i.test(existing);
+	const hasSignOff =
+		/(see you|thanks for|catch you|stay curious|next time)/i.test(existing);
 
 	const safeTopic =
 		sanitizeAudienceFacingText(topic, { allowAITopic: true }) || topic || "";
 	const question = safeTopic
 		? `What do you think about ${safeTopic}?`
 		: "What do you think?";
-	const cta = "Comment below and subscribe for more.";
+	const cta = "Comment below, tap like, and subscribe for more quick updates!";
+	const signOffs = [
+		"See you tomorrow!",
+		"Catch you next time!",
+		"Thanks for watching!",
+		"Stay curious!",
+	];
+	const signOff = choose(signOffs);
 
 	let combined = existing;
 	if (!hasQuestion && !hasCTA) combined = `${question} ${cta}`;
 	else if (!hasQuestion) combined = `${existing} ${question}`;
 	else if (!hasCTA) combined = `${existing} ${cta}`;
+	if (!hasSignOff) combined = `${combined} ${signOff}`;
 
 	combined = combined.replace(/\s+/g, " ").trim();
 
@@ -822,7 +832,7 @@ function planSoraAllocation(segLens, soraBudgetSeconds) {
 	return { useSora: use, perSegSeconds, totalSeconds: used };
 }
 
-function sanitizeSoraPrompt(promptText, topicHint = "") {
+function sanitizeSoraPrompt(promptText, topicHint = "", ratioHint = "") {
 	const safeTopic = String(topicHint || "")
 		.replace(/[^\w\s]/g, " ")
 		.trim();
@@ -833,12 +843,18 @@ function sanitizeSoraPrompt(promptText, topicHint = "") {
 		.trim();
 
 	const guard =
-		"no logos, no brand names, no trademarks, no on-screen text, no watermarks, cinematic, high detail, smooth camera move";
-	const topic = safeTopic ? ` Topic: ${safeTopic}.` : "";
+		"single cinematic shot, realistic lighting and physics, smooth camera move, natural faces, no logos, no brand names, no trademarks, no on-screen text, no watermarks, no slideshow frames";
+	const topic = safeTopic ? ` Topic focus: ${safeTopic}.` : "";
+	const aspect = ratioHint ? ` Frame for ${ratioHint} aspect.` : "";
 
+	const hasMotion =
+		/\b(camera|pan|tilt|tracking|dolly|move|motion|gimbal|zoom)\b/i.test(p);
 	if (!p || p.length < 20)
-		p = "Cinematic sports-news scene with abstract visuals";
-	return `${p}. ${guard}${topic}`.trim();
+		p = "Cinematic editorial news moment with natural movement";
+	else if (!hasMotion)
+		p = `${p}. gentle gimbal push with subtle subject motion`;
+
+	return `${p}. ${guard}${aspect}${topic}`.replace(/\s{2,}/g, " ").trim();
 }
 
 function isModerationBlock(err) {
@@ -935,7 +951,8 @@ async function exactLen(
 	});
 }
 
-async function exactLenAudio(src, targetSeconds, out) {
+async function exactLenAudio(src, targetSeconds, out, opts = {}) {
+	const { allowTempo = true, allowPad = true } = opts;
 	const meta = await ffprobe(src);
 	const inDur = meta.format?.duration || targetSeconds;
 	const diff = +(targetSeconds - inDur).toFixed(3);
@@ -948,15 +965,12 @@ async function exactLenAudio(src, targetSeconds, out) {
 			// close enough
 		} else if (diff < -0.08) {
 			const ratio = inDur / targetSeconds;
-			if (ratio <= 2.0) {
+			if (allowTempo && ratio <= 1.3) {
 				filters.push(`atempo=${Math.min(MAX_ATEMPO, ratio).toFixed(3)}`);
-			} else if (ratio <= 4.0) {
-				const r = Math.min(MAX_ATEMPO, Math.sqrt(ratio));
-				filters.push(`atempo=${r.toFixed(3)},atempo=${r.toFixed(3)}`);
 			} else {
 				cmd.outputOptions("-t", String(targetSeconds));
 			}
-		} else {
+		} else if (allowPad) {
 			const padDur = Math.min(MAX_SILENCE_PAD, diff);
 			if (padDur > 0.05) filters.push(`apad=pad_dur=${padDur.toFixed(3)}`);
 		}
@@ -1722,13 +1736,25 @@ async function generateOpenAIEditorialFallbackImages({
 	ratio,
 	topic,
 	category,
+	maxCount = null,
+	startIndex = 0,
 }) {
 	const size = openAIImageSizeForRatio(ratio);
 	const outputs = [];
 
-	const maxCount = Math.min(segments.length, 10);
-	for (let i = 0; i < maxCount; i++) {
-		const seg = segments[i];
+	const safeSegments = Array.isArray(segments) ? segments : [];
+	const start = Math.max(0, Number(startIndex) || 0);
+	const limitBase = Number.isFinite(maxCount)
+		? Math.max(0, Math.min(maxCount, 10))
+		: Math.min(safeSegments.length - start, 10);
+	const limit = Math.max(0, Math.min(limitBase, safeSegments.length - start));
+
+	for (
+		let idx = start;
+		idx < safeSegments.length && outputs.length < limit;
+		idx++
+	) {
+		const seg = safeSegments[idx];
 		const excerpt = String(seg?.scriptText || "")
 			.replace(/\s+/g, " ")
 			.trim()
@@ -1757,16 +1783,93 @@ async function generateOpenAIEditorialFallbackImages({
 			const up = await uploadTrendImageToCloudinarySmart(
 				imgUrl,
 				ratio,
-				`aivideomatic/fallback_${category}_${Date.now()}_${i}`
+				`aivideomatic/fallback_${category}_${Date.now()}_${idx}`
 			);
 
 			outputs.push({ originalUrl: imgUrl, cloudinaryUrl: up.url });
 		} catch (e) {
-			console.warn(`[OpenAI Fallback Image] seg ${i + 1} failed`, e.message);
+			console.warn(`[OpenAI Fallback Image] seg ${idx + 1} failed`, e.message);
 		}
 	}
 
 	return outputs;
+}
+
+async function ensureUniqueImagesPerSegment({
+	segments,
+	imagePairs,
+	ratio,
+	topic,
+	category,
+	allowGeneration = AUTO_GENERATE_FALLBACK_IMAGES,
+}) {
+	if (!Array.isArray(segments) || !segments.length)
+		return { segments, imagePairs };
+
+	const pairs = Array.isArray(imagePairs) ? [...imagePairs] : [];
+	const plannedIndexes = new Array(segments.length).fill(null);
+	const needs = [];
+	const used = new Set();
+
+	segments.forEach((seg, idx) => {
+		const candidate =
+			Number.isInteger(seg.imageIndex) && seg.imageIndex >= 0
+				? seg.imageIndex
+				: null;
+		const valid =
+			candidate !== null &&
+			candidate < pairs.length &&
+			candidate >= 0 &&
+			!used.has(candidate);
+		if (valid) {
+			plannedIndexes[idx] = candidate;
+			used.add(candidate);
+		} else {
+			needs.push(idx);
+		}
+	});
+
+	if (needs.length && allowGeneration) {
+		const extraImages = await generateOpenAIEditorialFallbackImages({
+			segments: needs.map((i) => segments[i]),
+			ratio,
+			topic,
+			category,
+			maxCount: needs.length,
+		});
+
+		for (let i = 0; i < needs.length; i++) {
+			const segIdx = needs[i];
+			const extra = extraImages[i];
+			if (extra && extra.cloudinaryUrl) {
+				pairs.push(extra);
+				const newIdx = pairs.length - 1;
+				plannedIndexes[segIdx] = newIdx;
+				used.add(newIdx);
+			}
+		}
+	}
+
+	for (let i = 0; i < plannedIndexes.length; i++) {
+		if (plannedIndexes[i] !== null) continue;
+		let candidate = 0;
+		while (candidate < pairs.length && used.has(candidate)) candidate++;
+		if (candidate < pairs.length) {
+			plannedIndexes[i] = candidate;
+			used.add(candidate);
+		} else if (pairs.length > 0) {
+			plannedIndexes[i] = i % pairs.length;
+		} else {
+			plannedIndexes[i] = null;
+		}
+	}
+
+	const updatedSegments = segments.map((seg, idx) => ({
+		...seg,
+		imageIndex: plannedIndexes[idx],
+	}));
+
+	return { segments: updatedSegments, imagePairs: pairs };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1812,7 +1915,8 @@ Segment ${segCnt} is the engagement outro (about ${
 		engagementTailSeconds || "5-6"
 	} seconds):
 - Ask ONE crisp, on-topic question to spark comments.
-- Immediately follow with a warm, slightly funny like/subscribe/comment nudge (American audience).
+- Immediately follow with a warm, playful like/subscribe/comment nudge that sounds like a friendly host (American audience).
+- End with a 3-5 word friendly sign-off (e.g., "See you tomorrow!" or "Stay curious!").
 - Entirely in ${language}.
 `.trim();
 
@@ -1824,6 +1928,8 @@ We need a ${duration}s ${category} YouTube Shorts video titled "${topic}", split
 
 Segment timing:
 ${segDescLines}
+
+Visual engine: OpenAI Sora text-to-video. Each "soraPrompt" must be one cinematic shot with obvious motion; avoid Runway-specific jargon, avoid still frames, and never ask for text overlays or logos.
 
 Narration rules:
 - Natural spoken language, human host.
@@ -1877,16 +1983,17 @@ ${
 Your output for each segment:
 - scriptText (spoken)
 - imageIndex (pick best matching attached photo)
-- runwayPrompt (cinematic, realistic moving shot; text-only; no real names/brands/logos)
-- negativePrompt (comma-separated defects to avoid)
+- soraPrompt (Sora text-to-video prompt for that exact attached photo; cinematic, realistic motion; text-only; no real names/brands/logos)
+- negativePrompt (comma-separated defects Sora must avoid)
 
-Rules for runwayPrompt:
+Rules for soraPrompt:
 - Match the photo’s setting, clothing, lighting, mood.
 - Keep clear motion: camera move and/or subject motion.
 - Physical realism, natural faces/eyes.
+- Do NOT mention Runway or ask for text overlays; this feeds Sora directly.
 
 Return JSON:
-{ "segments": [ { "index": 1, "scriptText": "...", "imageIndex": 0, "runwayPrompt": "...", "negativePrompt": "..." }, ... ] }
+{ "segments": [ { "index": 1, "scriptText": "...", "imageIndex": 0, "soraPrompt": "...", "negativePrompt": "..." }, ... ] }
 `.trim();
 	} else if (
 		category === "Top5" &&
@@ -1913,13 +2020,14 @@ No images are provided; imagine visuals from scratch.
 For each segment output:
 - index
 - scriptText
-- runwayPrompt (include explicit motion; no real names/brands/logos)
+- soraPrompt (Sora text-to-video prompt with explicit motion; no real names/brands/logos; single cinematic shot)
 - negativePrompt
 - overlayText (4-7 words, matches voice beat)
 - referenceImageUrl (direct link to high-quality editorial-style photo)
+- Keep it Sora-friendly: no Runway wording, no text overlays, clear motion.
 
 Return JSON:
-{ "segments": [ { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "...", "overlayText": "...", "referenceImageUrl": "https://..." }, ... ] }
+{ "segments": [ { "index": 1, "scriptText": "...", "soraPrompt": "...", "negativePrompt": "...", "overlayText": "...", "referenceImageUrl": "https://..." }, ... ] }
 `.trim();
 	} else {
 		promptText = `
@@ -1928,11 +2036,11 @@ ${baseIntro}
 No reliable images are available. Imagine visuals from scratch.
 
 Return JSON:
-{ "segments": [ { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "..." }, ... ] }
+{ "segments": [ { "index": 1, "scriptText": "...", "soraPrompt": "...", "negativePrompt": "..." }, ... ] }
 
 Visual rules:
 - Realistic scenes, good lighting, natural faces.
-- EVERY runwayPrompt must include explicit motion.
+- EVERY soraPrompt must include explicit motion and read like a single cinematic shot for Sora.
 - No real names/brands/logos.
 `.trim();
 	}
@@ -1957,8 +2065,10 @@ Visual rules:
 	let segments = plan.segments.map((s, idx) => ({
 		index: typeof s.index === "number" ? s.index : idx + 1,
 		scriptText: String(s.scriptText || "").trim(),
-		runwayPrompt: String(s.runwayPrompt || "").trim(),
-		runwayNegativePrompt: String(s.negativePrompt || "").trim(),
+		soraPrompt: String(s.soraPrompt || s.visualPrompt || "").trim(),
+		soraNegativePrompt: String(
+			s.negativePrompt || s.soraNegativePrompt || s.runwayNegativePrompt || ""
+		).trim(),
 		overlayText: String(s.overlayText || s.overlay || "").trim(),
 		referenceImageUrl: normalizeRemoteUrl(s.referenceImageUrl) || "",
 		imageIndex: Number.isInteger(s.imageIndex) ? s.imageIndex : null,
@@ -2131,7 +2241,8 @@ async function fetchElevenVoices() {
 			timeout: 8000,
 		});
 		const voices = Array.isArray(data?.voices) ? data.voices : [];
-		return voices.length ? voices : null;
+		if (!voices.length) return null;
+		return voices;
 	} catch (e) {
 		console.warn("[Eleven] fetch voices failed", e.message);
 		return null;
@@ -2149,59 +2260,6 @@ function slimVoices(voices, limit = 30) {
 			labels: v.labels || {},
 			description: v.description || "",
 		}));
-}
-
-function filterVoicesByLanguagePreferences(language, voices) {
-	const list = slimVoices(voices, 40);
-
-	if (language === "Arabic") {
-		const isEgyptian = (v) => {
-			const s = (
-				JSON.stringify(v.labels) +
-				" " +
-				v.description +
-				" " +
-				v.name
-			).toLowerCase();
-			return s.includes("egypt") || s.includes("masri");
-		};
-		const isArabic = (v) => {
-			const s = (
-				JSON.stringify(v.labels) +
-				" " +
-				v.description +
-				" " +
-				v.name
-			).toLowerCase();
-			return s.includes("arabic");
-		};
-		const egyptian = list.filter(isEgyptian);
-		if (egyptian.length) return egyptian;
-		const arabic = list.filter(isArabic);
-		if (arabic.length) return arabic;
-		return list;
-	}
-
-	if (language === "English") {
-		const isAmerican = (v) => {
-			const labels = v.labels || {};
-			const labelStr = JSON.stringify(labels).toLowerCase();
-			const accent = String(labels.accent || labels.Accent || "").toLowerCase();
-			const s = `${labelStr} ${v.description} ${v.name}`.toLowerCase();
-			return (
-				accent.includes("american") ||
-				accent.includes("us") ||
-				s.includes("american") ||
-				s.includes("us english") ||
-				s.includes("american accent") ||
-				s.includes("us accent")
-			);
-		};
-		const us = list.filter(isAmerican);
-		return us.length ? us : list;
-	}
-
-	return list;
 }
 
 async function selectBestElevenVoice(
@@ -2222,28 +2280,118 @@ async function selectBestElevenVoice(
 		fallbackCandidates[0] || staticLanguageVoice || staticDefaultVoice || null;
 
 	const voices = await fetchElevenVoices();
-	if (!voices?.length) {
-		return fallbackId
-			? {
-					voiceId: fallbackId,
-					name: "default",
-					source: "static",
-					reason: "/voices unavailable; using static fallback mapping.",
-			  }
-			: null;
+	if (!voices || !voices.length) {
+		if (fallbackId) {
+			return {
+				voiceId: fallbackId,
+				name: "default",
+				source: "static",
+				reason:
+					"ElevenLabs /voices unavailable, using static fallback map (avoiding previous voice where possible).",
+			};
+		}
+		return null;
 	}
 
-	let candidates = filterVoicesByLanguagePreferences(language, voices);
+	const slim = slimVoices(voices, 40);
+	let candidates = slim;
+
+	if (language === "Arabic") {
+		const isEgyptian = (v) => {
+			const labels = v.labels || {};
+			const labelStr = JSON.stringify(labels).toLowerCase();
+			const desc = String(v.description || "").toLowerCase();
+			const name = String(v.name || "").toLowerCase();
+			return (
+				labelStr.includes("egypt") ||
+				desc.includes("egypt") ||
+				name.includes("egypt") ||
+				name.includes("masri") ||
+				desc.includes("masri")
+			);
+		};
+
+		const isArabic = (v) => {
+			const labels = v.labels || {};
+			const labelStr = JSON.stringify(labels).toLowerCase();
+			const desc = String(v.description || "").toLowerCase();
+			const name = String(v.name || "").toLowerCase();
+			return (
+				labelStr.includes("arabic") ||
+				desc.includes("arabic") ||
+				name.includes("arabic")
+			);
+		};
+
+		const egyptian = slim.filter(isEgyptian);
+		const arabic = slim.filter(isArabic);
+		if (egyptian.length) {
+			candidates = egyptian;
+			console.log(
+				`[Eleven] Prioritising Egyptian Arabic voices (${egyptian.length})`
+			);
+		} else if (arabic.length) {
+			candidates = arabic;
+			console.log(`[Eleven] Prioritising Arabic voices (${arabic.length})`);
+		}
+	}
+
+	if (language === "English") {
+		const americanCandidates = slim.filter((v) => {
+			const labels = v.labels || {};
+			const labelStr = JSON.stringify(labels).toLowerCase();
+			const accent = String(labels.accent || labels.Accent || "").toLowerCase();
+			const desc = String(v.description || "").toLowerCase();
+			const name = String(v.name || "").toLowerCase();
+
+			if (accent.includes("american") || accent.includes("us")) return true;
+			if (labelStr.includes("american") || labelStr.includes("us english"))
+				return true;
+			if (desc.includes("american accent") || desc.includes("us accent"))
+				return true;
+			if (name.includes("us ") || name.includes("usa")) return true;
+			return false;
+		});
+
+		if (americanCandidates.length) {
+			candidates = americanCandidates;
+			console.log(
+				`[Eleven] Restricted to ${americanCandidates.length} American English voices`
+			);
+		} else if (fallbackId) {
+			console.warn(
+				"[Eleven] No explicit American English voices detected in /voices - using static fallback voice."
+			);
+			return {
+				voiceId: fallbackId,
+				name: "default",
+				source: "static-fallback-no-american-tag",
+				reason:
+					"Could not confidently find an American-accent English voice in /voices; using predefined US voice.",
+			};
+		}
+	}
+
 	if (avoidSet.size) {
 		const filtered = candidates.filter((v) => !avoidSet.has(v.id));
-		if (filtered.length) candidates = filtered;
+		if (filtered.length) {
+			console.log(
+				`[Eleven] Avoiding previously used voice(s) ${[...avoidSet].join(", ")}`
+			);
+			candidates = filtered;
+		} else {
+			console.warn(
+				"[Eleven] All candidate voices are in the avoid list - keeping full candidate set."
+			);
+		}
 	}
 
 	const tone = deriveVoiceSettings(sampleText || "", category);
 	const avoidText = avoidSet.size
-		? `Avoid these voice IDs: ${Array.from(avoidSet).join(
-				", "
-		  )}. You MUST choose a different id.`
+		? `
+The last video used these voice IDs: ${Array.from(avoidSet).join(", ")}.
+You MUST choose a different "id" than any of these from the voices array below.
+`
 		: "";
 
 	const ask = `
@@ -2251,21 +2399,28 @@ You are selecting the MOST natural-sounding ElevenLabs voice for a YouTube Short
 
 Goal:
 - Category: ${category}
-- Language preference: ${language}
-- Tone: ${tone.isSensitive ? "sensitive / serious" : "neutral to energetic"}
-- It must sound like a real human broadcaster.
+- Language preference label: ${language}
+- Script tone: ${
+		tone.isSensitive ? "sensitive / serious" : "neutral to energetic"
+	}
+- It should sound like a real human news or sports broadcaster, never robotic.
 
 ${
 	language === "English"
-		? "IMPORTANT: Prefer a clearly American / US English accent.\n"
+		? "- IMPORTANT: Only select a voice with a clearly American / US English accent.\n- Do NOT pick British, Australian or other non-US accents."
 		: ""
-}${avoidText}
+}
+
+${avoidText}
+
+You are given a JSON array called "voices" with candidate voices from the ElevenLabs /voices API.
+Pick ONE best "id" to use.
 
 voices:
 ${JSON.stringify(candidates).slice(0, 11000)}
 
 Return ONLY JSON:
-{ "voiceId": "<id>", "name": "<name>", "reason": "short" }
+{ "voiceId": "<id>", "name": "<readable name>", "reason": "short explanation" }
 `.trim();
 
 	try {
@@ -2284,6 +2439,11 @@ Return ONLY JSON:
 
 	if (fallbackId) {
 		const reused = avoidSet.has(fallbackId);
+		if (reused) {
+			console.warn(
+				`[Eleven] Fallback voice ${fallbackId} is the same as last used; no alternative available.`
+			);
+		}
 		return {
 			voiceId: fallbackId,
 			name: "default",
@@ -2432,13 +2592,14 @@ async function generateSoraClip({
 	ratio,
 	targetDuration,
 	soraSecondsOverride,
+	topic = "",
 }) {
 	const seconds =
 		soraSecondsOverride && Number(soraSecondsOverride)
 			? String(Number(soraSecondsOverride))
 			: soraSecondsForSegment(targetDuration);
 	const size = soraSizeForRatio(ratio);
-	const prompt = sanitizeSoraPrompt(promptText);
+	const prompt = sanitizeSoraPrompt(promptText, topic, ratio);
 
 	console.log(
 		`[Sora] seg ${segmentIndex}: TEXT-ONLY seconds=${seconds} size=${size}`
@@ -2676,6 +2837,9 @@ exports.createVideoSoraPro = async (req, res) => {
 		);
 		console.log("[Timing] initial segment lengths", segLens);
 
+		// Aim to upload up to 5 high-quality images from Trends (matches puppeteer output)
+		const maxTrendUploads = Math.min(5, trendStory?.images?.length || 5);
+
 		/* 5) Top5 outline */
 		const top5Outline =
 			category === "Top5" ? await generateTop5Outline(topic, language) : null;
@@ -2693,7 +2857,7 @@ exports.createVideoSoraPro = async (req, res) => {
 
 		if (canUseTrendsImages) {
 			send("FETCHING_IMAGES", {
-				msg: "Validating + uploading trend images (robust)...",
+				msg: "Validating + uploading trend images (up to 5, robust)...",
 			});
 
 			const slugBase = topic
@@ -2702,12 +2866,12 @@ exports.createVideoSoraPro = async (req, res) => {
 				.replace(/^_+|_+$/g, "")
 				.slice(0, 40);
 
-			// Try to build up to 8 usable pairs from up to 24 candidates
+			// Upload a concise, high-quality set (up to 5) from the Google Trends bundle
 			trendImagePairs = await buildUsableImagePairs({
-				urls: trendStory.images.slice(0, 24),
+				urls: trendStory.images.slice(0, 16),
 				ratio,
 				publicIdPrefix: `aivideomatic/trend_seeds/${slugBase}`,
-				maxImages: 8,
+				maxImages: maxTrendUploads,
 			});
 		}
 
@@ -2764,7 +2928,20 @@ exports.createVideoSoraPro = async (req, res) => {
 			segments = planImageIndexes(segments, trendImagePairs.length);
 		}
 
-		/* 10) Tighten narration to word caps */
+		/* 10) Guarantee one image per segment (no repeats), topping up with AI fallbacks if needed */
+		const uniqueness = await ensureUniqueImagesPerSegment({
+			segments,
+			imagePairs: trendImagePairs,
+			ratio,
+			topic,
+			category,
+			allowGeneration: AUTO_GENERATE_FALLBACK_IMAGES,
+		});
+		segments = uniqueness.segments;
+		trendImagePairs = uniqueness.imagePairs;
+		hasTrendImages = trendImagePairs.length > 0;
+
+		/* 11) Tighten narration to word caps */
 		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 		for (let i = 0; i < segments.length; i++) {
 			const words = segments[i].scriptText
@@ -2795,7 +2972,7 @@ One or two sentences.
 			}),
 		}));
 
-		/* 11) Ensure engagement outro has question + CTA */
+		/* 12) Ensure engagement outro has question + CTA */
 		if (segments.length) {
 			const tailCap = Math.floor(segLens[segLens.length - 1] * WORDS_PER_SEC);
 			const lastIdx = segments.length - 1;
@@ -2810,7 +2987,7 @@ One or two sentences.
 
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 
-		/* 12) Recompute segment durations from script */
+		/* 13) Recompute segment durations from script */
 		const recomputed = recomputeSegmentDurationsFromScript(
 			segments,
 			totalDurationTarget
@@ -2823,7 +3000,7 @@ One or two sentences.
 			segLens = recomputed;
 		}
 
-		/* 13) Sora allocation (cost-aware) */
+		/* 14) Sora allocation (cost-aware) */
 		const soraBudgetSeconds = useSora ? computeSoraBudgetSeconds(duration) : 0;
 		const soraPlan = useSora
 			? planSoraAllocation(segLens, soraBudgetSeconds)
@@ -2849,7 +3026,7 @@ One or two sentences.
 			soraCostEstimateUSD,
 		});
 
-		/* 14) Global style phrase */
+		/* 15) Global style phrase */
 		let globalStyle = "";
 		try {
 			globalStyle = (
@@ -2861,7 +3038,7 @@ One or two sentences.
 				.trim();
 		} catch {}
 
-		/* 15) SEO title, description, tags */
+		/* 16) SEO title, description, tags */
 		let seoTitle = "";
 		try {
 			const seedHeadlines = trendStory
@@ -2922,7 +3099,7 @@ One or two sentences.
 			.filter(Boolean);
 		tags = [...new Set(tags)];
 
-		/* 16) Load last voice + pick new ElevenLabs voice (avoid repetition) */
+		/* 17) Load last voice + pick new ElevenLabs voice (avoid repetition) */
 		let avoidVoiceIds = [];
 		try {
 			const last = await Video.findOne({
@@ -2931,9 +3108,18 @@ One or two sentences.
 			})
 				.sort({ createdAt: -1 })
 				.select("elevenLabsVoice");
-			if (last?.elevenLabsVoice?.voiceId)
+			if (last?.elevenLabsVoice?.voiceId) {
 				avoidVoiceIds.push(last.elevenLabsVoice.voiceId);
-		} catch {}
+				console.log("[TTS] Last used ElevenLabs voice", {
+					voiceId: last.elevenLabsVoice.voiceId,
+				});
+			}
+		} catch (e) {
+			console.warn(
+				"[TTS] Unable to load last ElevenLabs voice metadata",
+				e.message
+			);
+		}
 
 		let chosenVoice = null;
 		try {
@@ -2943,9 +3129,19 @@ One or two sentences.
 				fullScript,
 				avoidVoiceIds
 			);
-		} catch {}
+			if (chosenVoice) {
+				console.log("[TTS] Using ElevenLabs voice", {
+					id: chosenVoice.voiceId,
+					name: chosenVoice.name,
+					source: chosenVoice.source,
+					reason: chosenVoice.reason,
+				});
+			}
+		} catch (e) {
+			console.warn("[TTS] Voice selection failed", e.message);
+		}
 
-		/* 17) Background music */
+		/* 18) Background music */
 		let music = null;
 		let voiceGain = 1.4;
 		let musicGain = 0.12;
@@ -3012,7 +3208,7 @@ One or two sentences.
 			};
 		}
 
-		/* 18) Generate per-segment video clips (Sora + static fallback) */
+		/* 19) Generate per-segment video clips (Sora + static fallback) */
 		const segCnt = segLens.length;
 		const soraPerSegSeconds = soraPlan?.perSegSeconds || [];
 		const clips = [];
@@ -3035,7 +3231,7 @@ One or two sentences.
 			);
 
 			const basePrompt = [
-				seg.runwayPrompt,
+				seg.soraPrompt,
 				globalStyle,
 				PROMPT_BITS.quality,
 				PROMPT_BITS.physics,
@@ -3051,10 +3247,11 @@ One or two sentences.
 			if (promptText.length > PROMPT_CHAR_LIMIT)
 				promptText = promptText.slice(0, PROMPT_CHAR_LIMIT);
 
-			const negative = (seg.runwayNegativePrompt || PROMPT_BITS.defects).slice(
-				0,
-				PROMPT_CHAR_LIMIT
-			);
+			const negative = (
+				seg.soraNegativePrompt ||
+				seg.runwayNegativePrompt ||
+				PROMPT_BITS.defects
+			).slice(0, PROMPT_CHAR_LIMIT);
 
 			let clipPath = null;
 
@@ -3073,6 +3270,7 @@ One or two sentences.
 						ratio,
 						targetDuration: d,
 						soraSecondsOverride: override,
+						topic,
 					});
 				} catch (e) {
 					if (isModerationBlock(e)) {
@@ -3139,7 +3337,7 @@ One or two sentences.
 			});
 		}
 
-		/* 19) Assemble silent video */
+		/* 20) Assemble silent video */
 		send("ASSEMBLING_VIDEO", {
 			msg: "Blending clips with cinematic transitions...",
 		});
@@ -3177,7 +3375,7 @@ One or two sentences.
 		});
 		unlinkSafe(silent);
 
-		/* 20) Voice-over & music */
+		/* 21) Voice-over & music */
 		send("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
 
 		const fixedPieces = [];
@@ -3213,7 +3411,10 @@ One or two sentences.
 				fs.writeFileSync(raw, Buffer.from(await tts.arrayBuffer()));
 			}
 
-			await exactLenAudio(raw, segLens[i], fixed);
+			await exactLenAudio(raw, segLens[i], fixed, {
+				allowTempo: false,
+				allowPad: true,
+			});
 			unlinkSafe(raw);
 			fixedPieces.push(fixed);
 		}
@@ -3272,10 +3473,13 @@ One or two sentences.
 		}
 		unlinkSafe(ttsJoin);
 
-		await exactLenAudio(mixedRaw, totalDurationTarget, mixed);
+		await exactLenAudio(mixedRaw, totalDurationTarget, mixed, {
+			allowTempo: false,
+			allowPad: true,
+		});
 		unlinkSafe(mixedRaw);
 
-		/* 21) Mux audio + video */
+		/* 22) Mux audio + video */
 		send("SYNCING_VOICE_MUSIC", { msg: "Muxing final video" });
 
 		const safeTitle = seoTitle
@@ -3310,7 +3514,7 @@ One or two sentences.
 		unlinkSafe(silentFixed);
 		unlinkSafe(mixed);
 
-		/* 22) YouTube upload */
+		/* 23) YouTube upload */
 		let youtubeLink = "";
 		let youtubeTokens = null;
 		try {
@@ -3328,7 +3532,7 @@ One or two sentences.
 			console.warn("[YouTube] upload skipped", e.message);
 		}
 
-		/* 23) Persist to Mongo */
+		/* 24) Persist to Mongo */
 		const elevenLabsVoice =
 			chosenVoice || voiceToneSample
 				? {
@@ -3375,7 +3579,7 @@ One or two sentences.
 			backgroundMusic: backgroundMusicMeta,
 		});
 
-		/* 24) Optional scheduling */
+		/* 25) Optional scheduling */
 		if (schedule) {
 			const { type, timeOfDay, startDate, endDate } = schedule;
 			const { next, start, end } = await computeNextRunPST({
@@ -3402,7 +3606,7 @@ One or two sentences.
 			send("VIDEO_SCHEDULED", { msg: "Scheduled" });
 		}
 
-		/* 25) Done */
+		/* 26) Done */
 		send("COMPLETED", {
 			id: doc._id,
 			youtubeLink,
