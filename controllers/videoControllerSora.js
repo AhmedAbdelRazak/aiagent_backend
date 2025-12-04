@@ -1774,7 +1774,7 @@ async function generateOpenAIEditorialFallbackImages({
 				model: "gpt-image-1",
 				prompt,
 				size,
-				quality: "hd",
+				quality: "high",
 			});
 			const imgUrl = resp?.data?.[0]?.url;
 			if (!imgUrl) continue;
