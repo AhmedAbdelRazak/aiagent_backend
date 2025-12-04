@@ -542,11 +542,11 @@ function openAIImageSizeForRatio(ratio) {
 	switch (ratio) {
 		case "720:1280":
 		case "832:1104":
-			return "1024x1792";
+			return "1024x1536";
 		case "960:960":
 			return "1024x1024";
 		default:
-			return "1792x1024";
+			return "1536x1024";
 	}
 }
 
@@ -2604,12 +2604,26 @@ async function generateSoraClip({
 		`[Sora] seg ${segmentIndex}: TEXT-ONLY seconds=${seconds} size=${size}`
 	);
 
-	const job = await openai.videos.create({
-		model: SORA_MODEL,
-		prompt,
-		seconds,
-		size,
-	});
+	let job = null;
+	try {
+		job = await openai.videos.create({
+			model: SORA_MODEL,
+			prompt,
+			seconds,
+			size,
+		});
+	} catch (err) {
+		console.error("[Sora] create failed", {
+			segment: segmentIndex,
+			seconds,
+			size,
+			message: err?.message,
+			code: err?.code || err?.response?.data?.error?.code || null,
+			status: err?.response?.status || null,
+			promptPreview: prompt?.slice?.(0, 160) || "",
+		});
+		throw err;
+	}
 
 	let status = job.status;
 	let attempts = 0;
@@ -2625,17 +2639,41 @@ async function generateSoraClip({
 	}
 
 	if (status !== "completed") {
+		console.error("[Sora] job failed", {
+			segment: segmentIndex,
+			jobId: job.id,
+			status,
+			code: job?.error?.code || null,
+			message: job?.error?.message || null,
+			seconds,
+			size,
+			promptPreview: prompt?.slice?.(0, 160) || "",
+		});
 		const err = new Error(
 			job.error?.message || `Sora job ${job.id} failed (status=${status})`
 		);
 		err.code = job.error?.code;
+		err.jobId = job.id;
+		err.status = status;
 		throw err;
 	}
 
-	const response = await openai.videos.downloadContent(job.id, {
-		variant: "video",
-	});
-	const buf = Buffer.from(await response.arrayBuffer());
+	let buf = null;
+	try {
+		const response = await openai.videos.downloadContent(job.id, {
+			variant: "video",
+		});
+		buf = Buffer.from(await response.arrayBuffer());
+	} catch (err) {
+		console.error("[Sora] download failed", {
+			segment: segmentIndex,
+			jobId: job.id,
+			message: err?.message,
+			code: err?.code || err?.response?.data?.error?.code || null,
+			status: err?.response?.status || null,
+		});
+		throw err;
+	}
 	const outPath = tmpFile(`sora_${segmentIndex}`, ".mp4");
 	fs.writeFileSync(outPath, buf);
 	return outPath;
@@ -3272,6 +3310,13 @@ One or two sentences.
 						topic,
 					});
 				} catch (e) {
+					console.error("[Sora] error detail", {
+						segment: segIndex,
+						code: e?.code || e?.response?.data?.error?.code || null,
+						status: e?.status || e?.response?.status || null,
+						message: e?.message,
+						jobId: e?.jobId,
+					});
 					if (isModerationBlock(e)) {
 						console.warn(
 							`[Sora] seg ${segIndex}: moderation_blocked -> static fallback`
