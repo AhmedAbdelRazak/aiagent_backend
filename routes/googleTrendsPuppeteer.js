@@ -3,6 +3,12 @@
 
 require("dotenv").config();
 const express = require("express");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const crypto = require("crypto");
+const child_process = require("child_process");
+const axios = require("axios");
 const puppeteer = require("puppeteer-extra");
 const Stealth = require("puppeteer-extra-plugin-stealth");
 const OpenAI = require("openai");
@@ -16,6 +22,75 @@ const ROW_TIMEOUT_MS = 12_000; // per‑row timeout (ms)
 const PROTOCOL_TIMEOUT = 120_000; // whole‑browser cap (ms)
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
 const log = (...m) => console.log("[Trends]", ...m);
+const ffmpegPath =
+	process.env.FFMPEG_PATH || process.env.FFMPEG || process.env.FFMPEG_BIN || "ffmpeg";
+function tmpFile(tag, ext = "") {
+	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
+}
+
+async function downloadImageToTemp(url, ext = ".jpg") {
+	const tmp = tmpFile("trend_raw", ext);
+	const writer = fs.createWriteStream(tmp);
+	const resp = await axios.get(url, { responseType: "stream" });
+	await new Promise((resolve, reject) => {
+		resp.data.pipe(writer).on("finish", resolve).on("error", reject);
+	});
+	return tmp;
+}
+
+async function computeImageHashFromFile(filePath) {
+	return new Promise((resolve) => {
+		const args = [
+			"-v",
+			"error",
+			"-i",
+			filePath,
+			"-vf",
+			"scale=16:16,format=gray",
+			"-f",
+			"rawvideo",
+			"-pix_fmt",
+			"gray",
+			"-",
+		];
+		const proc = child_process.spawn(ffmpegPath, args, { encoding: null });
+		const chunks = [];
+		let failed = false;
+		proc.stdout.on("data", (d) => chunks.push(d));
+		proc.stderr.on("data", () => {});
+		proc.on("error", () => {
+			failed = true;
+			resolve(null);
+		});
+		proc.on("close", (code) => {
+			if (failed || code !== 0 || !chunks.length) return resolve(null);
+			try {
+				const buf = Buffer.concat(chunks);
+				const hash = crypto.createHash("sha1").update(buf).digest("hex");
+				return resolve(hash);
+			} catch {
+				return resolve(null);
+			}
+		});
+	});
+}
+
+async function computeImageHashFromUrl(url) {
+	let tmp = null;
+	try {
+		tmp = await downloadImageToTemp(url, ".jpg");
+		return await computeImageHashFromFile(tmp);
+	} catch (e) {
+		log("[ImageHash] unable to hash image", e.message || String(e));
+		return null;
+	} finally {
+		if (tmp) {
+			try {
+				fs.unlinkSync(tmp);
+			} catch (_) {}
+		}
+	}
+}
 
 /* ───────────────────────────────────────────── OpenAI client + helpers */
 
@@ -559,7 +634,24 @@ function inferAspectFromUrl(url) {
 	}
 }
 
-function buildStoryImages(story) {
+async function dedupeImagesByContent(urls, limit = 12) {
+	const uniq = [];
+	const seenUrls = new Set();
+	const seenHashes = new Set();
+
+	for (const url of urls) {
+		if (!url || seenUrls.has(url)) continue;
+		const hash = await computeImageHashFromUrl(url);
+		if (hash && seenHashes.has(hash)) continue;
+		seenUrls.add(url);
+		if (hash) seenHashes.add(hash);
+		uniq.push(url);
+		if (uniq.length >= limit) break;
+	}
+	return uniq;
+}
+
+async function buildStoryImages(story) {
 	const seen = new Set();
 	const pool = [];
 	const push = (u) => {
@@ -581,14 +673,18 @@ function buildStoryImages(story) {
 	if (portrait && portrait !== landscape) ordered.push(portrait);
 	if (!portrait && square && square !== landscape) ordered.push(square);
 	for (const u of pool) if (!ordered.includes(u)) ordered.push(u);
-	return ordered;
+
+	return await dedupeImagesByContent(ordered, 12);
 }
 
-function decorateStoriesWithImages(stories) {
-	return stories.map((s) => ({
-		...s,
-		images: buildStoryImages(s),
-	}));
+async function decorateStoriesWithImages(stories) {
+	const mapped = await Promise.all(
+		stories.map(async (s) => ({
+			...s,
+			images: await buildStoryImages(s),
+		}))
+	);
+	return mapped;
 }
 
 router.get("/google-trends", async (req, res) => {
@@ -624,7 +720,7 @@ router.get("/google-trends", async (req, res) => {
 		});
 
 		// 3) Ensure we always surface multiple images per topic (mixing aspect hints).
-		stories = decorateStoriesWithImages(stories);
+		stories = await decorateStoriesWithImages(stories);
 
 		return res.json({
 			generatedAt: new Date().toISOString(),
