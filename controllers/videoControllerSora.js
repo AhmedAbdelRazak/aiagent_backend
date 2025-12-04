@@ -832,40 +832,147 @@ function planSoraAllocation(segLens, soraBudgetSeconds) {
 	return { useSora: use, perSegSeconds, totalSeconds: used };
 }
 
-function sanitizeSoraPrompt(promptText, topicHint = "", ratioHint = "") {
-	const safeTopic = String(topicHint || "")
-		.replace(/[^\w\s]/g, " ")
+function escapeRegExp(str) {
+	return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Extract likely "real person / public figure" name-like phrases from the topic.
+// This is intentionally conservative: it mostly targets Title Case multi-word names.
+function extractLikelyPersonPhrases(text = "") {
+	const t = String(text || "")
+		.replace(/[“”"]/g, "")
+		.replace(/[’]/g, "'")
+		.replace(/\s+/g, " ")
 		.trim();
+
+	const out = new Set();
+
+	// Title Case sequences: "Kristin Chenoweth", "Steve Cropper", etc.
+	const re = /\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){1,3}\b/g;
+	let m;
+	while ((m = re.exec(t))) {
+		const phrase = String(m[0] || "").trim();
+		if (phrase.split(/\s+/).length >= 2) out.add(phrase);
+	}
+
+	// Possessive single word: "Kristin’s" etc (rarely enough but helps)
+	const rePoss = /\b[A-Z][a-z]{2,}['’]s\b/g;
+	while ((m = rePoss.exec(text))) {
+		out.add(String(m[0]).replace(/['’]s$/i, ""));
+	}
+
+	return Array.from(out);
+}
+
+function sanitizeTopicHintForSora(topicHint = "") {
+	let t = String(topicHint || "")
+		.replace(/[“”"]/g, "")
+		.replace(/[’]/g, "'")
+		.replace(/\([^)]*\)/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+
+	// Remove likely real-person phrases from the topic entirely
+	const banned = extractLikelyPersonPhrases(t);
+	for (const phrase of banned) {
+		const r = new RegExp(`\\b${escapeRegExp(phrase)}\\b`, "gi");
+		t = t.replace(r, " ");
+		const rPoss = new RegExp(`\\b${escapeRegExp(phrase)}\\b\\s*'s\\b`, "gi");
+		t = t.replace(rPoss, " ");
+	}
+
+	// Cleanup leftover possessives / punctuation
+	t = t
+		.replace(/\b's\b/gi, " ")
+		.replace(/[^\w\s]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+
+	// If it collapsed to nothing useful, return empty -> we simply won't add it
+	if (t.length < 12) return "";
+
+	return t;
+}
+
+function sanitizeSoraPrompt(promptText, topicHint = "", ratioHint = "") {
+	// 1) Start from prompt text, but scrub any likely real-person phrases based on the topic
 	let p = String(promptText || "")
+		.replace(/[“”"]/g, "")
+		.replace(/[’]/g, "'");
+
+	const banned = extractLikelyPersonPhrases(topicHint);
+	for (const phrase of banned) {
+		const r = new RegExp(`\\b${escapeRegExp(phrase)}\\b`, "gi");
+		p = p.replace(r, " ");
+		const rPoss = new RegExp(`\\b${escapeRegExp(phrase)}\\b\\s*'s\\b`, "gi");
+		p = p.replace(rPoss, " ");
+	}
+
+	// 2) Keep Sora-friendly characters, collapse whitespace
+	p = p
 		.replace(/[^\w\s.,-]/g, " ")
-		.replace(/\b[A-Z][a-z]{2,}\b/g, "") // reduce proper nouns
 		.replace(/\s{2,}/g, " ")
 		.trim();
 
+	// 3) Ensure motion (Sora hates “still frame”-ish prompts)
+	const hasMotion =
+		/\b(camera|pan|tilt|tracking|track|dolly|crane|handheld|gimbal|move|motion|zoom|push|pull|orbit)\b/i.test(
+			p
+		);
+
+	if (!p || p.length < 20) {
+		p =
+			"Cinematic editorial news moment with clear motion and realistic lighting";
+	} else if (!hasMotion) {
+		p = `${p}. gentle gimbal push with subtle subject motion`;
+	}
+
+	// 4) Guardrails (and explicitly forbid recognizable real people)
 	const guard =
-		"single cinematic shot, realistic lighting and physics, smooth camera move, natural faces, no logos, no brand names, no trademarks, no on-screen text, no watermarks, no slideshow frames";
-	const topic = safeTopic ? ` Topic focus: ${safeTopic}.` : "";
+		"single cinematic shot, obvious motion, realistic lighting and physics, natural faces, no recognizable real people or celebrity/public-figure likeness, no logos, no brand names, no trademarks, no on-screen text, no watermarks, no UI, no slideshow frames";
+
 	const aspect = ratioHint ? ` Frame for ${ratioHint} aspect.` : "";
 
-	const hasMotion =
-		/\b(camera|pan|tilt|tracking|dolly|move|motion|gimbal|zoom)\b/i.test(p);
-	if (!p || p.length < 20)
-		p = "Cinematic editorial news moment with natural movement";
-	else if (!hasMotion)
-		p = `${p}. gentle gimbal push with subtle subject motion`;
+	// Only add a sanitized topic if it doesn’t look like it’s mainly a person’s name
+	const safeTopic = sanitizeTopicHintForSora(topicHint);
+	const topic = safeTopic ? ` Context: ${safeTopic}.` : "";
 
 	return `${p}. ${guard}${aspect}${topic}`.replace(/\s{2,}/g, " ").trim();
 }
 
 function isModerationBlock(err) {
-	const code =
-		err?.code ||
-		err?.response?.data?.error?.code ||
-		err?.response?.data?.error?.type;
-	if (code && String(code).toLowerCase().includes("moderation")) return true;
-	return String(err?.message || "")
-		.toLowerCase()
-		.includes("moderation");
+	const parts = [];
+
+	const push = (v) => {
+		if (v === undefined || v === null) return;
+		const s = String(v).toLowerCase();
+		if (s) parts.push(s);
+	};
+
+	// Common places
+	push(err?.code);
+	push(err?.status);
+	push(err?.message);
+
+	// Our thrown errors may attach these
+	push(err?.jobId);
+	push(err?.fail?.code);
+	push(err?.fail?.message);
+
+	// OpenAI SDK / axios-ish shapes
+	push(err?.response?.status);
+	push(err?.response?.data?.error?.code);
+	push(err?.response?.data?.error?.type);
+	push(err?.response?.data?.error?.message);
+
+	const hay = parts.join(" ");
+
+	// Broad but practical for T2V failures
+	return (
+		/(moderation|policy|safety|content\s*policy|violat|disallow|rejected)/i.test(
+			hay
+		) || /(public\s*figure|real\s*person|celebrity|likeness)/i.test(hay)
+	);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2597,7 +2704,10 @@ async function generateSoraClip({
 		soraSecondsOverride && Number(soraSecondsOverride)
 			? String(Number(soraSecondsOverride))
 			: soraSecondsForSegment(targetDuration);
+
 	const size = soraSizeForRatio(ratio);
+
+	// IMPORTANT: This now avoids re-injecting celebrity names from `topic` into the final prompt.
 	const prompt = sanitizeSoraPrompt(promptText, topic, ratio);
 
 	console.log(
@@ -2620,60 +2730,97 @@ async function generateSoraClip({
 			message: err?.message,
 			code: err?.code || err?.response?.data?.error?.code || null,
 			status: err?.response?.status || null,
-			promptPreview: prompt?.slice?.(0, 160) || "",
+			promptPreview: prompt?.slice?.(0, 200) || "",
 		});
 		throw err;
 	}
 
-	let status = job.status;
+	const RUNNING = new Set(["queued", "in_progress", "processing"]);
 	let attempts = 0;
 
+	// Poll and ALWAYS keep the latest job object (so we can read error details)
 	while (
-		(status === "queued" || status === "in_progress") &&
+		RUNNING.has(String(job?.status || "")) &&
 		attempts < MAX_POLL_ATTEMPTS
 	) {
 		await sleep(POLL_INTERVAL_MS);
-		const updated = await openai.videos.retrieve(job.id);
-		status = updated.status;
+
+		try {
+			const updated = await openai.videos.retrieve(job.id);
+			if (updated) job = updated;
+		} catch (pollErr) {
+			// transient poll errors shouldn't instantly kill the whole job
+			console.warn("[Sora] poll failed", {
+				segment: segmentIndex,
+				jobId: job?.id,
+				attempt: attempts + 1,
+				message: pollErr?.message,
+				code: pollErr?.code || pollErr?.response?.data?.error?.code || null,
+				status: pollErr?.response?.status || null,
+			});
+		}
+
 		attempts++;
 	}
 
-	if (status !== "completed") {
+	if (String(job?.status) !== "completed") {
+		const jobErr =
+			job?.error ||
+			job?.last_error || // common shape in some SDK/resources
+			job?.failure ||
+			job?.failed_error ||
+			null;
+
+		const code = jobErr?.code || jobErr?.type || null;
+		const message =
+			jobErr?.message || jobErr?.error?.message || job?.failure_reason || null;
+
 		console.error("[Sora] job failed", {
 			segment: segmentIndex,
-			jobId: job.id,
-			status,
-			code: job?.error?.code || null,
-			message: job?.error?.message || null,
+			jobId: job?.id,
+			status: job?.status,
+			code,
+			message,
 			seconds,
 			size,
-			promptPreview: prompt?.slice?.(0, 160) || "",
+			promptPreview: prompt?.slice?.(0, 200) || "",
 		});
+
 		const err = new Error(
-			job.error?.message || `Sora job ${job.id} failed (status=${status})`
+			message ||
+				`Sora job ${job?.id} failed (status=${job?.status || "unknown"})`
 		);
-		err.code = job.error?.code;
-		err.jobId = job.id;
-		err.status = status;
+		err.code = code;
+		err.jobId = job?.id;
+		err.status = job?.status;
+		err.fail = jobErr || null;
 		throw err;
 	}
 
-	let buf = null;
+	// Download
+	let response = null;
 	try {
-		const response = await openai.videos.downloadContent(job.id, {
+		response = await openai.videos.downloadContent(job.id, {
 			variant: "video",
 		});
-		buf = Buffer.from(await response.arrayBuffer());
-	} catch (err) {
-		console.error("[Sora] download failed", {
-			segment: segmentIndex,
-			jobId: job.id,
-			message: err?.message,
-			code: err?.code || err?.response?.data?.error?.code || null,
-			status: err?.response?.status || null,
-		});
-		throw err;
+	} catch (e1) {
+		try {
+			response = await openai.videos.downloadContent(job.id, {
+				variant: "mp4",
+			});
+		} catch (e2) {
+			console.error("[Sora] download failed", {
+				segment: segmentIndex,
+				jobId: job?.id,
+				message: e2?.message,
+				code: e2?.code || e2?.response?.data?.error?.code || null,
+				status: e2?.response?.status || null,
+			});
+			throw e2;
+		}
 	}
+
+	const buf = Buffer.from(await response.arrayBuffer());
 	const outPath = tmpFile(`sora_${segmentIndex}`, ".mp4");
 	fs.writeFileSync(outPath, buf);
 	return outPath;
