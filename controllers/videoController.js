@@ -130,11 +130,32 @@ const FONT_PATH_FFMPEG = FONT_PATH.replace(/\\/g, "/").replace(/:/g, "\\:");
 const RUNWAY_VERSION = "2024-11-06";
 const POLL_INTERVAL_MS = 2000;
 const MAX_POLL_ATTEMPTS = 90;
+const RUNWAY_MODEL_PRIORITY = [
+	"gen4.5",
+	"gen4",
+	"gen4_turbo",
+	"gen3a_turbo",
+	"veo3.1",
+	"veo3.1_fast",
+	"veo3",
+];
 
 const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
 const JAMENDO_ID = process.env.JAMENDO_CLIENT_ID;
 const RUNWAY_ADMIN_KEY = process.env.RUNWAYML_API_SECRET;
 const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY;
+const GOOGLE_CSE_ID =
+	process.env.GOOGLE_CSE_ID ||
+	process.env.GOOGLE_CUSTOM_SEARCH_CX ||
+	process.env.GOOGLE_CUSTOM_SEARCH_ID ||
+	null;
+const GOOGLE_CSE_KEY =
+	process.env.GOOGLE_CSE_KEY ||
+	process.env.GOOGLE_CUSTOM_SEARCH_KEY ||
+	process.env.GOOGLE_API_KEY ||
+	null;
+const GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
+const GOOGLE_CSE_TIMEOUT_MS = 12000;
 
 const VALID_RATIOS = [
 	"1280:720",
@@ -169,9 +190,17 @@ const MAX_SILENCE_PAD = 0.35;
 const MIN_ATEMPO = 0.9;
 const MAX_ATEMPO = 1.08;
 
-const T2V_MODEL = "gen4_turbo";
+const T2V_MODEL = "gen4_turbo"; // prefer high quality but avoid unavailable variants by default
 const ITV_MODEL = "gen4_turbo";
 const TTI_MODEL = "gen4_image";
+
+const RUNWAY_IMAGE_TO_VIDEO_MODELS = new Set([
+	"gen4_turbo",
+	"veo3.1_fast",
+	"veo3.1",
+	"veo3",
+	"gen3a_turbo",
+]);
 
 const QUALITY_BONUS =
 	"photorealistic, ultra-detailed, HDR, 8K, cinema lighting, cinematic camera movement, smooth parallax, subtle subject motion, emotional body language";
@@ -294,7 +323,8 @@ const TONE_HINTS = {
 	Lifestyle: "Be friendly and encouraging.",
 	Science: "Convey wonder and clarity.",
 	World: "Maintain an objective, international outlook.",
-	Top5: "Keep each item snappy and clearly ranked.",
+	Top5: "Countdown voice: snappy, motivational, and appealing; clearly announce each rank.",
+	Other: "Keep it concise and confident.",
 };
 
 const YT_CATEGORY_MAP = {
@@ -321,7 +351,7 @@ const YT_CATEGORY_MAP = {
 	Fashion: "22",
 };
 
-const BRAND_TAG = "AiVideomatic";
+const BRAND_TAG = "SereneJannat";
 const BRAND_CREDIT = "Powered by Serene Jannat";
 const MERCH_INTRO =
 	"Support the channel & customize your own merch:\nhttps://www.serenejannat.com/custom-gifts\nhttps://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec\nhttps://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n\n";
@@ -583,7 +613,7 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 	)
 		return null;
 
-	const MIN_SEGMENT_SECONDS = 2.5;
+	const MIN_SEGMENT_SECONDS = 4;
 
 	const est = segments.map((s, idx) => {
 		const words = String(s.scriptText || "")
@@ -631,10 +661,10 @@ function computeEngagementTail(duration) {
 }
 
 function computeInitialSegLens(category, duration, tailSeconds) {
-	const INTRO = 3;
-	const segLens = [];
-
 	if (category === "Top5") {
+		const totalTarget = duration + tailSeconds;
+		const INTRO = 3;
+		const segLens = [];
 		const r = duration - INTRO;
 		const base = Math.floor(r / 5);
 		const extra = r % 5;
@@ -642,23 +672,52 @@ function computeInitialSegLens(category, duration, tailSeconds) {
 			INTRO,
 			...Array.from({ length: 5 }, (_, i) => base + (i < extra ? 1 : 0))
 		);
-	} else {
-		const r = duration - INTRO;
-		const n = Math.ceil(r / 10);
-		segLens.push(
-			INTRO,
-			...Array.from({ length: n }, (_, i) =>
-				i === n - 1 ? r - 10 * (n - 1) : 10
-			)
-		);
+		segLens.push(tailSeconds);
+		const planned = segLens.reduce((a, b) => a + b, 0);
+		const delta = totalTarget - planned;
+		if (Math.abs(delta) >= 0.5)
+			segLens[segLens.length - 1] = Math.max(
+				tailSeconds,
+				+(segLens[segLens.length - 1] + delta).toFixed(2)
+			);
+		return segLens.map((n) => +n.toFixed(2));
 	}
 
-	segLens.push(tailSeconds);
-	const targetTotal = duration + tailSeconds;
-	const delta = targetTotal - segLens.reduce((a, b) => a + b, 0);
-	if (Math.abs(delta) >= 1) segLens[segLens.length - 1] += delta;
+	const totalTarget = duration + tailSeconds;
+	const MIN_SEG_SECONDS = 4;
+	const runwayBudget = Math.max(
+		MIN_SEG_SECONDS * 2,
+		Math.round(totalTarget * 0.4)
+	);
+	let seg1 = Math.max(MIN_SEG_SECONDS, Math.round(runwayBudget * 0.55));
+	let seg2 = Math.max(MIN_SEG_SECONDS, runwayBudget - seg1);
+	let contentTotal = seg1 + seg2;
 
-	return segLens;
+	let outro = +(totalTarget - contentTotal).toFixed(2);
+	if (outro < tailSeconds) {
+		const shortfall = tailSeconds - outro;
+		const giveFrom1 = Math.min(shortfall, Math.max(0, seg1 - MIN_SEG_SECONDS));
+		seg1 -= giveFrom1;
+		const remaining = shortfall - giveFrom1;
+		const giveFrom2 = Math.min(remaining, Math.max(0, seg2 - MIN_SEG_SECONDS));
+		seg2 -= giveFrom2;
+		contentTotal = seg1 + seg2;
+		outro = +(totalTarget - contentTotal).toFixed(2);
+	}
+
+	if (outro <= 0) {
+		outro = tailSeconds;
+		const remaining = totalTarget - outro;
+		seg1 = Math.max(MIN_SEG_SECONDS, Math.round(remaining * 0.55));
+		seg2 = Math.max(MIN_SEG_SECONDS, +(remaining - seg1).toFixed(2));
+	}
+
+	const plannedTotal = seg1 + seg2 + outro;
+	if (Math.abs(plannedTotal - totalTarget) >= 0.05) {
+		outro = +(outro + (totalTarget - plannedTotal)).toFixed(2);
+	}
+
+	return [+seg1.toFixed(2), +seg2.toFixed(2), +outro.toFixed(2)];
 }
 
 /* ---------------------------------------------------------------
@@ -699,7 +758,7 @@ function buildCloudinaryTransformForRatio(ratio) {
 	const base = {
 		crop: "fill",
 		gravity: "auto",
-		quality: "auto:good",
+		quality: "auto:best",
 		fetch_format: "auto",
 	};
 
@@ -1646,6 +1705,359 @@ Keep everything in ${language}. Do not include any other keys or free-text.
 	return null;
 }
 
+function stripCountdownPrefix(text = "") {
+	return String(text || "")
+		.replace(/^\s*#\s*[1-5]\s*[\u2013\u2014-]?\s*/i, "")
+		.replace(
+			/^\s*Number\s+(one|two|three|four|five)\s*[:\u2013\u2014-]?\s*/i,
+			""
+		)
+		.trim();
+}
+
+function removeLeadingLabel(text = "", label = "") {
+	const base = String(text || "").trim();
+	const lbl = String(label || "").trim();
+	if (!base || !lbl) return base;
+	const safe = lbl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return base
+		.replace(new RegExp(`^${safe}\\s*[:\\u2013\\u2014-]?\\s*`, "i"), "")
+		.trim();
+}
+
+function buildCountdownLine(rank, label, bodyText = "") {
+	const cleanLabel = String(label || "").trim();
+	const prefix = `#${rank}- ${cleanLabel}`.trim();
+	const body = removeLeadingLabel(stripCountdownPrefix(bodyText), cleanLabel);
+	return body ? `${prefix}: ${body}` : prefix;
+}
+
+function applyTop5CountdownStructure(segments, outline) {
+	if (!Array.isArray(segments) || !Array.isArray(outline) || !outline.length)
+		return segments;
+
+	const sorted = outline
+		.slice()
+		.filter((o) => o && o.rank)
+		.sort((a, b) => (b.rank || 0) - (a.rank || 0));
+	const updated = segments.map((seg) => ({ ...seg }));
+	const max = Math.min(sorted.length, Math.max(0, updated.length - 2));
+
+	for (let i = 0; i < max; i++) {
+		const segIdx = i + 1; // segment 1 = intro
+		const seg = updated[segIdx];
+		if (!seg) break;
+
+		const rank = sorted[i].rank || sorted.length - i;
+		const label = String(sorted[i].label || "").trim();
+
+		const scriptText = buildCountdownLine(rank, label, seg.scriptText || "");
+		const overlayBase = `#${rank}: ${label}`.trim();
+		const overlayBody = removeLeadingLabel(
+			stripCountdownPrefix(seg.overlayText || ""),
+			label
+		);
+		const overlayText = overlayBody
+			? `${overlayBase} - ${overlayBody}`
+			: overlayBase;
+
+		updated[segIdx] = {
+			...seg,
+			scriptText,
+			overlayText,
+			countdownRank: rank,
+			countdownLabel: label,
+		};
+	}
+
+	return updated;
+}
+
+function buildTtsPartsForSegment(seg, category) {
+	const text = String(seg?.scriptText || "").trim();
+	if (category !== "Top5" || !seg?.countdownRank) {
+		return { parts: [text], pauseSeconds: 0 };
+	}
+
+	const rankWord = NUM_WORD[seg.countdownRank] || String(seg.countdownRank);
+	const label = String(seg.countdownLabel || "").trim();
+	const remainder = removeLeadingLabel(stripCountdownPrefix(text), label);
+	const labelLine = label
+		? `${label}${remainder ? `: ${remainder}` : ""}`
+		: text;
+
+	return {
+		parts: [`Number ${rankWord}`, labelLine],
+		pauseSeconds: 0.18,
+	};
+}
+
+function shortImageDesc(title = "", label = "") {
+	const text = String(title || label || "").trim();
+	if (!text) return "";
+	return text.split(/\s+/).slice(0, 5).join(" ");
+}
+
+function canUseGoogleSearch() {
+	return Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
+}
+
+async function isUrlReachable(url) {
+	if (!url) return false;
+	const tryHead = async () =>
+		axios({
+			url,
+			method: "head",
+			timeout: 5000,
+			maxRedirects: 2,
+			validateStatus: (s) => s < 500,
+		});
+	const tryTinyGet = async () =>
+		axios({
+			url,
+			method: "get",
+			responseType: "stream",
+			timeout: 6000,
+			maxRedirects: 2,
+			validateStatus: (s) => s < 500,
+		});
+
+	try {
+		const res = await tryHead();
+		if (res.status && res.status < 400) return true;
+		if (res.status === 405 || res.status === 403 || res.status === 400) {
+			const res2 = await tryTinyGet();
+			if (res2.status && res2.status < 400) {
+				if (res2.data?.destroy) res2.data.destroy();
+				return true;
+			}
+			if (res2.data?.destroy) res2.data.destroy();
+			return false;
+		}
+		return false;
+	} catch (e) {
+		return false;
+	}
+}
+
+function scoreImageCandidate(it, target) {
+	const { score, isThumbnail } = analyseImageUrl(it.link, true);
+	if (isThumbnail) return null;
+
+	let total = score;
+	const w = Number(it.image?.width || 0);
+	const h = Number(it.image?.height || 0);
+	if (w && h) {
+		if (w >= 1400 || h >= 1400) total += 3;
+		else if (w >= 1000 || h >= 1000) total += 2;
+
+		if (target?.width && target?.height) {
+			const ar = h ? w / h : 0;
+			const targetAr = target.height ? target.width / target.height : 0;
+			if (ar && targetAr) {
+				const diff = Math.abs(ar - targetAr);
+				if (diff < 0.08) total += 2;
+				else if (diff < 0.15) total += 1;
+			}
+		}
+	}
+
+	if (it.displayLink && /news|cdn|images|static/i.test(it.displayLink)) {
+		total += 0.5;
+	}
+
+	return {
+		link: it.link,
+		score: total,
+		source: it.image?.contextLink || it.displayLink || "",
+		title: it.title || "",
+	};
+}
+
+async function pickBestImageFromSearch(
+	items = [],
+	ratio = null,
+	label = "",
+	avoidSet = new Set()
+) {
+	if (!Array.isArray(items) || !items.length) return null;
+	const target = targetResolutionForRatio(ratio);
+
+	const candidates = [];
+	for (const it of items) {
+		if (!it || !it.link) continue;
+		if (avoidSet.has(it.link)) continue;
+		const scored = scoreImageCandidate(it, target);
+		if (scored) candidates.push(scored);
+	}
+
+	candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+	for (const cand of candidates) {
+		const ok = await isUrlReachable(cand.link);
+		if (ok) {
+			console.log("[Top5] Image chosen", {
+				label,
+				url: cand.link,
+				source: cand.source,
+				desc: shortImageDesc(cand.title, label),
+			});
+			return cand;
+		}
+		console.warn("[Top5] Image unreachable, skipping", {
+			label,
+			url: cand.link,
+			source: cand.source,
+		});
+	}
+
+	return null;
+}
+
+async function fetchTop5LiveContext(outline = [], topic = "") {
+	if (!canUseGoogleSearch()) {
+		console.warn(
+			"[Top5] Google Custom Search credentials missing - skipping live context"
+		);
+		return [];
+	}
+	const ctx = [];
+
+	for (const item of outline) {
+		if (!item || !item.label) continue;
+		const q = [topic, item.label].filter(Boolean).join(" ");
+		try {
+			const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+				params: {
+					key: GOOGLE_CSE_KEY,
+					cx: GOOGLE_CSE_ID,
+					q,
+					num: 1,
+					safe: "active",
+				},
+				timeout: GOOGLE_CSE_TIMEOUT_MS,
+			});
+			const hit = Array.isArray(data?.items) ? data.items[0] : null;
+			if (hit) {
+				ctx.push({
+					rank: item.rank,
+					label: item.label,
+					title: String(hit.title || "").slice(0, 180),
+					snippet: String(hit.snippet || "").slice(0, 260),
+					link: hit.link || hit.formattedUrl || "",
+				});
+			}
+		} catch (e) {
+			console.warn("[Top5] Live search failed", {
+				label: item.label,
+				message: e.message,
+				status: e.response?.status,
+				data: e.response?.data,
+			});
+		}
+	}
+
+	return ctx;
+}
+
+async function fetchTop5ImagePool(outline = [], topic = "", ratio = null) {
+	if (!canUseGoogleSearch()) {
+		console.warn(
+			"[Top5] Google Custom Search credentials missing - skipping live image pool"
+		);
+		return [];
+	}
+	const results = [];
+	const yearHint = dayjs().format("YYYY");
+
+	for (const item of outline) {
+		if (!item || !item.label) continue;
+		const q = [item.label, topic, "editorial photo", yearHint]
+			.filter(Boolean)
+			.join(" ");
+		try {
+			const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+				params: {
+					key: GOOGLE_CSE_KEY,
+					cx: GOOGLE_CSE_ID,
+					q,
+					searchType: "image",
+					num: 8,
+					safe: "active",
+				},
+				timeout: GOOGLE_CSE_TIMEOUT_MS,
+			});
+
+			const best = await pickBestImageFromSearch(
+				data?.items || [],
+				ratio,
+				item.label,
+				new Set()
+			);
+			if (best?.link) {
+				results.push({
+					rank: item.rank,
+					label: item.label,
+					url: best.link,
+					source: best.source || "",
+					title: best.title || "",
+				});
+			}
+		} catch (e) {
+			console.warn("[Top5] Image search failed", {
+				label: item.label,
+				message: e.message,
+				status: e.response?.status,
+				data: e.response?.data,
+			});
+		}
+	}
+
+	return results;
+}
+
+async function fetchTop5ReplacementImage(
+	label,
+	topic,
+	ratio,
+	avoidSet = new Set()
+) {
+	if (!canUseGoogleSearch()) return null;
+	const yearHint = dayjs().format("YYYY");
+	const q = [label, topic, "editorial photo", yearHint]
+		.filter(Boolean)
+		.join(" ");
+
+	try {
+		const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+			params: {
+				key: GOOGLE_CSE_KEY,
+				cx: GOOGLE_CSE_ID,
+				q,
+				searchType: "image",
+				num: 8,
+				safe: "active",
+			},
+			timeout: GOOGLE_CSE_TIMEOUT_MS,
+		});
+
+		return await pickBestImageFromSearch(
+			data?.items || [],
+			ratio,
+			label,
+			avoidSet
+		);
+	} catch (e) {
+		console.warn("[Top5] Replacement image search failed", {
+			label,
+			message: e.message,
+			status: e.response?.status,
+			data: e.response?.data,
+		});
+		return null;
+	}
+}
+
 /* ---------------------------------------------------------------
  *  Cloudinary helpers for Trends images
  * ------------------------------------------------------------- */
@@ -1801,21 +2213,54 @@ async function uploadReferenceImagesForTop5(segments, ratio, topic) {
 		.replace(/[^\w]+/g, "_")
 		.replace(/^_+|_+$/g, "")
 		.slice(0, 40);
+	const attempted = new Set();
 
 	for (let i = 0; i < segments.length; i++) {
-		const url = String(segments[i].referenceImageUrl || "").trim();
-		if (!url || urlToIdx.has(url)) continue;
-		try {
-			const up = await uploadTrendImageToCloudinary(
+		let url = String(segments[i].referenceImageUrl || "").trim();
+		const segLabel =
+			segments[i].countdownLabel ||
+			segments[i].label ||
+			segments[i].overlayText ||
+			`Segment ${i + 1}`;
+
+		let uploaded = false;
+		let attempts = 0;
+		while (!uploaded && attempts < 3) {
+			attempts += 1;
+			if (!url || urlToIdx.has(url) || attempted.has(url)) {
+				const replacement = await fetchTop5ReplacementImage(
+					segLabel,
+					topic,
+					ratio,
+					attempted
+				);
+				url = replacement?.url || "";
+			}
+			if (!url) break;
+
+			attempted.add(url);
+			console.log("[Top5] Uploading reference image", {
+				segment: i + 1,
+				label: segLabel,
 				url,
-				ratio,
-				`aivideomatic/top5_refs/${safeSlug}_${i}`
-			);
-			const idx = pairs.length;
-			pairs.push({ originalUrl: url, cloudinaryUrl: up.url });
-			urlToIdx.set(url, idx);
-		} catch (e) {
-			console.warn("[Top5] Upload reference image failed ?", e.message);
+				desc: shortImageDesc("", segLabel),
+			});
+
+			try {
+				const up = await uploadTrendImageToCloudinary(
+					url,
+					ratio,
+					`aivideomatic/top5_refs/${safeSlug}_${i}`
+				);
+				const idx = pairs.length;
+				pairs.push({ originalUrl: url, cloudinaryUrl: up.url });
+				urlToIdx.set(url, idx);
+				segments[i].referenceImageUrl = url;
+				uploaded = true;
+			} catch (e) {
+				console.warn("[Top5] Upload reference image failed ?", e.message);
+				url = "";
+			}
 		}
 	}
 
@@ -1937,12 +2382,17 @@ async function generateItvClipFromImage({
 	const itvLabel = `itv_seg${segmentIndex}`;
 	const pollLabel = `poll_itv_seg${segmentIndex}`;
 
+	const runwayModel =
+		process.env.RUNWAY_ITV_MODEL && process.env.RUNWAY_ITV_MODEL.trim()
+			? process.env.RUNWAY_ITV_MODEL.trim()
+			: ITV_MODEL;
+
 	const idVid = await retry(
 		async () => {
 			const { data } = await axios.post(
 				"https://api.dev.runwayml.com/v1/image_to_video",
 				{
-					model: ITV_MODEL,
+					model: runwayModel,
 					promptImage: imgUrl,
 					promptText,
 					ratio,
@@ -2016,50 +2466,85 @@ async function generateStaticClipFromImage({
 			const localPath = await downloadImageToTemp(url, ".jpg");
 			const out = tmpFile(`seg_static_${segmentIndex}`, ".mp4");
 			const { width, height } = targetResolutionForRatio(ratio);
-			const vf = [];
+			const filterPresets = [
+				() => {
+					const vf = ["format=yuv420p", "setsar=1"];
+					if (width && height) {
+						vf.push(
+							`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
+							`crop=${width}:${height}`
+						);
+					}
+					if (zoomPan && width && height) {
+						vf.push(
+							`zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
+						);
+					}
+					return vf;
+				},
+				() => {
+					const vf = ["format=yuv420p", "setsar=1"];
+					if (width && height) {
+						vf.push(
+							`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
+							`crop=${width}:${height}`
+						);
+					}
+					// no zoompan
+					return vf;
+				},
+			];
 
-			if (width && height) {
-				vf.push(
-					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
-					`crop=${width}:${height}`
-				);
-			}
+			let success = false;
+			for (
+				let attempt = 0;
+				attempt < filterPresets.length && !success;
+				attempt++
+			) {
+				const vf = filterPresets[attempt]();
+				try {
+					await ffmpegPromise((c) => {
+						c.input(norm(localPath)).inputOptions("-loop", "1");
 
-			if (zoomPan && width && height) {
-				vf.push(
-					`zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
-				);
-			}
+						if (vf.length) {
+							c.videoFilters(vf.join(","));
+						}
 
-			await ffmpegPromise((c) => {
-				c.input(norm(localPath)).inputOptions("-loop", "1");
-
-				if (vf.length) {
-					c.videoFilters(vf.join(","));
+						return c
+							.outputOptions(
+								"-t",
+								String(targetDuration),
+								"-c:v",
+								"libx264",
+								"-preset",
+								"slow",
+								"-crf",
+								"17",
+								"-pix_fmt",
+								"yuv420p",
+								"-r",
+								"30",
+								"-y"
+							)
+							.save(norm(out));
+					});
+					success = true;
+				} catch (inner) {
+					lastErr = inner;
+					console.warn(
+						`[Seg ${segmentIndex}] Static fallback filter attempt ${
+							attempt + 1
+						} failed for ${url}`,
+						inner.message
+					);
 				}
-
-				return c
-					.outputOptions(
-						"-t",
-						String(targetDuration),
-						"-c:v",
-						"libx264",
-						"-preset",
-						"slow",
-						"-crf",
-						"17",
-						"-pix_fmt",
-						"yuv420p",
-						"-r",
-						"30",
-						"-y"
-					)
-					.save(norm(out));
-			});
+			}
 
 			try {
 				fs.unlinkSync(localPath);
 			} catch (_) {}
+
+			if (!success) throw lastErr || new Error("Static filter failed");
 
 			console.log(
 				`[Seg ${segmentIndex}] Static fallback clip created from ${url}`
@@ -2075,7 +2560,15 @@ async function generateStaticClipFromImage({
 		}
 	}
 
-	throw lastErr || new Error("Failed to build static clip from any image URL");
+	console.warn(
+		`[Seg ${segmentIndex}] All static fallbacks failed, using placeholder clip`
+	);
+	return await generatePlaceholderClip({
+		segmentIndex,
+		ratio,
+		targetDuration,
+		color: "gray",
+	});
 }
 
 async function generatePlaceholderClip({
@@ -2087,35 +2580,66 @@ async function generatePlaceholderClip({
 	const { width, height } = targetResolutionForRatio(ratio);
 	const size = width && height ? `${width}x${height}` : "1080x1920";
 	const out = tmpFile(`seg_placeholder_${segmentIndex}`, ".mp4");
-	await ffmpegPromise((c) =>
-		c
-			.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
-			.inputOptions("-f", "lavfi")
-			.videoFilters(
-				[
-					"format=yuv420p",
-					"setsar=1",
-					`zoompan=z='min(1.0+0.001*n,1.04)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${size}:fps=30`,
-				].join(",")
-			)
-			.outputOptions(
-				"-t",
-				String(targetDuration),
-				"-c:v",
-				"libx264",
-				"-preset",
-				"slow",
-				"-crf",
-				"17",
-				"-pix_fmt",
-				"yuv420p",
-				"-r",
-				"30",
-				"-y"
-			)
-			.save(norm(out))
-	);
-	return out;
+	try {
+		await ffmpegPromise((c) =>
+			c
+				.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
+				.inputOptions("-f", "lavfi")
+				.videoFilters(
+					[
+						"format=yuv420p",
+						"setsar=1",
+						`zoompan=z='min(1.0+0.001*n,1.04)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${size}:fps=30`,
+					].join(",")
+				)
+				.outputOptions(
+					"-t",
+					String(targetDuration),
+					"-c:v",
+					"libx264",
+					"-preset",
+					"slow",
+					"-crf",
+					"17",
+					"-pix_fmt",
+					"yuv420p",
+					"-r",
+					"30",
+					"-y"
+				)
+				.save(norm(out))
+		);
+		return out;
+	} catch (e) {
+		const simple = tmpFile(`seg_placeholder_simple_${segmentIndex}`, ".mp4");
+		console.warn(
+			`[Seg ${segmentIndex}] Placeholder zoompan failed, falling back to solid frame`,
+			e.message
+		);
+		await ffmpegPromise((c) =>
+			c
+				.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
+				.inputOptions("-f", "lavfi")
+				.videoFilters(["format=yuv420p", "setsar=1"].join(","))
+				.outputOptions(
+					"-t",
+					String(targetDuration),
+					"-c:v",
+					"libx264",
+					"-preset",
+					"slow",
+					"-crf",
+					"17",
+					"-pix_fmt",
+					"yuv420p",
+					"-r",
+					"30",
+					"-y"
+				)
+				.save(norm(simple))
+		);
+		return simple;
+	}
 }
 
 function buildRunwayPrompt(seg, globalStyle) {
@@ -2250,7 +2774,9 @@ async function planBackgroundMusic(category, language, script) {
 	const defaultVoiceGain = category === "Top5" ? 1.5 : 1.4;
 	const defaultMusicGain = category === "Top5" ? 0.18 : 0.14;
 	const upbeatHint =
-		category === "Top5" ? "Fun, upbeat, percussive Top 5 vibe, no vocals." : "";
+		category === "Top5"
+			? "Fun, upbeat, exciting countdown energy with a motivational feel, percussive, no vocals."
+			: "";
 
 	const ask = `
 You are a sound designer for short-form YouTube videos.
@@ -2605,6 +3131,8 @@ async function buildVideoPlanWithGPT({
 	trendImagesForPlanning,
 	articleText,
 	top5Outline,
+	top5LiveContext,
+	top5ImagePool,
 	ratio,
 	trendImageBriefs,
 	engagementTailSeconds,
@@ -2630,6 +3158,14 @@ async function buildVideoPlanWithGPT({
 			  null
 			: imageBriefs[0] || null;
 	const imageComment = String(trendStory?.imageComment || "").trim();
+	const liveContext = Array.isArray(top5LiveContext) ? top5LiveContext : [];
+	const liveImages = Array.isArray(top5ImagePool) ? top5ImagePool : [];
+	const top5NeedsExtraDetail =
+		category === "Top5" && Number.isFinite(duration) && duration >= 45;
+	const runwayAnimationNote =
+		category === "Top5"
+			? "All five ranked segments will be animated with Runway (less strict than Sora) using unique real photos that clearly show each ranked item; if animation fails on a photo, we will show a static clip instead."
+			: "Only segments 1 and 2 will be animated with Runway (less strict than Sora); keep the core story beats there so later segments can stay simple if needed.";
 	const segDescLines = segLens
 		.map(
 			(sec, i) =>
@@ -2638,6 +3174,16 @@ async function buildVideoPlanWithGPT({
 				} spoken words.`
 		)
 		.join("\n");
+	const totalSegSeconds = segLens.reduce((a, b) => a + b, 0) || 1;
+	const runwayStoryCount = category === "Top5" ? 0 : Math.min(2, segCnt - 1);
+	const runwaySharePct =
+		runwayStoryCount > 0
+			? Math.round(
+					(segLens.slice(0, runwayStoryCount).reduce((a, b) => a + b, 0) /
+						totalSegSeconds) *
+						100
+			  )
+			: 0;
 
 	const categoryTone = TONE_HINTS[category] || "";
 	const outroDirective = `
@@ -2677,6 +3223,14 @@ Narration rules:
 - Keep pacing human and coherent; do not cram unnatural speed-reading into segments.
 - Keep every segment directly on-topic for "${topic}"; no unrelated tangents.
 ${categoryTone ? `- Tone: ${categoryTone}` : ""}
+${runwayAnimationNote ? `- ${runwayAnimationNote}` : ""}
+${
+	runwayStoryCount
+		? `- Segments 1${
+				runwayStoryCount === 1 ? "" : `-${runwayStoryCount}`
+		  } carry the core visuals and together use about ${runwaySharePct}% of the runtime; pack the key beats there so later segments can stay simple.`
+		: ""
+}
 ${outroDirective}
 `.trim();
 
@@ -2730,6 +3284,7 @@ Your job:
 				: 'For each segment, write one concise "runwayPrompt" telling a video model how to animate THAT exact real photo.'
 		}
 4) For each segment, also write a "negativePrompt" listing visual problems the video model must avoid.
+5) ${runwayAnimationNote}
 
 Critical visual rules:
 - The model ALREADY SEES the real Google Trends photo. "runwayPrompt" describes motion and subtle, realistic changes.
@@ -2777,7 +3332,7 @@ Return JSON:
 		top5Outline.length
 	) {
 		const outlineText = top5Outline
-			.map((it) => `#${it.rank}: ${it.label || ""} — ${it.oneLine || ""}`)
+			.map((it) => `#${it.rank}: ${it.label || ""} - ${it.oneLine || ""}`)
 			.join("\n");
 		promptText = `
 ${baseIntro}
@@ -2786,13 +3341,59 @@ This is a Top 5 countdown. Outline:
 
 ${outlineText}
 
+Latest live web context (use this to stay current and factual):
+${
+	liveContext.length
+		? liveContext
+				.slice()
+				.sort((a, b) => (b.rank || 0) - (a.rank || 0))
+				.map(
+					(ctx) =>
+						`#${ctx.rank}: ${ctx.label || ""} | ${ctx.title || ""}${
+							ctx.snippet ? " - " + ctx.snippet : ""
+						}`
+				)
+				.join("\n")
+		: "- No live snippets found; avoid dated claims or speculation."
+}
+
+Fresh reference images already pulled from the web (prefer these when they fit the beat):
+${
+	liveImages.length
+		? liveImages
+				.slice()
+				.sort((a, b) => (b.rank || 0) - (a.rank || 0))
+				.map(
+					(img) =>
+						`#${img.rank}: ${img.label || ""} -> ${img.url}${
+							img.source ? ` (source: ${img.source})` : ""
+						}`
+				)
+				.join("\n")
+		: "- None provided; pick new, descriptive editorial photos from current search results, not stock icons or thumbnails."
+}
+
 Rules:
 - Segment 1 teases the countdown and hooks the viewer.
 - Segments 2-6 correspond to ranks #5, #4, #3, #2, and #1.
 - Segment ${segCnt} is reserved for the engagement outro; keep it short, question-driven, and include a friendly like/subscribe nudge.
-- Each of those segments MUST start with "#5:", "#4:", "#3:", "#2:" or "#1:".
+- Each of those segments MUST start with "#5-", "#4-", "#3-", "#2-" or "#1-" before the label; keep it sounding natural.
+- ALL countdown segments (#5 through #1) will be animated with Runway; each rank must have its own unique reference image.
+${
+	top5NeedsExtraDetail
+		? "- Because the duration is 45-60 seconds, include one extra vivid descriptive clause about what makes each city unique (landmark, vibe, food, or culture) so the narration feels richer."
+		: ""
+}
+${
+	top5NeedsExtraDetail
+		? "- Make the narration feel motivational and appealing, inviting the viewer to imagine visiting each place."
+		: ""
+}
+- Every referenceImageUrl must directly show the ranked item (for food: a close-up of the dish/plating; for travel/cities: a recognisable landmark or skyline). Avoid portraits unless someone is eating that exact food. No unrelated objects or locations.
+- If a fresh image URL is provided above for that rank, use it. Otherwise, search current results and pick a sharp, descriptive editorial-style photo that matches the aspect ratio ${ratio}; avoid gstatic/thumbnail URLs.
+- Write the runwayPrompt to match the exact chosen photo and make the motion feel dynamic (camera move + subtle subject motion).
 
-No images are provided; imagine visuals from scratch.
+You must select real reference photos via search before planning the visuals; do not leave any referenceImageUrl blank.
 
 For each segment, output:
 - "index"
@@ -2800,7 +3401,7 @@ For each segment, output:
 - "runwayPrompt": a vivid scene description to generate, explicitly tailored to the requested aspect ratio ${ratio}. Include camera motion and subject motion and keep it photorealistic.
 - "negativePrompt": comma-separated defects to avoid.
 - "overlayText": 4-7 word on-screen text that fits the aspect ratio ${ratio} and stays perfectly in sync with the voiceover line for that segment.
-- "referenceImageUrl": a DIRECT URL to a high-quality photo online that matches the script beat and aspect ratio ${ratio}. Use real editorial-style photos (no watermarks, no logos). Do not invent; pick URLs that look like newsy, realistic shots.
+- "referenceImageUrl": a DIRECT URL to a high-quality photo online that matches the script beat and aspect ratio ${ratio}. You MUST pick one unique, real, editorial-style photo per rank via search (no AI, no blanks, no repeats, no logos).
 
 Visual rules:
 - Realistic scenes; no logos or trademarks.
@@ -2836,6 +3437,7 @@ You must imagine the visuals from scratch. For each segment output:
 - "scriptText"
 - "runwayPrompt"
 - "negativePrompt"
+- ${runwayAnimationNote}
 
 Visual rules:
 - Realistic, grounded scenes.
@@ -3100,24 +3702,41 @@ exports.createVideo = async (req, res) => {
 		}
 
 		/* 2. Segment timing */
-		const engagementTailSeconds = computeEngagementTail(duration);
-		const totalDurationTarget = duration + engagementTailSeconds;
+		const requestedTailSeconds = computeEngagementTail(duration);
+		console.log(
+			"[Job] ratio + target duration",
+			JSON.stringify({ ratio, duration, tailSeconds: requestedTailSeconds })
+		);
 		let segLens = computeInitialSegLens(
 			category,
 			duration,
-			engagementTailSeconds
+			requestedTailSeconds
 		);
 		let segCnt = segLens.length;
+		const engagementTailSeconds = segLens[segCnt - 1];
+		const totalDurationTarget = segLens.reduce((a, b) => a + b, 0);
 		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
 		console.log("[Timing] initial segment lengths", {
 			segLens,
 			segWordCaps,
+			totalDurationTarget,
 		});
 
 		/* 3. Top-5 outline */
 		let top5Outline = null;
+		let top5LiveContext = [];
+		let top5ImagePool = [];
 		if (category === "Top5") {
 			top5Outline = await generateTop5Outline(topic, language);
+			if (top5Outline && top5Outline.length) {
+				top5LiveContext = await fetchTop5LiveContext(top5Outline, topic);
+				top5ImagePool = await fetchTop5ImagePool(top5Outline, topic, ratio);
+				console.log("[Top5] live context & images", {
+					context: top5LiveContext.length,
+					imagePool: top5ImagePool.length,
+					ratio,
+				});
+			}
 		}
 
 		/* 4. Upload Trends images to Cloudinary (if available) */
@@ -3153,8 +3772,13 @@ exports.createVideo = async (req, res) => {
 			}
 			if (!trendImagePairs.length) {
 				console.warn(
-					"[Cloudinary] All Trends uploads failed – falling back to prompt-only mode"
+					"[Cloudinary] All Trends uploads failed - falling back to prompt-only mode"
 				);
+			} else {
+				console.log("[Cloudinary] Trends images uploaded", {
+					count: trendImagePairs.length,
+					ratio,
+				});
 			}
 		}
 
@@ -3177,6 +3801,8 @@ exports.createVideo = async (req, res) => {
 				: null,
 			articleText: trendArticleText,
 			top5Outline,
+			top5LiveContext,
+			top5ImagePool,
 			ratio,
 			trendImageBriefs: trendStory?.viralImageBriefs || [],
 			engagementTailSeconds,
@@ -3190,6 +3816,45 @@ exports.createVideo = async (req, res) => {
 			segments: segments.length,
 			hasImages: hasTrendImages,
 		});
+
+		if (Array.isArray(segments)) {
+			segments = segments
+				.slice()
+				.sort(
+					(a, b) =>
+						(typeof a.index === "number" ? a.index : 0) -
+						(typeof b.index === "number" ? b.index : 0)
+				);
+		}
+
+		if (category === "Top5" && top5Outline) {
+			segments = applyTop5CountdownStructure(segments, top5Outline);
+		}
+
+		if (category === "Top5" && top5ImagePool?.length) {
+			const imageByRank = new Map(
+				top5ImagePool
+					.filter((p) => p && p.rank && p.url)
+					.map((p) => [p.rank, p])
+			);
+			segments = segments.map((seg, idx) => {
+				const rank =
+					seg?.countdownRank ||
+					(top5Outline && idx - 1 >= 0 && idx - 1 < top5Outline.length
+						? top5Outline[idx - 1].rank
+						: null);
+				if (!rank) return seg;
+				if (seg.referenceImageUrl) return seg;
+				const img = imageByRank.get(rank);
+				return img ? { ...seg, referenceImageUrl: img.url } : seg;
+			});
+			const assigned = segments.filter((s) => s.referenceImageUrl).length;
+			console.log("[Top5] Applied live image pool", {
+				provided: top5ImagePool.length,
+				assigned,
+				ratio,
+			});
+		}
 
 		// For Top5, ingest reference images from GPT plan
 		if (category === "Top5" && !hasTrendImages) {
@@ -3210,9 +3875,18 @@ exports.createVideo = async (req, res) => {
 				}));
 				console.log("[Top5] Reference images uploaded", {
 					count: uploaded.pairs.length,
+					ratio,
 				});
+				if (uploaded.pairs.length < 5) {
+					throw new Error(
+						"Top5 requires at least 5 unique reference images; received fewer."
+					);
+				}
 			} else {
 				console.warn("[Top5] No reference images could be uploaded");
+				throw new Error(
+					"Top5 reference images missing; cannot proceed without 5 real photos."
+				);
 			}
 		}
 
@@ -3272,33 +3946,30 @@ One or two sentences only.
 				after: recomputed,
 			});
 			segLens = recomputed;
+		} else {
+			const sum = segLens.reduce((a, b) => a + b, 0);
+			const delta = +(totalDurationTarget - sum).toFixed(2);
+			console.log("[Timing] Using planned segment durations", {
+				segLens,
+				totalDurationTarget,
+				sum,
+				delta,
+			});
 		}
 		segCnt = segLens.length;
 
-		// Top5: generate fresh, high-quality images via OpenAI if none available
-		if (category === "Top5" && !hasTrendImages) {
-			try {
-				const aiImages = await generateOpenAIImagesForTop5(
-					segments,
-					ratio,
-					topic
-				);
-				if (aiImages.length) {
-					trendImagePairs = aiImages;
-					hasTrendImages = true;
-					segments = segments.map((seg, idx) => ({
-						...seg,
-						imageIndex: idx % aiImages.length,
-					}));
-					console.log(
-						`[Top5] Generated ${aiImages.length} OpenAI images for segments`
-					);
-				}
-			} catch (e) {
-				console.warn(
-					"[Top5] OpenAI image generation failed, staying with Runway text-to-image:",
-					e.message
-				);
+		// Final pass: enforce exact total duration target by nudging last segment if needed
+		{
+			const sum = segLens.reduce((a, b) => a + b, 0);
+			const delta = +(totalDurationTarget - sum).toFixed(2);
+			if (Math.abs(delta) >= 0.05 && segLens.length) {
+				segLens[segLens.length - 1] = +(
+					segLens[segLens.length - 1] + delta
+				).toFixed(2);
+				console.log("[Timing] Adjusted last segment to hit target total", {
+					segLens,
+					totalDurationTarget,
+				});
 			}
 		}
 
@@ -3513,7 +4184,12 @@ One or two sentences only.
 			total: segCnt,
 			done: 0,
 		});
-		console.log("[Phase] GENERATING_CLIPS ? Generating clips");
+		console.log("[Phase] GENERATING_CLIPS ? Generating clips", {
+			segCnt,
+			ratio,
+			hasTrendImages,
+			trendImages: trendImagePairs.length,
+		});
 
 		const runwaySafetyBans = new Set(); // image indexes that hit Runway safety and should not be retried
 		const staticOnlyImages = new Set(); // images we will use only as static fallback going forward
@@ -3526,13 +4202,16 @@ One or two sentences only.
 			const seg = segments[i];
 			const segIndex = i + 1;
 
-			const rw = d <= 5 ? 5 : 10;
+			const rw = Math.max(5, Math.min(10, Math.round(d)));
 			const { promptText, negativePrompt } = buildRunwayPrompt(
 				seg,
 				globalStyle
 			);
 			const canUseRunway =
-				allowRunway && hasTrendImages && seg.imageIndex !== null;
+				allowRunway &&
+				hasTrendImages &&
+				seg.imageIndex !== null &&
+				(category === "Top5" || i < 2);
 
 			console.log(
 				`[Seg ${segIndex}/${segCnt}] targetDuration=${d.toFixed(
@@ -3555,14 +4234,26 @@ One or two sentences only.
 				const pair = trendImagePairs[idx] || trendImagePairs[0] || null;
 				const imgUrlCloudinary = pair?.cloudinaryUrl;
 				const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
-				clipPath = await generateStaticClipFromImage({
-					segmentIndex: segIndex,
-					imgUrlOriginal,
-					imgUrlCloudinary,
-					ratio,
-					targetDuration: d,
-					zoomPan: true,
-				});
+				try {
+					clipPath = await generateStaticClipFromImage({
+						segmentIndex: segIndex,
+						imgUrlOriginal,
+						imgUrlCloudinary,
+						ratio,
+						targetDuration: d,
+						zoomPan: true,
+					});
+				} catch (err) {
+					console.warn(
+						`[Seg ${segIndex}] Static clip failed, using placeholder`,
+						err.message
+					);
+					clipPath = await generatePlaceholderClip({
+						segmentIndex: segIndex,
+						ratio,
+						targetDuration: d,
+					});
+				}
 			} else if (canUseRunway) {
 				const candidatesIdx = [];
 				const baseIdx =
@@ -3637,13 +4328,25 @@ One or two sentences only.
 						trendImagePairs[fallbackIdx] || trendImagePairs[0] || null;
 					const imgUrlCloudinary = pair?.cloudinaryUrl;
 					const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
-					clipPath = await generateStaticClipFromImage({
-						segmentIndex: segIndex,
-						imgUrlOriginal,
-						imgUrlCloudinary,
-						ratio,
-						targetDuration: d,
-					});
+					try {
+						clipPath = await generateStaticClipFromImage({
+							segmentIndex: segIndex,
+							imgUrlOriginal,
+							imgUrlCloudinary,
+							ratio,
+							targetDuration: d,
+						});
+					} catch (err) {
+						console.warn(
+							`[Seg ${segIndex}] Static fallback failed after Runway, using placeholder`,
+							err.message
+						);
+						clipPath = await generatePlaceholderClip({
+							segmentIndex: segIndex,
+							ratio,
+							targetDuration: d,
+						});
+					}
 				}
 			} else if (hasTrendImages) {
 				const baseIdx =
@@ -3657,14 +4360,26 @@ One or two sentences only.
 				const imgUrlOriginal = pair?.originalUrl || imgUrlCloudinary;
 
 				if (imgUrlOriginal || imgUrlCloudinary) {
-					clipPath = await generateStaticClipFromImage({
-						segmentIndex: segIndex,
-						imgUrlOriginal,
-						imgUrlCloudinary,
-						ratio,
-						targetDuration: d,
-						zoomPan: true,
-					});
+					try {
+						clipPath = await generateStaticClipFromImage({
+							segmentIndex: segIndex,
+							imgUrlOriginal,
+							imgUrlCloudinary,
+							ratio,
+							targetDuration: d,
+							zoomPan: true,
+						});
+					} catch (err) {
+						console.warn(
+							`[Seg ${segIndex}] Static clip failed, using placeholder`,
+							err.message
+						);
+						clipPath = await generatePlaceholderClip({
+							segmentIndex: segIndex,
+							ratio,
+							targetDuration: d,
+						});
+					}
 				}
 			} else {
 				console.log("[Runway] prompt preview", {
@@ -3757,40 +4472,119 @@ One or two sentences only.
 		let voiceToneSample = null;
 
 		for (let i = 0; i < segCnt; i++) {
-			const raw = tmpFile(`tts_raw_${i + 1}`, ".mp3");
 			const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
-			const txt = improveTTSPronunciation(segments[i].scriptText);
+			const ttsPlan = buildTtsPartsForSegment(segments[i], category);
+			const requestedParts = Array.isArray(ttsPlan.parts) ? ttsPlan.parts : [];
+			const ttsParts = requestedParts
+				.map((p) => String(p || "").trim())
+				.filter((p) => p.length);
+			if (!ttsParts.length)
+				ttsParts.push(String(segments[i].scriptText || "").trim() || "Update");
 
-			const localTone = deriveVoiceSettings(txt, category);
+			const toneText = improveTTSPronunciation(ttsParts.join(" ").trim());
+			const localTone = deriveVoiceSettings(toneText, category);
 			if (!voiceToneSample) voiceToneSample = localTone;
 
-			try {
-				await elevenLabsTTS(
-					txt,
-					language,
-					raw,
-					category,
-					chosenVoice?.voiceId || null
+			const piecePaths = [];
+			for (let pIdx = 0; pIdx < ttsParts.length; pIdx++) {
+				const partText = improveTTSPronunciation(
+					ttsParts[pIdx] || "Countdown update"
 				);
-			} catch (e) {
-				console.warn(
-					`[TTS] ElevenLabs failed for seg ${i + 1}, falling back to OpenAI ?`,
-					e.message
+				const partPath = tmpFile(`tts_part_${i + 1}_${pIdx + 1}`, ".mp3");
+
+				try {
+					await elevenLabsTTS(
+						partText,
+						language,
+						partPath,
+						category,
+						chosenVoice?.voiceId || null
+					);
+				} catch (e) {
+					console.warn(
+						`[TTS] ElevenLabs failed for seg ${i + 1} part ${
+							pIdx + 1
+						}, falling back to OpenAI ?`,
+						e.message
+					);
+
+					const tts = await openai.audio.speech.create({
+						model: "tts-1-hd",
+						voice: "shimmer",
+						speed: localTone.openaiSpeed,
+						input: partText,
+						format: "mp3",
+					});
+					fs.writeFileSync(partPath, Buffer.from(await tts.arrayBuffer()));
+				}
+				piecePaths.push(partPath);
+			}
+
+			let raw = piecePaths[0] || tmpFile(`tts_raw_${i + 1}`, ".mp3");
+			let silencePath = null;
+			let concatList = null;
+
+			if (piecePaths.length > 1) {
+				if (ttsPlan.pauseSeconds > 0) {
+					silencePath = tmpFile(`tts_pause_${i + 1}`, ".wav");
+					await ffmpegPromise((c) =>
+						c
+							.input("anullsrc=r=44100:cl=mono")
+							.inputOptions("-f", "lavfi")
+							.outputOptions(
+								"-t",
+								ttsPlan.pauseSeconds.toFixed(3),
+								"-ac",
+								"1",
+								"-ar",
+								"44100",
+								"-y"
+							)
+							.save(norm(silencePath))
+					);
+				}
+
+				const concatInputs = [];
+				for (let idx = 0; idx < piecePaths.length; idx++) {
+					concatInputs.push(piecePaths[idx]);
+					if (silencePath && idx < piecePaths.length - 1) {
+						concatInputs.push(silencePath);
+					}
+				}
+
+				concatList = tmpFile(`audio_list_parts_${i + 1}`, ".txt");
+				fs.writeFileSync(
+					concatList,
+					concatInputs.map((p) => `file '${norm(p)}'`).join("\n")
 				);
 
-				const tts = await openai.audio.speech.create({
-					model: "tts-1-hd",
-					voice: "shimmer",
-					speed: localTone.openaiSpeed,
-					input: txt,
-					format: "mp3",
+				raw = tmpFile(`tts_join_${i + 1}`, ".wav");
+				await ffmpegPromise((c) =>
+					c
+						.input(norm(concatList))
+						.inputOptions("-f", "concat", "-safe", "0")
+						.outputOptions("-c", "copy", "-y")
+						.save(norm(raw))
+				);
+
+				try {
+					fs.unlinkSync(concatList);
+				} catch {}
+				piecePaths.forEach((p) => {
+					try {
+						fs.unlinkSync(p);
+					} catch {}
 				});
-				fs.writeFileSync(raw, Buffer.from(await tts.arrayBuffer()));
+				if (silencePath) {
+					try {
+						fs.unlinkSync(silencePath);
+					} catch {}
+				}
 			}
 
 			await exactLenAudio(raw, segLens[i], fixed);
 			try {
-				fs.unlinkSync(raw);
+				if (raw && fs.existsSync(raw)) fs.unlinkSync(raw);
 			} catch {}
 			fixedPieces.push(fixed);
 		}

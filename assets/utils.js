@@ -2,7 +2,6 @@
 
 const ALL_TOP5_TOPICS = [
 	// Original 49 topics
-	"Best Foods in the World",
 	"Most Popular Sports Globally",
 	"Top 5 Cities to Visit",
 	"Countries with Highest Poverty Rates",

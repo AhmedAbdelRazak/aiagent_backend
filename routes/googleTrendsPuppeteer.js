@@ -15,6 +15,19 @@ const OpenAI = require("openai");
 
 puppeteer.use(Stealth());
 
+const GOOGLE_CSE_ID =
+	process.env.GOOGLE_CSE_ID ||
+	process.env.GOOGLE_CUSTOM_SEARCH_CX ||
+	process.env.GOOGLE_CUSTOM_SEARCH_ID ||
+	null;
+const GOOGLE_CSE_KEY =
+	process.env.GOOGLE_CSE_KEY ||
+	process.env.GOOGLE_CUSTOM_SEARCH_KEY ||
+	process.env.GOOGLE_API_KEY ||
+	null;
+const GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
+const GOOGLE_CSE_TIMEOUT_MS = 12000;
+
 const router = express.Router();
 
 const ROW_LIMIT = 6; // how many rising‑search rows we scrape
@@ -24,6 +37,8 @@ const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
 const log = (...m) => console.log("[Trends]", ...m);
 const ffmpegPath =
 	process.env.FFMPEG_PATH || process.env.FFMPEG || process.env.FFMPEG_BIN || "ffmpeg";
+const BROWSER_UA =
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
@@ -31,7 +46,14 @@ function tmpFile(tag, ext = "") {
 async function downloadImageToTemp(url, ext = ".jpg") {
 	const tmp = tmpFile("trend_raw", ext);
 	const writer = fs.createWriteStream(tmp);
-	const resp = await axios.get(url, { responseType: "stream" });
+	const resp = await axios.get(url, {
+		responseType: "stream",
+		headers: {
+			"User-Agent": BROWSER_UA,
+			Referer: "https://www.google.com/",
+		},
+		validateStatus: (s) => s < 500,
+	});
 	await new Promise((resolve, reject) => {
 		resp.data.pipe(writer).on("finish", resolve).on("error", reject);
 	});
@@ -81,7 +103,12 @@ async function computeImageHashFromUrl(url) {
 		tmp = await downloadImageToTemp(url, ".jpg");
 		return await computeImageHashFromFile(tmp);
 	} catch (e) {
-		log("[ImageHash] unable to hash image", e.message || String(e));
+		const status = e?.response?.status;
+		if (status === 403) {
+			log("[ImageHash] unable to hash image (403)", url);
+		} else {
+			log("[ImageHash] unable to hash image", e.message || String(e));
+		}
 		return null;
 	} finally {
 		if (tmp) {
@@ -89,6 +116,94 @@ async function computeImageHashFromUrl(url) {
 				fs.unlinkSync(tmp);
 			} catch (_) {}
 		}
+	}
+}
+
+// Custom Search helpers for richer images
+function canUseCse() {
+	return Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
+}
+
+function targetAspectFromRatio(ratio) {
+	if (ratio === "720:1280") return 9 / 16;
+	if (ratio === "1280:720") return 16 / 9;
+	return null;
+}
+
+function classifyAspect(w, h) {
+	if (!w || !h) return "unknown";
+	const ar = w / h;
+	if (ar > 1.2) return "landscape";
+	if (ar < 0.8) return "portrait";
+	return "square";
+}
+
+function normalizeImageKey(url) {
+	try {
+		const u = new URL(url);
+		return `${u.hostname}${u.pathname}`.toLowerCase();
+	} catch {
+		return url;
+	}
+}
+
+async function fetchHighQualityImages(term, ratio, limit = 5) {
+	if (!canUseCse()) return [];
+	const year = new Date().getFullYear();
+	const targetAr = targetAspectFromRatio(ratio) || null;
+
+	try {
+		const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+			params: {
+				key: GOOGLE_CSE_KEY,
+				cx: GOOGLE_CSE_ID,
+				q: `${term} latest news photo ${year}`,
+				searchType: "image",
+				imgType: "photo",
+				num: 10,
+				safe: "active",
+			},
+			timeout: GOOGLE_CSE_TIMEOUT_MS,
+		});
+
+		const items = Array.isArray(data?.items) ? data.items : [];
+		const scored = items
+			.map((it) => {
+				const w = Number(it.image?.width || 0);
+				const h = Number(it.image?.height || 0);
+				if (!w || !h || w < 900 || h < 900) return null;
+				const ar = w / h;
+				if (targetAr && Math.abs(ar - targetAr) > 0.35) return null;
+				const area = w * h;
+				return {
+					link: it.link,
+					w,
+					h,
+					area,
+					source: it.image?.contextLink || "",
+				};
+			})
+			.filter(Boolean)
+			.sort((a, b) => (b.area || 0) - (a.area || 0))
+			.slice(0, limit);
+
+		console.log("[Trends][CSE] images", {
+			term,
+			ratio,
+			returned: items.length,
+			filtered: scored.length,
+		});
+
+		return scored.map((s) => s.link);
+	} catch (e) {
+		console.warn("[Trends][CSE] image search failed", {
+			term,
+			ratio,
+			message: e.message,
+			status: e.response?.status,
+			data: e.response?.data,
+		});
+		return [];
 	}
 }
 
@@ -637,21 +752,55 @@ function inferAspectFromUrl(url) {
 async function dedupeImagesByContent(urls, limit = 12) {
 	const uniq = [];
 	const seenUrls = new Set();
+	const seenKeys = new Set();
 	const seenHashes = new Set();
+	const hostCount = new Map();
 
 	for (const url of urls) {
 		if (!url || seenUrls.has(url)) continue;
+		const normKey = normalizeImageKey(url);
+		if (seenKeys.has(normKey)) continue;
+		const host = (() => {
+			try {
+				return new URL(url).hostname.toLowerCase();
+			} catch {
+				return "";
+			}
+		})();
+		if (host) {
+			const c = hostCount.get(host) || 0;
+			if (c >= 2) continue; // cap per host to reduce redundancy
+		}
 		const hash = await computeImageHashFromUrl(url);
 		if (hash && seenHashes.has(hash)) continue;
 		seenUrls.add(url);
+		seenKeys.add(normKey);
 		if (hash) seenHashes.add(hash);
+		if (host) hostCount.set(host, (hostCount.get(host) || 0) + 1);
 		uniq.push(url);
 		if (uniq.length >= limit) break;
 	}
 	return uniq;
 }
 
-async function buildStoryImages(story) {
+async function fetchAdditionalImagesForStory(story) {
+	const term =
+		story.youtubeShortTitle || story.seoTitle || story.title || story.term;
+	if (!term) return [];
+	const portrait = await fetchHighQualityImages(term, "720:1280", 5);
+	const landscape = await fetchHighQualityImages(term, "1280:720", 5);
+	const extra = [...portrait, ...landscape];
+	if (extra.length) {
+		console.log("[Trends] extra search images", {
+			topic: term,
+			portrait: portrait.length,
+			landscape: landscape.length,
+		});
+	}
+	return extra;
+}
+
+async function buildStoryImages(story, extra = []) {
 	const seen = new Set();
 	const pool = [];
 	const push = (u) => {
@@ -663,6 +812,7 @@ async function buildStoryImages(story) {
 	};
 	push(story.image);
 	(story.articles || []).forEach((a) => push(a.image));
+	extra.forEach((u) => push(u));
 
 	const landscape = pool.find((u) => inferAspectFromUrl(u) === "landscape");
 	const portrait = pool.find((u) => inferAspectFromUrl(u) === "portrait");
@@ -679,10 +829,19 @@ async function buildStoryImages(story) {
 
 async function decorateStoriesWithImages(stories) {
 	const mapped = await Promise.all(
-		stories.map(async (s) => ({
-			...s,
-			images: await buildStoryImages(s),
-		}))
+		stories.map(async (s) => {
+			const extra = canUseCse() ? await fetchAdditionalImagesForStory(s) : [];
+			const images = await buildStoryImages(s, extra);
+			console.log("[Trends] final image set", {
+				topic: s.title,
+				total: images.length,
+				portrait: images.filter((u) => inferAspectFromUrl(u) === "portrait")
+					.length,
+				landscape: images.filter((u) => inferAspectFromUrl(u) === "landscape")
+					.length,
+			});
+			return { ...s, images };
+		})
 	);
 	return mapped;
 }

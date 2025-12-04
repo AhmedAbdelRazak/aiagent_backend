@@ -13,7 +13,7 @@ const { authorize } = require("../middlewares/roleMiddleware");
 const { createVideoSoraPro } = require("../controllers/videoControllerSora");
 
 // @route   POST /api/videos
-router.post("/videos", protect, createVideoSoraPro);
+router.post("/videos", protect, createVideo);
 
 // @route   GET /api/videos
 router.get("/videos", protect, listVideos);
