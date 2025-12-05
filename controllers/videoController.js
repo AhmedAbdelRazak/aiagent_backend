@@ -185,6 +185,9 @@ const WORDS_PER_SEC = 2.2;
 const NATURAL_WPS = 2.25;
 const ENGAGEMENT_TAIL_MIN = 5;
 const ENGAGEMENT_TAIL_MAX = 6;
+const MIN_OUTRO_WORDS = 16;
+const OUTRO_TOLERANCE_MAX = 5;
+const OUTRO_TOLERANCE_DEFAULT = 4;
 
 const MAX_SILENCE_PAD = 0.35;
 const MIN_ATEMPO = 0.9;
@@ -313,7 +316,8 @@ const HYPE_TONE_RE =
 
 const DEFAULT_LANGUAGE = "English";
 const TONE_HINTS = {
-	Sports: "Use an energetic, but professional broadcast tone.",
+	Sports:
+		"High-energy, play-by-play excitement; sound like a top commentator calling a pivotal moment without losing accuracy.",
 	Politics:
 		"Maintain an authoritative yet neutral tone, like a high-end documentary voiceover.",
 	Finance: "Speak in a confident, analytical tone.",
@@ -365,6 +369,224 @@ const choose = (a) => a[Math.floor(Math.random() * a.length)];
 const toBool = (v) => v === true || v === "true" || v === 1 || v === "1";
 const looksLikeAITopic = (t) => AI_TOPIC_RE.test(String(t || ""));
 
+const IMAGE_BLOCKLIST_HOSTS = [
+	"pinimg.com",
+	"pinterest.com",
+	"blogspot.com",
+	"bp.blogspot.com",
+	"fbcdn.net",
+	"lookaside.fbsbx.com",
+	"gstatic.com",
+	"ytimg.com",
+	"wikimedia.org",
+	"wikipedia.org",
+	"tiktok.com",
+	"twimg.com",
+];
+
+const IMAGE_UPLOAD_SOFT_BLOCK = [
+	"optimole.com",
+	"yourbasin.com",
+	"amny.com",
+	"nwahomepage.com",
+	"arcpublishing.com",
+	"conifa.org",
+	"statcdn.com",
+	"lookaside.instagram.com",
+];
+
+function normalizeImageKey(url) {
+	try {
+		const u = new URL(url);
+		return `${u.hostname}${u.pathname}`.toLowerCase();
+	} catch {
+		return url;
+	}
+}
+
+function tokenizeLabel(label = "") {
+	return String(label || "")
+		.toLowerCase()
+		.replace(/[^a-z0-9\s]/gi, " ")
+		.split(/\s+/)
+		.filter((w) => w.length >= 3);
+}
+
+function isSoftBlockedHost(host = "") {
+	const h = String(host || "").toLowerCase();
+	return IMAGE_UPLOAD_SOFT_BLOCK.some((b) => h === b || h.endsWith(`.${b}`));
+}
+
+function isBlockedHost(host = "") {
+	const h = String(host || "").toLowerCase();
+	return IMAGE_BLOCKLIST_HOSTS.some((b) => h === b || h.endsWith(`.${b}`));
+}
+
+const SPORTS_TOKEN_MAP = {
+	volleyball: ["volleyball", "spike", "serve", "net"],
+	tennis: ["tennis", "racket", "serve", "court"],
+	basketball: ["basketball", "hoop", "nba", "dunk", "layup"],
+	cricket: ["cricket", "bat", "bowler", "wicket", "batter"],
+	football: ["soccer", "football", "goalkeeper", "goal", "pitch", "fifa"],
+	soccer: ["soccer", "football", "goalkeeper", "goal", "pitch", "fifa"],
+	athletics: ["athletics", "track", "sprinter", "relay", "hurdle", "stadium"],
+};
+
+function requiredTokensForLabel(label = "") {
+	const lower = String(label || "").toLowerCase();
+	for (const [k, v] of Object.entries(SPORTS_TOKEN_MAP)) {
+		if (lower.includes(k)) return v;
+	}
+	return [];
+}
+
+function classifyAspectFromDims(w, h) {
+	if (!w || !h) return "unknown";
+	const ar = w / h;
+	if (ar > 1.2) return "landscape";
+	if (ar < 0.8) return "portrait";
+	return "square";
+}
+
+function targetAspectValue(ratio) {
+	if (ratio === "720:1280" || ratio === "832:1104") return 9 / 16;
+	if (ratio === "1280:720" || ratio === "1584:672" || ratio === "1104:832")
+		return 16 / 9;
+	return null;
+}
+
+function aspectMatchesRatio(candidateRatio, width, height) {
+	const target = targetAspectValue(candidateRatio);
+	if (!target || !width || !height) return false;
+	const ar = width / height;
+	return Math.abs(ar - target) <= 0.32;
+}
+
+function minEdgeForRatio(ratio) {
+	if (ratio === "720:1280" || ratio === "832:1104") return 900;
+	if (ratio === "960:960") return 900;
+	return 1400;
+}
+
+function isPortraitRatio(ratio) {
+	const target = targetAspectValue(ratio);
+	return target && target < 1;
+}
+
+function dedupeImageUrls(urls, limit = 8) {
+	const uniq = [];
+	const seen = new Set();
+	const seenKeys = new Set();
+	const hostCount = new Map();
+	for (const url of urls) {
+		if (!url || typeof url !== "string") continue;
+		if (!/^https?:\/\//i.test(url)) continue;
+		const trimmed = url.trim();
+		if (seen.has(trimmed)) continue;
+		let host = "";
+		try {
+			host = new URL(trimmed).hostname.toLowerCase();
+		} catch {
+			continue;
+		}
+		if (IMAGE_BLOCKLIST_HOSTS.some((b) => host === b || host.endsWith(`.${b}`)))
+			continue;
+		const key = normalizeImageKey(trimmed);
+		if (seenKeys.has(key)) continue;
+		const c = hostCount.get(host) || 0;
+		if (c >= 2) continue;
+
+		seen.add(trimmed);
+		seenKeys.add(key);
+		hostCount.set(host, c + 1);
+		uniq.push(trimmed);
+		if (uniq.length >= limit) break;
+	}
+	return uniq;
+}
+
+function filterUploadCandidates(urls, limit = 7) {
+	const out = [];
+	for (const u of urls) {
+		if (!u || typeof u !== "string") continue;
+		let host = "";
+		try {
+			host = new URL(u).hostname.toLowerCase();
+		} catch {
+			continue;
+		}
+		if (
+			IMAGE_UPLOAD_SOFT_BLOCK.some((b) => host === b || host.endsWith(`.${b}`))
+		)
+			continue;
+		out.push(u);
+		if (out.length >= limit) break;
+	}
+	return out;
+}
+
+function pickIntroOutroUrls(urls = []) {
+	const uniq = [];
+	const seen = new Set();
+	for (const u of urls) {
+		if (!u || typeof u !== "string") continue;
+		if (seen.has(u)) continue;
+		seen.add(u);
+		uniq.push(u);
+		if (uniq.length >= 3) break;
+	}
+	return {
+		intro: uniq[0] || null,
+		outro: uniq[1] || null,
+		remaining: uniq.slice(2),
+	};
+}
+
+function aspectForRatio(ratio) {
+	if (!ratio) return null;
+	const parts = String(ratio)
+		.split(":")
+		.map((p) => parseFloat(p));
+	if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+	return parts[0] >= parts[1] ? "landscape" : "portrait";
+}
+
+function pickTrendImagesForRatio(trendStory, ratio, desiredCount = 5) {
+	if (!trendStory) return [];
+	const aspect = aspectForRatio(ratio) || "landscape";
+	const exact =
+		trendStory.imagesByAspect &&
+		Array.isArray(trendStory.imagesByAspect[ratio]) &&
+		trendStory.imagesByAspect[ratio].length
+			? trendStory.imagesByAspect[ratio]
+			: null;
+	const fallbackKey = aspect === "portrait" ? "720:1280" : "1280:720";
+	const fallback =
+		trendStory.imagesByAspect && trendStory.imagesByAspect[fallbackKey]
+			? trendStory.imagesByAspect[fallbackKey]
+			: [];
+
+	const pools = [
+		...(exact || []),
+		...fallback,
+		...(Array.isArray(trendStory.images) ? trendStory.images : []),
+		...(trendStory.imagesByAspect?.square || []),
+		...(trendStory.imagesByAspect?.unknown || []),
+	];
+
+	const seen = new Set();
+	const picked = [];
+	for (const url of pools) {
+		if (!url || typeof url !== "string") continue;
+		if (!/^https?:\/\//i.test(url)) continue;
+		if (seen.has(url)) continue;
+		seen.add(url);
+		picked.push(url);
+		if (picked.length >= desiredCount) break;
+	}
+	return picked.slice(0, desiredCount);
+}
+
 function sanitizeAudienceFacingText(text, { allowAITopic = false } = {}) {
 	if (!text || typeof text !== "string") return "";
 	let cleaned = text;
@@ -398,7 +620,7 @@ function sanitizeAudienceFacingText(text, { allowAITopic = false } = {}) {
 	return cleaned.trim();
 }
 
-function enforceEngagementOutroText(text, { topic, wordCap }) {
+function enforceEngagementOutroText(text, { topic, wordCap, category }) {
 	const existing = String(text || "").trim();
 	const hasQuestion = /\?/.test(existing);
 	const hasCTA = /(comment|subscribe|follow|like)/i.test(existing);
@@ -407,23 +629,54 @@ function enforceEngagementOutroText(text, { topic, wordCap }) {
 
 	const safeTopic =
 		sanitizeAudienceFacingText(topic, { allowAITopic: true }) || topic || "";
-	const question = safeTopic
-		? `What do you think about ${safeTopic}?`
-		: "What do you think?";
-	const cta = "Comment below, tap like, and subscribe for more quick updates!";
-	const signOffs = [
+	const question =
+		category === "Top5"
+			? choose([
+					"Do you agree with this ranking?",
+					"What would you swap on this list?",
+					"Which pick shocked you most?",
+			  ])
+			: choose(
+					safeTopic
+						? [
+								`What do you make of ${safeTopic}?`,
+								`Does ${safeTopic} surprise you?`,
+								`Where do you stand on ${safeTopic}?`,
+						  ]
+						: [
+								"What do you think?",
+								"Did this surprise you?",
+								"What stood out to you?",
+						  ]
+			  );
+	const cta = choose([
+		"Drop your take below, tap like, and subscribe for more quick hits.",
+		"Tell me your angle in the comments, hit like, and subscribe for the next drop.",
+		"Share your thoughts, smash like, and follow for tomorrow's update.",
+	]);
+	const signOff = choose([
 		"See you tomorrow!",
 		"Catch you next time!",
 		"Thanks for watching!",
 		"Stay curious!",
-	];
-	const signOff = choose(signOffs);
+		"Stay sharp out there!",
+	]);
 
 	let combined = existing;
 	if (!hasQuestion && !hasCTA) combined = `${question} ${cta}`;
 	else if (!hasQuestion) combined = `${existing} ${question}`;
 	else if (!hasCTA) combined = `${existing} ${cta}`;
 	if (!hasSignOff) combined = `${combined} ${signOff}`;
+
+	// Ensure the CTA is complete and not dangling.
+	if (/[&]\s*$/.test(combined) || /\band\s*$/i.test(combined)) {
+		combined = combined.replace(/[&]\s*$/g, "and").replace(/\band\s*$/i, "and");
+		combined = `${combined} subscribe!`;
+	}
+	if (!/subscribe/i.test(combined) && /like/i.test(combined)) {
+		combined = `${combined} Subscribe for more!`;
+	}
+	if (!/[.!?]$/.test(combined)) combined = `${combined}!`;
 
 	combined = combined.replace(/\s+/g, " ").trim();
 
@@ -463,6 +716,12 @@ function ensureClickableLinks(text) {
 		s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
 		s = s.replace(
 			/(^|\s)(serenejannat\.com[^\s)]*)/gi,
+			(_m, prefix, url) =>
+				`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
+		);
+		// general bare domain -> clickable
+		s = s.replace(
+			/(^|\s)([a-z0-9.-]+\.[a-z]{2,}[^\s)]*)/gi,
 			(_m, prefix, url) =>
 				`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
 		);
@@ -526,7 +785,7 @@ function toTitleCase(str = "") {
 
 function fallbackSeoTitle(topic, category) {
 	const base = toTitleCase(topic || "Breaking Update");
-	if (category === "Top5") return `${base} | Top 5`;
+	if (category === "Top5") return `Top 5 ${base}`;
 	if (category === "Sports") return `${base} | Highlights & Preview`;
 	return `${base} | Update`;
 }
@@ -660,64 +919,58 @@ function computeEngagementTail(duration) {
 	return tail;
 }
 
-function computeInitialSegLens(category, duration, tailSeconds) {
+function computeOptionalOutroTolerance(tailSeconds) {
+	const needed = MIN_OUTRO_WORDS / WORDS_PER_SEC; // seconds needed to comfortably fit CTA
+	const deficit = +(needed - tailSeconds).toFixed(2);
+	if (deficit <= 0) return 0;
+	return +Math.min(Math.max(deficit, 0), OUTRO_TOLERANCE_MAX).toFixed(2);
+}
+
+function computeInitialSegLens(
+	category,
+	duration,
+	tailSeconds,
+	toleranceSeconds
+) {
 	if (category === "Top5") {
-		const totalTarget = duration + tailSeconds;
 		const INTRO = 3;
-		const segLens = [];
-		const r = duration - INTRO;
-		const base = Math.floor(r / 5);
-		const extra = r % 5;
-		segLens.push(
-			INTRO,
-			...Array.from({ length: 5 }, (_, i) => base + (i < extra ? 1 : 0))
-		);
-		segLens.push(tailSeconds);
-		const planned = segLens.reduce((a, b) => a + b, 0);
-		const delta = totalTarget - planned;
-		if (Math.abs(delta) >= 0.5)
-			segLens[segLens.length - 1] = Math.max(
-				tailSeconds,
-				+(segLens[segLens.length - 1] + delta).toFixed(2)
-			);
+		const outro = +(tailSeconds + (toleranceSeconds || 0)).toFixed(2);
+		const contentTarget = Math.max(duration - INTRO, 12);
+		const base = Math.max(4, Math.floor(contentTarget / 5));
+		let remainder = contentTarget - base * 5;
+		const segLens = [INTRO];
+		for (let i = 0; i < 5; i++) {
+			const add = remainder > 0 ? 1 : 0;
+			segLens.push(base + add);
+			remainder -= add;
+		}
+		segLens.push(outro);
 		return segLens.map((n) => +n.toFixed(2));
 	}
 
-	const totalTarget = duration + tailSeconds;
+	const INTRO = 3;
 	const MIN_SEG_SECONDS = 4;
-	const runwayBudget = Math.max(
-		MIN_SEG_SECONDS * 2,
-		Math.round(totalTarget * 0.4)
+	const outro = +(tailSeconds + (toleranceSeconds || 0)).toFixed(2);
+	const contentTarget = Math.max(duration - INTRO, MIN_SEG_SECONDS * 2);
+	const contentSegCount = Math.max(
+		2,
+		Math.min(4, Math.round(contentTarget / 8))
 	);
-	let seg1 = Math.max(MIN_SEG_SECONDS, Math.round(runwayBudget * 0.55));
-	let seg2 = Math.max(MIN_SEG_SECONDS, runwayBudget - seg1);
-	let contentTotal = seg1 + seg2;
+	const baseContent = Math.max(
+		MIN_SEG_SECONDS + 1,
+		Math.floor(contentTarget / contentSegCount)
+	);
+	let remainder = contentTarget - baseContent * contentSegCount;
 
-	let outro = +(totalTarget - contentTotal).toFixed(2);
-	if (outro < tailSeconds) {
-		const shortfall = tailSeconds - outro;
-		const giveFrom1 = Math.min(shortfall, Math.max(0, seg1 - MIN_SEG_SECONDS));
-		seg1 -= giveFrom1;
-		const remaining = shortfall - giveFrom1;
-		const giveFrom2 = Math.min(remaining, Math.max(0, seg2 - MIN_SEG_SECONDS));
-		seg2 -= giveFrom2;
-		contentTotal = seg1 + seg2;
-		outro = +(totalTarget - contentTotal).toFixed(2);
+	const segLens = [INTRO];
+	for (let i = 0; i < contentSegCount; i++) {
+		const add = remainder > 0 ? 1 : 0;
+		segLens.push(baseContent + add);
+		remainder -= add;
 	}
 
-	if (outro <= 0) {
-		outro = tailSeconds;
-		const remaining = totalTarget - outro;
-		seg1 = Math.max(MIN_SEG_SECONDS, Math.round(remaining * 0.55));
-		seg2 = Math.max(MIN_SEG_SECONDS, +(remaining - seg1).toFixed(2));
-	}
-
-	const plannedTotal = seg1 + seg2 + outro;
-	if (Math.abs(plannedTotal - totalTarget) >= 0.05) {
-		outro = +(outro + (totalTarget - plannedTotal)).toFixed(2);
-	}
-
-	return [+seg1.toFixed(2), +seg2.toFixed(2), +outro.toFixed(2)];
+	segLens.push(outro);
+	return segLens.map((n) => +n.toFixed(2));
 }
 
 /* ---------------------------------------------------------------
@@ -835,7 +1088,9 @@ async function exactLen(src, target, out, opts = {}) {
 			if (diff < 0) {
 				cmd.outputOptions("-t", String(target));
 			} else {
-				vf.push(`tpad=stop_duration=${diff.toFixed(3)}`);
+				// Cap extra silence to avoid long dead-air tails.
+				const capped = Math.min(diff, 1.0);
+				vf.push(`tpad=stop_duration=${capped.toFixed(3)}`);
 			}
 		}
 
@@ -923,41 +1178,12 @@ async function concatWithTransitions(
 	transitionDuration = 0.85,
 	options = {}
 ) {
-	/**
-	 * KNOBS YOU CARE ABOUT:
-	 *
-	 * 1) transitionDuration  (4th argument at call-site)
-	 *    - You currently call: concatWithTransitions(clips, segLens, ratio, 0.9)
-	 *    - LOWER this number (e.g. 0.3) -> much faster fade in/out.
-	 *    - HIGHER this number (e.g. 1.2) -> slower/longer fades.
-	 *
-	 * 2) options.maxFadeFraction
-	 *    - Fraction of each clip we are allowed to spend fading.
-	 *    - Smaller = snappier transitions.
-	 *
-	//  * 3) options.fadeIn*/ fadeOut * booleans;
-	//  *    - Control where fades are applied:
-	//  *      - fadeInFirst:  fade in segment 1 from black.
-	//  *      - fadeOutLast:  fade out final segment to black.
-	//  *      - fadeInMiddle: fade in segments 2..N from black.
-	//  *      - fadeOutMiddle:fade out segments 1..N-1 to black.
-	//  *
-	//  * EXAMPLES:
-	//  *
-	//  *  - Faster fades everywhere:
-	//  *      concatWithTransitions(clips, segLens, ratio, 0.3);
-	//  *
-	//  *  - Fade OUT segment 1, then HARD CUT to segment 2 (no fade-in on 2):
-	//  *      concatWithTransitions(clips, segLens, ratio, 0.3, {
-	//  *        fadeInMiddle: false
-	//  *      });
-	//  *
-	//  *  - No fades between segments at all (only fade-in at start, fade-out at end):
-	//  *      concatWithTransitions(clips, segLens, ratio, 0.3, {
-	//  *        fadeInMiddle: false,
-	//  *        fadeOutMiddle: false
-	//  *      });
-	//  /
+	/* KNOBS YOU CARE ABOUT:
+	 * 1) transitionDuration (4th argument at call-site)
+	 *    - LOWER (e.g. 0.3) -> faster fades. HIGHER (e.g. 1.2) -> slower fades.
+	 * 2) options.maxFadeFraction / minFadeSeconds: how much of each clip we spend fading.
+	 * 3) options.fadeIn flags control fades at start/middle; options.fadeOut flags control fades at end/middle.
+	 */
 
 	if (!clips || !clips.length) throw new Error("No clips to stitch");
 
@@ -970,8 +1196,8 @@ async function concatWithTransitions(
 
 		// How aggressive fades can be relative to each clip duration.
 		// Smaller maxFadeFraction + smaller transitionDuration => snappier fades.
-		maxFadeFraction = 0.18, // <= 18% of each clip duration
-		minFadeSeconds = 0.12, // minimum fade length so it’s not a 1‑frame flash
+		maxFadeFraction = 0.14, // <= 14% of each clip duration
+		minFadeSeconds = 0.15, // minimum fade length so it's not a 1-frame flash
 	} = options;
 
 	const maxFadeSeconds = transitionDuration || 0.85;
@@ -1391,6 +1617,63 @@ async function fetchTrendingStory(
 			effectiveTitle
 		);
 		const imageComment = String(s.imageComment || s.imageHook || "").trim();
+		const providedImages = Array.isArray(s.images)
+			? s.images.filter((u) => typeof u === "string" && /^https?:\/\//i.test(u))
+			: [];
+		const imagesByAspect =
+			s.imagesByAspect && typeof s.imagesByAspect === "object"
+				? {
+						"1280:720": Array.isArray(s.imagesByAspect["1280:720"])
+							? s.imagesByAspect["1280:720"].filter(
+									(u) => typeof u === "string" && /^https?:\/\//i.test(u)
+							  )
+							: [],
+						"720:1280": Array.isArray(s.imagesByAspect["720:1280"])
+							? s.imagesByAspect["720:1280"].filter(
+									(u) => typeof u === "string" && /^https?:\/\//i.test(u)
+							  )
+							: [],
+						square: Array.isArray(s.imagesByAspect.square)
+							? s.imagesByAspect.square.filter(
+									(u) => typeof u === "string" && /^https?:\/\//i.test(u)
+							  )
+							: [],
+						unknown: Array.isArray(s.imagesByAspect.unknown)
+							? s.imagesByAspect.unknown.filter(
+									(u) => typeof u === "string" && /^https?:\/\//i.test(u)
+							  )
+							: [],
+				  }
+				: {
+						"1280:720": [],
+						"720:1280": [],
+						square: [],
+						unknown: [],
+				  };
+
+		if (providedImages.length) {
+			return {
+				title: String(effectiveTitle || s.title || "").trim(),
+				rawTitle: String(s.title || "").trim(),
+				seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
+				youtubeShortTitle: s.youtubeShortTitle
+					? String(s.youtubeShortTitle).trim()
+					: null,
+				entityNames: Array.isArray(s.entityNames)
+					? s.entityNames.map((e) => String(e || "").trim()).filter(Boolean)
+					: [],
+				imageComment,
+				viralImageBriefs: viralBriefs,
+				images: providedImages,
+				imagesByAspect,
+				imageSummary: s.imageSummary || null,
+				articles: articles.map((a) => ({
+					title: String(a.title || "").trim(),
+					url: a.url || null,
+					image: a.image || null,
+				})),
+			};
+		}
 
 		const candidates = [];
 		if (s.image) {
@@ -1423,6 +1706,8 @@ async function fetchTrendingStory(
 				imageComment,
 				viralImageBriefs: viralBriefs,
 				images: [],
+				imagesByAspect,
+				imageSummary: s.imageSummary || null,
 				articles: articles.map((a) => ({
 					title: String(a.title || "").trim(),
 					url: a.url || null,
@@ -1478,6 +1763,8 @@ async function fetchTrendingStory(
 			imageComment,
 			viralImageBriefs: viralBriefs,
 			images,
+			imagesByAspect,
+			imageSummary: s.imageSummary || null,
 			articles: articles.map((a) => ({
 				title: String(a.title || "").trim(),
 				url: a.url || null,
@@ -1575,6 +1862,11 @@ Hard constraints:
 			? "like ESPN or an official league/NFL/NBA channel, not a meme or fan channel."
 			: "like a major newspaper or broadcaster, not a clickbait channel."
 	}
+${
+	category === "Top5"
+		? '- The title MUST start with "Top 5" followed by the topic. Example: "Top 5 Most Popular Sports Globally".'
+		: ""
+}
 
 SEO behavior:
 - Include the core subject once, close to the start.
@@ -1593,6 +1885,7 @@ ${
 		? `Respond in ${language}, keeping any names in their original spelling.`
 		: ""
 }
+If category is Top5, always begin with "Top 5" + the topic.
 
 Return only the final title, nothing else.
 `.trim();
@@ -1840,8 +2133,9 @@ async function isUrlReachable(url) {
 	}
 }
 
-function scoreImageCandidate(it, target) {
-	const { score, isThumbnail } = analyseImageUrl(it.link, true);
+function scoreCseImageCandidate(it, target) {
+	const link = it.link || it.url;
+	const { score, isThumbnail } = analyseImageUrl(link, true);
 	if (isThumbnail) return null;
 
 	let total = score;
@@ -1867,7 +2161,8 @@ function scoreImageCandidate(it, target) {
 	}
 
 	return {
-		link: it.link,
+		link,
+		url: link,
 		score: total,
 		source: it.image?.contextLink || it.displayLink || "",
 		title: it.title || "",
@@ -1878,37 +2173,115 @@ async function pickBestImageFromSearch(
 	items = [],
 	ratio = null,
 	label = "",
-	avoidSet = new Set()
+	avoidSet = new Set(),
+	options = {}
 ) {
 	if (!Array.isArray(items) || !items.length) return null;
 	const target = targetResolutionForRatio(ratio);
+	const labelTokens = tokenizeLabel(label);
+	const requirePortraitForRatio =
+		options.requirePortraitForRatio && isPortraitRatio(ratio);
+	const minEdgeOverride = Number(options.minEdge) || 0;
+	const negativeTitleRe = options.negativeTitleRe || null;
+	const requireTokens = Array.isArray(options.requireTokens)
+		? options.requireTokens
+				.map((t) => String(t || "").toLowerCase())
+				.filter(Boolean)
+		: [];
 
 	const candidates = [];
 	for (const it of items) {
-		if (!it || !it.link) continue;
-		if (avoidSet.has(it.link)) continue;
-		const scored = scoreImageCandidate(it, target);
+		if (!it) continue;
+		const link =
+			it.link ||
+			it.image?.originalImageUrl ||
+			it.image?.thumbnailLink ||
+			it.image?.contextLink ||
+			null;
+		if (!link) continue;
+		if (avoidSet.has(link)) continue;
+		let host = "";
+		try {
+			host = new URL(link).hostname.toLowerCase();
+			if (isBlockedHost(host) || isSoftBlockedHost(host)) continue;
+		} catch {
+			/* ignore malformed URL */
+		}
+		const title = (it.title || "").toLowerCase();
+		if (negativeTitleRe && negativeTitleRe.test(title)) continue;
+		const hay = `${title} ${link}`.toLowerCase();
+		if (labelTokens.length && !labelTokens.some((w) => hay.includes(w)))
+			continue;
+		if (requireTokens.length && !requireTokens.some((w) => hay.includes(w)))
+			continue;
+		const w = Number(it.image?.width || 0);
+		const h = Number(it.image?.height || 0);
+		if (requirePortraitForRatio && w && h && w > h * 1.05) continue;
+		if (minEdgeOverride && w && h && Math.min(w, h) < minEdgeOverride) continue;
+		const scored = scoreCseImageCandidate({ ...it, link, url: link }, target);
 		if (scored) candidates.push(scored);
 	}
 
 	candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
 
 	for (const cand of candidates) {
-		const ok = await isUrlReachable(cand.link);
+		const url = cand.url || cand.link;
+		if (!url) continue;
+		const ok = await isUrlReachable(url);
 		if (ok) {
 			console.log("[Top5] Image chosen", {
 				label,
-				url: cand.link,
+				url,
 				source: cand.source,
 				desc: shortImageDesc(cand.title, label),
 			});
-			return cand;
+			return { ...cand, link: url, url };
 		}
 		console.warn("[Top5] Image unreachable, skipping", {
 			label,
-			url: cand.link,
+			url,
 			source: cand.source,
 		});
+	}
+
+	// Fallback: try first reachable raw item even if score failed
+	for (const it of items) {
+		if (!it) continue;
+		const link =
+			it.link ||
+			it.image?.originalImageUrl ||
+			it.image?.thumbnailLink ||
+			it.image?.contextLink ||
+			null;
+		if (!link || avoidSet.has(link)) continue;
+		let host = "";
+		try {
+			host = new URL(link).hostname.toLowerCase();
+			if (isBlockedHost(host) || isSoftBlockedHost(host)) continue;
+		} catch {
+			/* ignore malformed URL */
+		}
+		const title = (it.title || "").toLowerCase();
+		if (negativeTitleRe && negativeTitleRe.test(title)) continue;
+		const hay = `${title} ${link}`.toLowerCase();
+		if (labelTokens.length && !labelTokens.some((w) => hay.includes(w)))
+			continue;
+		if (requireTokens.length && !requireTokens.some((w) => hay.includes(w)))
+			continue;
+		const w = Number(it.image?.width || 0);
+		const h = Number(it.image?.height || 0);
+		if (requirePortraitForRatio && w && h && w > h * 1.05) continue;
+		if (minEdgeOverride && w && h && Math.min(w, h) < minEdgeOverride) continue;
+		const ok = await isUrlReachable(link);
+		if (ok) {
+			console.log("[Top5] Fallback image chosen", { label, url: link });
+			return {
+				...it,
+				link,
+				url: link,
+				source: it.source || it.image?.contextLink || "",
+			};
+		}
 	}
 
 	return null;
@@ -1960,6 +2333,181 @@ async function fetchTop5LiveContext(outline = [], topic = "") {
 	return ctx;
 }
 
+async function fetchOgImage(url) {
+	if (!url) return null;
+	try {
+		const { data: html } = await axios.get(url, {
+			timeout: 8000,
+			headers: ARTICLE_FETCH_HEADERS,
+		});
+		const matches = [
+			/html\s*property=["']og:image["'][^>]+content=["']([^"'>]+)["']/i,
+			/property=["']og:image["'][^>]+content=["']([^"'>]+)["']/i,
+			/name=["']og:image["'][^>]+content=["']([^"'>]+)["']/i,
+			/name=["']twitter:image["'][^>]+content=["']([^"'>]+)["']/i,
+			/name=["']twitter:image:src["'][^>]+content=["']([^"'>]+)["']/i,
+		];
+		for (const re of matches) {
+			const m = html.match(re);
+			if (m && m[1]) return m[1];
+		}
+		return null;
+	} catch (e) {
+		const status = e?.response?.status;
+		if (status && status !== 404) {
+			console.warn("[OG] fetch failed", { url, status, msg: e.message });
+		}
+		return null;
+	}
+}
+
+function scoreImageCandidateByRatio({ url, width, height, ratio, source }) {
+	if (!url) return -1;
+	const minEdge = minEdgeForRatio(ratio);
+	const w = Number(width) || 0;
+	const h = Number(height) || 0;
+	const minOk = w && h ? Math.min(w, h) >= minEdge : true;
+	if (!minOk) return -1;
+	const aspectOk = w && h ? aspectMatchesRatio(ratio, w, h) : false;
+	const ar = w && h ? w / h : null;
+	const mp = w && h ? (w * h) / 1_000_000 : 0;
+	const sourceBonus =
+		/nytimes|espn|reuters|apnews|bbc|cnn|cnbc|bloomberg|guardian|washingtonpost/i.test(
+			source || ""
+		)
+			? 1.5
+			: 0.3;
+	return (
+		(mp ? mp * 1.2 : 0.5) +
+		(aspectOk ? 1.5 : -0.8) +
+		(ar
+			? Math.max(0, 1 - Math.abs((targetAspectValue(ratio) || ar) - ar))
+			: 0) +
+		sourceBonus
+	);
+}
+
+async function fetchHighQualityImagesForTopic({
+	topic,
+	ratio,
+	articleLinks = [],
+	desiredCount = 7,
+	limit = 16,
+}) {
+	const candidates = [];
+	const dedupeSet = new Set();
+
+	// 1) OG images from article links
+	for (const link of articleLinks.slice(0, 8)) {
+		const og = await fetchOgImage(link);
+		if (og) {
+			candidates.push({ url: og, source: link });
+			dedupeSet.add(og);
+		}
+	}
+
+	// 2) Google CSE search
+	if (canUseGoogleSearch()) {
+		const year = dayjs().format("YYYY");
+		const queries = [
+			`${topic} latest news photo ${year}`,
+			`${topic} highlight photo ${year}`,
+			`${topic} editorial photo ${year}`,
+			`${topic} vertical phone photo ${year}`,
+		];
+		const pages = [1, 11, 21];
+
+		for (const q of queries) {
+			for (const start of pages) {
+				try {
+					const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+						params: {
+							key: GOOGLE_CSE_KEY,
+							cx: GOOGLE_CSE_ID,
+							q,
+							searchType: "image",
+							imgType: "photo",
+							imgSize: "huge",
+							num: 10,
+							start,
+							safe: "high",
+						},
+						timeout: GOOGLE_CSE_TIMEOUT_MS,
+					});
+					const items = Array.isArray(data?.items) ? data.items : [];
+					for (const it of items) {
+						const url = it.link;
+						if (!url || dedupeSet.has(url)) continue;
+						const w = Number(it.image?.width || 0);
+						const h = Number(it.image?.height || 0);
+						const host = (() => {
+							try {
+								return new URL(url).hostname.toLowerCase();
+							} catch {
+								return "";
+							}
+						})();
+						if (
+							IMAGE_BLOCKLIST_HOSTS.some(
+								(b) => host === b || host.endsWith(`.${b}`)
+							)
+						)
+							continue;
+						candidates.push({
+							url,
+							width: w,
+							height: h,
+							source: it.image?.contextLink || it.displayLink || "",
+						});
+						dedupeSet.add(url);
+					}
+				} catch (e) {
+					console.warn("[ImageSearch] CSE failed", {
+						query: q,
+						start,
+						msg: e.message,
+						status: e.response?.status,
+					});
+				}
+			}
+		}
+	}
+
+	const scored = candidates
+		.map((c) => ({
+			...c,
+			score: scoreImageCandidateByRatio({
+				url: c.url,
+				width: c.width,
+				height: c.height,
+				ratio,
+				source: c.source,
+			}),
+		}))
+		.filter((c) => c.score > 0)
+		.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+	const urls = dedupeImageUrls(
+		scored.map((c) => c.url),
+		limit
+	);
+
+	const sliced = urls.slice(
+		0,
+		Math.max(desiredCount, Math.min(limit, urls.length))
+	);
+
+	console.log("[ImageSearch] candidates", {
+		topic,
+		ratio,
+		candidates: candidates.length,
+		scored: scored.length,
+		returning: sliced.length,
+	});
+
+	return sliced;
+}
+
 async function fetchTop5ImagePool(outline = [], topic = "", ratio = null) {
 	if (!canUseGoogleSearch()) {
 		console.warn(
@@ -1969,10 +2517,25 @@ async function fetchTop5ImagePool(outline = [], topic = "", ratio = null) {
 	}
 	const results = [];
 	const yearHint = dayjs().format("YYYY");
+	const negativeTitleRe = /(stock|wallpaper|logo|cartoon|illustration)/i;
+	const requireTokensByLabel = new Map(
+		(outline || []).map((o) => [o.label, requiredTokensForLabel(o.label)])
+	);
 
 	for (const item of outline) {
 		if (!item || !item.label) continue;
-		const q = [item.label, topic, "editorial photo", yearHint]
+		const q = [
+			item.label,
+			topic,
+			"action photo",
+			"vertical 9:16",
+			"editorial",
+			yearHint,
+			"-logo",
+			"-infographic",
+			"-cartoon",
+			"-illustration",
+		]
 			.filter(Boolean)
 			.join(" ");
 		try {
@@ -1988,19 +2551,57 @@ async function fetchTop5ImagePool(outline = [], topic = "", ratio = null) {
 				timeout: GOOGLE_CSE_TIMEOUT_MS,
 			});
 
-			const best = await pickBestImageFromSearch(
+			let best = await pickBestImageFromSearch(
 				data?.items || [],
 				ratio,
 				item.label,
-				new Set()
+				new Set(),
+				{
+					requirePortraitForRatio: true,
+					minEdge: 1000,
+					negativeTitleRe,
+					requireTokens: requireTokensByLabel.get(item.label) || [],
+				}
 			);
 			if (best?.link) {
+				try {
+					const host = new URL(best.link).hostname.toLowerCase();
+					if (isSoftBlockedHost(host)) continue;
+				} catch {
+					/* ignore */
+				}
 				results.push({
 					rank: item.rank,
 					label: item.label,
 					url: best.link,
 					source: best.source || "",
 					title: best.title || "",
+				});
+				continue;
+			}
+
+			// Fallback: use broader search per label + topic
+			const fallbackUrls = await fetchHighQualityImagesForTopic({
+				topic: `${item.label} ${topic}`,
+				ratio,
+				articleLinks: [],
+				desiredCount: 3,
+				limit: 8,
+			});
+			const chosen = fallbackUrls.find((u) => !!u);
+			if (chosen) {
+				try {
+					const host = new URL(chosen).hostname.toLowerCase();
+					if (isSoftBlockedHost(host)) continue;
+				} catch {
+					/* ignore */
+				}
+				results.push({
+					rank: item.rank,
+					label: item.label,
+					url: chosen,
+					source: "",
+					title: item.label,
 				});
 			}
 		} catch (e) {
@@ -2045,7 +2646,13 @@ async function fetchTop5ReplacementImage(
 			data?.items || [],
 			ratio,
 			label,
-			avoidSet
+			avoidSet,
+			{
+				requirePortraitForRatio: true,
+				minEdge: 1000,
+				negativeTitleRe: /(stock|wallpaper|logo|cartoon|illustration)/i,
+				requireTokens: requiredTokensForLabel(label),
+			}
 		);
 	} catch (e) {
 		console.warn("[Top5] Replacement image search failed", {
@@ -2205,7 +2812,12 @@ async function generateOpenAIImagesForTop5(segments, ratio, topic) {
 	return outputs;
 }
 
-async function uploadReferenceImagesForTop5(segments, ratio, topic) {
+async function uploadReferenceImagesForTop5(
+	segments,
+	ratio,
+	topic,
+	top5Outline
+) {
 	const pairs = [];
 	const urlToIdx = new Map();
 	const safeSlug = String(topic || "top5")
@@ -2214,14 +2826,24 @@ async function uploadReferenceImagesForTop5(segments, ratio, topic) {
 		.replace(/^_+|_+$/g, "")
 		.slice(0, 40);
 	const attempted = new Set();
+	const desiredRanks =
+		Array.isArray(top5Outline) && top5Outline.length
+			? Array.from(new Set(top5Outline.map((o) => o.rank).filter(Boolean)))
+			: null;
 
 	for (let i = 0; i < segments.length; i++) {
+		// only upload ranked content segments; skip intro/outro or non-countdown parts
+		if (!segments[i].countdownRank && !segments[i].rank) continue;
+
 		let url = String(segments[i].referenceImageUrl || "").trim();
 		const segLabel =
 			segments[i].countdownLabel ||
 			segments[i].label ||
 			segments[i].overlayText ||
 			`Segment ${i + 1}`;
+
+		// Hard cap uploads to avoid excess cost; keep up to 5 ranked images
+		if (pairs.length >= 5) break;
 
 		let uploaded = false;
 		let attempts = 0;
@@ -2234,9 +2856,32 @@ async function uploadReferenceImagesForTop5(segments, ratio, topic) {
 					ratio,
 					attempted
 				);
-				url = replacement?.url || "";
+				url = replacement?.url || replacement?.link || "";
 			}
 			if (!url) break;
+
+			const reachable = await isUrlReachable(url);
+			if (!reachable) {
+				attempted.add(url);
+				url = "";
+				continue;
+			}
+
+			const host = (() => {
+				try {
+					return new URL(url).hostname.toLowerCase();
+				} catch {
+					return "";
+				}
+			})();
+			if (
+				IMAGE_UPLOAD_SOFT_BLOCK.some(
+					(b) => host === b || host.endsWith(`.${b}`)
+				)
+			) {
+				url = "";
+				continue;
+			}
 
 			attempted.add(url);
 			console.log("[Top5] Uploading reference image", {
@@ -2253,12 +2898,20 @@ async function uploadReferenceImagesForTop5(segments, ratio, topic) {
 					`aivideomatic/top5_refs/${safeSlug}_${i}`
 				);
 				const idx = pairs.length;
-				pairs.push({ originalUrl: url, cloudinaryUrl: up.url });
+				const rankVal =
+					segments[i].countdownRank ||
+					segments[i].rank ||
+					(() => {
+						const m = String(segLabel || "").match(/#(\d+)/);
+						return m ? Number(m[1]) : null;
+					})();
+				pairs.push({ originalUrl: url, cloudinaryUrl: up.url, rank: rankVal });
 				urlToIdx.set(url, idx);
 				segments[i].referenceImageUrl = url;
 				uploaded = true;
 			} catch (e) {
 				console.warn("[Top5] Upload reference image failed ?", e.message);
+				attempted.add(url);
 				url = "";
 			}
 		}
@@ -2269,7 +2922,75 @@ async function uploadReferenceImagesForTop5(segments, ratio, topic) {
 		return urlToIdx.has(url) ? urlToIdx.get(url) : null;
 	});
 
+	// If we are still short of 5 unique ranked images, try to fill missing ranks
+	if (pairs.length < 5 && desiredRanks && desiredRanks.length) {
+		for (const rank of desiredRanks) {
+			if (pairs.find((p) => p.rank === rank)) continue;
+			const label =
+				(top5Outline || []).find((o) => o.rank === rank)?.label ||
+				`Rank ${rank}`;
+			let nextUrl = "";
+
+			const replacement = await fetchTop5ReplacementImage(
+				label,
+				topic,
+				ratio,
+				attempted
+			);
+			nextUrl = replacement?.url || replacement?.link || "";
+
+			if (!nextUrl) {
+				const extra = await fetchHighQualityImagesForTopic({
+					topic: `${label} sport action photo`,
+					ratio,
+					articleLinks: [],
+					desiredCount: 2,
+					limit: 5,
+				});
+				nextUrl = (extra && extra[0]) || "";
+			}
+
+			if (!nextUrl || attempted.has(nextUrl)) continue;
+			const reachable = await isUrlReachable(nextUrl);
+			if (!reachable) {
+				attempted.add(nextUrl);
+				continue;
+			}
+
+			attempted.add(nextUrl);
+			try {
+				const up = await uploadTrendImageToCloudinary(
+					nextUrl,
+					ratio,
+					`aivideomatic/top5_refs/${safeSlug}_fill_${rank}`
+				);
+				pairs.push({ originalUrl: nextUrl, cloudinaryUrl: up.url, rank });
+			} catch (e) {
+				console.warn("[Top5] Fallback fill upload failed", e.message);
+			}
+			if (pairs.length >= 5) break;
+		}
+	}
+
 	return { pairs, segImageIndex };
+}
+
+function alignTop5ImageIndexes(segments, top5Outline, pairs) {
+	if (!Array.isArray(segments) || !Array.isArray(pairs) || !pairs.length)
+		return segments;
+	const byRank = new Map();
+	(pairs || []).forEach((p, idx) => byRank.set(p.rank || idx + 1, idx));
+	return segments.map((seg, idx) => {
+		const rank =
+			seg?.countdownRank ||
+			(top5Outline && idx - 1 >= 0 && idx - 1 < top5Outline.length
+				? top5Outline[idx - 1].rank
+				: null);
+		if (!rank) return seg;
+		if (seg.imageIndex !== null && seg.imageIndex !== undefined) return seg;
+		const mapped = byRank.get(rank);
+		return mapped !== undefined ? { ...seg, imageIndex: mapped } : seg;
+	});
 }
 
 /* ---------------------------------------------------------------
@@ -2475,7 +3196,8 @@ async function generateStaticClipFromImage({
 							`crop=${width}:${height}`
 						);
 					}
-					if (zoomPan && width && height) {
+					const minEdge = Math.min(width || 0, height || 0);
+					if (zoomPan && width && height && minEdge >= 960) {
 						vf.push(
 							`zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
 						);
@@ -3192,9 +3914,10 @@ Segment ${segCnt} is the engagement outro (about ${
 	} seconds):
 - Ask one crisp, on-topic question to spark comments.
 - Immediately follow with a warm, slightly funny like/subscribe/comment nudge for an American audience that feels tailored to this topic.
+- Vary the phrasing so outros never feel templated; keep it playful and topic-aware.
 - Keep it concise and entirely in ${language}.
 - Make it sound human and upbeat, not robotic; a friendly host riffing on the story.
-- This extra outro is appended on top of the requested duration, so treat it like an add-on bumper.
+- This extra outro is appended on top of the requested duration, with a 3-5s tolerance buffer baked in, so you can finish the thought without cutting yourself off.
 `.trim();
 
 	const baseIntro = `
@@ -3210,6 +3933,12 @@ ${segDescLines}
 
 Narration rules:
 - Natural spoken language, like a professional commentator.
+- Vary sentence lengths and verbs so it feels human and lively, not robotic.
+- Sprinkle quick, honest reactions that match the facts (amazed, relieved, concerned) without overhyping.
+- Even for somber news, stay compassionate but keep momentum with clear, visual language - no flat recaps.
+- All core narration (intro + content) must fit inside the requested ${duration}s; outro sits on top with a tiny buffer so it never truncates mid-sentence.
+- Use the provided article headlines/snippets as your source of truth; if something is unconfirmed, state that instead of inventing details. Stay timely to the trend.
+- Give each segment one concrete, visual detail or comparison that makes the scene easy to picture.
 - Stay accurate; do NOT invent fake scores, injuries, or quotes.
 - No "In this video" filler; keep like/subscribe wording ONLY in the final engagement segment.
 - Segment 1 must hook immediately.
@@ -3223,6 +3952,11 @@ Narration rules:
 - Keep pacing human and coherent; do not cram unnatural speed-reading into segments.
 - Keep every segment directly on-topic for "${topic}"; no unrelated tangents.
 ${categoryTone ? `- Tone: ${categoryTone}` : ""}
+${
+	category === "Sports"
+		? "- Sports: call it like a clutch highlight; use the freshest headline details, be precise with scores, and keep the energy up without inventing stats."
+		: ""
+}
 ${runwayAnimationNote ? `- ${runwayAnimationNote}` : ""}
 ${
 	runwayStoryCount
@@ -3274,6 +4008,7 @@ Images:
 The FIRST attached image is imageIndex 0, the second is 1, etc.
 The video engine will receive an upscaled, cropped version of these photos (via Cloudinary),
 but it is still the same real shot and real people.
+- There are ${imgCount} curated photos already cropped for ${ratio}; rotate through them so each one gets used before any repeat (unless there are fewer segments than photos).
 
 Your job:
 1) Write the voice-over script for each segment.
@@ -3389,6 +4124,7 @@ ${
 		? "- Make the narration feel motivational and appealing, inviting the viewer to imagine visiting each place."
 		: ""
 }
+- Visual integrity is critical: humans must look human (no warped faces or hands), food must be appetizing and clearly that dish, and every chosen photo must obviously match the ranked item.
 - Every referenceImageUrl must directly show the ranked item (for food: a close-up of the dish/plating; for travel/cities: a recognisable landmark or skyline). Avoid portraits unless someone is eating that exact food. No unrelated objects or locations.
 - If a fresh image URL is provided above for that rank, use it. Otherwise, search current results and pick a sharp, descriptive editorial-style photo that matches the aspect ratio ${ratio}; avoid gstatic/thumbnail URLs.
 - Write the runwayPrompt to match the exact chosen photo and make the motion feel dynamic (camera move + subtle subject motion).
@@ -3533,9 +4269,10 @@ Return JSON:
 			.map((s) => s.imageIndex)
 			.filter((v) => v !== null);
 		const distinctCount = new Set(validIndexes).size;
+		const desiredDistinct = Math.min(imgCount, segments.length, 5);
 
-		// If GPT barely used images (or only one image), force round-robin variety
-		if (!validIndexes.length || distinctCount <= 1) {
+		// If GPT barely used images, force round-robin to cover the curated pool
+		if (!validIndexes.length || distinctCount < desiredDistinct) {
 			segments = segments.map((seg, idx) => ({
 				...seg,
 				imageIndex: idx % imgCount,
@@ -3703,19 +4440,31 @@ exports.createVideo = async (req, res) => {
 
 		/* 2. Segment timing */
 		const requestedTailSeconds = computeEngagementTail(duration);
+		const tolerancePadSeconds =
+			computeOptionalOutroTolerance(requestedTailSeconds);
 		console.log(
 			"[Job] ratio + target duration",
-			JSON.stringify({ ratio, duration, tailSeconds: requestedTailSeconds })
+			JSON.stringify({
+				ratio,
+				durationCore: duration,
+				tailSeconds: requestedTailSeconds,
+				tolerancePadSeconds,
+			})
 		);
 		let segLens = computeInitialSegLens(
 			category,
 			duration,
-			requestedTailSeconds
+			requestedTailSeconds,
+			tolerancePadSeconds
 		);
 		let segCnt = segLens.length;
 		const engagementTailSeconds = segLens[segCnt - 1];
 		const totalDurationTarget = segLens.reduce((a, b) => a + b, 0);
 		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+		if (segWordCaps.length) {
+			const lastIdx = segWordCaps.length - 1;
+			segWordCaps[lastIdx] = Math.max(segWordCaps[lastIdx], MIN_OUTRO_WORDS);
+		}
 		console.log("[Timing] initial segment lengths", {
 			segLens,
 			segWordCaps,
@@ -3726,27 +4475,50 @@ exports.createVideo = async (req, res) => {
 		let top5Outline = null;
 		let top5LiveContext = [];
 		let top5ImagePool = [];
+		let top5Slug = "";
 		if (category === "Top5") {
 			top5Outline = await generateTop5Outline(topic, language);
 			if (top5Outline && top5Outline.length) {
 				top5LiveContext = await fetchTop5LiveContext(top5Outline, topic);
 				top5ImagePool = await fetchTop5ImagePool(top5Outline, topic, ratio);
+				if (top5ImagePool.length > 6) {
+					top5ImagePool = top5ImagePool.slice(0, 6);
+				}
 				console.log("[Top5] live context & images", {
 					context: top5LiveContext.length,
 					imagePool: top5ImagePool.length,
 					ratio,
 				});
 			}
+			top5Slug = String(topic || "top5")
+				.toLowerCase()
+				.replace(/[^\w]+/g, "_")
+				.replace(/^_+|_+$/g, "")
+				.slice(0, 40);
 		}
 
-		/* 4. Upload Trends images to Cloudinary (if available) */
+		/* 4. Search & upload Trends images to Cloudinary (single target ratio) */
 		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
+		let trendImagesForRatio = [];
+		if (!userOverrides && category !== "Top5") {
+			const articleLinks =
+				trendStory && Array.isArray(trendStory.articles)
+					? trendStory.articles.map((a) => a.url).filter(Boolean)
+					: [];
+			trendImagesForRatio = await fetchHighQualityImagesForTopic({
+				topic,
+				ratio,
+				articleLinks,
+				desiredCount: 7,
+				limit: 16,
+			});
+			trendImagesForRatio = filterUploadCandidates(trendImagesForRatio, 7);
+		}
 		const canUseTrendsImages =
 			category !== "Top5" &&
 			!userOverrides &&
 			trendStory &&
-			Array.isArray(trendStory.images) &&
-			trendStory.images.length > 0;
+			trendImagesForRatio.length > 0;
 
 		if (canUseTrendsImages) {
 			const slugBase = topic
@@ -3754,8 +4526,9 @@ exports.createVideo = async (req, res) => {
 				.replace(/[^\w]+/g, "_")
 				.replace(/^_+|_+$/g, "")
 				.slice(0, 40);
-			for (let i = 0; i < Math.min(trendStory.images.length, 6); i++) {
-				const url = trendStory.images[i];
+			const uploadLimit = Math.min(6, trendImagesForRatio.length); // 5 needed + 1 backup
+			for (let i = 0; i < uploadLimit; i++) {
+				const url = trendImagesForRatio[i];
 				try {
 					const up = await uploadTrendImageToCloudinary(
 						url,
@@ -3777,8 +4550,14 @@ exports.createVideo = async (req, res) => {
 			} else {
 				console.log("[Cloudinary] Trends images uploaded", {
 					count: trendImagePairs.length,
+					requested: Math.min(trendImagesForRatio.length, 6),
 					ratio,
 				});
+				if (trendImagePairs.length < 5) {
+					console.warn(
+						"[Cloudinary] Fewer than 5 ratio-matched images uploaded; will reuse where needed."
+					);
+				}
 			}
 		}
 
@@ -3854,27 +4633,97 @@ exports.createVideo = async (req, res) => {
 				assigned,
 				ratio,
 			});
+			segments = alignTop5ImageIndexes(segments, top5Outline, top5ImagePool);
 		}
 
 		// For Top5, ingest reference images from GPT plan
 		if (category === "Top5" && !hasTrendImages) {
+			// Upload dedicated intro/outro images (topic-wide), avoid reusing ranked photos
+			let introPair = null;
+			let outroPair = null;
+			try {
+				const introOutroCandidates = filterUploadCandidates(
+					await fetchHighQualityImagesForTopic({
+						topic,
+						ratio,
+						articleLinks: [],
+						desiredCount: 3,
+						limit: 8,
+					}),
+					3
+				);
+				const picked = pickIntroOutroUrls(introOutroCandidates);
+				if (picked.intro) {
+					try {
+						const upIntro = await uploadTrendImageToCloudinary(
+							picked.intro,
+							ratio,
+							`aivideomatic/top5_intro/${top5Slug || "top5_intro"}`
+						);
+						introPair = {
+							originalUrl: picked.intro,
+							cloudinaryUrl: upIntro.url,
+						};
+					} catch (e) {
+						console.warn("[Top5] Intro image upload failed", e.message);
+					}
+				}
+				if (picked.outro) {
+					try {
+						const upOutro = await uploadTrendImageToCloudinary(
+							picked.outro,
+							ratio,
+							`aivideomatic/top5_outro/${top5Slug || "top5_outro"}`
+						);
+						outroPair = {
+							originalUrl: picked.outro,
+							cloudinaryUrl: upOutro.url,
+						};
+					} catch (e) {
+						console.warn("[Top5] Outro image upload failed", e.message);
+					}
+				}
+			} catch (e) {
+				console.warn("[Top5] Intro/outro image search failed", e.message);
+			}
+
 			const uploaded = await uploadReferenceImagesForTop5(
 				segments,
 				ratio,
-				topic
+				topic,
+				top5Outline
 			);
 			if (uploaded.pairs.length) {
-				trendImagePairs = uploaded.pairs;
+				let combinedPairs = [];
+				if (introPair) combinedPairs.push(introPair);
+				if (outroPair) combinedPairs.push(outroPair);
+				combinedPairs = combinedPairs.concat(uploaded.pairs);
+
+				trendImagePairs = combinedPairs;
 				hasTrendImages = true;
-				segments = segments.map((s, idx) => ({
-					...s,
-					imageIndex:
+
+				const introIdx = introPair ? 0 : null;
+				const outroIdx = outroPair ? (introPair ? 1 : 0) : null;
+
+				segments = segments.map((s, idx) => {
+					if (idx === 0 && introIdx !== null) {
+						return { ...s, imageIndex: introIdx };
+					}
+					if (idx === segments.length - 1 && outroIdx !== null) {
+						return { ...s, imageIndex: outroIdx };
+					}
+					const offset =
+						introPair && outroPair ? 2 : introPair || outroPair ? 1 : 0;
+					const baseIdx =
 						typeof uploaded.segImageIndex[idx] === "number"
-							? uploaded.segImageIndex[idx]
-							: s.imageIndex,
-				}));
+							? uploaded.segImageIndex[idx] + offset
+							: s.imageIndex;
+					return { ...s, imageIndex: baseIdx };
+				});
+
+				segments = alignTop5ImageIndexes(segments, top5Outline, combinedPairs);
 				console.log("[Top5] Reference images uploaded", {
-					count: uploaded.pairs.length,
+					count: combinedPairs.length,
 					ratio,
 				});
 				if (uploaded.pairs.length < 5) {
@@ -3931,6 +4780,7 @@ One or two sentences only.
 				scriptText: enforceEngagementOutroText(segments[lastIdx].scriptText, {
 					topic,
 					wordCap: tailCap,
+					category,
 				}),
 			};
 		}
@@ -4426,11 +5276,14 @@ One or two sentences only.
 
 		let silent;
 		try {
-			silent = await concatWithTransitions(clips, segLens, ratio, 0.35);
+			silent = await concatWithTransitions(clips, segLens, ratio, 0.5, {
+				maxFadeFraction: 0.14,
+				minFadeSeconds: 0.15,
+			});
 		} catch (err) {
 			console.warn(
-				"[Transitions] Failed to xfade, falling back to direct concat:",
-				err.message
+				"[Transitions] Fade pipeline failed, falling back to direct concat:",
+				err && err.stack ? err.stack : err?.message || err
 			);
 			const listFile = tmpFile("list", ".txt");
 			fs.writeFileSync(
@@ -4685,8 +5538,7 @@ One or two sentences only.
 					"17",
 					"-c:a",
 					"aac",
-					"-t",
-					String(totalDurationTarget),
+					"-shortest",
 					"-y"
 				)
 				.save(norm(finalPath))
@@ -4699,42 +5551,42 @@ One or two sentences only.
 		} catch {}
 
 		/* 14. YouTube upload */
-		let youtubeLink = "";
-		let youtubeTokens = null;
-		try {
-			youtubeTokens = await refreshYouTubeTokensIfNeeded(user, req);
-			const oauth2 = buildYouTubeOAuth2Client(youtubeTokens);
-			if (oauth2) {
-				const yt = google.youtube({ version: "v3", auth: oauth2 });
-				const { data } = await yt.videos.insert(
-					{
-						part: ["snippet", "status"],
-						requestBody: {
-							snippet: {
-								title: seoTitle,
-								description: seoDescription,
-								tags,
-								categoryId:
-									YT_CATEGORY_MAP[category] === "0"
-										? "22"
-										: YT_CATEGORY_MAP[category],
-							},
-							status: {
-								privacyStatus: "public",
-								selfDeclaredMadeForKids: false,
-							},
-						},
-						media: { body: fs.createReadStream(finalPath) },
-					},
-					{ maxContentLength: Infinity, maxBodyLength: Infinity }
-				);
-				youtubeLink = `https://www.youtube.com/watch?v=${data.id}`;
-				sendPhase("VIDEO_UPLOADED", { youtubeLink });
-				console.log("[Phase] VIDEO_UPLOADED", youtubeLink);
-			}
-		} catch (e) {
-			console.warn("[YouTube] upload skipped ?", e.message);
-		}
+		// let youtubeLink = "";
+		// let youtubeTokens = null;
+		// try {
+		// 	youtubeTokens = await refreshYouTubeTokensIfNeeded(user, req);
+		// 	const oauth2 = buildYouTubeOAuth2Client(youtubeTokens);
+		// 	if (oauth2) {
+		// 		const yt = google.youtube({ version: "v3", auth: oauth2 });
+		// 		const { data } = await yt.videos.insert(
+		// 			{
+		// 				part: ["snippet", "status"],
+		// 				requestBody: {
+		// 					snippet: {
+		// 						title: seoTitle,
+		// 						description: seoDescription,
+		// 						tags,
+		// 						categoryId:
+		// 							YT_CATEGORY_MAP[category] === "0"
+		// 								? "22"
+		// 								: YT_CATEGORY_MAP[category],
+		// 					},
+		// 					status: {
+		// 						privacyStatus: "public",
+		// 						selfDeclaredMadeForKids: false,
+		// 					},
+		// 				},
+		// 				media: { body: fs.createReadStream(finalPath) },
+		// 			},
+		// 			{ maxContentLength: Infinity, maxBodyLength: Infinity }
+		// 		);
+		// 		youtubeLink = `https://www.youtube.com/watch?v=${data.id}`;
+		// 		sendPhase("VIDEO_UPLOADED", { youtubeLink });
+		// 		console.log("[Phase] VIDEO_UPLOADED", youtubeLink);
+		// 	}
+		// } catch (e) {
+		// 	console.warn("[YouTube] upload skipped ?", e.message);
+		// }
 
 		/* 15. Voice + music metadata */
 		const elevenLabsVoice =

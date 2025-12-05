@@ -15,19 +15,6 @@ const OpenAI = require("openai");
 
 puppeteer.use(Stealth());
 
-const GOOGLE_CSE_ID =
-	process.env.GOOGLE_CSE_ID ||
-	process.env.GOOGLE_CUSTOM_SEARCH_CX ||
-	process.env.GOOGLE_CUSTOM_SEARCH_ID ||
-	null;
-const GOOGLE_CSE_KEY =
-	process.env.GOOGLE_CSE_KEY ||
-	process.env.GOOGLE_CUSTOM_SEARCH_KEY ||
-	process.env.GOOGLE_API_KEY ||
-	null;
-const GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
-const GOOGLE_CSE_TIMEOUT_MS = 12000;
-
 const router = express.Router();
 
 const ROW_LIMIT = 6; // how many rising‑search rows we scrape
@@ -43,169 +30,6 @@ function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
-async function downloadImageToTemp(url, ext = ".jpg") {
-	const tmp = tmpFile("trend_raw", ext);
-	const writer = fs.createWriteStream(tmp);
-	const resp = await axios.get(url, {
-		responseType: "stream",
-		headers: {
-			"User-Agent": BROWSER_UA,
-			Referer: "https://www.google.com/",
-		},
-		validateStatus: (s) => s < 500,
-	});
-	await new Promise((resolve, reject) => {
-		resp.data.pipe(writer).on("finish", resolve).on("error", reject);
-	});
-	return tmp;
-}
-
-async function computeImageHashFromFile(filePath) {
-	return new Promise((resolve) => {
-		const args = [
-			"-v",
-			"error",
-			"-i",
-			filePath,
-			"-vf",
-			"scale=16:16,format=gray",
-			"-f",
-			"rawvideo",
-			"-pix_fmt",
-			"gray",
-			"-",
-		];
-		const proc = child_process.spawn(ffmpegPath, args, { encoding: null });
-		const chunks = [];
-		let failed = false;
-		proc.stdout.on("data", (d) => chunks.push(d));
-		proc.stderr.on("data", () => {});
-		proc.on("error", () => {
-			failed = true;
-			resolve(null);
-		});
-		proc.on("close", (code) => {
-			if (failed || code !== 0 || !chunks.length) return resolve(null);
-			try {
-				const buf = Buffer.concat(chunks);
-				const hash = crypto.createHash("sha1").update(buf).digest("hex");
-				return resolve(hash);
-			} catch {
-				return resolve(null);
-			}
-		});
-	});
-}
-
-async function computeImageHashFromUrl(url) {
-	let tmp = null;
-	try {
-		tmp = await downloadImageToTemp(url, ".jpg");
-		return await computeImageHashFromFile(tmp);
-	} catch (e) {
-		const status = e?.response?.status;
-		if (status === 403) {
-			log("[ImageHash] unable to hash image (403)", url);
-		} else {
-			log("[ImageHash] unable to hash image", e.message || String(e));
-		}
-		return null;
-	} finally {
-		if (tmp) {
-			try {
-				fs.unlinkSync(tmp);
-			} catch (_) {}
-		}
-	}
-}
-
-// Custom Search helpers for richer images
-function canUseCse() {
-	return Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
-}
-
-function targetAspectFromRatio(ratio) {
-	if (ratio === "720:1280") return 9 / 16;
-	if (ratio === "1280:720") return 16 / 9;
-	return null;
-}
-
-function classifyAspect(w, h) {
-	if (!w || !h) return "unknown";
-	const ar = w / h;
-	if (ar > 1.2) return "landscape";
-	if (ar < 0.8) return "portrait";
-	return "square";
-}
-
-function normalizeImageKey(url) {
-	try {
-		const u = new URL(url);
-		return `${u.hostname}${u.pathname}`.toLowerCase();
-	} catch {
-		return url;
-	}
-}
-
-async function fetchHighQualityImages(term, ratio, limit = 5) {
-	if (!canUseCse()) return [];
-	const year = new Date().getFullYear();
-	const targetAr = targetAspectFromRatio(ratio) || null;
-
-	try {
-		const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
-			params: {
-				key: GOOGLE_CSE_KEY,
-				cx: GOOGLE_CSE_ID,
-				q: `${term} latest news photo ${year}`,
-				searchType: "image",
-				imgType: "photo",
-				num: 10,
-				safe: "active",
-			},
-			timeout: GOOGLE_CSE_TIMEOUT_MS,
-		});
-
-		const items = Array.isArray(data?.items) ? data.items : [];
-		const scored = items
-			.map((it) => {
-				const w = Number(it.image?.width || 0);
-				const h = Number(it.image?.height || 0);
-				if (!w || !h || w < 900 || h < 900) return null;
-				const ar = w / h;
-				if (targetAr && Math.abs(ar - targetAr) > 0.35) return null;
-				const area = w * h;
-				return {
-					link: it.link,
-					w,
-					h,
-					area,
-					source: it.image?.contextLink || "",
-				};
-			})
-			.filter(Boolean)
-			.sort((a, b) => (b.area || 0) - (a.area || 0))
-			.slice(0, limit);
-
-		console.log("[Trends][CSE] images", {
-			term,
-			ratio,
-			returned: items.length,
-			filtered: scored.length,
-		});
-
-		return scored.map((s) => s.link);
-	} catch (e) {
-		console.warn("[Trends][CSE] image search failed", {
-			term,
-			ratio,
-			message: e.message,
-			status: e.response?.status,
-			data: e.response?.data,
-		});
-		return [];
-	}
-}
 
 /* ───────────────────────────────────────────── OpenAI client + helpers */
 
@@ -721,131 +545,6 @@ async function scrape({ geo, hours, category, sort }) {
 
 /* ───────────────────────────────────────────────────────────── express API */
 
-function inferAspectFromUrl(url) {
-	try {
-		const u = new URL(url);
-		const search = u.search || "";
-		const path = u.pathname || "";
-		let w = null;
-		let h = null;
-		const qW = search.match(/[?&]w=(\d{2,4})/i);
-		const qH = search.match(/[?&]h=(\d{2,4})/i);
-		if (qW) w = parseInt(qW[1], 10);
-		if (qH) h = parseInt(qH[1], 10);
-		if (!w || !h) {
-			const m = path.match(/(\d{3,4})x(\d{3,4})/);
-			if (m) {
-				w = parseInt(m[1], 10);
-				h = parseInt(m[2], 10);
-			}
-		}
-		if (!w || !h || h === 0) return "unknown";
-		const r = w / h;
-		if (r >= 1.1) return "landscape";
-		if (r <= 0.9) return "portrait";
-		return "square";
-	} catch {
-		return "unknown";
-	}
-}
-
-async function dedupeImagesByContent(urls, limit = 12) {
-	const uniq = [];
-	const seenUrls = new Set();
-	const seenKeys = new Set();
-	const seenHashes = new Set();
-	const hostCount = new Map();
-
-	for (const url of urls) {
-		if (!url || seenUrls.has(url)) continue;
-		const normKey = normalizeImageKey(url);
-		if (seenKeys.has(normKey)) continue;
-		const host = (() => {
-			try {
-				return new URL(url).hostname.toLowerCase();
-			} catch {
-				return "";
-			}
-		})();
-		if (host) {
-			const c = hostCount.get(host) || 0;
-			if (c >= 2) continue; // cap per host to reduce redundancy
-		}
-		const hash = await computeImageHashFromUrl(url);
-		if (hash && seenHashes.has(hash)) continue;
-		seenUrls.add(url);
-		seenKeys.add(normKey);
-		if (hash) seenHashes.add(hash);
-		if (host) hostCount.set(host, (hostCount.get(host) || 0) + 1);
-		uniq.push(url);
-		if (uniq.length >= limit) break;
-	}
-	return uniq;
-}
-
-async function fetchAdditionalImagesForStory(story) {
-	const term =
-		story.youtubeShortTitle || story.seoTitle || story.title || story.term;
-	if (!term) return [];
-	const portrait = await fetchHighQualityImages(term, "720:1280", 5);
-	const landscape = await fetchHighQualityImages(term, "1280:720", 5);
-	const extra = [...portrait, ...landscape];
-	if (extra.length) {
-		console.log("[Trends] extra search images", {
-			topic: term,
-			portrait: portrait.length,
-			landscape: landscape.length,
-		});
-	}
-	return extra;
-}
-
-async function buildStoryImages(story, extra = []) {
-	const seen = new Set();
-	const pool = [];
-	const push = (u) => {
-		if (!u || typeof u !== "string") return;
-		if (!/^https?:\/\//i.test(u)) return;
-		if (seen.has(u)) return;
-		seen.add(u);
-		pool.push(u);
-	};
-	push(story.image);
-	(story.articles || []).forEach((a) => push(a.image));
-	extra.forEach((u) => push(u));
-
-	const landscape = pool.find((u) => inferAspectFromUrl(u) === "landscape");
-	const portrait = pool.find((u) => inferAspectFromUrl(u) === "portrait");
-	const square = pool.find((u) => inferAspectFromUrl(u) === "square");
-
-	const ordered = [];
-	if (landscape) ordered.push(landscape);
-	if (portrait && portrait !== landscape) ordered.push(portrait);
-	if (!portrait && square && square !== landscape) ordered.push(square);
-	for (const u of pool) if (!ordered.includes(u)) ordered.push(u);
-
-	return await dedupeImagesByContent(ordered, 12);
-}
-
-async function decorateStoriesWithImages(stories) {
-	const mapped = await Promise.all(
-		stories.map(async (s) => {
-			const extra = canUseCse() ? await fetchAdditionalImagesForStory(s) : [];
-			const images = await buildStoryImages(s, extra);
-			console.log("[Trends] final image set", {
-				topic: s.title,
-				total: images.length,
-				portrait: images.filter((u) => inferAspectFromUrl(u) === "portrait")
-					.length,
-				landscape: images.filter((u) => inferAspectFromUrl(u) === "landscape")
-					.length,
-			});
-			return { ...s, images };
-		})
-	);
-	return mapped;
-}
-
 router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
 	if (!/^[A-Z]{2}$/.test(geo)) {
@@ -866,10 +565,7 @@ router.get("/google-trends", async (req, res) => {
 			sort,
 		});
 
-		// 1) Replace low‑res Google thumbnails with article OG images where possible.
-		stories = await hydrateArticleImages(stories);
-
-		// 2) Ask GPT‑5.1 for better blog + YouTube titles.
+		// Ask GPT‑5.1 for better blog + YouTube titles.
 		//    This is optional and skipped if CHATGPT_API_TOKEN / OPENAI_API_KEY
 		//    is not configured or the call fails.
 		stories = await enhanceStoriesWithOpenAI(stories, {
@@ -878,8 +574,16 @@ router.get("/google-trends", async (req, res) => {
 			category,
 		});
 
-		// 3) Ensure we always surface multiple images per topic (mixing aspect hints).
-		stories = await decorateStoriesWithImages(stories);
+		// Strip images here; downstream orchestrator will search high-quality images per ratio.
+		stories = stories.map((s) => ({
+			...s,
+			image: null,
+			images: [],
+			articles: (s.articles || []).map((a) => ({
+				title: a.title,
+				url: a.url,
+			})),
+		}));
 
 		return res.json({
 			generatedAt: new Date().toISOString(),
