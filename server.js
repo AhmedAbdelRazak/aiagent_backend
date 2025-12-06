@@ -144,9 +144,7 @@ async function handleSchedule(sched) {
 	}
 
 	const resolvedCategory =
-		sched.category ||
-		(baseVideo && baseVideo.category) ||
-		"Entertainment";
+		sched.category || (baseVideo && baseVideo.category) || "Entertainment";
 
 	if (!baseVideo || !baseVideo.category) {
 		// fetch latest video matching user + category as fallback

@@ -69,22 +69,12 @@ const ffmpegPath =
 		? process.env.FFMPEG_PATH.trim()
 		: DEFAULT_FFMPEG_PATH;
 
-// Try to sanity-check once, but DO NOT exit the process if it fails.
-// We just log a warning and let fluent-ffmpeg try.
-try {
-	child_process.execSync(`"${ffmpegPath}" -version`, { stdio: "ignore" });
-	console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
-} catch (e) {
-	console.warn(
-		`[Startup] WARN – FFmpeg check failed at "${ffmpegPath}", error: ${e.message}. ` +
-			`Proceeding anyway; fluent-ffmpeg will fall back to PATH.`
-	);
-}
-
 ffmpeg.setFfmpegPath(ffmpegPath);
 
-const ffprobePath = process.env.FFPROBE_PATH || "ffprobe";
+const ffprobePath = process.env.FFPROBE_PATH || "/usr/bin/ffprobe";
 ffmpeg.setFfprobePath(ffprobePath);
+
+console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
 console.log(`[FFprobe] binary : ${ffprobePath}`);
 
 function ffmpegSupportsLavfi() {
