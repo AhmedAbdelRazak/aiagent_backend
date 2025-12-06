@@ -376,6 +376,42 @@ function wordsPerSecForCaps(category) {
 	return category === "Top5" ? TOP5_WORDS_PER_SEC : WORDS_PER_SEC;
 }
 
+function normalizeTop5Token(token = "") {
+	const t = String(token || "").toLowerCase();
+	if (!t) return "";
+	if (t.endsWith("ies") && t.length > 4) return `${t.slice(0, -3)}y`;
+	if (t.endsWith("ses") && t.length > 5) return `${t.slice(0, -2)}`;
+	if (t.endsWith("s") && t.length > 3) return t.slice(0, -1);
+	return t;
+}
+
+const TOP5_KEY_STOP_WORDS = new Set([
+	"explained",
+	"guide",
+	"lesson",
+	"tutorial",
+	"countdown",
+	"ranking",
+	"ranked",
+	"list",
+	"tour",
+	"visit",
+	"visited",
+	"lets",
+]);
+
+function top5TitleKey(title = "") {
+	const tokens = topicTokensFromTitle(title)
+		.map(normalizeTop5Token)
+		.filter((t) => t && !TOP5_KEY_STOP_WORDS.has(t));
+	if (tokens.length) return tokens.join("_");
+	return String(title || "")
+		.toLowerCase()
+		.replace(/[^\w\s]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 const IMAGE_BLOCKLIST_HOSTS = [
 	"pinimg.com",
 	"pinterest.com",
@@ -2060,10 +2096,15 @@ async function generateSeoTitle(
 		: joinedHeadlines;
 
 	const isSports = category === "Sports";
+	const isTop5 = category === "Top5";
 
 	const ask = `
 You are an experienced YouTube editor writing titles for ${
-		isSports ? "an official sports league channel" : "a serious news channel"
+		isSports
+			? "an official sports league channel"
+			: isTop5
+			? "a playful countdown Shorts channel"
+			: "a serious news channel"
 	}.
 
 Write ONE highly searchable, professional YouTube Shorts title that mirrors how people actually search.
@@ -2078,11 +2119,18 @@ Hard constraints:
 - The style must feel ${
 		isSports
 			? "like ESPN or an official league/NFL/NBA channel, not a meme or fan channel."
+			: isTop5
+			? "like a fun, high-energy countdown viewers want to watch, not a classroom lecture."
 			: "like a major newspaper or broadcaster, not a clickbait channel."
 	}
 ${
 	category === "Top5"
 		? '- The title MUST start with "Top 5" followed by the topic. Example: "Top 5 Most Popular Sports Globally".'
+		: ""
+}
+${
+	isTop5
+		? '- Keep it inviting and entertaining; avoid words like "explained", "guide", "lesson", or "tutorial".'
 		: ""
 }
 
@@ -2091,6 +2139,8 @@ SEO behavior:
 - Prefer exact search phrases users type, like ${
 		isSports
 			? '"start time", "how to watch", "full card", "highlights", "preview", "results".'
+			: isTop5
+			? '"top 5", "best", "most popular", "countdown", "list".'
 			: '"explained", "update", "analysis", "what to know", "timeline", "breaking news".'
 	}
 - Avoid filler words; every word should boost search intent or clarity.
@@ -2243,6 +2293,22 @@ function buildCountdownLine(rank, label, bodyText = "") {
 	return body ? `${prefix}: ${body}` : prefix;
 }
 
+function buildTop5IntroLine(topic = "") {
+	const cleaned = String(topic || "")
+		.replace(/^\s*Top\s*5\s*/i, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	const hook = cleaned ? `Guess the Top 5 ${cleaned}` : "Guess the Top 5 picks";
+	return `${hook}. Stay for #1.`;
+}
+
+function countWords(text = "") {
+	return String(text || "")
+		.trim()
+		.split(/\s+/)
+		.filter(Boolean).length;
+}
+
 function applyTop5CountdownStructure(segments, outline) {
 	if (!Array.isArray(segments) || !Array.isArray(outline) || !outline.length)
 		return segments;
@@ -2304,7 +2370,7 @@ async function punchUpTop5Scripts(segments = [], segWordCaps = []) {
 		if (rank) {
 			prompt = `
 You are rewriting a Top 5 countdown voiceover line.
-Keep the exact prefix "${prefix}" and then deliver one high-energy, non-redundant reason to care that includes a vivid detail (scene, stat, or feeling). Avoid filler like "coming in at number" or "next up". Maximum ${cap} words total.
+Keep the exact prefix "${prefix}" and then deliver one high-energy, non-redundant reason to care that includes a vivid, broadly known stat/impact (participation, reach, cultural pull). Avoid filler like "coming in at number" or "next up" and skip niche team/city/player anecdotes unless the subject itself is that team. Maximum ${cap} words total.
 Original: "${seg.scriptText}"
 `.trim();
 		} else if (i === 0) {
@@ -2350,6 +2416,102 @@ Original: "${seg.scriptText}"
 			tightened.push({ ...seg, scriptText: rewritten });
 		} catch (e) {
 			console.warn("[Top5] punch-up failed ?", e.message);
+			tightened.push(seg);
+		}
+	}
+
+	return tightened;
+}
+
+async function tightenTop5TimingAndClarity(
+	segments = [],
+	segLens = [],
+	language = DEFAULT_LANGUAGE
+) {
+	if (!Array.isArray(segments) || !segments.length) return segments;
+	const langNote =
+		language && language.trim() ? language.trim() : DEFAULT_LANGUAGE;
+	const targets =
+		Array.isArray(segLens) && segLens.length === segments.length
+			? segLens.map((s, idx) =>
+					Math.max(
+						6,
+						Math.round(
+							s * TOP5_WORDS_PER_SEC - (idx === segLens.length - 1 ? 0 : 0.5)
+						)
+					)
+			  )
+			: segments.map(() => 18);
+
+	const tightened = [];
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i];
+		if (!seg) {
+			tightened.push(seg);
+			continue;
+		}
+
+		const target = targets[i] || 18;
+		const words = countWords(seg.scriptText);
+		if (Math.abs(words - target) <= 2) {
+			tightened.push(seg);
+			continue;
+		}
+
+		const rank = seg.countdownRank;
+		const label = String(seg.countdownLabel || seg.overlayText || "").trim();
+		const prefix = rank ? `#${rank}- ${label}`.trim() : "";
+		const role =
+			rank && rank >= 1 && rank <= 5
+				? "rank line"
+				: i === 0
+				? "intro"
+				: i === segments.length - 1
+				? "outro"
+				: "transition";
+
+		const ask = `
+Rewrite this Top 5 ${role} so it lands within ${target} words (±1) for a ${
+			segLens?.[i] || "planned"
+		}s segment.
+Rules:
+- Keep language in ${
+			langNote === DEFAULT_LANGUAGE ? "clear American English" : langNote
+		}.
+- ${
+			rank
+				? `Keep the exact prefix "${prefix}" at the start.`
+				: "Hook the viewer plainly; no meta talk."
+		}
+- Give one broad, widely known reason (stat, participation, cultural impact) for the rank; avoid niche player/team/city anecdotes.
+- Make it easy to understand for text-to-speech; avoid tongue twisters or run-ons.
+- Stay energetic but concise.
+Original: "${seg.scriptText}"
+`.trim();
+
+		try {
+			const { choices } = await openai.chat.completions.create({
+				model: CHAT_MODEL,
+				messages: [{ role: "user", content: ask }],
+			});
+			let rewritten = choices[0].message.content
+				.trim()
+				.replace(/^["'\s]+|["'\s]+$/g, "");
+
+			if (rank) {
+				const remainder = removeLeadingLabel(
+					stripCountdownPrefix(rewritten),
+					label
+				);
+				const body = remainder || stripCountdownPrefix(rewritten) || "";
+				rewritten = buildCountdownLine(rank, label, body || seg.scriptText);
+			} else if (role === "intro" && !/top\s*5/i.test(rewritten)) {
+				rewritten = buildTop5IntroLine(label || seg.scriptText || "");
+			}
+
+			tightened.push({ ...seg, scriptText: rewritten });
+		} catch (e) {
+			console.warn("[Top5] timing tighten failed ?", e.message);
 			tightened.push(seg);
 		}
 	}
@@ -3183,34 +3345,75 @@ async function generateOpenAIImageSingle(prompt, ratio, publicIdBase) {
 	};
 }
 
-async function gptTop5Plan(topic, language = DEFAULT_LANGUAGE) {
+async function gptTop5Plan(topic, language = DEFAULT_LANGUAGE, segLens = []) {
+	const segTiming =
+		Array.isArray(segLens) && segLens.length >= 7 ? segLens.slice(0, 7) : null;
+	const wordTargets = segTiming
+		? segTiming.map((s, idx) =>
+				Math.max(
+					6,
+					Math.round(
+						s * TOP5_WORDS_PER_SEC - (idx === segTiming.length - 1 ? 0 : 0.5)
+					)
+				)
+		  )
+		: [];
+	const timingLines = segTiming
+		? segTiming
+				.map((s, idx) => {
+					const target =
+						wordTargets[idx] || Math.max(8, Math.round(s * TOP5_WORDS_PER_SEC));
+					const label =
+						idx === 0
+							? "Intro"
+							: idx === segTiming.length - 1
+							? "Outro"
+							: `#${6 - idx}`;
+					return `- Segment ${idx + 1} (${label}): ~${s.toFixed(
+						1
+					)}s, aim for ${target}±1 words.`;
+				})
+				.join("\n")
+		: "";
+	const languageNote =
+		language && language.trim() ? language.trim() : DEFAULT_LANGUAGE;
+	const cleanTopic =
+		String(topic || "")
+			.replace(/^\s*Top\s*5\s*/i, "")
+			.trim() || topic;
+
 	const ask = `
- You are building a 7-part Top 5 countdown video. Make it current and exciting.
- Topic: ${topic}
- Language: ${language}
- 
- Return JSON with exactly 7 objects in order: intro, rank5, rank4, rank3, rank2, rank1, outro.
- Each object must have:
-  - "type": "intro" | "rank" | "outro"
-  - "rank": 5/4/3/2/1 for rank items (null for intro/outro)
-  - "label": short name for the item (intro/outro can reuse the topic)
-  - "script": countdown pacing; 1-2 high-energy sentences (<= 32 words) with a vivid reason, scene, or stat; avoid filler like "coming in at number"
-  - "overlay": action-forward 3-8 word overlay text (no punctuation/hashtags)
-  - "imageQuery": concise search query for a strong photo, include action words and the item name; avoid generic wallpapers.
-  - "runwayPrompt": vivid cinematic prompt describing motion for image_to_video; include setting, action, camera, lighting; avoid text/logos.
- 
- Accuracy rules:
-  - Use up-to-date, widely accepted rankings as of TODAY. Do not invent teams/players/items that are not truly in the current Top 5 for this topic.
-  - Ranks must be in true 5 -> 1 order, no duplicates, no skipped ranks.
-  - If unsure, pick the most globally recognized consensus list rather than speculation.
-  - Avoid player or team names unless the topic explicitly requires individuals (e.g., "richest men", "top players"); otherwise focus on the item/sport itself.
-  - Use "Soccer" explicitly for the global sport (never "football" unless "American football" is truly intended).
-  Style rules:
-  - Vary verbs and sentence openings across ranks; no repeated phrasing.
-  - Intro: one clear, confident hook that states what we are ranking and why #1 is worth waiting for; lively and human, never robotic or meta ("in this video").
-  - Outro should invite them to share their own #1 plus a quick CTA.
-  - Keep language easy to follow and conversationally energetic.
- `.trim();
+You are building a 7-part Top 5 countdown video and the narration must sync tightly to each segment.
+
+Topic: ${topic}
+Language: ${languageNote} (default to clear American English delivery if unspecified)
+
+Timing + pacing:
+- Exactly 7 segments: intro, #5, #4, #3, #2, #1, outro.
+${
+	timingLines ||
+	"- Keep rank segments evenly timed; avoid long or ultra-short lines."
+}
+- Stay within the word targets so TTS fits without time-stretching.
+
+Content + tone:
+- Intro: start with a simple hook like "Guess the Top 5 ${cleanTopic}" and tease that #1 is worth the wait.
+- Each rank line MUST start with "#5-", "#4-", "#3-", "#2-", or "#1-" before the label.
+- Give ONE broadly known reason (stat, participation, cultural impact, popularity) that justifies the rank. Avoid niche player/team/city details unless the item itself is that subject.
+- No filler like "coming in at number"; vary verbs and openings.
+- Outro: invite viewers to drop their own #1 and include a friendly CTA.
+- Keep sentences crisp, conversational, and easy for TTS to pronounce.
+
+Return JSON with exactly 7 objects in order: intro, rank5, rank4, rank3, rank2, rank1, outro.
+Each object must have:
+- "type": "intro" | "rank" | "outro"
+- "rank": 5/4/3/2/1 for rank items (null for intro/outro)
+- "label": short name for the item (intro/outro can reuse the topic)
+- "script": 1-2 lively sentences that fit the timing guidance above; avoid academic words like "explained" or "lesson"
+- "overlay": action-forward 3-8 word overlay text (no punctuation/hashtags)
+- "imageQuery": concise search query for a strong photo, include action words and the item name; avoid generic wallpapers.
+- "runwayPrompt": vivid cinematic prompt describing motion for image_to_video; include setting, action, camera, lighting; avoid text/logos.
+`.trim();
 
 	for (let attempt = 1; attempt <= 2; attempt++) {
 		try {
@@ -3338,16 +3541,20 @@ async function searchAndUploadTop5Image({
 }
 
 async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
-	const plan = await gptTop5Plan(topic, language);
+	const plan = await gptTop5Plan(topic, language, segLens);
 	const orderedPlan = enforceTop5Order(plan);
 	if (!orderedPlan) {
 		throw new Error("Top5 GPT plan missing intro/#5/#4/#3/#2/#1/outro");
 	}
 	const slug = safeSlug(topic || "top5");
 	const year = dayjs().format("YYYY");
+	const introTopic =
+		String(topic || "")
+			.replace(/^\s*Top\s*5\s*/i, "")
+			.trim() || topic;
 
-	const segments = [];
-	const trendImagePairs = [];
+	let segments = [];
+	let trendImagePairs = [];
 
 	for (let idx = 0; idx < orderedPlan.length; idx++) {
 		const p = orderedPlan[idx] || {};
@@ -3368,11 +3575,10 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 			stripCountdownPrefix(rawScript),
 			label
 		);
-		const scriptText = buildCountdownLine(
-			rank || "",
-			label,
-			cleanBody || rawScript
-		);
+		const scriptText =
+			segType === "intro"
+				? buildTop5IntroLine(introTopic)
+				: buildCountdownLine(rank || "", label, cleanBody || rawScript);
 		const overlayBody = removeLeadingLabel(
 			stripCountdownPrefix(p.overlay || label),
 			label
@@ -3380,6 +3586,8 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 		const overlayText =
 			segType === "rank"
 				? `#${rank}: ${overlayBody || label}`.trim()
+				: segType === "intro"
+				? `Top 5 ${introTopic || label}`.trim()
 				: String(p.overlay || label).trim();
 		const runwayPrompt = String(
 			p.runwayPrompt || `${label} cinematic action shot`
@@ -3398,7 +3606,7 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 			throw new Error(`Top5 missing image for segment ${idx + 1}`);
 		}
 
-		trendImagePairs.push(img);
+		trendImagePairs.push({ ...img, rank });
 
 		segments.push({
 			index: idx + 1,
@@ -3418,6 +3626,16 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 			"Top5 requires exactly 7 images; planning failed to secure all slots."
 		);
 	}
+
+	const { segments: alignedSegments, trendImagePairs: alignedPairs } =
+		await enforceTop5ImageRelevance({
+			segments,
+			trendImagePairs,
+			topic,
+			ratio,
+		});
+	segments = alignedSegments;
+	trendImagePairs = alignedPairs;
 
 	// Align segment lengths if GPT returned anything different
 	if (Array.isArray(segLens) && segLens.length === segments.length) {
@@ -3622,6 +3840,92 @@ function alignTop5ImageIndexes(segments, top5Outline, pairs) {
 		const mapped = byRank.get(rank);
 		return mapped !== undefined ? { ...seg, imageIndex: mapped } : seg;
 	});
+}
+
+function isTop5ImageAligned(pair, label, topic) {
+	if (!pair) return false;
+	const hay = `${pair.originalUrl || ""} ${
+		pair.cloudinaryUrl || ""
+	}`.toLowerCase();
+	const decoded = (() => {
+		try {
+			return decodeURIComponent(hay);
+		} catch {
+			return hay;
+		}
+	})();
+	const labelTokens = tokenizeLabel(label);
+	if (labelTokens.some((t) => decoded.includes(t))) return true;
+	if (/oaidalle|openai|gpt-image/i.test(decoded)) return true;
+	const topicTokens = topicTokensFromTitle(topic);
+	return (
+		labelTokens.length === 0 && topicTokens.some((t) => decoded.includes(t))
+	);
+}
+
+async function enforceTop5ImageRelevance({
+	segments,
+	trendImagePairs,
+	topic,
+	ratio,
+}) {
+	if (!Array.isArray(segments) || !Array.isArray(trendImagePairs)) {
+		return { segments, trendImagePairs };
+	}
+
+	const safeSegments = segments.map((s) => ({ ...s }));
+	const safePairs = trendImagePairs.slice();
+	const avoid = new Set(
+		trendImagePairs
+			.map((p) => p?.originalUrl || p?.cloudinaryUrl || "")
+			.filter(Boolean)
+	);
+
+	for (let i = 0; i < safeSegments.length; i++) {
+		const seg = safeSegments[i];
+		const label = seg?.countdownLabel || seg?.overlayText || topic;
+		const pairIdx =
+			typeof seg?.imageIndex === "number" && seg.imageIndex >= 0
+				? seg.imageIndex
+				: i;
+		const pair = safePairs[pairIdx];
+
+		if (pair && isTop5ImageAligned(pair, label, topic)) continue;
+
+		const replacement = await fetchTop5ReplacementImage(
+			label,
+			topic,
+			ratio,
+			avoid
+		);
+		if (!replacement || !replacement.url) continue;
+		avoid.add(normalizeImageKey(replacement.url));
+
+		try {
+			const up = await uploadTrendImageToCloudinary(
+				replacement.url,
+				ratio,
+				`aivideomatic/top5_refs/${safeSlug(topic || "top5")}/${rankSlug(
+					seg?.countdownRank || seg?.rank || pairIdx + 1
+				)}_${safeSlug(label || "rank", 24)}_reval`
+			);
+			const newPair = {
+				originalUrl: replacement.url,
+				cloudinaryUrl: up.url,
+				rank: seg?.countdownRank || pair?.rank || null,
+			};
+			safePairs[pairIdx] = newPair;
+			safeSegments[i] = {
+				...seg,
+				referenceImageUrl: replacement.url,
+				imageIndex: pairIdx,
+			};
+		} catch (e) {
+			console.warn("[Top5] Image relevance replacement failed ?", e.message);
+		}
+	}
+
+	return { segments: safeSegments, trendImagePairs: safePairs };
 }
 
 /* ---------------------------------------------------------------
@@ -4986,7 +5290,8 @@ exports.createVideo = async (req, res) => {
 		} = req.body;
 
 		const user = req.user;
-		const language = (langIn || DEFAULT_LANGUAGE).trim();
+		const language =
+			toTitleCase((langIn || DEFAULT_LANGUAGE).trim()) || DEFAULT_LANGUAGE;
 		const country =
 			countryIn && countryIn.toLowerCase() !== "all countries"
 				? countryIn.trim()
@@ -5006,6 +5311,7 @@ exports.createVideo = async (req, res) => {
 			createdAt: { $gte: threeDaysAgo },
 		}).select("topic seoTitle");
 		const normRecent = [];
+		const usedTop5Keys = new Set();
 		for (const v of recentVideos) {
 			const base = String(v.topic || v.seoTitle || "").trim();
 			if (!base) continue;
@@ -5015,8 +5321,32 @@ exports.createVideo = async (req, res) => {
 			if (firstTwo && firstTwo.length >= 4) normRecent.push(firstTwo);
 			const firstThree = normFull.split(" ").slice(0, 3).join(" ");
 			if (firstThree && firstThree.length >= 6) normRecent.push(firstThree);
+			[v.topic, v.seoTitle].forEach((txt) => {
+				const key = category === "Top5" ? top5TitleKey(txt) : "";
+				if (key) usedTop5Keys.add(key);
+			});
 		}
 		const usedTopics = new Set(normRecent);
+
+		if (category === "Top5") {
+			const top5Cutoff = dayjs().subtract(180, "day").toDate();
+			const historicTop5 = await Video.find({
+				category: "Top5",
+				createdAt: { $gte: top5Cutoff },
+			}).select("topic seoTitle");
+
+			for (const v of historicTop5) {
+				[v.topic, v.seoTitle].forEach((txt) => {
+					const key = top5TitleKey(txt);
+					if (key) usedTop5Keys.add(key);
+				});
+				const base = String(v.topic || v.seoTitle || "").trim();
+				if (base) {
+					const normFull = base.toLowerCase().replace(/\s+/g, " ").trim();
+					if (normFull) usedTopics.add(normFull);
+				}
+			}
+		}
 
 		let topic = "";
 		let trendStory = null;
@@ -5049,11 +5379,41 @@ exports.createVideo = async (req, res) => {
 			}
 		}
 
+		if (category === "Top5" && topic) {
+			const key = top5TitleKey(topic);
+			const allowedMap = new Map(
+				ALL_TOP5_TOPICS.map((t) => [top5TitleKey(t), t]).filter(([k]) =>
+					Boolean(k)
+				)
+			);
+			const isAllowed = key && allowedMap.has(key);
+			const isUsed = key && usedTop5Keys.has(key);
+			if (!isAllowed || isUsed) {
+				const candidateList = ALL_TOP5_TOPICS.map((t) => ({
+					topic: t,
+					key: top5TitleKey(t),
+				})).filter((c) => c.key && !usedTop5Keys.has(c.key));
+				if (candidateList.length) {
+					console.log(
+						"[Top5] Custom topic rejected (duplicate or off-list); selecting unused preset topic"
+					);
+					topic = candidateList[0].topic;
+				}
+			}
+		}
+
 		// 3) Generic GPT trending fallback
 		if (!topic) {
 			if (category === "Top5") {
-				const remaining = ALL_TOP5_TOPICS.filter((t) => !usedTopics.has(t));
-				topic = remaining.length ? remaining[0] : choose(ALL_TOP5_TOPICS);
+				const candidateList = ALL_TOP5_TOPICS.map((t) => ({
+					topic: t,
+					key: top5TitleKey(t),
+				})).filter((c) => c.key);
+				const remaining = candidateList.filter((c) => !usedTop5Keys.has(c.key));
+				const fallbackPool = remaining.length ? remaining : candidateList;
+				topic = fallbackPool.length
+					? fallbackPool[0].topic
+					: choose(ALL_TOP5_TOPICS);
 			} else {
 				const list = await pickTrendingTopicFresh(category, language, country);
 				topic = list.find((t) => !usedTopics.has(t)) || list[0];
@@ -5196,6 +5556,7 @@ exports.createVideo = async (req, res) => {
 				ratio,
 			});
 			segments = await punchUpTop5Scripts(segments, segWordCaps);
+			segments = await tightenTop5TimingAndClarity(segments, segLens, language);
 		} else {
 			/* 5. Let OpenAI orchestrate segments + visuals */
 			console.log("[GPT] building full video plan …");
