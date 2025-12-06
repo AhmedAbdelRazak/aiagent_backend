@@ -6057,42 +6057,42 @@ One or two sentences only.
 		} catch {}
 
 		/* 14. YouTube upload */
-		// let youtubeLink = "";
-		// let youtubeTokens = null;
-		// try {
-		// 	youtubeTokens = await refreshYouTubeTokensIfNeeded(user, req);
-		// 	const oauth2 = buildYouTubeOAuth2Client(youtubeTokens);
-		// 	if (oauth2) {
-		// 		const yt = google.youtube({ version: "v3", auth: oauth2 });
-		// 		const { data } = await yt.videos.insert(
-		// 			{
-		// 				part: ["snippet", "status"],
-		// 				requestBody: {
-		// 					snippet: {
-		// 						title: seoTitle,
-		// 						description: seoDescription,
-		// 						tags,
-		// 						categoryId:
-		// 							YT_CATEGORY_MAP[category] === "0"
-		// 								? "22"
-		// 								: YT_CATEGORY_MAP[category],
-		// 					},
-		// 					status: {
-		// 						privacyStatus: "public",
-		// 						selfDeclaredMadeForKids: false,
-		// 					},
-		// 				},
-		// 				media: { body: fs.createReadStream(finalPath) },
-		// 			},
-		// 			{ maxContentLength: Infinity, maxBodyLength: Infinity }
-		// 		);
-		// 		youtubeLink = `https://www.youtube.com/watch?v=${data.id}`;
-		// 		sendPhase("VIDEO_UPLOADED", { youtubeLink });
-		// 		console.log("[Phase] VIDEO_UPLOADED", youtubeLink);
-		// 	}
-		// } catch (e) {
-		// 	console.warn("[YouTube] upload skipped ?", e.message);
-		// }
+		let youtubeLink = "";
+		let youtubeTokens = null;
+		try {
+			youtubeTokens = await refreshYouTubeTokensIfNeeded(user, req);
+			const oauth2 = buildYouTubeOAuth2Client(youtubeTokens);
+			if (oauth2) {
+				const yt = google.youtube({ version: "v3", auth: oauth2 });
+				const { data } = await yt.videos.insert(
+					{
+						part: ["snippet", "status"],
+						requestBody: {
+							snippet: {
+								title: seoTitle,
+								description: seoDescription,
+								tags,
+								categoryId:
+									YT_CATEGORY_MAP[category] === "0"
+										? "22"
+										: YT_CATEGORY_MAP[category],
+							},
+							status: {
+								privacyStatus: "public",
+								selfDeclaredMadeForKids: false,
+							},
+						},
+						media: { body: fs.createReadStream(finalPath) },
+					},
+					{ maxContentLength: Infinity, maxBodyLength: Infinity }
+				);
+				youtubeLink = `https://www.youtube.com/watch?v=${data.id}`;
+				sendPhase("VIDEO_UPLOADED", { youtubeLink });
+				console.log("[Phase] VIDEO_UPLOADED", youtubeLink);
+			}
+		} catch (e) {
+			console.warn("[YouTube] upload skipped ?", e.message);
+		}
 
 		/* 15. Voice + music metadata */
 		const elevenLabsVoice =
