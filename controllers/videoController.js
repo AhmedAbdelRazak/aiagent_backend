@@ -183,6 +183,9 @@ const ARTICLE_FETCH_HEADERS = Object.freeze({
  */
 const WORDS_PER_SEC = 2.2;
 const NATURAL_WPS = 2.25;
+const TOP5_WORDS_PER_SEC = 2.0;
+const TOP5_NATURAL_WPS = 2.05;
+const TOP5_FINISH_PAD = 0.12;
 const ENGAGEMENT_TAIL_MIN = 5;
 const ENGAGEMENT_TAIL_MAX = 6;
 const MIN_OUTRO_WORDS = 16;
@@ -368,6 +371,10 @@ const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
 const toBool = (v) => v === true || v === "true" || v === 1 || v === "1";
 const looksLikeAITopic = (t) => AI_TOPIC_RE.test(String(t || ""));
+
+function wordsPerSecForCaps(category) {
+	return category === "Top5" ? TOP5_WORDS_PER_SEC : WORDS_PER_SEC;
+}
 
 const IMAGE_BLOCKLIST_HOSTS = [
 	"pinimg.com",
@@ -982,7 +989,11 @@ function deriveVoiceSettings(text, category = "Other") {
 }
 
 /* Recompute segment durations from script words */
-function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
+function recomputeSegmentDurationsFromScript(
+	segments,
+	targetTotalSeconds,
+	opts = {}
+) {
 	if (
 		!Array.isArray(segments) ||
 		!segments.length ||
@@ -992,22 +1003,43 @@ function recomputeSegmentDurationsFromScript(segments, targetTotalSeconds) {
 		return null;
 
 	const MIN_SEGMENT_SECONDS = 4;
+	const { category = null, targetSegLens = null } = opts;
+	const isTop5 = category === "Top5";
+	const anchorLens =
+		Array.isArray(targetSegLens) && targetSegLens.length === segments.length
+			? targetSegLens
+			: null;
 
 	const est = segments.map((s, idx) => {
 		const words = String(s.scriptText || "")
 			.trim()
 			.split(/\s+/)
 			.filter(Boolean).length;
-		const basePause = idx === segments.length - 1 ? 0.35 : 0.25;
-		const countdownPause = s?.countdownRank ? 0.18 : 0;
-		const raw = (words || 1) / NATURAL_WPS + basePause + countdownPause;
-		return Math.max(MIN_SEGMENT_SECONDS, raw);
+		const basePause =
+			idx === segments.length - 1
+				? isTop5
+					? 0.42
+					: 0.35
+				: isTop5
+				? 0.3
+				: 0.25;
+		const countdownPause = s?.countdownRank ? (isTop5 ? 0.22 : 0.18) : 0;
+		const cadencePad = isTop5 ? TOP5_FINISH_PAD : 0;
+		const wps = isTop5 ? TOP5_NATURAL_WPS : NATURAL_WPS;
+		const raw = (words || 1) / wps + basePause + countdownPause + cadencePad;
+		const blended =
+			isTop5 && anchorLens && Number.isFinite(anchorLens[idx])
+				? raw * 0.68 + anchorLens[idx] * 0.32
+				: raw;
+		return Math.max(MIN_SEGMENT_SECONDS, blended);
 	});
 
 	const estTotal = est.reduce((a, b) => a + b, 0) || targetTotalSeconds;
 	let scale = targetTotalSeconds / estTotal;
-	if (scale < 0.8) scale = 0.8;
-	if (scale > 1.25) scale = 1.25;
+	const minScale = isTop5 ? 0.9 : 0.8;
+	const maxScale = isTop5 ? 1.12 : 1.25;
+	if (scale < minScale) scale = minScale;
+	if (scale > maxScale) scale = maxScale;
 
 	let scaled = est.map((v) => v * scale);
 	let total = scaled.reduce((a, b) => a + b, 0);
@@ -2277,7 +2309,7 @@ Original: "${seg.scriptText}"
 `.trim();
 		} else if (i === 0) {
 			prompt = `
-Punch up this countdown intro so it hooks viewers to stay for #1. One sentence, max ${cap} words, energetic, specific to the topic, and clearly promises a surprising #1 pick.
+Punch up this countdown intro so it hooks viewers to stay for #1. One sentence, max ${cap} words, energetic, specific to the topic, and clearly promises a surprising #1 pick. Sound like a confident host speaking plainly to the viewer—no robotic phrasing or vague hype.
 Original: "${seg.scriptText}"
 `.trim();
 		} else if (i === segments.length - 1) {
@@ -3175,7 +3207,9 @@ async function gptTop5Plan(topic, language = DEFAULT_LANGUAGE) {
   - Use "Soccer" explicitly for the global sport (never "football" unless "American football" is truly intended).
   Style rules:
   - Vary verbs and sentence openings across ranks; no repeated phrasing.
-  - Intro should hook viewers to stay for #1; outro should invite them to share their own #1 plus a quick CTA.
+  - Intro: one clear, confident hook that states what we are ranking and why #1 is worth waiting for; lively and human, never robotic or meta ("in this video").
+  - Outro should invite them to share their own #1 plus a quick CTA.
+  - Keep language easy to follow and conversationally energetic.
  `.trim();
 
 	for (let attempt = 1; attempt <= 2; attempt++) {
@@ -3208,14 +3242,17 @@ async function buildTop5FallbackPlan(topic, language = DEFAULT_LANGUAGE) {
 		.sort((a, b) => (b.rank || 0) - (a.rank || 0))
 		.slice(0, 5);
 	const year = dayjs().format("YYYY");
+	const introTopic =
+		String(topic || "")
+			.replace(/^\s*Top\s*5\s*/i, "")
+			.trim() || topic;
 
 	const intro = {
 		type: "intro",
 		rank: null,
 		label: topic,
-		script:
-			"Counting down the top cities to visit right now—stick around for #1.",
-		overlay: "Top 5 Cities Now",
+		script: `Counting down the Top 5 ${introTopic}—wait until you hear our #1 pick.`,
+		overlay: `Top 5 ${introTopic}`.trim(),
 		imageQuery: `${topic} skyline golden hour ${year}`,
 		runwayPrompt:
 			"Cinematic aerial over a vibrant city skyline at sunset, people and traffic in motion, smooth drone move, warm light",
@@ -3241,9 +3278,10 @@ async function buildTop5FallbackPlan(topic, language = DEFAULT_LANGUAGE) {
 		type: "outro",
 		rank: null,
 		label: topic,
-		script:
-			"Which city is your #1? Drop it below and save this list for your next trip.",
-		overlay: "Your #1 city?",
+		script: `Which ${
+			introTopic || "pick"
+		} is your #1? Drop it below, hit like, and tell us what should top the list.`,
+		overlay: "Your #1 pick?",
 		imageQuery: `${topic} traveler airport window ${year}`,
 		runwayPrompt:
 			"Traveler at an airport window watching planes take off, soft morning light, gentle dolly move",
@@ -4455,7 +4493,8 @@ async function buildVideoPlanWithGPT({
 	forceStaticVisuals = false,
 }) {
 	const segCnt = segLens.length;
-	const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+	const wordRate = wordsPerSecForCaps(category);
+	const segWordCaps = segLens.map((s) => Math.floor(s * wordRate));
 	const hasImages =
 		trendImagesForPlanning &&
 		Array.isArray(trendImagesForPlanning) &&
@@ -5053,7 +5092,9 @@ exports.createVideo = async (req, res) => {
 		let segCnt = segLens.length;
 		const engagementTailSeconds = segLens[segCnt - 1];
 		const totalDurationTarget = segLens.reduce((a, b) => a + b, 0);
-		const segWordCaps = segLens.map((s) => Math.floor(s * WORDS_PER_SEC));
+		const segWordCaps = segLens.map((s) =>
+			Math.floor(s * wordsPerSecForCaps(category))
+		);
 		if (segWordCaps.length) {
 			const lastIdx = segWordCaps.length - 1;
 			segWordCaps[lastIdx] = Math.max(segWordCaps[lastIdx], MIN_OUTRO_WORDS);
@@ -5247,7 +5288,8 @@ One or two sentences only.
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 		const recomputed = recomputeSegmentDurationsFromScript(
 			segments,
-			totalDurationTarget
+			totalDurationTarget,
+			{ category, targetSegLens: segLens }
 		);
 		if (recomputed && recomputed.length === segLens.length) {
 			console.log("[Timing] Recomputed segment durations from script:", {
