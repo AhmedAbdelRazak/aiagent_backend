@@ -10,7 +10,7 @@ const {
 } = require("../controllers/videoController");
 const { protect } = require("../middlewares/authMiddleware");
 const { authorize } = require("../middlewares/roleMiddleware");
-const { createVideoSoraPro } = require("../controllers/videoControllerSora");
+// const { createVideoSoraPro } = require("../controllers/videoControllerSora");
 
 // @route   POST /api/videos
 router.post("/videos", protect, createVideo);
