@@ -62,32 +62,30 @@ function assertExists(cond, msg) {
 	}
 }
 
-function resolveFfmpegPath() {
-	if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
-	try {
-		return require("ffmpeg-static");
-	} catch {
-		/* ignore */
-	}
-	return process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+const DEFAULT_FFMPEG_PATH = "/usr/bin/ffmpeg";
+
+const ffmpegPath =
+	process.env.FFMPEG_PATH && process.env.FFMPEG_PATH.trim()
+		? process.env.FFMPEG_PATH.trim()
+		: DEFAULT_FFMPEG_PATH;
+
+// Try to sanity-check once, but DO NOT exit the process if it fails.
+// We just log a warning and let fluent-ffmpeg try.
+try {
+	child_process.execSync(`"${ffmpegPath}" -version`, { stdio: "ignore" });
+	console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
+} catch (e) {
+	console.warn(
+		`[Startup] WARN – FFmpeg check failed at "${ffmpegPath}", error: ${e.message}. ` +
+			`Proceeding anyway; fluent-ffmpeg will fall back to PATH.`
+	);
 }
-const ffmpegPath = resolveFfmpegPath();
-assertExists(
-	(() => {
-		try {
-			child_process.execSync(`"${ffmpegPath}" -version`, { stdio: "ignore" });
-			return true;
-		} catch {
-			return false;
-		}
-	})(),
-	"FFmpeg binary not found – install ffmpeg or set FFMPEG_PATH."
-);
+
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const ffprobePath = process.env.FFPROBE_PATH || "ffprobe";
 ffmpeg.setFfprobePath(ffprobePath);
-console.log(`[FFprobe]  binary : ${ffprobePath}`);
+console.log(`[FFprobe] binary : ${ffprobePath}`);
 
 function ffmpegSupportsLavfi() {
 	try {
