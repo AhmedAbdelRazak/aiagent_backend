@@ -1,8 +1,8 @@
 // assets/utils.js
 
 const ALL_TOP5_TOPICS = [
-	"Top 5 Most Popular Sports Globally Now",
 	"Top 5 Cities to Visit Now",
+	"Top 5 Most Popular Sports Globally Now",
 	"Top 5 Street Foods Around the World",
 	"Top 5 Footballers Right Now",
 	"Top 5 NBA Players This Season",
@@ -10,6 +10,20 @@ const ALL_TOP5_TOPICS = [
 	"Top 5 Luxury Beach Resorts",
 	"Top 5 Budget Travel Spots",
 	"Top 5 Fastest Growing Tech Jobs",
+	"Top 5 Cutest Pet Moments on the Internet",
+	"Top 5 AI Image Generators Right Now",
+	"Top 5 YouTube Shorts Creators to Follow",
+	"Top 5 Hidden Beach Destinations You’ve Never Heard Of",
+	"Top 5 10-Minute Recipes for Busy People",
+	"Top 5 Pet Tricks That Broke the Internet",
+	"Top 5 Smart Home Devices Worth Buying",
+	"Top 5 Programming Languages to Learn this year",
+	"Top 5 Luxury Beach Resorts in the World",
+	"Top 5 Fitness Trends Taking Over This Year",
+	"Top 5 Relationship Green Flags People Ignore",
+	"Top 5 AI Coding Assistants Right Now",
+	"Top 5 Plant-Based Recipes Even Meat Lovers Love",
+	"Top 5 Podcasts to Binge in this year",
 	"Top 5 Programming Languages to Learn",
 	"Top 5 AI Tools for Creators",
 	"Top 5 AI Image Generators",
@@ -51,6 +65,11 @@ const ALL_TOP5_TOPICS = [
 	"Top 5 Wildlife Safari Destinations",
 	"Top 5 Most Beautiful Train Trips",
 	"Top 5 Hidden Beach Destinations",
+	"Top 5 Chrome Extensions That Save You Hours",
+	"Top 5 Gadgets Under $100 That Feel High-End",
+	"Top 5 Netflix (or Streaming) Originals Right Now",
+	"Top 5 Movies You Need to Watch This Year",
+	"Top 5 Viral TikTok Challenges Right Now",
 ];
 
 const googleTrendingCategoriesId = [
