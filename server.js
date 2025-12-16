@@ -1,6 +1,10 @@
-/* server.js — queued‑cron, PST‑aware 2025‑06‑16 */
+/* server.js — production-hardened, queued-cron, PST-aware
 /* eslint-disable no-console */
-require("dotenv").config();
+
+const path = require("path");
+
+// Always load .env from the same directory as this file (works reliably with PM2)
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const express = require("express");
 const mongoose = require("mongoose");
@@ -16,85 +20,122 @@ const tz = require("dayjs/plugin/timezone");
 dayjs.extend(utc);
 dayjs.extend(tz);
 
-/* ---------- FFmpeg bootstrap (unchanged) ---------- */
-const ffmpeg = require("fluent-ffmpeg");
-ffmpeg.setFfmpegPath("C:/ffmpeg/bin/ffmpeg.exe");
-ffmpeg.setFfprobePath("C:/ffmpeg/bin/ffprobe.exe");
-
-/* ---------- Google APIs ---------- */
-const { google } = require("googleapis");
-
 /* ---------- Models & Controllers ---------- */
 const Schedule = require("./models/Schedule");
 const Video = require("./models/Video");
-const {
-	createVideo,
-	buildYouTubeOAuth2Client,
-} = require("./controllers/videoController");
+const { createVideo } = require("./controllers/videoController");
 
 /* ---------- Middleware ---------- */
 const { protect } = require("./middlewares/authMiddleware");
-const { authorize } = require("./middlewares/roleMiddleware");
 const PST_TZ = "America/Los_Angeles";
+
+/* ---------- Environment normalization ---------- */
+if (!process.env.NODE_ENV && process.env.ENVIRONMENT) {
+	// map ENVIRONMENT=PRODUCTION -> NODE_ENV=production
+	const env = String(process.env.ENVIRONMENT).toLowerCase();
+	process.env.NODE_ENV = env === "production" ? "production" : env;
+}
+const NODE_ENV = process.env.NODE_ENV || "test";
+
+/* ---------- Small helpers ---------- */
+function toInt(v, fallback) {
+	const n = Number(v);
+	return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeOriginList(raw) {
+	const v = String(raw || "").trim();
+	if (!v) return [];
+	if (v === "*") return ["*"];
+	// allow comma-separated list
+	return v
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+}
+
+const ALLOWED_ORIGINS = normalizeOriginList(process.env.CLIENT_ORIGIN || "*");
+const ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS.includes("*");
+
+function isOriginAllowed(origin) {
+	if (ALLOW_ALL_ORIGINS) return true;
+	return ALLOWED_ORIGINS.includes(origin);
+}
 
 /* ---------- Express + HTTP + Socket.IO ---------- */
 const app = express();
+app.disable("x-powered-by");
+
+// behind Nginx (so req.ip, secure cookies, etc. behave correctly)
+app.set("trust proxy", 1);
+
 const server = http.createServer(app);
+
+// Node/HTTP timeouts — safer for long-running API calls (video generation, etc.)
+server.keepAliveTimeout = toInt(process.env.KEEP_ALIVE_TIMEOUT_MS, 65000);
+server.headersTimeout = toInt(process.env.HEADERS_TIMEOUT_MS, 66000);
+// Disable request timeout so long jobs don’t get killed mid-request
+server.requestTimeout = 0;
+
+// Socket.IO CORS: if you use credentials, wildcard "*" cannot be used by browsers.
+// We reflect/allow based on CLIENT_ORIGIN list.
 const io = socketIo(server, {
 	cors: {
-		origin: process.env.CLIENT_ORIGIN || "*",
+		origin: (origin, cb) => {
+			// origin may be undefined for non-browser clients
+			if (!origin) return cb(null, true);
+			if (isOriginAllowed(origin)) return cb(null, true);
+			return cb(new Error(`Socket.IO CORS blocked origin: ${origin}`), false);
+		},
 		methods: ["GET", "POST"],
-		allowedHeaders: ["Authorization"],
+		allowedHeaders: ["Authorization", "Content-Type"],
 		credentials: true,
 	},
+	// Optional: allow websocket upgrades cleanly
+	allowEIO3: true,
 });
 app.set("io", io);
 
-/* ───── 1) MongoDB Connection ───── */
-const mongoUri = process.env.MONGODB_URI || process.env.DATABASE;
-if (!mongoUri) {
-	console.error(
-		"Missing MongoDB connection string. Set MONGODB_URI (preferred) or DATABASE in your environment."
-	);
-	process.exit(1);
-}
+/* ---------- Global middleware ---------- */
+const LOG_FORMAT =
+	process.env.LOG_FORMAT || (NODE_ENV === "production" ? "combined" : "dev");
+app.use(morgan(LOG_FORMAT));
 
-// Log a redacted target so we can see where we're pointing without leaking creds.
-const mongoDisplayUri = (() => {
-	try {
-		const parsed = new URL(mongoUri);
-		const port = parsed.port ? `:${parsed.port}` : "";
-		const path = parsed.pathname || "";
-		return `${parsed.protocol}//${parsed.hostname}${port}${path}`;
-	} catch (err) {
-		return mongoUri;
-	}
-})();
+const BODY_LIMIT = process.env.BODY_LIMIT || "50mb";
+app.use(express.json({ limit: BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
 
-mongoose.set("strictQuery", false);
-mongoose
-	.connect(mongoUri, { serverSelectionTimeoutMS: 10000 })
-	.then(() => console.log(`MongoDB connected (${mongoDisplayUri})`))
-	.catch((err) =>
-		console.error(`DB Connection Error (check tunnel/local Mongo at ${mongoDisplayUri}):`, err)
-	);
-
-/* ───── 2) Global Middleware ───── */
-app.use(morgan("dev"));
+// Express CORS (same rules as Socket.IO)
 app.use(
 	cors({
-		origin: process.env.CLIENT_ORIGIN || "*",
-		methods: ["GET", "POST", "PUT", "DELETE"],
+		origin: (origin, cb) => {
+			if (!origin) return cb(null, true);
+			if (isOriginAllowed(origin)) return cb(null, true);
+			return cb(new Error(`CORS blocked origin: ${origin}`));
+		},
+		methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
 		allowedHeaders: ["Content-Type", "Authorization"],
 		credentials: true,
 	})
 );
-app.use(express.json({ limit: "50mb" }));
 
-/* ───── 3) Health Check ───── */
+/* ---------- Health endpoints ---------- */
+// Local-only quick test (direct port)
 app.get("/", (req, res) => res.send("Hello from AgentAI API"));
 
-/* ───── 4) YouTube OAuth Routes (protected) ───── */
+// Public test through Nginx: https://yourdomain.com/api/health
+app.get("/api/health", (req, res) => {
+	const dbState = mongoose.connection.readyState; // 0=disconnected,1=connected,2=connecting,3=disconnecting
+	res.json({
+		ok: true,
+		env: NODE_ENV,
+		uptimeSec: Math.round(process.uptime()),
+		dbReadyState: dbState,
+		timestamp: new Date().toISOString(),
+	});
+});
+
+/* ---------- Protected YouTube routes ---------- */
 const youTubeAuthRoutes = require("./routes/youtubeAuth");
 const youTubeTokensRoutes = require("./routes/youtubeTokens");
 const youtubeExchangeRoutes = require("./routes/youtubeExchange");
@@ -103,35 +144,40 @@ app.use("/api/youtube", protect, youTubeAuthRoutes);
 app.use("/api/youtube", protect, youTubeTokensRoutes);
 app.use("/api/youtube", protect, youtubeExchangeRoutes);
 
-/* ───── 5) All Other /api Routes ───── */
-readdirSync("./routes").forEach((file) => {
-	if (/^youtube(A|T|E)/.test(file)) return; // skip the three explicit files
-	app.use("/api", require(`./routes/${file}`));
-});
+/* ---------- All other /api routes ---------- */
+const routesDir = path.join(__dirname, "routes");
+readdirSync(routesDir)
+	.filter((file) => file.endsWith(".js"))
+	.forEach((file) => {
+		// skip the three explicit files above
+		if (/^youtube(A|T|E)/.test(file)) return;
+		app.use("/api", require(path.join(routesDir, file)));
+	});
 
-/* ───────────────────────────────────────────────────────────── */
-/* 6)  SIMPLE IN‑MEMORY JOB QUEUE (concurrency = 1)              */
-/*     Fix: keep id in queuedIds UNTIL handleSchedule finishes   */
-/* ───────────────────────────────────────────────────────────── */
+/* ---------- Queue + cron (concurrency=1, retry backoff on failure) ---------- */
 const jobQueue = [];
-const queuedIds = new Set(); // avoid duplicates per schedule _id
+const queuedIds = new Set();
 let processing = false;
 
+const FAIL_BACKOFF_MINUTES = toInt(
+	process.env.SCHEDULE_FAIL_BACKOFF_MINUTES,
+	10
+);
+
 async function processQueue() {
-	if (processing) return; // already working
+	if (processing) return;
 	processing = true;
 
 	while (jobQueue.length) {
 		const sched = jobQueue.shift();
-
 		try {
 			await handleSchedule(sched);
 		} catch (err) {
-			console.error("[Queue] job error:", err.message);
+			console.error(
+				"[Queue] job error:",
+				err && err.message ? err.message : err
+			);
 		} finally {
-			// IMPORTANT: only clear after the job finishes (success or error).
-			// While handleSchedule is running, this id stays in queuedIds so
-			// the cron poller cannot enqueue a duplicate.
 			queuedIds.delete(String(sched._id));
 		}
 	}
@@ -139,15 +185,46 @@ async function processQueue() {
 	processing = false;
 }
 
-/* Core logic for one schedule */
+function parseTimeOfDay(timeOfDay) {
+	const raw = String(timeOfDay || "").trim();
+	const m = raw.match(/^(\d{1,2}):(\d{2})$/);
+	if (!m) return null;
+	const hh = Number(m[1]);
+	const mm = Number(m[2]);
+	if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
+	if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+	return { hh, mm };
+}
+
+function normalizeScheduleType(t) {
+	const v = String(t || "")
+		.toLowerCase()
+		.trim();
+	if (v === "daily" || v === "weekly" || v === "monthly") return v;
+	return "daily";
+}
+
 async function handleSchedule(sched) {
 	const nowPST = dayjs().tz(PST_TZ);
 
-	/* 1 ▸ stop expired schedules (endDate is a PST calendar date) */
+	// Basic validation to prevent “bad data” infinite loops
+	const t = parseTimeOfDay(sched.timeOfDay);
+	if (!t) {
+		console.error(
+			`[Queue] Invalid timeOfDay for schedule ${sched._id}:`,
+			sched.timeOfDay
+		);
+		sched.active = false;
+		await sched.save();
+		return;
+	}
+	const scheduleType = normalizeScheduleType(sched.scheduleType);
+
+	/* 1) stop expired schedules */
 	let endPST = null;
 	if (sched.endDate) {
 		const endDateStr = dayjs(sched.endDate).format("YYYY-MM-DD");
-		endPST = dayjs.tz(`${endDateStr} 23:59`, "YYYY-MM-DD HH:mm", PST_TZ);
+		endPST = dayjs.tz(`${endDateStr} 23:59:59`, "YYYY-MM-DD HH:mm:ss", PST_TZ);
 		if (nowPST.isAfter(endPST)) {
 			sched.active = false;
 			await sched.save();
@@ -156,10 +233,9 @@ async function handleSchedule(sched) {
 		}
 	}
 
-	const { user, video, scheduleType, timeOfDay } = sched;
+	const { user, video } = sched;
 
-	/* 2 ▸ build request for createVideo */
-	// Resolve a base video seed: prefer populated video, then last of videos[], then most recent video for user/category
+	/* 2) resolve base video seed */
 	let baseVideo = video || null;
 	if (!baseVideo && Array.isArray(sched.videos) && sched.videos.length) {
 		baseVideo = sched.videos[sched.videos.length - 1];
@@ -169,19 +245,15 @@ async function handleSchedule(sched) {
 		sched.category || (baseVideo && baseVideo.category) || "Entertainment";
 
 	if (!baseVideo || !baseVideo.category) {
-		// fetch latest video matching user + category as fallback
 		try {
 			baseVideo = await Video.findOne({
-				user: user._id || user,
+				user: (user && user._id) || user,
 				category: resolvedCategory,
 			})
 				.sort({ createdAt: -1 })
 				.lean();
 		} catch (e) {
-			console.warn(
-				"[Queue] No base video found for schedule, using defaults:",
-				e.message
-			);
+			console.warn("[Queue] No base video found; using defaults:", e.message);
 		}
 	}
 
@@ -193,13 +265,14 @@ async function handleSchedule(sched) {
 		country: baseVideo?.country || "US",
 		customPrompt: "",
 		videoImage: baseVideo?.videoImage,
-		schedule: null, // don't schedule a schedule-run
+		schedule: null,
 		youtubeAccessToken: baseVideo?.youtubeAccessToken,
 		youtubeRefreshToken: baseVideo?.youtubeRefreshToken,
 		youtubeTokenExpiresAt: baseVideo?.youtubeTokenExpiresAt,
 		youtubeEmail: baseVideo?.youtubeEmail,
 	};
 
+	// Mock req/res so createVideo can run from cron/queue
 	const reqMock = { body, user };
 	const resMock = {
 		headersSent: false,
@@ -213,100 +286,124 @@ async function handleSchedule(sched) {
 		end() {},
 	};
 
-	console.log(
-		`[Queue] ▶ Generating video for user ${user._id} from schedule ${sched._id}`
-	);
-	await createVideo(reqMock, resMock);
-	console.log(`[Queue] ✔ Video done for schedule ${sched._id}`);
+	console.log(`[Queue] ▶ Generating video for schedule ${sched._id}`);
 
-	/* 3 ▸ compute nextRun (always PST timeOfDay) */
-	const [hh, mm] = timeOfDay.split(":").map(Number);
+	// IMPORTANT: Prevent “infinite retry loop” if createVideo fails:
+	// we push nextRun forward by FAIL_BACKOFF_MINUTES on failure.
+	try {
+		await createVideo(reqMock, resMock);
+		console.log(`[Queue] ✔ Video done for schedule ${sched._id}`);
+	} catch (err) {
+		console.error(
+			`[Queue] ✖ createVideo failed for schedule ${sched._id}:`,
+			err?.message || err
+		);
+		sched.nextRun = nowPST.add(FAIL_BACKOFF_MINUTES, "minute").toDate();
+		await sched.save();
+		console.log(
+			`[Queue] ↻ Backoff: schedule ${sched._id} will retry at ${dayjs(
+				sched.nextRun
+			)
+				.tz(PST_TZ)
+				.format()} PST`
+		);
+		return;
+	}
 
-	// Start from the date of the previous run, in PST
+	/* 3) compute nextRun (PST wall-clock time) */
+	const { hh, mm } = t;
+
 	let base = dayjs(sched.nextRun).tz(PST_TZ);
+	if (!base.isValid()) base = nowPST;
 
 	if (scheduleType === "daily") base = base.add(1, "day");
 	else if (scheduleType === "weekly") base = base.add(1, "week");
 	else if (scheduleType === "monthly") base = base.add(1, "month");
 
-	// Force the configured wall‑clock time in PST
 	let next = base.hour(hh).minute(mm).second(0).millisecond(0);
 
-	// If for some reason it's already in the past, bump one more period
 	if (next.isBefore(nowPST)) {
 		if (scheduleType === "daily") next = next.add(1, "day");
 		else if (scheduleType === "weekly") next = next.add(1, "week");
 		else if (scheduleType === "monthly") next = next.add(1, "month");
 	}
 
-	// Re‑evaluate against endDate in PST (end‑of‑day)
 	if (endPST && next.isAfter(endPST)) {
 		sched.active = false;
 		console.log(
 			`[Queue] Schedule ${sched._id} reached endDate, marking inactive`
 		);
 	} else {
-		sched.nextRun = next.toDate(); // exact instant corresponding to HH:mm PST
+		sched.nextRun = next.toDate();
 	}
 
 	await sched.save();
 	console.log(
 		`[Queue] Schedule ${
 			sched._id
-		} → nextRun ${next.format()} PST (stored as ${sched.nextRun.toISOString()})`
+		} → nextRun ${next.format()} PST (stored ${sched.nextRun.toISOString()})`
 	);
 }
 
-/* ───────────────────────────────────────────────────────────── */
-/* 7)  CRON POLLER — adds due schedules to the queue            */
-/*     Runs every minute in PST                                 */
-/* ───────────────────────────────────────────────────────────── */
-cron.schedule("* * * * *", async () => {
-	try {
-		const nowPSTDate = dayjs().tz(PST_TZ).toDate();
-
-		const due = await Schedule.find({
-			nextRun: { $lte: nowPSTDate },
-			active: true,
-		})
-			.populate("video")
-			.populate("videos")
-			.populate("user");
-
-		let newlyEnqueued = 0;
-
-		for (const sched of due) {
-			const idStr = String(sched._id);
-			if (!queuedIds.has(idStr)) {
-				jobQueue.push(sched);
-				queuedIds.add(idStr);
-				newlyEnqueued++;
+/* ---------- Cron poller (every minute, PST timezone) ---------- */
+const cronTask = cron.schedule(
+	"* * * * *",
+	async () => {
+		try {
+			// If DB isn’t connected, don’t enqueue jobs (avoids noisy loops)
+			if (mongoose.connection.readyState !== 1) {
+				console.warn("[Cron] DB not connected yet; skipping this tick.");
+				return;
 			}
-		}
 
-		if (newlyEnqueued > 0) {
-			console.log(
-				`[Cron] Enqueued ${newlyEnqueued} new job(s); queue size now ${jobQueue.length}`
-			);
-			processQueue(); // kick the worker if idle
-		}
-	} catch (err) {
-		console.error("[Cron] fatal:", err);
-	}
-});
+			const nowPSTDate = dayjs().tz(PST_TZ).toDate();
 
-/* ───── 8) SOCKET.IO (unchanged) ───── */
+			const due = await Schedule.find({
+				nextRun: { $lte: nowPSTDate },
+				active: true,
+			})
+				.populate("video")
+				.populate("videos")
+				.populate("user");
+
+			let newlyEnqueued = 0;
+
+			for (const sched of due) {
+				const idStr = String(sched._id);
+				if (!queuedIds.has(idStr)) {
+					jobQueue.push(sched);
+					queuedIds.add(idStr);
+					newlyEnqueued++;
+				}
+			}
+
+			if (newlyEnqueued > 0) {
+				console.log(
+					`[Cron] Enqueued ${newlyEnqueued} job(s); queue size ${jobQueue.length}`
+				);
+				processQueue();
+			}
+		} catch (err) {
+			console.error("[Cron] fatal:", err);
+		}
+	},
+	{ timezone: PST_TZ }
+);
+
+/* ---------- Socket.IO handlers ---------- */
 io.on("connection", (socket) => {
 	console.log("User connected:", socket.id);
 
 	socket.on("joinRoom", ({ chatId }) => chatId && socket.join(chatId));
 	socket.on("leaveRoom", ({ chatId }) => chatId && socket.leave(chatId));
+
 	socket.on("typing", ({ chatId, userId }) =>
 		io.to(chatId).emit("typing", { chatId, userId })
 	);
 	socket.on("stopTyping", ({ chatId, userId }) =>
 		io.to(chatId).emit("stopTyping", { chatId, userId })
 	);
+
 	socket.on("sendMessage", (msg) =>
 		io.to(msg.chatId).emit("receiveMessage", msg)
 	);
@@ -314,6 +411,7 @@ io.on("connection", (socket) => {
 	socket.on("deleteMessage", ({ chatId, messageId }) =>
 		io.to(chatId).emit("messageDeleted", { chatId, messageId })
 	);
+
 	socket.on("disconnect", (reason) =>
 		console.log(`User disconnected: ${reason}`)
 	);
@@ -322,10 +420,96 @@ io.on("connection", (socket) => {
 	);
 });
 
-/* ───── 9) Error handler (unchanged) ───── */
+/* ---------- Error handler ---------- */
 const { errorHandler } = require("./middlewares/errorHandler");
 app.use(errorHandler);
 
-/* ───── 10) Start server ───── */
-const PORT = process.env.PORT || 8102;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+/* ---------- Startup / Shutdown ---------- */
+const HOST = process.env.HOST || "127.0.0.1";
+const PORT = toInt(process.env.PORT, 8102);
+
+const mongoUri = process.env.MONGODB_URI || process.env.DATABASE;
+if (!mongoUri) {
+	console.error(
+		"Missing MongoDB connection string. Set MONGODB_URI (preferred) or DATABASE in your .env"
+	);
+	process.exit(1);
+}
+
+function redactMongoTarget(uri) {
+	try {
+		const parsed = new URL(uri);
+		const port = parsed.port ? `:${parsed.port}` : "";
+		const pathPart = parsed.pathname || "";
+		return `${parsed.protocol}//${parsed.hostname}${port}${pathPart}`;
+	} catch {
+		return uri;
+	}
+}
+
+let shuttingDown = false;
+
+async function shutdown(code = 0) {
+	if (shuttingDown) return;
+	shuttingDown = true;
+
+	console.log("[Shutdown] Stopping cron, closing server, disconnecting DB...");
+
+	try {
+		cronTask.stop();
+	} catch {}
+
+	await new Promise((resolve) => {
+		server.close(() => resolve());
+	}).catch(() => {});
+
+	try {
+		await mongoose.disconnect();
+	} catch {}
+
+	console.log("[Shutdown] Done.");
+	process.exit(code);
+}
+
+process.on("SIGINT", () => shutdown(0));
+process.on("SIGTERM", () => shutdown(0));
+
+process.on("unhandledRejection", (reason) => {
+	console.error("[Process] Unhandled Rejection:", reason);
+	shutdown(1);
+});
+
+process.on("uncaughtException", (err) => {
+	console.error("[Process] Uncaught Exception:", err);
+	shutdown(1);
+});
+
+async function start() {
+	try {
+		mongoose.set("strictQuery", false);
+
+		const display = redactMongoTarget(mongoUri);
+		await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000 });
+		console.log(`MongoDB connected (${display})`);
+
+		server.listen(PORT, HOST, () => {
+			console.log(`Server running: http://${HOST}:${PORT} (${NODE_ENV})`);
+			console.log(
+				`Allowed origins: ${
+					ALLOW_ALL_ORIGINS ? "*" : ALLOWED_ORIGINS.join(", ")
+				}`
+			);
+			console.log(`Cron timezone: ${PST_TZ}`);
+		});
+
+		server.on("error", (err) => {
+			console.error("[Server] Listen error:", err);
+			shutdown(1);
+		});
+	} catch (err) {
+		console.error("Startup failed:", err?.message || err);
+		process.exit(1);
+	}
+}
+
+start();
