@@ -2470,7 +2470,8 @@ async function fetchTrendingStory(
 	category,
 	geo = "US",
 	usedTopics = new Set(),
-	language = DEFAULT_LANGUAGE
+	language = DEFAULT_LANGUAGE,
+	{ requireStory = false, scheduleId = null } = {}
 ) {
 	const id = resolveTrendsCategoryId(category);
 	const baseUrl =
@@ -2663,6 +2664,9 @@ async function fetchTrendingStory(
 			return {
 				title: String(effectiveTitle || s.title || "").trim(),
 				rawTitle,
+				fromGoogleTrends: true,
+				trendsCategory: category,
+				trendsGeo: geo,
 				trendSearchTerm: rawTitle || dialogTitle || effectiveTitle || null,
 				seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
 				youtubeShortTitle: s.youtubeShortTitle
@@ -2701,6 +2705,9 @@ async function fetchTrendingStory(
 			return {
 				title: String(effectiveTitle || s.title || "").trim(),
 				rawTitle,
+				fromGoogleTrends: true,
+				trendsCategory: category,
+				trendsGeo: geo,
 				trendSearchTerm: rawTitle || dialogTitle || effectiveTitle || null,
 				seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
 				youtubeShortTitle: s.youtubeShortTitle
@@ -2755,6 +2762,9 @@ async function fetchTrendingStory(
 		return {
 			title: String(effectiveTitle || s.title || "").trim(),
 			rawTitle,
+			fromGoogleTrends: true,
+			trendsCategory: category,
+			trendsGeo: geo,
 			trendSearchTerm: rawTitle || dialogTitle || effectiveTitle || null,
 			seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
 			youtubeShortTitle: s.youtubeShortTitle
@@ -2786,6 +2796,12 @@ async function fetchTrendingStory(
 					console.warn("[Trending] response data snippet: [unserializable]");
 				}
 			}
+		}
+		if (requireStory) {
+			const tag = scheduleId ? ` for schedule ${scheduleId}` : "";
+			throw new Error(
+				`Google Trends required${tag} but failed: ${e.message || e}`
+			);
 		}
 		return null;
 	}
@@ -6414,6 +6430,10 @@ exports.createVideo = async (req, res) => {
 	console.log("[Phase] INIT ? Starting pipeline");
 	res.setTimeout(0);
 
+	const scheduleJobMeta =
+		req.scheduleJobMeta || req.body?.scheduleJobMeta || null;
+	const isScheduledJob = Boolean(scheduleJobMeta);
+
 	try {
 		const {
 			language: langIn,
@@ -6433,9 +6453,20 @@ exports.createVideo = async (req, res) => {
 				: "US";
 		const customPrompt = customPromptRaw.trim();
 		const useSora = toBool(useSoraIn); // reuse frontend flag: true => allow Runway clips
+		if (isScheduledJob && scheduleJobMeta?.category) {
+			const expectedCat = String(scheduleJobMeta.category);
+			if (expectedCat && expectedCat !== category) {
+				throw new Error(
+					`Scheduled run category mismatch (expected ${expectedCat}, got ${category})`
+				);
+			}
+		}
 
+		const scheduleTag = isScheduledJob
+			? ` schedule=${scheduleJobMeta?.scheduleId || "unknown"}`
+			: "";
 		console.log(
-			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}  useRunway=${useSora}`
+			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}  useRunway=${useSora}${scheduleTag}`
 		);
 
 		// Preload recent topics for this user/category (last 3 days) to avoid duplicates
@@ -6488,20 +6519,37 @@ exports.createVideo = async (req, res) => {
 		let trendArticleText = null;
 
 		const userOverrides = Boolean(videoImage) || customPrompt.length > 0;
+		const requireScheduledTrends =
+			isScheduledJob && category !== "Top5";
+		const shouldFetchTrendStory =
+			category !== "Top5" && (!userOverrides || isScheduledJob);
 
-		// 1) Try Trends story first (no Top5, no custom overrides)
-		if (!userOverrides && category !== "Top5") {
+		// 1) Try Trends story first (Top5 skips; scheduled runs force Trends even with overrides)
+		if (shouldFetchTrendStory) {
 			trendStory = await fetchTrendingStory(
 				category,
 				country,
 				usedTopics,
-				language
+				language,
+				{
+					requireStory: requireScheduledTrends,
+					scheduleId:
+						scheduleJobMeta?.scheduleId ||
+						scheduleJobMeta?._id ||
+						scheduleJobMeta?.id ||
+						null,
+				}
 			);
 			if (trendStory && trendStory.title) {
 				topic = trendStory.title;
 				console.log(`[Trending] candidate topic="${topic}"`);
 				// mark this as used so later fallbacks don't duplicate
 				usedTopics.add(topic);
+			}
+			if (requireScheduledTrends && (!trendStory || !trendStory.title)) {
+				throw new Error(
+					"Scheduled run requires a Google Trends topic; none was returned"
+				);
 			}
 		}
 
@@ -8108,6 +8156,7 @@ One or two sentences only.
 			}
 		}
 		sendErr(err.message || "Internal error");
+		if (isScheduledJob) throw err;
 	}
 };
 

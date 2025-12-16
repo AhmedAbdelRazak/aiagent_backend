@@ -242,7 +242,16 @@ async function handleSchedule(sched) {
 	}
 
 	const resolvedCategory =
-		sched.category || (baseVideo && baseVideo.category) || "Entertainment";
+		sched.category || (baseVideo && baseVideo.category) || null;
+
+	if (!resolvedCategory) {
+		console.error(
+			`[Queue] Schedule ${sched._id} missing category; delaying with backoff`
+		);
+		sched.nextRun = nowPST.add(FAIL_BACKOFF_MINUTES, "minute").toDate();
+		await sched.save();
+		return;
+	}
 
 	if (!baseVideo || !baseVideo.category) {
 		try {
@@ -271,9 +280,14 @@ async function handleSchedule(sched) {
 		youtubeTokenExpiresAt: baseVideo?.youtubeTokenExpiresAt,
 		youtubeEmail: baseVideo?.youtubeEmail,
 	};
+	const scheduleJobMeta = {
+		scheduleId: String(sched._id),
+		category: resolvedCategory,
+		baseVideoId: baseVideo?._id || baseVideo?.id || undefined,
+	};
 
 	// Mock req/res so createVideo can run from cron/queue
-	const reqMock = { body, user };
+	const reqMock = { body, user, scheduleJobMeta };
 	const resMock = {
 		headersSent: false,
 		setHeader() {},
@@ -286,7 +300,9 @@ async function handleSchedule(sched) {
 		end() {},
 	};
 
-	console.log(`[Queue] ▶ Generating video for schedule ${sched._id}`);
+	console.log(
+		`[Queue] Generating video for schedule ${sched._id} (${resolvedCategory})`
+	);
 
 	// IMPORTANT: Prevent “infinite retry loop” if createVideo fails:
 	// we push nextRun forward by FAIL_BACKOFF_MINUTES on failure.
