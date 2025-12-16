@@ -23,13 +23,31 @@ const PROTOCOL_TIMEOUT = 120_000; // whole‑browser cap (ms)
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
 const log = (...m) => console.log("[Trends]", ...m);
 const ffmpegPath =
-	process.env.FFMPEG_PATH || process.env.FFMPEG || process.env.FFMPEG_BIN || "ffmpeg";
+	process.env.FFMPEG_PATH ||
+	process.env.FFMPEG ||
+	process.env.FFMPEG_BIN ||
+	"ffmpeg";
 const BROWSER_UA =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
 function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
+function uniqueStrings(list = [], { limit = 0 } = {}) {
+	const seen = new Set();
+	const out = [];
+	for (const raw of Array.isArray(list) ? list : []) {
+		const val = String(raw || "").trim();
+		if (!val) continue;
+		const key = val.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(val);
+		if (limit && out.length >= limit) break;
+	}
+	return out;
+}
 
 /* ───────────────────────────────────────────── OpenAI client + helpers */
 
@@ -191,14 +209,13 @@ async function enhanceStoriesWithOpenAI(
 
 const urlFor = ({ geo, hours, category, sort }) => {
 	// Clamp hours 1–168 and actually use the requested window.
-	const hrs = Math.min(Math.max(Number(hours) || 24, 1), 168);
+	// const hrs = Math.min(Math.max(Number(hours) || 24, 1), 168);
 
 	const params = new URLSearchParams({
 		geo,
 		hl: "en-US", // matches the UI you pasted
-		hours: 24,
+		hours: String(48),
 		status: "active",
-		// hours: String(hrs),
 	});
 
 	if (category) params.set("category", String(category).trim());
@@ -450,6 +467,10 @@ async function scrape({ geo, hours, category, sort }) {
 
 						if (dialog) {
 							const label = dialog.getAttribute("aria-label") || "";
+							const heading =
+								dialog.querySelector('[role="heading"]')?.textContent.trim() ||
+								dialog.querySelector("h1,h2,h3")?.textContent.trim() ||
+								"";
 							const normalizedLabel = label.trim().toLowerCase();
 							const normalizedTerm = rowTerm.trim().toLowerCase();
 
@@ -493,6 +514,7 @@ async function scrape({ geo, hours, category, sort }) {
 
 								return {
 									status: "ok",
+									dialogTitle: heading || label || rowTerm,
 									image: arts[0]?.image || null,
 									articles: arts,
 								};
@@ -516,11 +538,31 @@ async function scrape({ geo, hours, category, sort }) {
 
 			if (result.status === "ok") {
 				seenTerms.add(normTerm);
+
+				const rawTitle = term;
+				const dialogTitle = String(result.dialogTitle || "").trim();
+				const primaryTitle = dialogTitle || rawTitle;
+				const articles = Array.isArray(result.articles)
+					? result.articles.map((a) => ({
+							title: String(a.title || "").trim(),
+							url: a.url,
+							image: a.image || null,
+					  }))
+					: [];
+				const searchPhrases = uniqueStrings(
+					[primaryTitle, rawTitle, ...articles.map((a) => a.title)],
+					{ limit: 6 }
+				);
+				const entityNames = uniqueStrings([primaryTitle, rawTitle]);
+
 				stories.push({
-					title: term,
+					title: primaryTitle,
+					rawTitle,
+					trendDialogTitle: dialogTitle || null,
+					searchPhrases,
 					image: result.image,
-					entityNames: [term],
-					articles: result.articles,
+					entityNames,
+					articles,
 				});
 			}
 
@@ -577,6 +619,8 @@ router.get("/google-trends", async (req, res) => {
 		// Strip images here; downstream orchestrator will search high-quality images per ratio.
 		stories = stories.map((s) => ({
 			...s,
+			trendSearchTerm:
+				s.trendSearchTerm || s.rawTitle || s.title || s.trendDialogTitle || "",
 			image: null,
 			images: [],
 			articles: (s.articles || []).map((a) => ({

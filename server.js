@@ -51,11 +51,33 @@ const io = socketIo(server, {
 app.set("io", io);
 
 /* ───── 1) MongoDB Connection ───── */
+const mongoUri = process.env.MONGODB_URI || process.env.DATABASE;
+if (!mongoUri) {
+	console.error(
+		"Missing MongoDB connection string. Set MONGODB_URI (preferred) or DATABASE in your environment."
+	);
+	process.exit(1);
+}
+
+// Log a redacted target so we can see where we're pointing without leaking creds.
+const mongoDisplayUri = (() => {
+	try {
+		const parsed = new URL(mongoUri);
+		const port = parsed.port ? `:${parsed.port}` : "";
+		const path = parsed.pathname || "";
+		return `${parsed.protocol}//${parsed.hostname}${port}${path}`;
+	} catch (err) {
+		return mongoUri;
+	}
+})();
+
 mongoose.set("strictQuery", false);
 mongoose
-	.connect(process.env.DATABASE)
-	.then(() => console.log("MongoDB connected"))
-	.catch((err) => console.error("DB Connection Error:", err));
+	.connect(mongoUri, { serverSelectionTimeoutMS: 10000 })
+	.then(() => console.log(`MongoDB connected (${mongoDisplayUri})`))
+	.catch((err) =>
+		console.error(`DB Connection Error (check tunnel/local Mongo at ${mongoDisplayUri}):`, err)
+	);
 
 /* ───── 2) Global Middleware ───── */
 app.use(morgan("dev"));

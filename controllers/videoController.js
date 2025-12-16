@@ -21,6 +21,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const child_process = require("child_process");
+const ffmpegStatic = require("ffmpeg-static");
 const mongoose = require("mongoose");
 const axios = require("axios");
 const dayjs = require("dayjs");
@@ -57,30 +58,53 @@ const PST_TZ = "America/Los_Angeles";
  * ------------------------------------------------------------- */
 function assertExists(cond, msg) {
 	if (!cond) {
-		console.error(`[Startup] FATAL – ${msg}`);
+		console.error(`[Startup] FATAL - ${msg}`);
 		process.exit(1);
 	}
 }
 
-const DEFAULT_FFMPEG_PATH = "/usr/bin/ffmpeg";
+const FFMPEG_CANDIDATES = [
+	(typeof ffmpegStatic === "string" && ffmpegStatic.trim()) || null,
+	process.env.FFMPEG_PATH && process.env.FFMPEG_PATH.trim(),
+	process.env.FFMPEG && process.env.FFMPEG.trim(),
+	process.env.FFMPEG_BIN && process.env.FFMPEG_BIN.trim(),
+	os.platform() === "win32" ? "ffmpeg" : "/usr/bin/ffmpeg",
+	"ffmpeg",
+];
 
-const ffmpegPath =
-	process.env.FFMPEG_PATH && process.env.FFMPEG_PATH.trim()
-		? process.env.FFMPEG_PATH.trim()
-		: DEFAULT_FFMPEG_PATH;
+function resolveFfmpegPath() {
+	for (const candidate of FFMPEG_CANDIDATES) {
+		if (!candidate) continue;
+		try {
+			child_process.execSync(`"${candidate}" -version`, { stdio: "ignore" });
+			return candidate;
+		} catch (e) {
+			// try next candidate
+		}
+	}
+	return null;
+}
 
-ffmpeg.setFfmpegPath(ffmpegPath);
+const ffmpegPath = resolveFfmpegPath();
 
-const ffprobePath = process.env.FFPROBE_PATH || "/usr/bin/ffprobe";
+if (ffmpegPath) {
+	ffmpeg.setFfmpegPath(ffmpegPath);
+	console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
+} else {
+	console.warn(
+		"[Startup] WARN - No valid FFmpeg binary found. Set FFMPEG_PATH or ensure ffmpeg is on PATH."
+	);
+}
+
+const ffprobePath = process.env.FFPROBE_PATH || "ffprobe";
 ffmpeg.setFfprobePath(ffprobePath);
-
-console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
 console.log(`[FFprobe] binary : ${ffprobePath}`);
 
 function ffmpegSupportsLavfi() {
+	const bin = ffmpegPath || "ffmpeg";
 	try {
 		child_process.execSync(
-			`"${ffmpegPath}" -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:d=0.1 -frames:v 1 -f null -`,
+			`"${bin}" -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:d=0.1 -frames:v 1 -f null -`,
 			{ stdio: "ignore" }
 		);
 		return true;
@@ -89,7 +113,7 @@ function ffmpegSupportsLavfi() {
 	}
 }
 const hasLavfi = ffmpegSupportsLavfi();
-console.log(`[FFmpeg]   binary : ${ffmpegPath}`);
+console.log(`[FFmpeg]   binary : ${ffmpegPath || "ffmpeg (PATH)"}`);
 console.log(`[FFmpeg]   lavfi  ? ${hasLavfi}`);
 
 /* font discovery (for any future overlays) */
@@ -171,18 +195,30 @@ const ARTICLE_FETCH_HEADERS = Object.freeze({
  */
 const WORDS_PER_SEC = 2.2;
 const NATURAL_WPS = 2.25;
-const TOP5_WORDS_PER_SEC = 2.0;
-const TOP5_NATURAL_WPS = 2.05;
+const TOP5_WORDS_PER_SEC = 1.82; // brisker Top5 pacing with tighter word caps
+const TOP5_NATURAL_WPS = 2.12;
 const TOP5_FINISH_PAD = 0.12;
+const TOP5_MIN_AUDIO_PAD = 0.1;
+const TOP5_MAX_ATEMPO = 1.2;
 const ENGAGEMENT_TAIL_MIN = 5;
 const ENGAGEMENT_TAIL_MAX = 6;
 const MIN_OUTRO_WORDS = 16;
 const OUTRO_TOLERANCE_MAX = 5;
 const OUTRO_TOLERANCE_DEFAULT = 4;
+const TOP5_MAX_EXTRA_SECONDS = 7;
+const TOP5_OUTRO_SECONDS = 4;
+const TOP5_OUTRO_TOLERANCE_MAX = 3;
+const TEXTY_IMAGE_URL_RE =
+	/(logo|poster|banner|cover|keyart|titlecard|thumbnail|thumb|promo|template|vector|watermark|wallpaper)/i;
+const OFF_TOPIC_IMAGE_TITLE_RE =
+	/(stock|wallpaper|logo|poster|banner|cover|keyart|titlecard|thumbnail|thumb|promo|template|vector|illustration|clipart|scene|still|screengrab|trailer|clip)/i;
+const TRAILING_COMMA_RE = /,\s*([}\]])/g;
 
 const MAX_SILENCE_PAD = 0.35;
 const MIN_ATEMPO = 0.9;
-const MAX_ATEMPO = 1.08;
+const MAX_ATEMPO = 1.12;
+const MAX_ATEMPO_VOICE_EN = 1.06; // keep speech intelligible; avoid chipmunk artifacts
+const MAX_ATEMPO_MIX_EN = 1.05; // final mix cap for English to prevent garbling
 
 const T2V_MODEL = "gen4_turbo"; // prefer high quality but avoid unavailable variants by default
 const ITV_MODEL = "gen4_turbo";
@@ -204,6 +240,10 @@ const EYE_REALISM_HINT =
 	"natural eye focus and blinking, subtle micro-expressions, no jittering pupils, no crossed or wall-eyed look";
 const SOFT_SAFETY_PAD =
 	"fully clothed, respectful framing, wholesome, safe for work, no sexualised framing, no injuries";
+const TOP5_RUNWAY_MOTION_HINT =
+	"smooth dolly or lateral move with gentle parallax, subtle subject motion that matches the real photo, steady framing, no frantic zooms or spins";
+const TOP5_RUNWAY_CONTENT_GUARD =
+	"keep the real-world subject intact; no invented crashes, no surreal morphing, no chaotic overlaps";
 
 const RUNWAY_NEGATIVE_PROMPT = [
 	"duplicate",
@@ -267,6 +307,18 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"glitch",
 	"streaks",
 	"ghosting",
+].join(", ");
+const TOP5_RUNWAY_NEGATIVE = [
+	"camera spin",
+	"fisheye warp",
+	"rapid zoom",
+	"hallucinated collision",
+	"crashing vehicles",
+	"overcrowded distortions",
+	"duplicated faces",
+	"split faces",
+	"mismatched limbs",
+	"surreal melting objects",
 ].join(", ");
 
 const HUMAN_SAFETY =
@@ -359,6 +411,49 @@ const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
 const toBool = (v) => v === true || v === "true" || v === 1 || v === "1";
 const looksLikeAITopic = (t) => AI_TOPIC_RE.test(String(t || ""));
+
+const LANGUAGE_ALIASES = Object.freeze({
+	en: "English",
+	"en-us": "English",
+	english: "English",
+	us: "English",
+	ar: "Arabic",
+	"ar-eg": "Arabic",
+	arabic: "Arabic",
+});
+
+function normalizeLanguageLabel(lang) {
+	const raw = String(lang || "").trim();
+	if (!raw) return DEFAULT_LANGUAGE;
+	const lower = raw.toLowerCase();
+	if (LANGUAGE_ALIASES[lower]) return LANGUAGE_ALIASES[lower];
+	if (lower.startsWith("en")) return "English";
+	if (lower.startsWith("ar")) return "Arabic";
+	return toTitleCase(raw);
+}
+
+function stripExtraRankPrefixes(text = "", rank = null, label = "") {
+	if (!rank) return text || "";
+	const remainder = removeLeadingLabel(stripCountdownPrefix(text), label);
+	const noLabel = stripLeadingLabel(
+		remainder || stripCountdownPrefix(text),
+		label
+	);
+	return noLabel || stripCountdownPrefix(text) || text || "";
+}
+
+function cleanEnglishLine(text = "") {
+	const cleaned = String(text || "").replace(/[^\x09\x0A\x0D\x20-\x7E]+/g, " ");
+	return cleaned.replace(/\s+/g, " ").trim();
+}
+
+function buildCleanRankLine(rank, label, body, language) {
+	const trimmedBody =
+		language === "English" ? cleanEnglishLine(body) : String(body || "").trim();
+	const noLabel = stripLeadingLabel(trimmedBody, label);
+	const safeBody = noLabel || String(label || "").trim() || "";
+	return buildCountdownLine(rank, label, safeBody);
+}
 
 function wordsPerSecForCaps(category) {
 	return category === "Top5" ? TOP5_WORDS_PER_SEC : WORDS_PER_SEC;
@@ -471,14 +566,171 @@ const TOPIC_STOP_WORDS = new Set([
 	"5",
 ]);
 
+const TOPIC_TOKEN_ALIASES = Object.freeze({
+	oscar: [
+		"oscars",
+		"academy award",
+		"academy awards",
+		"academyaward",
+		"academyawards",
+		"academy",
+	],
+	oscars: [
+		"oscar",
+		"academy award",
+		"academy awards",
+		"academyaward",
+		"academyawards",
+		"academy",
+	],
+	nominee: ["nominees", "nomination", "nominations"],
+	nominees: ["nominee", "nomination", "nominations"],
+	award: ["awards"],
+	awards: ["award"],
+	grammy: ["grammys", "grammy awards"],
+	grammys: ["grammy", "grammy awards"],
+	emmy: ["emmys", "emmy awards"],
+	emmys: ["emmy", "emmy awards"],
+	"golden globe": ["golden globes"],
+	"golden globes": ["golden globe"],
+});
+
 function topicTokensFromTitle(title = "") {
 	return tokenizeLabel(title || "").filter((t) => !TOPIC_STOP_WORDS.has(t));
+}
+
+function collectStoryTokens(topic = "", trendStory = null) {
+	const base = topicTokensFromTitle(topic);
+	const storyTokens = topicTokensFromTitle(trendStory?.title || "");
+	const articleTokens = Array.isArray(trendStory?.articles)
+		? trendStory.articles.flatMap((a) => topicTokensFromTitle(a.title || ""))
+		: [];
+	const entityTokens = Array.isArray(trendStory?.entityNames)
+		? trendStory.entityNames.flatMap((e) => topicTokensFromTitle(e || ""))
+		: [];
+	return [
+		...new Set([
+			...base,
+			...storyTokens,
+			...articleTokens,
+			...entityTokens,
+			...(Array.isArray(trendStory?.searchPhrases)
+				? trendStory.searchPhrases.flatMap((p) => topicTokensFromTitle(p || ""))
+				: []),
+		]),
+	];
+}
+
+function normalizeAnchorPhrases(list = [], limit = 0) {
+	const seen = new Set();
+	const out = [];
+	for (const raw of Array.isArray(list) ? list : []) {
+		const val = String(raw || "")
+			.toLowerCase()
+			.replace(/\s+/g, " ")
+			.trim();
+		if (!val) continue;
+		if (seen.has(val)) continue;
+		seen.add(val);
+		out.push(val);
+		if (limit && out.length >= limit) break;
+	}
+	return out;
+}
+
+function buildAnchorPhrasesFromStory(trendStory = null) {
+	if (!trendStory) return [];
+	return normalizeAnchorPhrases(
+		[
+			trendStory.trendSearchTerm,
+			trendStory.trendDialogTitle,
+			trendStory.rawTitle,
+			trendStory.title,
+			...(Array.isArray(trendStory.searchPhrases)
+				? trendStory.searchPhrases
+				: []),
+			...(Array.isArray(trendStory.entityNames) ? trendStory.entityNames : []),
+		].filter(Boolean),
+		10
+	);
+}
+
+function prioritizeTokenMatchedUrls(urls = [], tokens = []) {
+	if (!Array.isArray(urls) || !urls.length || !tokens || !tokens.length)
+		return urls;
+	const normTokens = tokens.map((t) => t.toLowerCase());
+	const matches = [];
+	const rest = [];
+	for (const raw of urls) {
+		const hay = (() => {
+			try {
+				return decodeURIComponent(String(raw || "")).toLowerCase();
+			} catch {
+				return String(raw || "").toLowerCase();
+			}
+		})();
+		(normTokens.some((tok) => hay.includes(tok)) ? matches : rest).push(raw);
+	}
+	return [...matches, ...rest];
 }
 
 function matchesAnyToken(str = "", tokens = []) {
 	if (!str || !tokens || !tokens.length) return false;
 	const hay = str.toLowerCase();
 	return tokens.some((t) => hay.includes(t.toLowerCase()));
+}
+
+function normalizeTopicTokens(tokens = []) {
+	return Array.from(
+		new Set(
+			(tokens || [])
+				.map((t) =>
+					String(t || "")
+						.toLowerCase()
+						.trim()
+				)
+				.filter(Boolean)
+		)
+	);
+}
+
+function expandTopicTokens(tokens = []) {
+	const base = normalizeTopicTokens(tokens);
+	const out = new Set(base);
+	for (const tok of base) {
+		if (TOPIC_TOKEN_ALIASES[tok]) {
+			for (const alias of TOPIC_TOKEN_ALIASES[tok]) out.add(alias);
+		}
+	}
+	return Array.from(out);
+}
+
+function minTopicTokenMatches(tokens = []) {
+	const norm = normalizeTopicTokens(tokens);
+	if (!norm.length) return 0;
+	const strong = norm.filter((t) => t.length >= 4);
+	if (norm.length >= 2) return 2;
+	if (strong.length >= 1) return 1;
+	return 1;
+}
+
+function topicMatchInfo(tokens = [], fields = []) {
+	const norm = normalizeTopicTokens(tokens);
+	if (!norm.length) return { count: 0, matchedTokens: [], normTokens: [] };
+	const hay = (fields || [])
+		.flatMap((f) => {
+			const str = String(f || "");
+			const lowers = [str.toLowerCase()];
+			try {
+				lowers.push(decodeURIComponent(str).toLowerCase());
+			} catch {
+				/* ignore decode errors */
+			}
+			return lowers;
+		})
+		.join(" ");
+	const matchedTokens = norm.filter((tok) => hay.includes(tok));
+	return { count: matchedTokens.length, matchedTokens, normTokens: norm };
 }
 
 function safeSlug(text = "", max = 60) {
@@ -535,6 +787,33 @@ function normalizeLabelForTopic(label = "", topic = "") {
 		normalized = normalized.replace(/football(\s*\(soccer\))?/gi, "Soccer");
 	}
 	return normalized.trim();
+}
+
+function stripTrailingLocation(label = "") {
+	const raw = String(label || "").trim();
+	if (!raw) return raw;
+	let cleaned = raw.replace(/\s*,\s+[A-Za-z\s']{2,}$/i, "");
+	cleaned = cleaned.replace(/\s+[-–]\s+[A-Za-z\s']{2,}$/i, "");
+	cleaned = cleaned.replace(/\s+in\s+[A-Za-z\s']{2,}$/i, "");
+	cleaned = cleaned.trim();
+	return cleaned || raw;
+}
+
+function ensureCompleteTop5Outro(text = "") {
+	const base = String(text || "").trim();
+	let out =
+		base ||
+		"Drop your #1 in the comments; hit like and subscribe for the next reveal.";
+	if (/hit\s*$/i.test(out)) {
+		out = out.replace(/hit\s*$/i, "hit like and subscribe");
+	}
+	if (!/subscribe/i.test(out)) {
+		out = `${out} Hit like and subscribe.`.trim();
+	}
+	if (!/comment/i.test(out)) {
+		out = `Drop your #1 in the comments. ${out}`.trim();
+	}
+	return out.replace(/\s+/g, " ").trim();
 }
 
 function isSoftBlockedHost(host = "") {
@@ -855,33 +1134,45 @@ function stripCodeFence(s) {
 	return inner || s;
 }
 
+function parseJsonFlexible(raw) {
+	if (!raw || typeof raw !== "string") return null;
+	const cleaned = stripCodeFence(raw).replace(TRAILING_COMMA_RE, "$1").trim();
+	try {
+		return JSON.parse(cleaned);
+	} catch {
+		return null;
+	}
+}
+
 function ensureClickableLinks(text) {
 	if (!text || typeof text !== "string") return "";
-	const lines = text.split(/\r?\n/);
-	const fixed = lines.map((line) => {
-		let s = line.trim();
-		// remove trailing parenthetical labels
-		s = s.replace(/\s*\([^)]*\)\s*$/, "");
-		// fix bare domains
-		s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
-		s = s.replace(
-			/(^|\s)(serenejannat\.com[^\s)]*)/gi,
-			(_m, prefix, url) =>
-				`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
-		);
-		// general bare domain -> clickable
-		s = s.replace(
-			/(^|\s)([a-z0-9.-]+\.[a-z]{2,}[^\s)]*)/gi,
-			(_m, prefix, url) =>
-				`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
-		);
-		// strip trailing punctuation that breaks linkification
-		s = s.replace(/(https?:\/\/[^\s)]+)[).,;:]+$/g, "$1");
-		// enforce a newline separation after any URL chain to avoid trailing text sticking
-		s = s.replace(/(https?:\/\/[^\s)]+)/g, "$1");
-		return s;
-	});
-	return fixed.join("\n");
+	const fixed = text
+		.split(/\r?\n/)
+		.map((line) => {
+			let s = line.trim();
+			// remove trailing parenthetical labels
+			s = s.replace(/\s*\([^)]*\)\s*$/, "");
+			// fix bare domains
+			s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
+			s = s.replace(
+				/(https?:\/\/)?(www\.)?(serenejannat\.com[^\s)]*)/gi,
+				(_m, _scheme, _www, domain) => `https://${domain}`
+			);
+			// general bare domain -> clickable
+			s = s.replace(
+				/(^|\s)([a-z0-9.-]+\.[a-z]{2,}[^\s)]*)/gi,
+				(_m, prefix, url) =>
+					`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
+			);
+			// strip trailing punctuation that breaks linkification
+			s = s.replace(/(https?:\/\/[^\s)]+)[).,;:]+$/g, "$1");
+			// ensure URLs are separated from adjoining text
+			s = s.replace(/([^ \t\r\n])(https?:\/\/[^\s)]+)/g, "$1 $2");
+			return s;
+		})
+		.join("\n")
+		.replace(/\n{3,}/g, "\n\n");
+	return fixed;
 }
 
 function scrubPromptForSafety(text) {
@@ -962,9 +1253,226 @@ const NUM_WORD = Object.freeze({
 	19: "nineteen",
 	20: "twenty",
 });
+
+function numberToEnglish(n) {
+	if (!Number.isFinite(n) || n < 0) return null;
+	if (n === 0) return "zero";
+
+	const ones = [
+		"",
+		"one",
+		"two",
+		"three",
+		"four",
+		"five",
+		"six",
+		"seven",
+		"eight",
+		"nine",
+		"ten",
+		"eleven",
+		"twelve",
+		"thirteen",
+		"fourteen",
+		"fifteen",
+		"sixteen",
+		"seventeen",
+		"eighteen",
+		"nineteen",
+	];
+	const tens = [
+		"",
+		"",
+		"twenty",
+		"thirty",
+		"forty",
+		"fifty",
+		"sixty",
+		"seventy",
+		"eighty",
+		"ninety",
+	];
+
+	function underHundred(x) {
+		if (x < 20) return ones[x];
+		const t = Math.floor(x / 10);
+		const o = x % 10;
+		return `${tens[t]}${o ? ` ${ones[o]}` : ""}`.trim();
+	}
+
+	function underThousand(x) {
+		if (x < 100) return underHundred(x);
+		const h = Math.floor(x / 100);
+		const rem = x % 100;
+		return `${ones[h]} hundred${rem ? ` ${underHundred(rem)}` : ""}`.trim();
+	}
+
+	if (n < 1000) return underThousand(n);
+	if (n < 10000) {
+		const th = Math.floor(n / 1000);
+		const rem = n % 1000;
+		return `${ones[th]} thousand${rem ? ` ${underThousand(rem)}` : ""}`.trim();
+	}
+	return null;
+}
+
 function improveTTSPronunciation(text) {
-	text = text.replace(/#\s*([1-5])\s*:/g, (_, n) => `Number ${NUM_WORD[n]}:`);
+	text = text.replace(/#\s*([1-5])\s*[-–—:]?/gi, (_, n) =>
+		NUM_WORD[n] ? `Number ${NUM_WORD[n]}: ` : `Number ${n}: `
+	);
+	text = text.replace(/\b#\s*([1-5])\b/gi, (_, n) =>
+		NUM_WORD[n] ? `Number ${NUM_WORD[n]}` : `Number ${n}`
+	);
+
+	text = text.replace(
+		/(\d+)\s*\+\s*(million|billion|thousand)?/gi,
+		(_, num, scale) => {
+			const spoken = numberToEnglish(parseInt(num, 10)) || num;
+			return scale ? `${spoken} plus ${scale}` : `${spoken} plus`;
+		}
+	);
+
+	text = text.replace(
+		/\b(\d{1,4})\s*(million|billion|thousand)?\b/gi,
+		(m, num, scale) => {
+			const spoken = numberToEnglish(parseInt(num, 10));
+			if (!spoken) return m;
+			return scale ? `${spoken} ${scale}` : spoken;
+		}
+	);
+
+	text = text.replace(/\b(\d{1,3})%\b/g, (_, num) => {
+		const spoken = numberToEnglish(parseInt(num, 10)) || num;
+		return `${spoken} percent`;
+	});
+
 	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
+}
+
+function cleanForTTS(text = "", language = DEFAULT_LANGUAGE) {
+	let cleaned = String(text || "");
+	// normalize whitespace
+	cleaned = cleaned
+		.replace(/[^\S\r\n]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (language === "English") {
+		// allow ASCII punctuation + letters/numbers
+		cleaned = cleaned.replace(/[^\x20-\x7E]+/g, " ");
+		cleaned = cleaned.replace(/\s+/g, " ").trim();
+	}
+	if (!cleaned) return text || "";
+	return cleaned;
+}
+
+function segmentLooksFragmentary(text = "") {
+	const t = String(text || "").trim();
+	if (!t) return true;
+	const words = t.split(/\s+/).filter(Boolean);
+	if (words.length < 6) return true;
+	const lastWord = words[words.length - 1]
+		.replace(/[^a-zA-Z]+$/g, "")
+		.toLowerCase();
+	const orphanTail = new Set([
+		"a",
+		"an",
+		"the",
+		"to",
+		"for",
+		"with",
+		"of",
+		"in",
+		"on",
+		"at",
+		"by",
+		"and",
+		"or",
+		"but",
+	]);
+	if (orphanTail.has(lastWord)) return true;
+	if (/[-\u2013\u2014]\s*$/.test(t)) return true;
+	return false;
+}
+
+async function repairNarrationSegments(
+	segments = [],
+	segWordCaps = [],
+	{ topic = "", category = "", language = DEFAULT_LANGUAGE } = {}
+) {
+	if (!Array.isArray(segments) || !segments.length) return segments;
+
+	const fraggy = segments.filter((s) => segmentLooksFragmentary(s?.scriptText));
+	if (!fraggy.length) return segments;
+
+	const capsLine = Array.isArray(segWordCaps)
+		? segWordCaps.map((c, i) => `#${i + 1}: ${c || "n/a"}`).join(", ")
+		: "";
+
+	const ask = `
+We have a short-form video with ${
+		segments.length
+	} segments about "${topic}" (${category}).
+Some narration lines look incomplete or too thin. Rewrite ONLY the narration to fix dangling fragments, keep every sentence complete, and stay tightly on-topic.
+
+Rules:
+- Keep the SAME number of segments and the SAME order.
+- Respect these soft word caps per segment: ${
+		capsLine || "(not provided)"
+	}. Stay close so timing is safe for TTS.
+- Language: ${language}${
+		language === DEFAULT_LANGUAGE
+			? " (use clear American English wording; no non-English words)"
+			: ""
+	}.
+- Intro must land who/what/when/why-now; middle segments carry stakes/impact/what's next; final segment ends cleanly, and the outro must include a direct question/CTA.
+- No filler or hype; keep facts from the originals. If something is unconfirmed, say it's unconfirmed instead of inventing.
+- Do NOT change overlays or counts—only polish scriptText to be complete and natural.
+
+Segments (index + scriptText):
+${segments.map((s, i) => `- ${i + 1}: ${s.scriptText || ""}`).join("\n")}
+
+Return ONLY JSON:
+{ "segments": [ { "index": <number>, "scriptText": "<rewritten line>" } ] }
+`.trim();
+
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask }],
+		});
+		const parsed = parseJsonFlexible(strip(choices[0].message.content));
+		if (!parsed || !Array.isArray(parsed.segments)) return segments;
+
+		const byIndex = new Map();
+		for (const s of parsed.segments) {
+			const idx = typeof s.index === "number" ? s.index : null;
+			if (!idx) continue;
+			const txt = String(s.scriptText || "").trim();
+			if (!txt) continue;
+			byIndex.set(idx, txt);
+		}
+		if (!byIndex.size) return segments;
+
+		return segments.map((seg, idx) => {
+			const key = seg.index || idx + 1;
+			const replacement = byIndex.get(key);
+			return replacement ? { ...seg, scriptText: replacement } : seg;
+		});
+	} catch (e) {
+		console.warn("[GPT] repairNarrationSegments failed ?", e.message);
+		return segments;
+	}
+}
+
+function escapeRegex(str = "") {
+	return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripLeadingLabel(text = "", label = "") {
+	const raw = String(text || "").trim();
+	if (!raw || !label) return raw || "";
+	const re = new RegExp(`^\\s*${escapeRegex(label)}\\s*[:\\-–—]?\\s*`, "i");
+	return raw.replace(re, "").trim();
 }
 
 /* Voice tone classification */
@@ -995,11 +1503,11 @@ function deriveVoiceSettings(text, category = "Other") {
 		if (isHype) {
 			style = Math.min(1, baseStyle + 0.3);
 			stability = 0.13;
-			openaiSpeed = 1.06;
+			openaiSpeed = category === "Top5" ? 1.18 : 1.06;
 		} else {
 			style = Math.min(1, baseStyle + 0.15);
 			stability = 0.17;
-			openaiSpeed = 1.02;
+			openaiSpeed = category === "Top5" ? 1.12 : 1.02;
 		}
 	}
 
@@ -1042,12 +1550,12 @@ function recomputeSegmentDurationsFromScript(
 		const basePause =
 			idx === segments.length - 1
 				? isTop5
-					? 0.42
-					: 0.35
+					? 0.22
+					: 0.32
 				: isTop5
-				? 0.3
-				: 0.25;
-		const countdownPause = s?.countdownRank ? (isTop5 ? 0.22 : 0.18) : 0;
+				? 0.14
+				: 0.23;
+		const countdownPause = s?.countdownRank ? (isTop5 ? 0.12 : 0.18) : 0;
 		const cadencePad = isTop5 ? TOP5_FINISH_PAD : 0;
 		const wps = isTop5 ? TOP5_NATURAL_WPS : NATURAL_WPS;
 		const raw = (words || 1) / wps + basePause + countdownPause + cadencePad;
@@ -1084,7 +1592,10 @@ function recomputeSegmentDurationsFromScript(
 	return scaled.map((v) => +v.toFixed(2));
 }
 
-function computeEngagementTail(duration) {
+function computeEngagementTail(duration, category = "") {
+	const isTop5 = String(category || "").toLowerCase() === "top5";
+	if (isTop5) return TOP5_OUTRO_SECONDS;
+
 	let tail = Math.round(
 		Math.max(
 			ENGAGEMENT_TAIL_MIN,
@@ -1095,11 +1606,24 @@ function computeEngagementTail(duration) {
 	return tail;
 }
 
-function computeOptionalOutroTolerance(tailSeconds) {
-	const needed = MIN_OUTRO_WORDS / WORDS_PER_SEC; // seconds needed to comfortably fit CTA
+function computeOptionalOutroTolerance(
+	tailSeconds,
+	category = "",
+	duration = 0
+) {
+	const needed = MIN_OUTRO_WORDS / wordsPerSecForCaps(category); // seconds needed to comfortably fit CTA
 	const deficit = +(needed - tailSeconds).toFixed(2);
-	if (deficit <= 0) return 0;
-	return +Math.min(Math.max(deficit, 0), OUTRO_TOLERANCE_MAX).toFixed(2);
+	const isTop5 = String(category || "").toLowerCase() === "top5";
+	const maxTol = isTop5
+		? Math.min(
+				TOP5_OUTRO_TOLERANCE_MAX,
+				Math.max(0, TOP5_MAX_EXTRA_SECONDS - tailSeconds)
+		  )
+		: OUTRO_TOLERANCE_MAX;
+	const minTol = isTop5 && duration && duration >= 40 ? maxTol : 0;
+	if (deficit <= 0) return +minTol.toFixed(2);
+	const computed = +Math.min(Math.max(deficit, 0), maxTol).toFixed(2);
+	return +Math.max(minTol, computed).toFixed(2);
 }
 
 function computeInitialSegLens(
@@ -1223,6 +1747,36 @@ function ffmpegPromise(cfg) {
 			.on("end", () => res())
 			.on("error", (e) => rej(e));
 	});
+}
+
+// Create a PCM silence WAV without FFmpeg (for environments missing lavfi).
+function writeSilenceWav(outPath, durationSeconds, opts = {}) {
+	const seconds = Math.max(0, Number(durationSeconds) || 0);
+	const sampleRate = Number(opts.sampleRate) || 44100;
+	const channels = Number(opts.channels) || 1;
+	const bitsPerSample = 16;
+	const totalSamples = Math.max(1, Math.round(seconds * sampleRate));
+	const blockAlign = (channels * bitsPerSample) / 8;
+	const byteRate = sampleRate * blockAlign;
+	const dataSize = totalSamples * blockAlign;
+	const buffer = Buffer.alloc(44 + dataSize);
+
+	buffer.write("RIFF", 0);
+	buffer.writeUInt32LE(36 + dataSize, 4);
+	buffer.write("WAVE", 8);
+	buffer.write("fmt ", 12);
+	buffer.writeUInt32LE(16, 16);
+	buffer.writeUInt16LE(1, 20);
+	buffer.writeUInt16LE(channels, 22);
+	buffer.writeUInt32LE(sampleRate, 24);
+	buffer.writeUInt32LE(byteRate, 28);
+	buffer.writeUInt16LE(blockAlign, 32);
+	buffer.writeUInt16LE(bitsPerSample, 34);
+	buffer.write("data", 36);
+	buffer.writeUInt32LE(dataSize, 40);
+
+	fs.writeFileSync(outPath, buffer);
+	return outPath;
 }
 
 async function exactLen(src, target, out, opts = {}) {
@@ -1351,12 +1905,151 @@ async function exactLenAudio(src, target, out, opts = {}) {
 	});
 }
 
+async function probeDurationSeconds(filePath) {
+	if (!filePath) return 0;
+	try {
+		const meta = await new Promise((resolve, reject) =>
+			ffmpeg.ffprobe(filePath, (err, data) =>
+				err ? reject(err) : resolve(data)
+			)
+		);
+		const dur = meta?.format?.duration;
+		return Number.isFinite(dur) ? +dur.toFixed(3) : 0;
+	} catch (e) {
+		console.warn("[FFprobe] duration probe failed ?", e.message);
+		return 0;
+	}
+}
+
+function alignSegLensToVoice(segLens = [], voiceDurations = [], opts = {}) {
+	if (
+		!Array.isArray(segLens) ||
+		!segLens.length ||
+		!Array.isArray(voiceDurations) ||
+		!voiceDurations.length
+	) {
+		const totalDuration = segLens.reduce((a, b) => a + b, 0) || 0;
+		return { segLens, totalDuration, delta: 0, changed: false };
+	}
+
+	const pad =
+		typeof opts.minPad === "number" && opts.minPad >= 0
+			? opts.minPad
+			: TOP5_MIN_AUDIO_PAD;
+	const finishPad =
+		typeof opts.finishPad === "number" && opts.finishPad >= 0
+			? opts.finishPad
+			: TOP5_FINISH_PAD;
+
+	const adjusted = segLens.map((sec, idx) => {
+		const vDur = Number(voiceDurations[idx]) || 0;
+		const extra = idx === segLens.length - 1 ? pad * 0.5 : finishPad;
+		const needed = vDur + pad + extra;
+		return +Math.max(sec, needed).toFixed(2);
+	});
+
+	const originalTotal = segLens.reduce((a, b) => a + b, 0) || 0;
+	const totalDuration = +adjusted.reduce((a, b) => a + b, 0).toFixed(2);
+	const delta = +(totalDuration - originalTotal).toFixed(2);
+	const changed = adjusted.some((v, i) => Math.abs(v - segLens[i]) >= 0.01);
+
+	return { segLens: adjusted, totalDuration, delta, changed };
+}
+
+function capTop5SegLensToMaxTotal(segLens = [], maxTotal = 0) {
+	if (
+		!Array.isArray(segLens) ||
+		!segLens.length ||
+		!Number.isFinite(maxTotal) ||
+		maxTotal <= 0
+	) {
+		const total = segLens.reduce((a, b) => a + b, 0) || 0;
+		return { segLens, total, delta: 0, changed: false };
+	}
+
+	const MIN_INTRO = 3;
+	const MIN_CONTENT = 4;
+	const MIN_OUTRO = 3;
+
+	const normalized = segLens.map((sec, idx) => {
+		if (idx === 0) return Math.max(MIN_INTRO, sec);
+		if (idx === segLens.length - 1) return Math.max(MIN_OUTRO, sec);
+		return Math.max(MIN_CONTENT, sec);
+	});
+
+	let total = +normalized.reduce((a, b) => a + b, 0).toFixed(2);
+	if (total <= maxTotal) {
+		const changed = normalized.some((v, i) => Math.abs(v - segLens[i]) >= 0.01);
+		return {
+			segLens: normalized,
+			total,
+			delta: +(total - maxTotal).toFixed(2),
+			changed,
+		};
+	}
+
+	const scale = maxTotal / total;
+	const scaled = normalized.map((sec, idx) => {
+		const min =
+			idx === 0
+				? MIN_INTRO
+				: idx === normalized.length - 1
+				? MIN_OUTRO
+				: MIN_CONTENT;
+		return +Math.max(min, sec * scale).toFixed(2);
+	});
+
+	total = +scaled.reduce((a, b) => a + b, 0).toFixed(2);
+	let delta = +(maxTotal - total).toFixed(2);
+	if (Math.abs(delta) >= 0.05) {
+		const lastIdx = scaled.length - 1;
+		scaled[lastIdx] = +Math.max(MIN_OUTRO, scaled[lastIdx] + delta).toFixed(2);
+		total = +scaled.reduce((a, b) => a + b, 0).toFixed(2);
+		delta = +(maxTotal - total).toFixed(2);
+		if (delta < -0.05) {
+			scaled[lastIdx] = +Math.max(MIN_OUTRO, scaled[lastIdx] + delta).toFixed(
+				2
+			);
+			total = +scaled.reduce((a, b) => a + b, 0).toFixed(2);
+			delta = +(maxTotal - total).toFixed(2);
+		}
+	}
+
+	return { segLens: scaled, total, delta, changed: true };
+}
+
 function escapeDrawtext(text = "") {
 	return String(text || "")
 		.replace(/\\/g, "\\\\")
 		.replace(/:/g, "\\:")
 		.replace(/'/g, "\\'")
 		.trim();
+}
+
+function wrapOverlayText(text = "", frameWidth = 1080, fontSize = 64) {
+	const raw = String(text || "").trim();
+	if (!raw) return "";
+	const maxChars =
+		frameWidth && fontSize
+			? Math.max(8, Math.floor((frameWidth * 0.8) / (fontSize * 0.6)))
+			: 18;
+	const words = raw.split(/\s+/).filter(Boolean);
+	const lines = [];
+	let current = "";
+	for (const w of words) {
+		if (!current.length) {
+			current = w;
+			continue;
+		}
+		if ((current + " " + w).length <= maxChars) {
+			current += " " + w;
+		} else {
+			lines.push(current);
+			current = w;
+		}
+	}
+	if (current.length) lines.push(current);
+	return lines.join("\n");
 }
 
 async function overlayCountdownSlate({
@@ -1369,19 +2062,31 @@ async function overlayCountdownSlate({
 }) {
 	if (!src || !out || !rank) return src;
 	const res = targetResolutionForRatio(ratio);
-	const fontSize = res?.height ? Math.round(res.height * 0.055) : 64;
-	const yPos = res?.height ? Math.round(res.height * 0.08) : 80;
+	const aspect =
+		res && res.width && res.height ? res.width / res.height : 9 / 16;
+	const fontFactor = aspect < 1 ? 0.038 : 0.042; // smaller but readable
+	const fontSize = res?.height
+		? Math.max(34, Math.round(res.height * fontFactor))
+		: 60;
+	const yPos = res?.height ? Math.round(res.height * 0.07) : 70;
+	const stroke = Math.max(3, Math.round(fontSize * 0.1));
+	const boxBorder = Math.max(10, Math.round(fontSize * 0.28));
 	const fadeIn = 0.2;
 	const fadeOut = 0.3;
 	const hold = Math.max(0.6, displaySeconds - (fadeIn + fadeOut));
 	const fadeOutStart = +(fadeIn + hold).toFixed(3);
 	const visibleUntil = +(fadeIn + hold + fadeOut).toFixed(3);
 
-	const text = escapeDrawtext(`#${rank}- ${label || ""}`);
+	const wrapped = wrapOverlayText(
+		`#${rank}- ${label || ""}`,
+		res?.width || 1080,
+		fontSize
+	);
+	const text = escapeDrawtext(wrapped);
 	const alphaExpr = `if(lt(t\\,${fadeIn})\\, t/${fadeIn}\\, if(lt(t\\,${fadeOutStart})\\, 1\\, if(lt(t\\,${visibleUntil})\\, (${visibleUntil}-t)/${fadeOut}\\, 0)))`;
 
 	const vf = [
-		`drawtext=fontfile=${FONT_PATH_FFMPEG}:text='${text}':fontsize=${fontSize}:fontcolor=white:alpha=${alphaExpr}:x=(w-text_w)/2:y=${yPos}:borderw=6:bordercolor=black@0.6:shadowcolor=black@0.55:shadowx=3:shadowy=3:box=1:boxcolor=black@0.35:boxborderw=18:enable='lt(t\\,${visibleUntil})'`,
+		`drawtext=fontfile=${FONT_PATH_FFMPEG}:text='${text}':fontsize=${fontSize}:fontcolor=white:alpha=${alphaExpr}:x=(w-text_w)/2:y=${yPos}:borderw=${stroke}:bordercolor=black@0.6:shadowcolor=black@0.55:shadowx=3:shadowy=3:box=1:boxcolor=black@0.35:boxborderw=${boxBorder}:enable='lt(t\\,${visibleUntil})'`,
 	];
 
 	await ffmpegPromise((cmd) =>
@@ -1770,7 +2475,7 @@ async function fetchTrendingStory(
 	const id = resolveTrendsCategoryId(category);
 	const baseUrl =
 		`${TRENDS_API_URL}?` +
-		qs.stringify({ geo, category: id, hours: 168, language });
+		qs.stringify({ geo, category: id, hours: 48, language });
 
 	const normTitle = (t) =>
 		String(t || "")
@@ -1799,6 +2504,20 @@ async function fetchTrendingStory(
 		// catch near-duplicates where the base term is contained in prior titles
 		return usedList.some((u) => u.includes(n) || n.includes(u));
 	};
+	const cleanStrings = (list, limit = 0) => {
+		const seen = new Set();
+		const out = [];
+		for (const raw of Array.isArray(list) ? list : []) {
+			const val = String(raw || "").trim();
+			if (!val) continue;
+			const key = val.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push(val);
+			if (limit && out.length >= limit) break;
+		}
+		return out;
+	};
 
 	try {
 		console.log("[Trending] fetch:", baseUrl);
@@ -1824,29 +2543,51 @@ async function fetchTrendingStory(
 		// Pick the first story whose title / entity we haven't used yet (keep Trends order)
 		let picked = null;
 		for (const s of stories) {
-			const t = String(
-				s.youtubeShortTitle || s.seoTitle || s.title || ""
+			const primaryTitle = String(
+				s.trendDialogTitle || s.title || s.rawTitle || s.dialogTitle || ""
 			).trim();
-			if (!t) continue;
-			const raw = String(s.title || "").trim();
-			const normT = normTitle(t);
-			const normRaw = normTitle(raw);
-			const usedByEntity =
-				Array.isArray(s.entityNames) &&
-				s.entityNames.some((e) => isTermUsed(String(e || "")));
-			const alreadyUsed =
-				isTermUsed(normT) || (normRaw && isTermUsed(normRaw)) || usedByEntity;
+			const effectiveCandidate =
+				primaryTitle ||
+				String(s.rawTitle || s.title || s.trendDialogTitle || "").trim() ||
+				String(s.youtubeShortTitle || s.seoTitle || "").trim();
+			const rawCandidate = String(
+				s.rawTitle ||
+					s.title ||
+					s.trendDialogTitle ||
+					s.dialogTitle ||
+					primaryTitle
+			).trim();
+			if (!effectiveCandidate && !rawCandidate) continue;
+
+			const alreadyUsed = [
+				effectiveCandidate,
+				rawCandidate,
+				s.trendDialogTitle,
+				s.dialogTitle,
+				...(Array.isArray(s.entityNames) ? s.entityNames : []),
+				...(Array.isArray(s.searchPhrases) ? s.searchPhrases : []),
+			].some((e) => isTermUsed(String(e || "")));
 			if (!alreadyUsed) {
-				picked = { story: s, effectiveTitle: t };
+				picked = {
+					story: s,
+					effectiveTitle: effectiveCandidate || rawCandidate || primaryTitle,
+				};
 				break;
 			}
 		}
 
-		if (!picked) {
+		if (!picked && stories[0]) {
 			const s = stories[0];
 			const effectiveTitle =
-				String(s.youtubeShortTitle || s.seoTitle || s.title || "").trim() ||
-				String(s.title || "").trim();
+				String(
+					s.trendDialogTitle ||
+						s.title ||
+						s.rawTitle ||
+						s.dialogTitle ||
+						s.youtubeShortTitle ||
+						s.seoTitle ||
+						""
+				).trim() || String(s.title || s.rawTitle || "").trim();
 			picked = { story: s, effectiveTitle };
 		}
 
@@ -1854,11 +2595,36 @@ async function fetchTrendingStory(
 		const effectiveTitle = picked.effectiveTitle;
 
 		const articles = Array.isArray(s.articles) ? s.articles : [];
+		const sanitizedArticles = articles.map((a) => ({
+			title: String(a.title || "").trim(),
+			url: a.url || null,
+			image: a.image || null,
+		}));
+		const rawTitle = String(
+			s.rawTitle || s.title || s.trendDialogTitle || s.dialogTitle || ""
+		).trim();
+		const dialogTitle = String(
+			s.trendDialogTitle || s.dialogTitle || ""
+		).trim();
 		const viralBriefs = normaliseTrendImageBriefs(
 			s.viralImageBriefs || s.imageDirectives || [],
 			effectiveTitle
 		);
 		const imageComment = String(s.imageComment || s.imageHook || "").trim();
+		const searchPhrases = cleanStrings(
+			[
+				effectiveTitle,
+				rawTitle,
+				dialogTitle,
+				s.title,
+				...(Array.isArray(s.searchPhrases) ? s.searchPhrases : []),
+				...sanitizedArticles.slice(0, 3).map((a) => a.title),
+			],
+			10
+		);
+		const entityNames = cleanStrings(
+			Array.isArray(s.entityNames) ? s.entityNames : [rawTitle, dialogTitle]
+		);
 		const providedImages = Array.isArray(s.images)
 			? s.images.filter((u) => typeof u === "string" && /^https?:\/\//i.test(u))
 			: [];
@@ -1896,24 +2662,21 @@ async function fetchTrendingStory(
 		if (providedImages.length) {
 			return {
 				title: String(effectiveTitle || s.title || "").trim(),
-				rawTitle: String(s.title || "").trim(),
+				rawTitle,
+				trendSearchTerm: rawTitle || dialogTitle || effectiveTitle || null,
 				seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
 				youtubeShortTitle: s.youtubeShortTitle
 					? String(s.youtubeShortTitle).trim()
 					: null,
-				entityNames: Array.isArray(s.entityNames)
-					? s.entityNames.map((e) => String(e || "").trim()).filter(Boolean)
-					: [],
+				entityNames,
+				searchPhrases,
+				trendDialogTitle: dialogTitle || null,
 				imageComment,
 				viralImageBriefs: viralBriefs,
 				images: providedImages,
 				imagesByAspect,
 				imageSummary: s.imageSummary || null,
-				articles: articles.map((a) => ({
-					title: String(a.title || "").trim(),
-					url: a.url || null,
-					image: a.image || null,
-				})),
+				articles: sanitizedArticles,
 			};
 		}
 
@@ -1924,7 +2687,7 @@ async function fetchTrendingStory(
 				isStoryImage: true,
 			});
 		}
-		for (const a of articles) {
+		for (const a of sanitizedArticles) {
 			if (a.image) {
 				candidates.push({
 					url: a.image,
@@ -1937,24 +2700,21 @@ async function fetchTrendingStory(
 			console.warn("[Trending] story has no images at all");
 			return {
 				title: String(effectiveTitle || s.title || "").trim(),
-				rawTitle: String(s.title || "").trim(),
+				rawTitle,
+				trendSearchTerm: rawTitle || dialogTitle || effectiveTitle || null,
 				seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
 				youtubeShortTitle: s.youtubeShortTitle
 					? String(s.youtubeShortTitle).trim()
 					: null,
-				entityNames: Array.isArray(s.entityNames)
-					? s.entityNames.map((e) => String(e || "").trim()).filter(Boolean)
-					: [],
+				entityNames,
+				searchPhrases,
+				trendDialogTitle: dialogTitle || null,
 				imageComment,
 				viralImageBriefs: viralBriefs,
 				images: [],
 				imagesByAspect,
 				imageSummary: s.imageSummary || null,
-				articles: articles.map((a) => ({
-					title: String(a.title || "").trim(),
-					url: a.url || null,
-					image: a.image || null,
-				})),
+				articles: sanitizedArticles,
 			};
 		}
 
@@ -1994,24 +2754,21 @@ async function fetchTrendingStory(
 
 		return {
 			title: String(effectiveTitle || s.title || "").trim(),
-			rawTitle: String(s.title || "").trim(),
+			rawTitle,
+			trendSearchTerm: rawTitle || dialogTitle || effectiveTitle || null,
 			seoTitle: s.seoTitle ? String(s.seoTitle).trim() : null,
 			youtubeShortTitle: s.youtubeShortTitle
 				? String(s.youtubeShortTitle).trim()
 				: null,
-			entityNames: Array.isArray(s.entityNames)
-				? s.entityNames.map((e) => String(e || "").trim()).filter(Boolean)
-				: [],
+			entityNames,
+			searchPhrases,
+			trendDialogTitle: dialogTitle || null,
 			imageComment,
 			viralImageBriefs: viralBriefs,
 			images,
 			imagesByAspect,
 			imageSummary: s.imageSummary || null,
-			articles: articles.map((a) => ({
-				title: String(a.title || "").trim(),
-				url: a.url || null,
-				image: a.image || null,
-			})),
+			articles: sanitizedArticles,
 		};
 	} catch (e) {
 		console.warn("[Trending] fetch failed ?", e.message);
@@ -2187,7 +2944,48 @@ Do not mention years before ${CURRENT_YEAR}.
 	throw new Error("Cannot distil topic");
 }
 
+async function pullTrendsTopicList(
+	category,
+	geo = "US",
+	language = DEFAULT_LANGUAGE
+) {
+	const id = resolveTrendsCategoryId(category);
+	const baseUrl =
+		`${TRENDS_API_URL}?` +
+		qs.stringify({ geo, category: id, hours: 48, language });
+
+	try {
+		const { data } = await axios.get(baseUrl, {
+			timeout: TRENDS_HTTP_TIMEOUT_MS,
+		});
+		const stories = Array.isArray(data?.stories) ? data.stories : [];
+		const titles = stories
+			.map((s) =>
+				String(
+					s.trendDialogTitle || s.title || s.rawTitle || s.dialogTitle || ""
+				).trim()
+			)
+			.filter(Boolean);
+		return Array.from(new Set(titles));
+	} catch (e) {
+		console.warn("[Trending] fallback list fetch failed ?", e.message);
+		return [];
+	}
+}
+
 async function pickTrendingTopicFresh(category, language, country) {
+	const geo =
+		country && country.toLowerCase() !== "all countries"
+			? country.toUpperCase()
+			: "US";
+
+	try {
+		const trends = await pullTrendsTopicList(category, geo, language);
+		if (Array.isArray(trends) && trends.length) return trends;
+	} catch (e) {
+		console.warn("[Trending] fallback list from Trends failed ?", e.message);
+	}
+
 	const loc =
 		country && country.toLowerCase() !== "all countries"
 			? ` in ${country}`
@@ -2207,7 +3005,7 @@ Return a JSON array of 10 trending ${category} titles (${CURRENT_MONTH_YEAR}${lo
 				messages: [{ role: "user", content: base(a) }],
 			});
 			const raw = strip(g.choices[0].message.content);
-			const list = JSON.parse(raw || "[]");
+			const list = parseJsonFlexible(raw || "");
 			if (Array.isArray(list) && list.length) return list;
 		} catch {
 			/* ignore */
@@ -2228,7 +3026,7 @@ Return a strict JSON array of exactly 5 objects, one per rank from 5 down to 1.
 Each object must have:
 - "rank": 5, 4, 3, 2 or 1
 - "label": a short name for the item (maximum 8 words)
-- "oneLine": one punchy sentence (maximum 18 words) explaining why it deserves this rank.
+- "oneLine": one punchy sentence (maximum 18 words) explaining why it deserves this rank with a concrete stat/year/visual detail (landmark, dish, record, attendance, or cultural impact) instead of generic praise.
 
 Use real-world facts and widely known names when appropriate; avoid speculation.
 Keep everything in ${language}. Do not include any other keys or free-text.
@@ -2241,7 +3039,7 @@ Keep everything in ${language}. Do not include any other keys or free-text.
 				messages: [{ role: "user", content: ask }],
 			});
 			const raw = strip(choices[0].message.content);
-			const parsed = JSON.parse(raw);
+			const parsed = parseJsonFlexible(raw);
 			if (Array.isArray(parsed) && parsed.length === 5) {
 				return parsed.sort((a, b) => (b.rank || 0) - (a.rank || 0));
 			}
@@ -2338,8 +3136,19 @@ function applyTop5CountdownStructure(segments, outline) {
 	return updated;
 }
 
-async function punchUpTop5Scripts(segments = [], segWordCaps = []) {
+async function punchUpTop5Scripts(
+	segments = [],
+	segWordCaps = [],
+	language = DEFAULT_LANGUAGE
+) {
 	if (!Array.isArray(segments) || !segments.length) return segments;
+
+	const langNote =
+		language && language.trim() ? language.trim() : DEFAULT_LANGUAGE;
+	const englishNote =
+		langNote === DEFAULT_LANGUAGE
+			? " Keep it in clear, direct American English with simple, everyday words."
+			: "";
 
 	const tightened = [];
 	for (let i = 0; i < segments.length; i++) {
@@ -2357,23 +3166,24 @@ async function punchUpTop5Scripts(segments = [], segWordCaps = []) {
 		let prompt;
 		if (rank) {
 			prompt = `
-You are rewriting a Top 5 countdown voiceover line.
-Keep the exact prefix "${prefix}" and then deliver one high-energy, non-redundant reason to care that includes a vivid, broadly known stat/impact (participation, reach, cultural pull). Avoid filler like "coming in at number" or "next up" and skip niche team/city/player anecdotes unless the subject itself is that team. Maximum ${cap} words total.
+You are rewriting a Top 5 countdown voiceover line.${englishNote}
+Keep the exact prefix "${prefix}" and then deliver one high-energy, non-redundant reason to care that includes a vivid, broadly known stat/impact (participation, reach, cultural pull) AND a quick curiosity hook (contrast, bragging right, or unexpected perk). Keep any country/region in the body, not in the prefix. Avoid filler like "coming in at number" or "next up" and skip niche team/city/player anecdotes unless the subject itself is that team. Maximum ${cap} words total.
+If the label is a country/city/resort, skip obvious geography explanations (e.g., "USA is in North America"); give a stat or unique draw instead.
 Original: "${seg.scriptText}"
 `.trim();
 		} else if (i === 0) {
 			prompt = `
-Punch up this countdown intro so it hooks viewers to stay for #1. One sentence, max ${cap} words, energetic, specific to the topic, and clearly promises a surprising #1 pick. Sound like a confident host speaking plainly to the viewer—no robotic phrasing or vague hype.
+Punch up this countdown intro so it hooks viewers to stay for #1.${englishNote} One sentence, max ${cap} words, energetic, specific to the topic, and clearly promises a surprising #1 pick or reveal. Sound like a confident host speaking plainly to the viewer-no robotic phrasing or vague hype.
 Original: "${seg.scriptText}"
 `.trim();
 		} else if (i === segments.length - 1) {
 			prompt = `
-Rewrite this outro with a quick CTA to like/subscribe and explicitly invite viewers to post their own #1 in the comments. One sentence, max ${cap} words.
+Rewrite this outro with a quick CTA to like/subscribe and explicitly invite viewers to post their own #1 in the comments.${englishNote} One sentence, max ${cap} words.
 Original: "${seg.scriptText}"
 `.trim();
 		} else {
 			prompt = `
-Rewrite this transition so it keeps the countdown momentum. Max ${cap} words, energetic, and concrete.
+Rewrite this transition so it keeps the countdown momentum and builds anticipation for the next pick.${englishNote} Max ${cap} words, energetic, and concrete.
 Original: "${seg.scriptText}"
 `.trim();
 		}
@@ -2425,7 +3235,10 @@ async function tightenTop5TimingAndClarity(
 					Math.max(
 						6,
 						Math.round(
-							s * TOP5_WORDS_PER_SEC - (idx === segLens.length - 1 ? 0 : 0.5)
+							s * TOP5_WORDS_PER_SEC -
+								(idx === segLens.length - 1 ? 0 : 0.5) -
+								1 -
+								(idx >= segLens.length - 2 ? 1 : 0) // extra cushion for #1 + outro
 						)
 					)
 			  )
@@ -2442,7 +3255,25 @@ async function tightenTop5TimingAndClarity(
 		const target = targets[i] || 18;
 		const words = countWords(seg.scriptText);
 		if (Math.abs(words - target) <= 2) {
-			tightened.push(seg);
+			if (seg.countdownRank) {
+				const body = stripExtraRankPrefixes(
+					cleanForTTS(seg.scriptText, langNote),
+					seg.countdownRank,
+					seg.countdownLabel || seg.overlayText || ""
+				);
+				const clean = buildCleanRankLine(
+					seg.countdownRank,
+					seg.countdownLabel || seg.overlayText || "",
+					body,
+					langNote
+				);
+				tightened.push({ ...seg, scriptText: clean });
+			} else {
+				tightened.push({
+					...seg,
+					scriptText: cleanForTTS(seg.scriptText, langNote),
+				});
+			}
 			continue;
 		}
 
@@ -2472,8 +3303,13 @@ Rules:
 				: "Hook the viewer plainly; no meta talk."
 		}
 - Give one broad, widely known reason (stat, participation, cultural impact) for the rank; avoid niche player/team/city anecdotes.
+- Add one vivid visual detail tied to the label (landmark, dish, skyline, or what the viewer would literally see) so the picture fits the narration.
+- Keep country/region/location info in the body, not inside the prefix/label.
+- If the label itself is a country/city/resort, skip obvious geography explanations (e.g., "USA is in North America"); give a stat or unique draw instead.
+- Add a light curiosity hook (surprising benefit, bragging right, or contrast) without rambling.
 - Make it easy to understand for text-to-speech; avoid tongue twisters or run-ons.
 - Stay energetic but concise.
+- Do NOT repeat the label after the prefix; mention it only once.
 Original: "${seg.scriptText}"
 `.trim();
 
@@ -2487,12 +3323,13 @@ Original: "${seg.scriptText}"
 				.replace(/^["'\s]+|["'\s]+$/g, "");
 
 			if (rank) {
-				const remainder = removeLeadingLabel(
-					stripCountdownPrefix(rewritten),
-					label
+				const body = stripExtraRankPrefixes(rewritten, rank, label);
+				rewritten = buildCleanRankLine(
+					rank,
+					label,
+					body || seg.scriptText,
+					langNote
 				);
-				const body = remainder || stripCountdownPrefix(rewritten) || "";
-				rewritten = buildCountdownLine(rank, label, body || seg.scriptText);
 			} else if (role === "intro" && !/top\s*5/i.test(rewritten)) {
 				rewritten = buildTop5IntroLine(label || seg.scriptText || "");
 			}
@@ -2520,9 +3357,11 @@ function buildTtsPartsForSegment(seg, category) {
 		? `${label}${remainder ? `: ${remainder}` : ""}`
 		: text;
 
+	const spoken = `Number ${rankWord}: ${labelLine}`.replace(/\s+/g, " ").trim();
+
 	return {
-		parts: [`Number ${rankWord}`, labelLine],
-		pauseSeconds: 0.18,
+		parts: [spoken],
+		pauseSeconds: 0,
 	};
 }
 
@@ -2656,7 +3495,12 @@ async function pickBestImageFromSearch(
 			/* ignore malformed URL */
 		}
 		const title = (it.title || "").toLowerCase();
-		if (negativeTitleRe && negativeTitleRe.test(title)) continue;
+		if (TEXTY_IMAGE_URL_RE.test(link)) continue;
+		if (
+			OFF_TOPIC_IMAGE_TITLE_RE.test(title) ||
+			(negativeTitleRe && negativeTitleRe.test(title))
+		)
+			continue;
 		const hay = `${title} ${link}`.toLowerCase();
 		if (labelTokens.length && !labelTokens.some((w) => hay.includes(w)))
 			continue;
@@ -2716,7 +3560,11 @@ async function pickBestImageFromSearch(
 			/* ignore malformed URL */
 		}
 		const title = (it.title || "").toLowerCase();
-		if (negativeTitleRe && negativeTitleRe.test(title)) continue;
+		if (
+			OFF_TOPIC_IMAGE_TITLE_RE.test(title) ||
+			(negativeTitleRe && negativeTitleRe.test(title))
+		)
+			continue;
 		const hay = `${title} ${link}`.toLowerCase();
 		if (labelTokens.length && !labelTokens.some((w) => hay.includes(w)))
 			continue;
@@ -2815,7 +3663,20 @@ async function fetchOgImage(url) {
 	}
 }
 
-function scoreImageCandidateByRatio({ url, width, height, ratio, source }) {
+function scoreImageCandidateByRatio({
+	url,
+	width,
+	height,
+	ratio,
+	source,
+	topicTokens = [],
+	title = "",
+	topicMatchCount = 0,
+	minTopicMatches = 0,
+	strictTopicMatch = false,
+	anchorHit = false,
+	anchorBonus = 0.6,
+}) {
 	if (!url) return -1;
 	const minEdge = minEdgeForRatio(ratio);
 	const w = Number(width) || 0;
@@ -2831,13 +3692,21 @@ function scoreImageCandidateByRatio({ url, width, height, ratio, source }) {
 		)
 			? 1.5
 			: 0.3;
+	const topicMatch =
+		topicMatchCount ||
+		topicMatchInfo(topicTokens, [url, source || "", title || ""]).count;
+	if (strictTopicMatch && minTopicMatches > 0 && topicMatch < minTopicMatches)
+		return -1;
+	const tokenBonus = topicMatch > 0 ? 0.9 + 0.4 * Math.min(topicMatch, 3) : 0;
 	return (
 		(mp ? mp * 1.2 : 0.5) +
 		(aspectOk ? 1.5 : -0.8) +
 		(ar
 			? Math.max(0, 1 - Math.abs((targetAspectValue(ratio) || ar) - ar))
 			: 0) +
-		sourceBonus
+		sourceBonus +
+		tokenBonus +
+		(anchorHit ? anchorBonus : 0)
 	);
 }
 
@@ -2850,17 +3719,71 @@ async function fetchHighQualityImagesForTopic({
 	topicTokens = [],
 	requireAnyToken = false,
 	negativeTitleRe = null,
+	strictTopicMatch = false,
+	phraseAnchors = [],
+	requireAnchorPhrase = false,
 }) {
 	const candidates = [];
 	const dedupeSet = new Set();
+	const primaryTokens = topicTokensFromTitle(topic);
+	const primaryMinMatch = minTopicTokenMatches(primaryTokens);
+	const normTopicTokens = expandTopicTokens(topicTokens);
+	const tokensAvailable = normTopicTokens.length > 0;
+	const minTopicMatch = strictTopicMatch
+		? tokensAvailable
+			? Math.max(1, minTopicTokenMatches(normTopicTokens))
+			: 0
+		: 0;
+	const requireMatch = (requireAnyToken || strictTopicMatch) && tokensAvailable;
+	const anchorPhrases = normalizeAnchorPhrases(phraseAnchors, 12);
+	const requireAnchor = requireAnchorPhrase && anchorPhrases.length > 0;
+	const textyUrlRe = TEXTY_IMAGE_URL_RE;
+	const strictNegativeTitleRe = OFF_TOPIC_IMAGE_TITLE_RE;
+	const mergeNegativeTitleRe = (title = "") => {
+		if (strictNegativeTitleRe && strictNegativeTitleRe.test(title)) return true;
+		if (negativeTitleRe && negativeTitleRe.test(title)) return true;
+		return false;
+	};
+
+	const topicGate = (url, source = "", title = "") => {
+		const combinedInfo = topicMatchInfo(normTopicTokens, [url, source, title]);
+		const primaryInfo = topicMatchInfo(primaryTokens, [url, source, title]);
+		const combinedOk = requireMatch
+			? combinedInfo.count >= minTopicMatch
+			: true;
+		const primaryOk = primaryTokens.length
+			? primaryInfo.count >= Math.max(1, primaryMinMatch)
+			: true;
+		const anchorHit = !anchorPhrases.length
+			? true
+			: [url, source, title].some((field) => {
+					const hay = String(field || "").toLowerCase();
+					return anchorPhrases.some((p) => hay.includes(p));
+			  });
+		const ok = combinedOk && primaryOk && (requireAnchor ? anchorHit : true);
+		return {
+			...combinedInfo,
+			primaryMatches: primaryInfo.matchedTokens,
+			anchorHit,
+			ok,
+		};
+	};
 
 	// 1) OG images from article links
 	for (const link of articleLinks.slice(0, 8)) {
 		const og = await fetchOgImage(link);
-		if (og) {
-			candidates.push({ url: og, source: link });
-			dedupeSet.add(og);
-		}
+		if (!og) continue;
+		if (textyUrlRe.test(og)) continue;
+		const gate = topicGate(og, link, "");
+		if (!gate.ok) continue;
+		candidates.push({
+			url: og,
+			source: link,
+			title: link,
+			topicMatchCount: gate.count,
+			anchorHit: gate.anchorHit,
+		});
+		dedupeSet.add(og);
 	}
 
 	// 2) Google CSE search
@@ -2910,20 +3833,20 @@ async function fetchHighQualityImagesForTopic({
 							)
 						)
 							continue;
+						if (textyUrlRe.test(url)) continue;
 						const title = (it.title || "").toLowerCase();
-						if (negativeTitleRe && negativeTitleRe.test(title)) continue;
-						if (
-							requireAnyToken &&
-							Array.isArray(topicTokens) &&
-							topicTokens.length &&
-							!matchesAnyToken(`${title} ${url}`, topicTokens)
-						)
-							continue;
+						if (mergeNegativeTitleRe(title)) continue;
+						const source = it.image?.contextLink || it.displayLink || "";
+						const gate = topicGate(url, source, it.title || "");
+						if (!gate.ok) continue;
 						candidates.push({
 							url,
 							width: w,
 							height: h,
-							source: it.image?.contextLink || it.displayLink || "",
+							source,
+							title: it.title || "",
+							topicMatchCount: gate.count,
+							anchorHit: gate.anchorHit,
 						});
 						dedupeSet.add(url);
 					}
@@ -2948,6 +3871,13 @@ async function fetchHighQualityImagesForTopic({
 				height: c.height,
 				ratio,
 				source: c.source,
+				title: c.title,
+				topicTokens: normTopicTokens,
+				topicMatchCount: c.topicMatchCount || 0,
+				minTopicMatches: minTopicMatch,
+				strictTopicMatch,
+				anchorHit: Boolean(c.anchorHit),
+				anchorBonus: anchorPhrases.length ? 1.2 : 0.6,
 			}),
 		}))
 		.filter((c) => c.score > 0)
@@ -2969,6 +3899,8 @@ async function fetchHighQualityImagesForTopic({
 		candidates: candidates.length,
 		scored: scored.length,
 		returning: sliced.length,
+		strictTopicMatch,
+		minTopicMatch,
 	});
 
 	return sliced;
@@ -3103,6 +4035,11 @@ async function fetchTop5ReplacementImage(
 		.filter(Boolean)
 		.join(" ");
 	const topicTokens = topicTokensFromTitle(topic);
+	const labelTokens = tokenizeLabel(label);
+	const combinedTokens = [...new Set([...topicTokens, ...labelTokens])];
+	const requiredTokens = [
+		...new Set([...requiredTokensForLabel(label), ...labelTokens.slice(0, 3)]),
+	];
 
 	try {
 		const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
@@ -3128,8 +4065,8 @@ async function fetchTop5ReplacementImage(
 				requirePortraitForRatio: true,
 				minEdge: Math.max(1100, minEdgeForRatio(ratio) || 0),
 				negativeTitleRe: /(stock|wallpaper|logo|cartoon|illustration)/i,
-				requireTokens: requiredTokensForLabel(label),
-				topicTokens,
+				requireTokens: requiredTokens,
+				topicTokens: combinedTokens,
 				requireAnyToken: true,
 			}
 		);
@@ -3221,9 +4158,11 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 					c
 						.input(norm(rawPath))
 						.videoFilters(
-							`scale=${
+							`scale=${width || 1080}:${
+								height || 1920
+							}:force_original_aspect_ratio=increase:flags=lanczos,crop:${
 								width || 1080
-							}:-2:force_original_aspect_ratio=decrease:flags=lanczos`
+							}:${height || 1920}`
 						)
 						.outputOptions("-frames:v", "1", "-q:v", "5", "-y")
 						.save(norm(scaledPath))
@@ -3341,7 +4280,10 @@ async function gptTop5Plan(topic, language = DEFAULT_LANGUAGE, segLens = []) {
 				Math.max(
 					6,
 					Math.round(
-						s * TOP5_WORDS_PER_SEC - (idx === segTiming.length - 1 ? 0 : 0.5)
+						s * TOP5_WORDS_PER_SEC -
+							(idx === segTiming.length - 1 ? 0 : 0.5) -
+							1 -
+							(idx >= segTiming.length - 2 ? 1 : 0) // extra cushion for #1 + outro
 					)
 				)
 		  )
@@ -3374,7 +4316,7 @@ async function gptTop5Plan(topic, language = DEFAULT_LANGUAGE, segLens = []) {
 You are building a 7-part Top 5 countdown video and the narration must sync tightly to each segment.
 
 Topic: ${topic}
-Language: ${languageNote} (default to clear American English delivery if unspecified)
+Language: ${languageNote} (if English, use crisp, clear American English with brisk but understandable delivery)
 
 Timing + pacing:
 - Exactly 7 segments: intro, #5, #4, #3, #2, #1, outro.
@@ -3385,9 +4327,18 @@ ${
 - Stay within the word targets so TTS fits without time-stretching.
 
 Content + tone:
-- Intro: start with a simple hook like "Guess the Top 5 ${cleanTopic}" and tease that #1 is worth the wait.
+- Intro: start with a simple hook like "Guess the Top 5 ${cleanTopic}" and tease that #1 is worth the wait without spoiling it.
 - Each rank line MUST start with "#5-", "#4-", "#3-", "#2-", or "#1-" before the label.
-- Give ONE broadly known reason (stat, participation, cultural impact, popularity) that justifies the rank. Avoid niche player/team/city details unless the item itself is that subject.
+- Only one rank tag per line. Never repeat the number twice.
+- Give ONE concrete, label-specific reason (stat, participation, attendance, revenue, landmark/food/feature) that justifies the rank AND tuck in a curiosity hook (surprising stat, bragging rights, or unexpected contrast) that makes viewers want to hear the next pick. Avoid niche player/team/city details unless the item itself is that subject.
+- If the label itself is a country, city, or resort name, do NOT restate obvious location facts like "X is in <country>"; focus on a stat, bragging right, or distinct feature instead.
+- Make every line visual with one vivid descriptor that would fit on screen for that label (landmark, dish, skyline, signature move) so visuals can match the narration.
+- Keep verbs active and imagery concrete so it sounds like a host talking to camera, not a wiki entry.
+- Use concise, plain ${
+		languageNote === DEFAULT_LANGUAGE ? "American English" : languageNote
+	} with short, easy-to-pronounce words. No filler, no gibberish, no other languages.
+- If a rank label is long, keep the sentence simple so it fits comfortably in timing.
+- Do NOT repeat the label after the prefix; mention it once then move to the reason.
 - No filler like "coming in at number"; vary verbs and openings.
 - Outro: invite viewers to drop their own #1 and include a friendly CTA.
 - Keep sentences crisp, conversational, and easy for TTS to pronounce.
@@ -3396,11 +4347,13 @@ Return JSON with exactly 7 objects in order: intro, rank5, rank4, rank3, rank2, 
 Each object must have:
 - "type": "intro" | "rank" | "outro"
 - "rank": 5/4/3/2/1 for rank items (null for intro/outro)
-- "label": short name for the item (intro/outro can reuse the topic)
+- "label": short name for the item ONLY (no country/region/city; intro/outro can reuse the topic)
 - "script": 1-2 lively sentences that fit the timing guidance above; avoid academic words like "explained" or "lesson"
 - "overlay": action-forward 3-8 word overlay text (no punctuation/hashtags)
-- "imageQuery": concise search query for a strong photo, include action words and the item name; avoid generic wallpapers.
+- "imageQuery": concise search query for a strong photo, include action words, the item name, AND the concrete visual detail you mentioned (landmark/food/setting) so the image matches; avoid generic wallpapers.
 - "runwayPrompt": vivid cinematic prompt describing motion for image_to_video; include setting, action, camera, lighting; avoid text/logos.
+- Keep motion grounded: smooth dolly/pan/slide and light subject motion that matches the real photo; avoid zoom-only moves, whiplash spins, crashes, or surreal morphing.
+- If people/vehicles appear, keep them natural: no distorted faces, no duplicates, no collisions.
 `.trim();
 
 	for (let attempt = 1; attempt <= 2; attempt++) {
@@ -3410,7 +4363,7 @@ Each object must have:
 				messages: [{ role: "user", content: ask }],
 			});
 			const raw = strip(choices[0].message.content);
-			const parsed = JSON.parse(raw);
+			const parsed = parseJsonFlexible(raw);
 			if (Array.isArray(parsed) && parsed.length === 7) return parsed;
 		} catch (e) {
 			console.warn(`[GPT] Top5 plan attempt ${attempt} failed ? ${e.message}`);
@@ -3451,7 +4404,9 @@ async function buildTop5FallbackPlan(topic, language = DEFAULT_LANGUAGE) {
 
 	const ranks = sorted.map((o, idx) => {
 		const rank = Number(o.rank) || 5 - idx;
-		const label = normalizeLabelForTopic(o.label || `Pick ${rank}`, topic);
+		const label = stripTrailingLocation(
+			normalizeLabelForTopic(o.label || `Pick ${rank}`, topic)
+		);
 		const body =
 			String(o.oneLine || "").trim() || "Buzzing right now for travelers.";
 		return {
@@ -3490,19 +4445,75 @@ async function searchAndUploadTop5Image({
 	slug,
 }) {
 	const topicTokens = topicTokensFromTitle(`${topic} ${label || ""}`);
-	const urlCandidates = await fetchHighQualityImagesForTopic({
+	const negativeRe = /(stock|wallpaper|logo|cartoon|illustration|wallpaper)/i;
+	let urlCandidates = await fetchHighQualityImagesForTopic({
 		topic: query,
 		ratio,
 		articleLinks: [],
 		desiredCount: 4,
-		limit: 10,
+		limit: 12,
 		topicTokens,
 		requireAnyToken: true,
-		negativeTitleRe: /(stock|wallpaper|logo|cartoon|illustration|wallpaper)/i,
+		strictTopicMatch: true,
+		negativeTitleRe: negativeRe,
 	});
+	if (!urlCandidates || !urlCandidates.length) {
+		urlCandidates = await fetchHighQualityImagesForTopic({
+			topic: query,
+			ratio,
+			articleLinks: [],
+			desiredCount: 4,
+			limit: 12,
+			topicTokens,
+			requireAnyToken: true,
+			negativeTitleRe: negativeRe,
+		});
+	}
+	if (!urlCandidates || !urlCandidates.length) {
+		const year = dayjs().format("YYYY");
+		const fallbackQueries = [
+			`${label} ${topic} vertical photo ${year}`,
+			`${label} ${topic} action shot ${year}`,
+			`${label} ${topic} closeup ${year}`,
+		];
+		const seen = new Set();
+		for (const fq of fallbackQueries) {
+			const extra = await fetchHighQualityImagesForTopic({
+				topic: fq,
+				ratio,
+				articleLinks: [],
+				desiredCount: 4,
+				limit: 12,
+				topicTokens: topicTokensFromTitle(`${label} ${topic}`),
+				requireAnyToken: true,
+				negativeTitleRe: negativeRe,
+			});
+			for (const u of extra || []) {
+				if (!seen.has(u)) {
+					seen.add(u);
+					urlCandidates = urlCandidates || [];
+					urlCandidates.push(u);
+				}
+			}
+			if (urlCandidates && urlCandidates.length) break;
+		}
+	}
+
 	const publicIdBase = `aivideomatic/top5_refs/${slug}/${rankSlug(
 		rank
 	)}_${safeSlug(label || topic, 32)}`;
+
+	if (!Array.isArray(urlCandidates) || !urlCandidates.length) {
+		const aiPrompt = `Cinematic, photorealistic vertical photo for ${
+			label || topic
+		} street food. ${QUALITY_BONUS}. No text, no logos.`;
+		const aiImage = await generateOpenAIImageSingle(
+			aiPrompt,
+			ratio,
+			publicIdBase
+		);
+		return aiImage;
+	}
 
 	for (const url of urlCandidates) {
 		try {
@@ -3551,7 +4562,9 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 		const labelRaw = String(
 			p.label || (segType === "intro" ? topic : "Outro")
 		).trim();
-		const label = normalizeLabelForTopic(labelRaw, topic);
+		const label = stripTrailingLocation(
+			normalizeLabelForTopic(labelRaw, topic)
+		);
 		const baseQuery =
 			p.imageQuery ||
 			`${label} ${topic} action photo ${
@@ -3571,9 +4584,10 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 			stripCountdownPrefix(p.overlay || label),
 			label
 		);
+		const overlayBodyClean = stripTrailingLocation(overlayBody);
 		const overlayText =
 			segType === "rank"
-				? `#${rank}: ${overlayBody || label}`.trim()
+				? `#${rank}: ${overlayBodyClean || label}`.trim()
 				: segType === "intro"
 				? `Top 5 ${introTopic || label}`.trim()
 				: String(p.overlay || label).trim();
@@ -3581,7 +4595,7 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 			p.runwayPrompt || `${label} cinematic action shot`
 		).trim();
 
-		const img = await searchAndUploadTop5Image({
+		let img = await searchAndUploadTop5Image({
 			query: baseQuery,
 			label,
 			rank:
@@ -3590,6 +4604,39 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 			topic,
 			slug,
 		});
+		if (!img || !img.cloudinaryUrl) {
+			console.warn(
+				`[Top5] Primary image search failed for segment ${
+					idx + 1
+				}, attempting AI fallback`
+			);
+			try {
+				const aiPrompt = `Cinematic, photorealistic vertical photo for ${
+					label || topic
+				}. ${QUALITY_BONUS}. No text, no logos.`;
+				img = await generateOpenAIImageSingle(
+					aiPrompt,
+					ratio,
+					`${slug}/fallback_${idx + 1}`
+				);
+			} catch (e) {
+				console.warn(
+					`[Top5] AI fallback image failed for segment ${idx + 1} ?`,
+					e.message
+				);
+			}
+		}
+		if ((!img || !img.cloudinaryUrl) && trendImagePairs.length) {
+			const reuse =
+				trendImagePairs[Math.min(idx, trendImagePairs.length - 1)] ||
+				trendImagePairs[0];
+			if (reuse && reuse.cloudinaryUrl) {
+				console.warn(
+					`[Top5] Reusing earlier image for segment ${idx + 1} to avoid failure`
+				);
+				img = reuse;
+			}
+		}
 		if (!img || !img.cloudinaryUrl) {
 			throw new Error(`Top5 missing image for segment ${idx + 1}`);
 		}
@@ -4022,6 +5069,7 @@ async function generateItvClipFromImage({
 	negativePrompt,
 	ratio,
 	runwayDuration,
+	promptStrength,
 }) {
 	const itvLabel = `itv_seg${segmentIndex}`;
 	const pollLabel = `poll_itv_seg${segmentIndex}`;
@@ -4041,7 +5089,10 @@ async function generateItvClipFromImage({
 					promptText,
 					ratio,
 					duration: runwayDuration,
-					promptStrength: 0.55,
+					promptStrength:
+						typeof promptStrength === "number" && promptStrength > 0
+							? promptStrength
+							: 0.55,
 					negativePrompt: negativePrompt || RUNWAY_NEGATIVE_PROMPT,
 				},
 				{
@@ -4225,35 +5276,80 @@ async function generatePlaceholderClip({
 	const { width, height } = targetResolutionForRatio(ratio);
 	const size = width && height ? `${width}x${height}` : "1080x1920";
 	const out = tmpFile(`seg_placeholder_${segmentIndex}`, ".mp4");
+	const pixelPngPath = !hasLavfi
+		? (() => {
+				// 1x1 transparent PNG (base64) to avoid lavfi when unavailable
+				const b64 =
+					"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAocB9VX4htkAAAAASUVORK5CYII=";
+				const p = tmpFile(`placeholder_${segmentIndex}`, ".png");
+				fs.writeFileSync(p, Buffer.from(b64, "base64"));
+				return p;
+		  })()
+		: null;
 	try {
-		await ffmpegPromise((c) =>
-			c
-				.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
-				.inputOptions("-f", "lavfi")
-				.videoFilters(
-					[
-						"format=yuv420p",
-						"setsar=1",
-						`zoompan=z='min(1.0+0.001*n,1.04)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${size}:fps=30`,
-					].join(",")
-				)
-				.outputOptions(
-					"-t",
-					String(targetDuration),
-					"-c:v",
-					"libx264",
-					"-preset",
-					"slow",
-					"-crf",
-					"17",
-					"-pix_fmt",
-					"yuv420p",
-					"-r",
-					"30",
-					"-y"
-				)
-				.save(norm(out))
-		);
+		if (hasLavfi) {
+			await ffmpegPromise((c) =>
+				c
+					.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
+					.inputOptions("-f", "lavfi")
+					.videoFilters(
+						[
+							"format=yuv420p",
+							"setsar=1",
+							`zoompan=z='min(1.0+0.001*n,1.04)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${size}:fps=30`,
+						].join(",")
+					)
+					.outputOptions(
+						"-t",
+						String(targetDuration),
+						"-c:v",
+						"libx264",
+						"-preset",
+						"slow",
+						"-crf",
+						"17",
+						"-pix_fmt",
+						"yuv420p",
+						"-r",
+						"30",
+						"-y"
+					)
+					.save(norm(out))
+			);
+		} else {
+			await ffmpegPromise((c) => {
+				const vf = ["format=yuv420p", "setsar=1"];
+				if (width && height) {
+					vf.push(
+						`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
+						`crop=${width}:${height}`
+					);
+					vf.push(
+						`zoompan=z='min(1.0+0.001*n,1.02)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
+					);
+				}
+				return c
+					.input(norm(pixelPngPath))
+					.inputOptions("-loop", "1")
+					.videoFilters(vf.join(","))
+					.outputOptions(
+						"-t",
+						String(targetDuration),
+						"-c:v",
+						"libx264",
+						"-preset",
+						"slow",
+						"-crf",
+						"17",
+						"-pix_fmt",
+						"yuv420p",
+						"-r",
+						"30",
+						"-y"
+					)
+					.save(norm(out));
+			});
+		}
 		return out;
 	} catch (e) {
 		const simple = tmpFile(`seg_placeholder_simple_${segmentIndex}`, ".mp4");
@@ -4261,37 +5357,72 @@ async function generatePlaceholderClip({
 			`[Seg ${segmentIndex}] Placeholder zoompan failed, falling back to solid frame`,
 			e.message
 		);
-		await ffmpegPromise((c) =>
-			c
-				.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
-				.inputOptions("-f", "lavfi")
-				.videoFilters(["format=yuv420p", "setsar=1"].join(","))
-				.outputOptions(
-					"-t",
-					String(targetDuration),
-					"-c:v",
-					"libx264",
-					"-preset",
-					"slow",
-					"-crf",
-					"17",
-					"-pix_fmt",
-					"yuv420p",
-					"-r",
-					"30",
-					"-y"
-				)
-				.save(norm(simple))
-		);
+		if (hasLavfi) {
+			await ffmpegPromise((c) =>
+				c
+					.input(`color=${color}:s=${size}:r=30:d=${targetDuration}`)
+					.inputOptions("-f", "lavfi")
+					.videoFilters(["format=yuv420p", "setsar=1"].join(","))
+					.outputOptions(
+						"-t",
+						String(targetDuration),
+						"-c:v",
+						"libx264",
+						"-preset",
+						"slow",
+						"-crf",
+						"17",
+						"-pix_fmt",
+						"yuv420p",
+						"-r",
+						"30",
+						"-y"
+					)
+					.save(norm(simple))
+			);
+		} else {
+			await ffmpegPromise((c) =>
+				c
+					.input(norm(pixelPngPath))
+					.inputOptions("-loop", "1")
+					.videoFilters(["format=yuv420p", "setsar=1"].join(","))
+					.outputOptions(
+						"-t",
+						String(targetDuration),
+						"-c:v",
+						"libx264",
+						"-preset",
+						"slow",
+						"-crf",
+						"17",
+						"-pix_fmt",
+						"yuv420p",
+						"-r",
+						"30",
+						"-y"
+					)
+					.save(norm(simple))
+			);
+		}
 		return simple;
 	}
 }
 
-function buildRunwayPrompt(seg, globalStyle) {
+function buildRunwayPrompt(seg, globalStyle, category = "") {
+	const isTop5 = String(category || "").toLowerCase() === "top5";
+	const fallbackLabel =
+		seg?.countdownLabel || seg?.overlayText || seg?.label || "scene";
+	const fallbackPrompt = isTop5
+		? `Cinematic move through ${fallbackLabel} with real-world motion and depth; gentle dolly or slide, natural crowd/traffic movement, steady framing, no zoom-only moves`
+		: `${fallbackLabel} cinematic action shot`;
+	const userPrompt = String(seg?.runwayPrompt || "").trim() || fallbackPrompt;
+
 	const parts = [
-		seg.runwayPrompt || "",
+		userPrompt,
 		globalStyle,
 		"cinematic, cohesive single shot with smooth camera motion",
+		isTop5 ? TOP5_RUNWAY_MOTION_HINT : "",
+		isTop5 ? TOP5_RUNWAY_CONTENT_GUARD : "",
 		QUALITY_BONUS,
 		PHYSICAL_REALISM_HINT,
 		EYE_REALISM_HINT,
@@ -4306,14 +5437,28 @@ function buildRunwayPrompt(seg, globalStyle) {
 	if (promptText.length > PROMPT_CHAR_LIMIT)
 		promptText = promptText.slice(0, PROMPT_CHAR_LIMIT);
 
-	const negativeBase =
-		seg.runwayNegativePrompt && seg.runwayNegativePrompt.trim().length
-			? seg.runwayNegativePrompt.trim()
+	const negativeBaseRaw =
+		seg?.runwayNegativePrompt && String(seg.runwayNegativePrompt).trim().length
+			? seg.runwayNegativePrompt
 			: RUNWAY_NEGATIVE_PROMPT;
+	const negParts = Array.isArray(negativeBaseRaw)
+		? negativeBaseRaw.slice()
+		: String(negativeBaseRaw || "")
+				.split(/[,|]/)
+				.map((t) => t.trim())
+				.filter(Boolean);
+	if (isTop5) {
+		negParts.push(
+			...String(TOP5_RUNWAY_NEGATIVE || "")
+				.split(/[,|]/)
+				.map((t) => t.trim())
+		);
+	}
+	const negativeJoined = negParts.filter(Boolean).join(", ");
 	const negativePrompt =
-		negativeBase.length > PROMPT_CHAR_LIMIT
-			? negativeBase.slice(0, PROMPT_CHAR_LIMIT)
-			: negativeBase;
+		negativeJoined.length > PROMPT_CHAR_LIMIT
+			? negativeJoined.slice(0, PROMPT_CHAR_LIMIT)
+			: negativeJoined;
 
 	return { promptText, negativePrompt };
 }
@@ -4382,13 +5527,14 @@ async function uploadToYouTube(u, fp, { title, description, tags, category }) {
 	const o = buildYouTubeOAuth2Client(u);
 	if (!o) throw new Error("YouTube OAuth missing");
 	const yt = google.youtube({ version: "v3", auth: o });
+	const safeDescription = ensureClickableLinks(description);
 	const { data } = await yt.videos.insert(
 		{
 			part: ["snippet", "status"],
 			requestBody: {
 				snippet: {
 					title,
-					description,
+					description: safeDescription,
 					tags,
 					categoryId:
 						YT_CATEGORY_MAP[category] === "0"
@@ -4458,7 +5604,7 @@ Constraints:
 			messages: [{ role: "user", content: ask }],
 		});
 		const raw = strip(choices[0].message.content);
-		const parsed = JSON.parse(raw);
+		const parsed = parseJsonFlexible(raw);
 		if (!parsed || typeof parsed !== "object") return null;
 
 		let voiceGain = Number(parsed.voiceGain) || 1.4;
@@ -4682,7 +5828,7 @@ Return ONLY JSON:
 			model: CHAT_MODEL,
 			messages: [{ role: "user", content: ask }],
 		});
-		const parsed = JSON.parse(strip(choices[0].message.content));
+		const parsed = parseJsonFlexible(strip(choices[0].message.content));
 		if (parsed && parsed.voiceId) {
 			return {
 				voiceId: parsed.voiceId,
@@ -4841,7 +5987,7 @@ Segment ${segCnt} is the engagement outro (about ${
 - Vary the phrasing so outros never feel templated; keep it playful and topic-aware.
 - Keep it concise and entirely in ${language}.
 - Make it sound human and upbeat, not robotic; a friendly host riffing on the story.
-- This extra outro is appended on top of the requested duration, with a 3-5s tolerance buffer baked in, so you can finish the thought without cutting yourself off.
+- This extra outro is appended on top of the requested duration, with a ~4s tolerance buffer baked in, so you can finish the thought without cutting yourself off.
 `.trim();
 
 	const baseIntro = `
@@ -4860,6 +6006,9 @@ Narration rules:
 - Vary sentence lengths and verbs so it feels human and lively, not robotic.
 - Sprinkle quick, honest reactions that match the facts (amazed, relieved, concerned) without overhyping.
 - Even for somber news, stay compassionate but keep momentum with clear, visual language - no flat recaps.
+- Segment 1 must immediately land the who/what/when and why-now hook in one tight line.
+- Middle segments should carry stakes, impact, and what to watch next so viewers know why this matters now.
+- The final core segment must end on a complete thought; the engagement outro is its own segment with a clear CTA/question.
 - All core narration (intro + content) must fit inside the requested ${duration}s; outro sits on top with a tiny buffer so it never truncates mid-sentence.
 - Use the provided article headlines/snippets as your source of truth; if something is unconfirmed, state that instead of inventing details. Stay timely to the trend.
 - Give each segment one concrete, visual detail or comparison that makes the scene easy to picture.
@@ -4869,6 +6018,7 @@ Narration rules:
 - Later segments deepen context: stakes, key players, what to watch, etc.
 - Stay within word caps so narration fits timing.
 - All narration MUST be in ${language}.
+- If ${language} is English, keep wording in clear American English; avoid non-English words or translations unless they are proper names.
 - Ignore the country's native language; keep EVERY word in ${language} even if geo/country differs.
 - For nontragic topics, pacing should feel clear and slightly brisk.
 - For clearly tragic or sensitive stories, slow pacing slightly but keep it clear and respectful.
@@ -4889,7 +6039,7 @@ ${
 		  } carry the core visuals and together use about ${runwaySharePct}% of the runtime; pack the key beats there so later segments can stay simple.`
 		: ""
 }
-${outroDirective}
+${outroDirective.replace("~4s tolerance buffer", "~3s max buffer")}
 `.trim();
 
 	let promptText;
@@ -5138,10 +6288,8 @@ Return JSON:
 	});
 
 	const raw = strip(choices[0].message.content);
-	let plan;
-	try {
-		plan = JSON.parse(raw);
-	} catch (e) {
+	const plan = parseJsonFlexible(raw);
+	if (!plan) {
 		console.error("[GPT] plan JSON parse failed:", raw);
 		throw new Error("GPT video plan JSON malformed");
 	}
@@ -5278,8 +6426,7 @@ exports.createVideo = async (req, res) => {
 		} = req.body;
 
 		const user = req.user;
-		const language =
-			toTitleCase((langIn || DEFAULT_LANGUAGE).trim()) || DEFAULT_LANGUAGE;
+		const language = normalizeLanguageLabel(langIn || DEFAULT_LANGUAGE);
 		const country =
 			countryIn && countryIn.toLowerCase() !== "all countries"
 				? countryIn.trim()
@@ -5419,9 +6566,12 @@ exports.createVideo = async (req, res) => {
 		}
 
 		/* 2. Segment timing */
-		const requestedTailSeconds = computeEngagementTail(duration);
-		const tolerancePadSeconds =
-			computeOptionalOutroTolerance(requestedTailSeconds);
+		const requestedTailSeconds = computeEngagementTail(duration, category);
+		const tolerancePadSeconds = computeOptionalOutroTolerance(
+			requestedTailSeconds,
+			category,
+			duration
+		);
 		console.log(
 			"[Job] ratio + target duration",
 			JSON.stringify({
@@ -5438,8 +6588,10 @@ exports.createVideo = async (req, res) => {
 			tolerancePadSeconds
 		);
 		let segCnt = segLens.length;
-		const engagementTailSeconds = segLens[segCnt - 1];
-		const totalDurationTarget = segLens.reduce((a, b) => a + b, 0);
+		let engagementTailSeconds = segLens[segCnt - 1];
+		let totalDurationTarget = segLens.reduce((a, b) => a + b, 0);
+		const top5DurationCap =
+			category === "Top5" ? duration + TOP5_MAX_EXTRA_SECONDS : null;
 		const segWordCaps = segLens.map((s) =>
 			Math.floor(s * wordsPerSecForCaps(category))
 		);
@@ -5467,14 +6619,47 @@ exports.createVideo = async (req, res) => {
 				trendStory && Array.isArray(trendStory.articles)
 					? trendStory.articles.map((a) => a.url).filter(Boolean)
 					: [];
+			const strongTopicTokens = collectStoryTokens(topic, trendStory);
+			const requireTokenMatch = strongTopicTokens.length > 0;
+			const anchorPhrases = buildAnchorPhrasesFromStory(trendStory);
 			trendImagesForRatio = await fetchHighQualityImagesForTopic({
 				topic,
 				ratio,
 				articleLinks,
 				desiredCount: 7,
 				limit: 16,
+				topicTokens: strongTopicTokens,
+				requireAnyToken: requireTokenMatch,
+				negativeTitleRe:
+					/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
+				strictTopicMatch: true,
+				phraseAnchors: anchorPhrases,
+				requireAnchorPhrase: true,
 			});
-			trendImagesForRatio = filterUploadCandidates(trendImagesForRatio, 7);
+			if (trendImagesForRatio.length < 5) {
+				const relaxed = await fetchHighQualityImagesForTopic({
+					topic,
+					ratio,
+					articleLinks,
+					desiredCount: 7,
+					limit: 16,
+					topicTokens: strongTopicTokens,
+					requireAnyToken: requireTokenMatch,
+					negativeTitleRe:
+						/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
+					strictTopicMatch: true,
+					phraseAnchors: anchorPhrases,
+					requireAnchorPhrase: false,
+				});
+				trendImagesForRatio = dedupeImageUrls(
+					[...trendImagesForRatio, ...relaxed],
+					16
+				);
+			}
+			trendImagesForRatio = prioritizeTokenMatchedUrls(
+				filterUploadCandidates(trendImagesForRatio, 7),
+				strongTopicTokens
+			);
 		}
 		const canUseTrendsImages =
 			category !== "Top5" &&
@@ -5543,7 +6728,7 @@ exports.createVideo = async (req, res) => {
 				images: trendImagePairs.length,
 				ratio,
 			});
-			segments = await punchUpTop5Scripts(segments, segWordCaps);
+			segments = await punchUpTop5Scripts(segments, segWordCaps, language);
 			segments = await tightenTop5TimingAndClarity(segments, segLens, language);
 		} else {
 			/* 5. Let OpenAI orchestrate segments + visuals */
@@ -5586,6 +6771,14 @@ exports.createVideo = async (req, res) => {
 							(typeof b.index === "number" ? b.index : 0)
 					);
 			}
+		}
+
+		if (category !== "Top5") {
+			segments = await repairNarrationSegments(segments, segWordCaps, {
+				topic,
+				category,
+				language,
+			});
 		}
 
 		// Tighten narration to fit word caps
@@ -5632,6 +6825,12 @@ One or two sentences only.
 					category,
 				}),
 			};
+			if (category === "Top5") {
+				segments[lastIdx] = {
+					...segments[lastIdx],
+					scriptText: ensureCompleteTop5Outro(segments[lastIdx].scriptText),
+				};
+			}
 		}
 
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
@@ -5737,7 +6936,9 @@ One or two sentences only.
 					},
 				],
 			});
-			const parsed = JSON.parse(strip(tagResp.choices[0].message.content));
+			const parsed = parseJsonFlexible(
+				strip(tagResp.choices[0].message.content)
+			);
 			if (Array.isArray(parsed)) tags.push(...parsed);
 		} catch (e) {
 			console.warn("[Tags] generation failed ?", e.message);
@@ -5877,6 +7078,234 @@ One or two sentences only.
 			};
 		}
 
+		/* 9.5. Voiceover synthesis + Top5 timing alignment */
+		const rawVoicePieces = [];
+		const rawVoiceDurations = [];
+		let fixedPieces = [];
+		let voiceToneSample = null;
+
+		for (let i = 0; i < segCnt; i++) {
+			const ttsPlan = buildTtsPartsForSegment(segments[i], category);
+			const requestedParts = Array.isArray(ttsPlan.parts) ? ttsPlan.parts : [];
+			const ttsParts = requestedParts
+				.map((p) => cleanForTTS(String(p || "").trim(), language))
+				.filter((p) => p.length);
+			if (!ttsParts.length)
+				ttsParts.push(
+					cleanForTTS(String(segments[i].scriptText || "").trim(), language) ||
+						"Update"
+				);
+
+			const toneText = cleanForTTS(
+				improveTTSPronunciation(ttsParts.join(" ").trim()),
+				language
+			);
+			const localTone = deriveVoiceSettings(toneText, category);
+			if (!voiceToneSample) voiceToneSample = localTone;
+
+			const piecePaths = [];
+			for (let pIdx = 0; pIdx < ttsParts.length; pIdx++) {
+				const partText = cleanForTTS(
+					improveTTSPronunciation(ttsParts[pIdx] || "Countdown update"),
+					language
+				);
+				if (!partText.trim()) continue;
+				const partPath = tmpFile(`tts_part_${i + 1}_${pIdx + 1}`, ".mp3");
+
+				try {
+					await elevenLabsTTS(
+						partText,
+						language,
+						partPath,
+						category,
+						chosenVoice?.voiceId || null
+					);
+				} catch (e) {
+					console.warn(
+						`[TTS] ElevenLabs failed for seg ${i + 1} part ${
+							pIdx + 1
+						}, falling back to OpenAI ?`,
+						e.message
+					);
+
+					const tts = await openai.audio.speech.create({
+						model: "tts-1-hd",
+						voice: "shimmer",
+						speed: localTone.openaiSpeed,
+						input: partText,
+						format: "mp3",
+					});
+					fs.writeFileSync(partPath, Buffer.from(await tts.arrayBuffer()));
+				}
+				piecePaths.push(partPath);
+			}
+
+			let raw = piecePaths[0] || tmpFile(`tts_raw_${i + 1}`, ".mp3");
+			let silencePath = null;
+
+			if (piecePaths.length > 1) {
+				const pauseSeconds = Math.max(0, Number(ttsPlan.pauseSeconds) || 0);
+				if (pauseSeconds > 0) {
+					const targetSilence = tmpFile(`tts_pause_${i + 1}`, ".wav");
+					let silenceBuilt = false;
+
+					if (hasLavfi) {
+						try {
+							await ffmpegPromise((c) =>
+								c
+									.input("anullsrc=r=44100:cl=mono")
+									.inputOptions("-f", "lavfi")
+									.outputOptions(
+										"-t",
+										pauseSeconds.toFixed(3),
+										"-ac",
+										"1",
+										"-ar",
+										"44100",
+										"-y"
+									)
+									.save(norm(targetSilence))
+							);
+							silenceBuilt = true;
+						} catch (err) {
+							console.warn(
+								`[TTS] lavfi silence failed for seg ${
+									i + 1
+								}, using PCM fallback`,
+								err.message
+							);
+						}
+					}
+
+					if (!silenceBuilt) {
+						writeSilenceWav(targetSilence, pauseSeconds, {
+							sampleRate: 44100,
+							channels: 1,
+						});
+						silenceBuilt = true;
+					}
+
+					silencePath = silenceBuilt ? targetSilence : null;
+				}
+
+				const concatInputs = [];
+				for (let idx = 0; idx < piecePaths.length; idx++) {
+					concatInputs.push(piecePaths[idx]);
+					if (silencePath && idx < piecePaths.length - 1) {
+						concatInputs.push(silencePath);
+					}
+				}
+
+				raw = tmpFile(`tts_join_${i + 1}`, ".wav");
+				await ffmpegPromise((c) => {
+					concatInputs.forEach((p) => c.input(norm(p)));
+					const concatFilter = concatInputs
+						.map((_, idx) => `[${idx}:a]`)
+						.join("")
+						.concat(`concat=n=${concatInputs.length}:v=0:a=1[aout]`);
+					return c
+						.complexFilter([concatFilter])
+						.outputOptions(
+							"-map",
+							"[aout]",
+							"-ac",
+							"1",
+							"-ar",
+							"44100",
+							"-c:a",
+							"pcm_s16le",
+							"-y"
+						)
+						.save(norm(raw));
+				});
+
+				piecePaths.forEach((p) => {
+					try {
+						fs.unlinkSync(p);
+					} catch {}
+				});
+				if (silencePath) {
+					try {
+						fs.unlinkSync(silencePath);
+					} catch {}
+				}
+			}
+
+			const dur = await probeDurationSeconds(raw);
+			rawVoiceDurations.push(dur);
+			rawVoicePieces.push(raw);
+		}
+
+		if (
+			category === "Top5" &&
+			rawVoiceDurations.length === segCnt &&
+			rawVoiceDurations.some((d) => d > 0.01)
+		) {
+			const aligned = alignSegLensToVoice(segLens, rawVoiceDurations, {
+				minPad: TOP5_MIN_AUDIO_PAD,
+				finishPad: TOP5_FINISH_PAD,
+			});
+			if (aligned.changed) {
+				console.log("[Timing] Top5 voice-aligned segments", {
+					before: segLens,
+					after: aligned.segLens,
+					delta: aligned.delta,
+				});
+				segLens = aligned.segLens;
+				totalDurationTarget = aligned.totalDuration;
+				segCnt = segLens.length;
+				engagementTailSeconds = segLens[segLens.length - 1];
+			}
+			if (top5DurationCap) {
+				const capped = capTop5SegLensToMaxTotal(segLens, top5DurationCap);
+				if (capped.changed && capped.total <= top5DurationCap + 0.01) {
+					console.log("[Timing] Top5 capped to max budget", {
+						before: segLens,
+						after: capped.segLens,
+						cap: top5DurationCap,
+						delta: capped.delta,
+					});
+					segLens = capped.segLens;
+					totalDurationTarget = capped.total;
+					segCnt = segLens.length;
+					engagementTailSeconds = segLens[segLens.length - 1];
+				}
+			}
+		}
+
+		const voiceAtempoCap =
+			category === "Top5"
+				? Math.min(
+						TOP5_MAX_ATEMPO,
+						language === "English" ? MAX_ATEMPO_VOICE_EN : MAX_ATEMPO
+				  )
+				: language === "English"
+				? MAX_ATEMPO_VOICE_EN
+				: MAX_ATEMPO;
+
+		for (let i = 0; i < rawVoicePieces.length; i++) {
+			const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
+			const rawPath = rawVoicePieces[i];
+			if (!rawPath || !fs.existsSync(rawPath)) {
+				console.warn(
+					`[TTS] Missing raw audio for segment ${i + 1}, skipping prebuilt fit`
+				);
+				continue;
+			}
+			await exactLenAudio(rawPath, segLens[i], fixed, {
+				maxAtempo: voiceAtempoCap,
+				forceTrim: category === "Top5",
+			});
+			fixedPieces.push(fixed);
+			try {
+				if (rawPath && fs.existsSync(rawPath)) {
+					fs.unlinkSync(rawPath);
+				}
+			} catch {}
+		}
+
+		totalDurationTarget = +segLens.reduce((a, b) => a + b, 0).toFixed(2);
+
 		/* 10. Per-segment video generation */
 		const clips = [];
 		sendPhase("GENERATING_CLIPS", {
@@ -5905,7 +7334,8 @@ One or two sentences only.
 			const rw = Math.max(5, Math.min(10, Math.round(d)));
 			const { promptText, negativePrompt } = buildRunwayPrompt(
 				seg,
-				globalStyle
+				globalStyle,
+				category
 			);
 			const canUseRunway =
 				allowRunway &&
@@ -6001,6 +7431,7 @@ One or two sentences only.
 							negativePrompt,
 							ratio,
 							runwayDuration: rw,
+							promptStrength: category === "Top5" ? 0.6 : 0.55,
 						});
 						break;
 					} catch (e) {
@@ -6212,128 +7643,181 @@ One or two sentences only.
 		sendPhase("ADDING_VOICE_MUSIC", { msg: "Creating audio layer" });
 		console.log("[Phase] ADDING_VOICE_MUSIC ? Creating audio layer");
 
-		const fixedPieces = [];
-		let voiceToneSample = null;
+		if (!fixedPieces || fixedPieces.length !== segCnt) {
+			console.warn(
+				"[TTS] Prebuilt voice tracks missing; regenerating during audio stage."
+			);
+			fixedPieces = [];
+			const voiceAtempoCap =
+				category === "Top5"
+					? Math.min(
+							TOP5_MAX_ATEMPO,
+							language === "English" ? MAX_ATEMPO_VOICE_EN : MAX_ATEMPO
+					  )
+					: language === "English"
+					? MAX_ATEMPO_VOICE_EN
+					: MAX_ATEMPO;
+			for (let i = 0; i < segCnt; i++) {
+				const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
+				const ttsPlan = buildTtsPartsForSegment(segments[i], category);
+				const requestedParts = Array.isArray(ttsPlan.parts)
+					? ttsPlan.parts
+					: [];
+				const ttsParts = requestedParts
+					.map((p) => cleanForTTS(String(p || "").trim(), language))
+					.filter((p) => p.length);
+				if (!ttsParts.length)
+					ttsParts.push(
+						cleanForTTS(
+							String(segments[i].scriptText || "").trim(),
+							language
+						) || "Update"
+					);
 
-		for (let i = 0; i < segCnt; i++) {
-			const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
-			const ttsPlan = buildTtsPartsForSegment(segments[i], category);
-			const requestedParts = Array.isArray(ttsPlan.parts) ? ttsPlan.parts : [];
-			const ttsParts = requestedParts
-				.map((p) => String(p || "").trim())
-				.filter((p) => p.length);
-			if (!ttsParts.length)
-				ttsParts.push(String(segments[i].scriptText || "").trim() || "Update");
-
-			const toneText = improveTTSPronunciation(ttsParts.join(" ").trim());
-			const localTone = deriveVoiceSettings(toneText, category);
-			if (!voiceToneSample) voiceToneSample = localTone;
-
-			const piecePaths = [];
-			for (let pIdx = 0; pIdx < ttsParts.length; pIdx++) {
-				const partText = improveTTSPronunciation(
-					ttsParts[pIdx] || "Countdown update"
+				const toneText = cleanForTTS(
+					improveTTSPronunciation(ttsParts.join(" ").trim()),
+					language
 				);
-				const partPath = tmpFile(`tts_part_${i + 1}_${pIdx + 1}`, ".mp3");
+				const localTone = deriveVoiceSettings(toneText, category);
+				if (!voiceToneSample) voiceToneSample = localTone;
 
-				try {
-					await elevenLabsTTS(
-						partText,
-						language,
-						partPath,
-						category,
-						chosenVoice?.voiceId || null
+				const piecePaths = [];
+				for (let pIdx = 0; pIdx < ttsParts.length; pIdx++) {
+					const partText = cleanForTTS(
+						improveTTSPronunciation(ttsParts[pIdx] || "Countdown update"),
+						language
 					);
-				} catch (e) {
-					console.warn(
-						`[TTS] ElevenLabs failed for seg ${i + 1} part ${
-							pIdx + 1
-						}, falling back to OpenAI ?`,
-						e.message
-					);
+					if (!partText.trim()) continue;
+					const partPath = tmpFile(`tts_part_${i + 1}_${pIdx + 1}`, ".mp3");
 
-					const tts = await openai.audio.speech.create({
-						model: "tts-1-hd",
-						voice: "shimmer",
-						speed: localTone.openaiSpeed,
-						input: partText,
-						format: "mp3",
-					});
-					fs.writeFileSync(partPath, Buffer.from(await tts.arrayBuffer()));
+					try {
+						await elevenLabsTTS(
+							partText,
+							language,
+							partPath,
+							category,
+							chosenVoice?.voiceId || null
+						);
+					} catch (e) {
+						console.warn(
+							`[TTS] ElevenLabs failed for seg ${i + 1} part ${
+								pIdx + 1
+							}, falling back to OpenAI ?`,
+							e.message
+						);
+
+						const tts = await openai.audio.speech.create({
+							model: "tts-1-hd",
+							voice: "shimmer",
+							speed: localTone.openaiSpeed,
+							input: partText,
+							format: "mp3",
+						});
+						fs.writeFileSync(partPath, Buffer.from(await tts.arrayBuffer()));
+					}
+					piecePaths.push(partPath);
 				}
-				piecePaths.push(partPath);
-			}
 
-			let raw = piecePaths[0] || tmpFile(`tts_raw_${i + 1}`, ".mp3");
-			let silencePath = null;
-			let concatList = null;
+				let raw = piecePaths[0] || tmpFile(`tts_raw_${i + 1}`, ".mp3");
+				let silencePath = null;
 
-			if (piecePaths.length > 1) {
-				if (ttsPlan.pauseSeconds > 0) {
-					silencePath = tmpFile(`tts_pause_${i + 1}`, ".wav");
-					await ffmpegPromise((c) =>
-						c
-							.input("anullsrc=r=44100:cl=mono")
-							.inputOptions("-f", "lavfi")
+				if (piecePaths.length > 1) {
+					const pauseSeconds = Math.max(0, Number(ttsPlan.pauseSeconds) || 0);
+					if (pauseSeconds > 0) {
+						const targetSilence = tmpFile(`tts_pause_${i + 1}`, ".wav");
+						let silenceBuilt = false;
+
+						if (hasLavfi) {
+							try {
+								await ffmpegPromise((c) =>
+									c
+										.input("anullsrc=r=44100:cl=mono")
+										.inputOptions("-f", "lavfi")
+										.outputOptions(
+											"-t",
+											pauseSeconds.toFixed(3),
+											"-ac",
+											"1",
+											"-ar",
+											"44100",
+											"-y"
+										)
+										.save(norm(targetSilence))
+								);
+								silenceBuilt = true;
+							} catch (err) {
+								console.warn(
+									`[TTS] lavfi silence failed for seg ${
+										i + 1
+									}, using PCM fallback`,
+									err.message
+								);
+							}
+						}
+
+						if (!silenceBuilt) {
+							writeSilenceWav(targetSilence, pauseSeconds, {
+								sampleRate: 44100,
+								channels: 1,
+							});
+							silenceBuilt = true;
+						}
+
+						silencePath = silenceBuilt ? targetSilence : null;
+					}
+
+					const concatInputs = [];
+					for (let idx = 0; idx < piecePaths.length; idx++) {
+						concatInputs.push(piecePaths[idx]);
+						if (silencePath && idx < piecePaths.length - 1) {
+							concatInputs.push(silencePath);
+						}
+					}
+
+					raw = tmpFile(`tts_join_${i + 1}`, ".wav");
+					await ffmpegPromise((c) => {
+						concatInputs.forEach((p) => c.input(norm(p)));
+						const concatFilter = concatInputs
+							.map((_, idx) => `[${idx}:a]`)
+							.join("")
+							.concat(`concat=n=${concatInputs.length}:v=0:a=1[aout]`);
+						return c
+							.complexFilter([concatFilter])
 							.outputOptions(
-								"-t",
-								ttsPlan.pauseSeconds.toFixed(3),
+								"-map",
+								"[aout]",
 								"-ac",
 								"1",
 								"-ar",
 								"44100",
+								"-c:a",
+								"pcm_s16le",
 								"-y"
 							)
-							.save(norm(silencePath))
-					);
-				}
+							.save(norm(raw));
+					});
 
-				const concatInputs = [];
-				for (let idx = 0; idx < piecePaths.length; idx++) {
-					concatInputs.push(piecePaths[idx]);
-					if (silencePath && idx < piecePaths.length - 1) {
-						concatInputs.push(silencePath);
+					piecePaths.forEach((p) => {
+						try {
+							fs.unlinkSync(p);
+						} catch {}
+					});
+					if (silencePath) {
+						try {
+							fs.unlinkSync(silencePath);
+						} catch {}
 					}
 				}
 
-				concatList = tmpFile(`audio_list_parts_${i + 1}`, ".txt");
-				fs.writeFileSync(
-					concatList,
-					concatInputs.map((p) => `file '${norm(p)}'`).join("\n")
-				);
-
-				raw = tmpFile(`tts_join_${i + 1}`, ".wav");
-				await ffmpegPromise((c) =>
-					c
-						.input(norm(concatList))
-						.inputOptions("-f", "concat", "-safe", "0")
-						.outputOptions("-c", "copy", "-y")
-						.save(norm(raw))
-				);
-
-				try {
-					fs.unlinkSync(concatList);
-				} catch {}
-				piecePaths.forEach((p) => {
-					try {
-						fs.unlinkSync(p);
-					} catch {}
+				await exactLenAudio(raw, segLens[i], fixed, {
+					maxAtempo: voiceAtempoCap,
+					forceTrim: category === "Top5",
 				});
-				if (silencePath) {
-					try {
-						fs.unlinkSync(silencePath);
-					} catch {}
-				}
+				try {
+					if (raw && fs.existsSync(raw)) fs.unlinkSync(raw);
+				} catch {}
+				fixedPieces.push(fixed);
 			}
-
-			await exactLenAudio(raw, segLens[i], fixed, {
-				maxAtempo: category === "Top5" ? 1.08 : MAX_ATEMPO,
-				forceTrim: category === "Top5",
-			});
-			try {
-				if (raw && fs.existsSync(raw)) fs.unlinkSync(raw);
-			} catch {}
-			fixedPieces.push(fixed);
 		}
 
 		const audioConcatList = tmpFile("audio_list", ".txt");
@@ -6400,8 +7884,18 @@ One or two sentences only.
 			fs.unlinkSync(ttsJoin);
 		} catch {}
 
+		const mixAtempoCap =
+			category === "Top5"
+				? Math.min(
+						TOP5_MAX_ATEMPO,
+						language === "English" ? MAX_ATEMPO_MIX_EN : MAX_ATEMPO
+				  )
+				: language === "English"
+				? MAX_ATEMPO_MIX_EN
+				: MAX_ATEMPO;
+
 		await exactLenAudio(mixedRaw, totalDurationTarget, mixed, {
-			maxAtempo: category === "Top5" ? 1.08 : MAX_ATEMPO,
+			maxAtempo: mixAtempoCap,
 			forceTrim: category === "Top5",
 		});
 		try {
@@ -6716,6 +8210,10 @@ exports.updateVideo = async (req, res, next) => {
 					error: "Another video with the same category & topic already exists.",
 				});
 			}
+		}
+
+		if (typeof updates.seoDescription === "string") {
+			updates.seoDescription = ensureClickableLinks(updates.seoDescription);
 		}
 
 		// Apply only whitelisted updates (prevent overwriting system fields)
