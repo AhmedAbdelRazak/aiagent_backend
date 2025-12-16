@@ -275,6 +275,7 @@ async function handleSchedule(sched) {
 		customPrompt: "",
 		videoImage: baseVideo?.videoImage,
 		schedule: null,
+		useSora: Boolean(baseVideo?.useSora),
 		youtubeAccessToken: baseVideo?.youtubeAccessToken,
 		youtubeRefreshToken: baseVideo?.youtubeRefreshToken,
 		youtubeTokenExpiresAt: baseVideo?.youtubeTokenExpiresAt,
