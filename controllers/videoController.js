@@ -6711,6 +6711,27 @@ exports.createVideo = async (req, res) => {
 				filterUploadCandidates(trendImagesForRatio, 7),
 				strongTopicTokens
 			);
+			// Last-resort: if nothing survived strict/relaxed filters, do a loose grab
+			if (!trendImagesForRatio.length) {
+				try {
+					const loose = await fetchHighQualityImagesForTopic({
+						topic,
+						ratio,
+						articleLinks,
+						desiredCount: 8,
+						limit: 14,
+						topicTokens: [],
+						requireAnyToken: false,
+						negativeTitleRe: null,
+						strictTopicMatch: false,
+						phraseAnchors: [],
+						requireAnchorPhrase: false,
+					});
+					trendImagesForRatio = dedupeImageUrls(loose, 14);
+				} catch (e) {
+					console.warn("[Trending] loose image search failed ?", e.message);
+				}
+			}
 		}
 		const canUseTrendsImages =
 			category !== "Top5" &&
