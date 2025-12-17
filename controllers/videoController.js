@@ -337,6 +337,14 @@ const ELEVEN_VOICES = {
 	Hindi: "ykoxtvL6VZTyas23mE9F",
 	Arabic: "", // leave blank to force dynamic Egyptian/Arabic pick
 };
+const ELEVEN_LANGUAGE_CODES = {
+	English: "en",
+	Spanish: "es",
+	Francais: "fr",
+	Deutsch: "de",
+	Hindi: "hi",
+	Arabic: "ar",
+};
 const ELEVEN_STYLE_BY_CATEGORY = {
 	Sports: 1.0,
 	Politics: 0.7,
@@ -1317,7 +1325,7 @@ function numberToEnglish(n) {
 }
 
 function improveTTSPronunciation(text) {
-	text = text.replace(/#\s*([1-5])\s*[-–—:]?/gi, (_, n) =>
+	text = text.replace(/#\s*([1-5])\s*[---:]?/gi, (_, n) =>
 		NUM_WORD[n] ? `Number ${NUM_WORD[n]}: ` : `Number ${n}: `
 	);
 	text = text.replace(/\b#\s*([1-5])\b/gi, (_, n) =>
@@ -1349,8 +1357,44 @@ function improveTTSPronunciation(text) {
 	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
 }
 
-function cleanForTTS(text = "", language = DEFAULT_LANGUAGE) {
+function normalizePunctuationForTTS(text = "") {
 	let cleaned = String(text || "");
+
+	// Remove URLs and emails that ElevenLabs will spell awkwardly
+	cleaned = cleaned.replace(
+		/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi,
+		" "
+	);
+
+	// Flatten hashtags/handles into plain words
+	cleaned = cleaned.replace(/#([A-Za-z0-9]+)/g, " $1 ");
+	cleaned = cleaned.replace(/@([A-Za-z0-9_]+)/g, " $1 ");
+
+	// Expand simple currency tokens
+	cleaned = cleaned.replace(/\$([0-9][0-9,\.]*)/g, "$1 dollars");
+	cleaned = cleaned.replace(/€([0-9][0-9,\.]*)/g, "$1 euros");
+	cleaned = cleaned.replace(/£([0-9][0-9,\.]*)/g, "$1 pounds");
+	cleaned = cleaned.replace(/₹([0-9][0-9,\.]*)/g, "$1 rupees");
+	cleaned = cleaned.replace(/¥([0-9][0-9,\.]*)/g, "$1 yen");
+
+	// Replace stray punctuation that can create gibberish
+	cleaned = cleaned.replace(/[|\\*=_<>^~`{}[\]]+/g, " ");
+
+	// Treat separators as pauses
+	cleaned = cleaned.replace(/[\/]+/g, " / ");
+	cleaned = cleaned.replace(/[+]+/g, " plus ");
+
+	// Collapse repeated punctuation
+	cleaned = cleaned.replace(/([!?.,]){2,}/g, "$1 ");
+
+	// Normalize ampersand
+	cleaned = cleaned.replace(/&/g, " and ");
+
+	return cleaned;
+}
+
+function cleanForTTS(text = "", language = DEFAULT_LANGUAGE) {
+	let cleaned = normalizePunctuationForTTS(text);
 	// normalize whitespace
 	cleaned = cleaned
 		.replace(/[^\S\r\n]+/g, " ")
@@ -5581,7 +5625,7 @@ async function jamendo(term) {
 /* Background music planning */
 async function planBackgroundMusic(category, language, script) {
 	const defaultVoiceGain = category === "Top5" ? 1.5 : 1.4;
-	const defaultMusicGain = category === "Top5" ? 0.18 : 0.18;
+	const defaultMusicGain = category === "Top5" ? 0.18 : 0.16;
 	const upbeatHint =
 		category === "Top5"
 			? "Fun, upbeat, exciting countdown energy with a motivational feel, percussive, no vocals."
@@ -5890,12 +5934,17 @@ async function elevenLabsTTS(
 		voiceIdOverride ||
 		ELEVEN_VOICES[language] ||
 		ELEVEN_VOICES[DEFAULT_LANGUAGE];
+	const languageCode =
+		ELEVEN_LANGUAGE_CODES[language] ||
+		ELEVEN_LANGUAGE_CODES[normalizeLanguageLabel(language)] ||
+		ELEVEN_LANGUAGE_CODES[DEFAULT_LANGUAGE];
 
 	const tone = deriveVoiceSettings(text, category);
 
 	const payload = {
 		text,
 		model_id: "eleven_multilingual_v2",
+		...(languageCode ? { language_code: languageCode } : {}),
 		voice_settings: {
 			stability: tone.stability,
 			similarity_boost: tone.similarityBoost,
