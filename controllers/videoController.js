@@ -1361,10 +1361,7 @@ function normalizePunctuationForTTS(text = "") {
 	let cleaned = String(text || "");
 
 	// Remove URLs and emails that ElevenLabs will spell awkwardly
-	cleaned = cleaned.replace(
-		/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi,
-		" "
-	);
+	cleaned = cleaned.replace(/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi, " ");
 
 	// Flatten hashtags/handles into plain words
 	cleaned = cleaned.replace(/#([A-Za-z0-9]+)/g, " $1 ");
