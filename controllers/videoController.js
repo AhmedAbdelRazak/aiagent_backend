@@ -5581,7 +5581,7 @@ async function jamendo(term) {
 /* Background music planning */
 async function planBackgroundMusic(category, language, script) {
 	const defaultVoiceGain = category === "Top5" ? 1.5 : 1.4;
-	const defaultMusicGain = category === "Top5" ? 0.18 : 0.14;
+	const defaultMusicGain = category === "Top5" ? 0.18 : 0.18;
 	const upbeatHint =
 		category === "Top5"
 			? "Fun, upbeat, exciting countdown energy with a motivational feel, percussive, no vocals."
@@ -6524,8 +6524,7 @@ exports.createVideo = async (req, res) => {
 		let trendArticleText = null;
 
 		const userOverrides = Boolean(videoImage) || customPrompt.length > 0;
-		const requireScheduledTrends =
-			isScheduledJob && category !== "Top5";
+		const requireScheduledTrends = isScheduledJob && category !== "Top5";
 		const shouldFetchTrendStory =
 			category !== "Top5" && (!userOverrides || isScheduledJob);
 		const allowTrendsImageSearch =
