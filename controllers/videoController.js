@@ -6452,7 +6452,10 @@ exports.createVideo = async (req, res) => {
 				? countryIn.trim()
 				: "US";
 		const customPrompt = customPromptRaw.trim();
-		const useSora = toBool(useSoraIn); // reuse frontend flag: true => allow Runway clips
+		let useSora = toBool(useSoraIn); // reuse frontend flag: true => allow Runway clips
+		if (isScheduledJob && scheduleJobMeta?.useSora) {
+			useSora = true;
+		}
 		if (isScheduledJob && scheduleJobMeta?.category) {
 			const expectedCat = String(scheduleJobMeta.category);
 			if (expectedCat && expectedCat !== category) {
@@ -6754,11 +6757,14 @@ exports.createVideo = async (req, res) => {
 					);
 				}
 			}
+		} else if (requireScheduledTrends) {
+			throw new Error(
+				"Scheduled run requires Google Trends images; none were available"
+			);
 		}
 
 		let hasTrendImages = trendImagePairs.length > 0;
-		const forceStaticVisuals =
-			!useSora || isSportsTopic(topic, category, trendStory);
+		const forceStaticVisuals = !useSora;
 
 		let segments;
 		if (category === "Top5") {

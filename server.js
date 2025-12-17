@@ -285,6 +285,7 @@ async function handleSchedule(sched) {
 		scheduleId: String(sched._id),
 		category: resolvedCategory,
 		baseVideoId: baseVideo?._id || baseVideo?.id || undefined,
+		useSora: Boolean(baseVideo?.useSora),
 	};
 
 	// Mock req/res so createVideo can run from cron/queue
