@@ -5625,7 +5625,7 @@ async function jamendo(term) {
 /* Background music planning */
 async function planBackgroundMusic(category, language, script) {
 	const defaultVoiceGain = category === "Top5" ? 1.5 : 1.4;
-	const defaultMusicGain = category === "Top5" ? 0.18 : 0.16;
+	const defaultMusicGain = category === "Top5" ? 0.18 : 0.14;
 	const upbeatHint =
 		category === "Top5"
 			? "Fun, upbeat, exciting countdown energy with a motivational feel, percussive, no vocals."
