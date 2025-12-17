@@ -6732,6 +6732,30 @@ exports.createVideo = async (req, res) => {
 					console.warn("[Trending] loose image search failed ?", e.message);
 				}
 			}
+			// Scheduled runs: ensure we aggressively try one more broad search if still empty
+			if (requireScheduledTrends && !trendImagesForRatio.length) {
+				try {
+					const broad = await fetchHighQualityImagesForTopic({
+						topic,
+						ratio,
+						articleLinks: [],
+						desiredCount: 10,
+						limit: 18,
+						topicTokens: [],
+						requireAnyToken: false,
+						negativeTitleRe: null,
+						strictTopicMatch: false,
+						phraseAnchors: [],
+						requireAnchorPhrase: false,
+					});
+					trendImagesForRatio = dedupeImageUrls(broad, 18);
+					console.log("[Trending] broad fallback images (scheduled)", {
+						count: trendImagesForRatio.length,
+					});
+				} catch (e) {
+					console.warn("[Trending] broad fallback search failed ?", e.message);
+				}
+			}
 		}
 		const canUseTrendsImages =
 			category !== "Top5" &&
@@ -6781,6 +6805,11 @@ exports.createVideo = async (req, res) => {
 		}
 
 		let hasTrendImages = trendImagePairs.length > 0;
+		if (requireScheduledTrends && !hasTrendImages) {
+			throw new Error(
+				"Scheduled run requires topic images; none were found or uploadable"
+			);
+		}
 		const forceStaticVisuals = !useSora;
 
 		let segments;
