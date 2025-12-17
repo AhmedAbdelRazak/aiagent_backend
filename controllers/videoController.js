@@ -3876,6 +3876,8 @@ async function fetchHighQualityImagesForTopic({
 				}
 			}
 		}
+	} else {
+		console.warn("[ImageSearch] Google CSE disabled (missing key/cx)");
 	}
 
 	const scored = candidates
@@ -6526,6 +6528,8 @@ exports.createVideo = async (req, res) => {
 			isScheduledJob && category !== "Top5";
 		const shouldFetchTrendStory =
 			category !== "Top5" && (!userOverrides || isScheduledJob);
+		const allowTrendsImageSearch =
+			category !== "Top5" && (!userOverrides || isScheduledJob);
 
 		// 1) Try Trends story first (Top5 skips; scheduled runs force Trends even with overrides)
 		if (shouldFetchTrendStory) {
@@ -6665,7 +6669,7 @@ exports.createVideo = async (req, res) => {
 		/* 4. Search & upload Trends images to Cloudinary (single target ratio) */
 		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
 		let trendImagesForRatio = [];
-		if (!userOverrides && category !== "Top5") {
+		if (allowTrendsImageSearch) {
 			const articleLinks =
 				trendStory && Array.isArray(trendStory.articles)
 					? trendStory.articles.map((a) => a.url).filter(Boolean)
@@ -6688,6 +6692,10 @@ exports.createVideo = async (req, res) => {
 				requireAnchorPhrase: true,
 			});
 			if (trendImagesForRatio.length < 5) {
+				console.log(
+					"[Trending] image search (strict) count",
+					trendImagesForRatio.length
+				);
 				const relaxed = await fetchHighQualityImagesForTopic({
 					topic,
 					ratio,
@@ -6711,6 +6719,10 @@ exports.createVideo = async (req, res) => {
 				filterUploadCandidates(trendImagesForRatio, 7),
 				strongTopicTokens
 			);
+			console.log(
+				"[Trending] image search (relaxed/prioritized) count",
+				trendImagesForRatio.length
+			);
 			// Last-resort: if nothing survived strict/relaxed filters, do a loose grab
 			if (!trendImagesForRatio.length) {
 				try {
@@ -6728,6 +6740,10 @@ exports.createVideo = async (req, res) => {
 						requireAnchorPhrase: false,
 					});
 					trendImagesForRatio = dedupeImageUrls(loose, 14);
+					console.log(
+						"[Trending] image search (loose) count",
+						trendImagesForRatio.length
+					);
 				} catch (e) {
 					console.warn("[Trending] loose image search failed ?", e.message);
 				}
@@ -6758,10 +6774,7 @@ exports.createVideo = async (req, res) => {
 			}
 		}
 		const canUseTrendsImages =
-			category !== "Top5" &&
-			!userOverrides &&
-			trendStory &&
-			trendImagesForRatio.length > 0;
+			allowTrendsImageSearch && trendStory && trendImagesForRatio.length > 0;
 
 		if (canUseTrendsImages) {
 			const slugBase = topic
