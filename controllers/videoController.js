@@ -6757,10 +6757,6 @@ exports.createVideo = async (req, res) => {
 					);
 				}
 			}
-		} else if (requireScheduledTrends) {
-			throw new Error(
-				"Scheduled run requires Google Trends images; none were available"
-			);
 		}
 
 		let hasTrendImages = trendImagePairs.length > 0;
