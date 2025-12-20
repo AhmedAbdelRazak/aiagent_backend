@@ -358,6 +358,7 @@ const ELEVEN_STYLE_BY_CATEGORY = {
 	Top5: 1.0,
 	Other: 0.7,
 };
+const RECENT_VOICE_AVOID_COUNT = 2; // keep rotation by avoiding the last two unique voices when possible
 
 const SENSITIVE_TONE_RE =
 	/\b(died|dead|death|killed|slain|shot dead|massacre|tragedy|tragic|funeral|mourning|mourner|passed away|succumbed|fatal|fatalities|casualty|casualties|victim|victims|hospitalized|in intensive care|on life support|critically ill|coma|cancer|tumor|tumour|leukemia|stroke|heart attack|illness|terminal|pandemic|epidemic|outbreak|bombing|explosion|airstrike|air strike|genocide)\b/i;
@@ -1324,7 +1325,52 @@ function numberToEnglish(n) {
 	return null;
 }
 
+function trimTrailingZeros(str = "") {
+	return String(str || "")
+		.replace(/\.0+$/, "")
+		.replace(/(\.\d*[1-9])0+$/, "$1");
+}
+
+function humanizeLargeNumber(num) {
+	if (!Number.isFinite(num)) return null;
+	if (num >= 1e9) {
+		return `${trimTrailingZeros((num / 1e9).toFixed(num % 1e9 === 0 ? 0 : 2))} billion`;
+	}
+	if (num >= 1e6) {
+		return `${trimTrailingZeros((num / 1e6).toFixed(num % 1e6 === 0 ? 0 : 2))} million`;
+	}
+	if (num >= 1e3) {
+		return `${trimTrailingZeros((num / 1e3).toFixed(num % 1e3 === 0 ? 0 : 2))} thousand`;
+	}
+	if (num >= 1 && num < 10000) {
+		const spoken = numberToEnglish(Math.round(num));
+		return spoken || trimTrailingZeros(num.toString());
+	}
+	return trimTrailingZeros(num.toString());
+}
+
+function scaleNumberForSpeech(numStr = "", scale = 1) {
+	const numeric = parseFloat(String(numStr || "").replace(/,/g, ""));
+	if (!Number.isFinite(numeric)) return null;
+	return humanizeLargeNumber(numeric * scale);
+}
+
+function appendUnitForSpeech(numStr, unitLabel) {
+	const spoken = scaleNumberForSpeech(numStr, 1);
+	return spoken ? `${spoken} ${unitLabel}` : `${numStr} ${unitLabel}`;
+}
+
 function improveTTSPronunciation(text) {
+	const SCALE_MAP = {
+		k: 1e3,
+		m: 1e6,
+		million: 1e6,
+		b: 1e9,
+		bn: 1e9,
+		billion: 1e9,
+		thousand: 1e3,
+	};
+
 	text = text.replace(/#\s*([1-5])\s*[---:]?/gi, (_, n) =>
 		NUM_WORD[n] ? `Number ${NUM_WORD[n]}: ` : `Number ${n}: `
 	);
@@ -1349,12 +1395,80 @@ function improveTTSPronunciation(text) {
 		}
 	);
 
-	text = text.replace(/\b(\d{1,3})%\b/g, (_, num) => {
-		const spoken = numberToEnglish(parseInt(num, 10)) || num;
-		return `${spoken} percent`;
+	text = text.replace(
+		/\b(\d[\d,\.]*)\s*(k|m|b|bn|million|billion|thousand)\b/gi,
+		(m, num, scaleToken) => {
+			const scale = SCALE_MAP[String(scaleToken || "").toLowerCase()] || 1;
+			const spoken = scaleNumberForSpeech(num, scale);
+			return spoken || m;
+		}
+	);
+
+	text = text.replace(/\b(\d{1,3}(?:,\d{3})+)\b/g, (m, num) => {
+		const spoken = scaleNumberForSpeech(num, 1);
+		return spoken || m;
 	});
 
-	return text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
+	text = text.replace(
+		/\b(\d{1,3}(?:,\d{3})*|\d+(?:\.\d+)?)%\b/g,
+		(m, num) => {
+			const spoken = scaleNumberForSpeech(num, 1);
+			return spoken ? `${spoken} percent` : `${num} percent`;
+		}
+	);
+
+	text = text.replace(
+		/\bpopulation of\s+(\d[\d,\.]*)(\s*(million|billion|thousand|k|m|bn)?)\b/gi,
+		(m, num, scaleToken) => {
+			const scale = SCALE_MAP[String(scaleToken || "").toLowerCase()] || 1;
+			const spoken = scaleNumberForSpeech(num, scale);
+			return spoken ? `population of ${spoken} people` : m;
+		}
+	);
+
+	const replaceScaledUnit = (regex, unitLabel) => {
+		text = text.replace(regex, (m, num, scaleToken) => {
+			const scale = SCALE_MAP[String(scaleToken || "").toLowerCase()] || 1;
+			const spoken = scaleNumberForSpeech(num, scale);
+			return spoken ? `${spoken} ${unitLabel}` : m;
+		});
+	};
+
+	replaceScaledUnit(
+		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:sq\.?\s*ft|sqft|square\s*feet?|ft2|ft\^2)\b/gi,
+		"square feet"
+	);
+	replaceScaledUnit(
+		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:sq\.?\s*m|sqm|square\s*meters?|m2|m\^2)\b/gi,
+		"square meters"
+	);
+	replaceScaledUnit(
+		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:sq\.?\s*km|square\s*kilometers?|km2|km\^2)\b/gi,
+		"square kilometers"
+	);
+	replaceScaledUnit(
+		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:sq\.?\s*mi|square\s*miles?|mi2|mi\^2)\b/gi,
+		"square miles"
+	);
+	replaceScaledUnit(
+		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:acres?)\b/gi,
+		"acres"
+	);
+	replaceScaledUnit(
+		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:hectares?)\b/gi,
+		"hectares"
+	);
+	replaceScaledUnit(
+		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:mph|miles per hour)\b/gi,
+		"miles per hour"
+	);
+
+	text = text.replace(
+		/\b([1-9]|1[0-9]|20)\b/g,
+		(_, n) => NUM_WORD[n] || n
+	);
+
+	return text;
 }
 
 function normalizePunctuationForTTS(text = "") {
@@ -1369,10 +1483,11 @@ function normalizePunctuationForTTS(text = "") {
 
 	// Expand simple currency tokens
 	cleaned = cleaned.replace(/\$([0-9][0-9,\.]*)/g, "$1 dollars");
-	cleaned = cleaned.replace(/€([0-9][0-9,\.]*)/g, "$1 euros");
-	cleaned = cleaned.replace(/£([0-9][0-9,\.]*)/g, "$1 pounds");
-	cleaned = cleaned.replace(/₹([0-9][0-9,\.]*)/g, "$1 rupees");
-	cleaned = cleaned.replace(/¥([0-9][0-9,\.]*)/g, "$1 yen");
+	cleaned = cleaned.replace(/\u20ac\s*([0-9][0-9,\.]*)/g, "$1 euros");
+	cleaned = cleaned.replace(/\u00a3\s*([0-9][0-9,\.]*)/g, "$1 pounds");
+	cleaned = cleaned.replace(/\bUSD\s*\$?([0-9][0-9,\.]*)/gi, "$1 dollars");
+	cleaned = cleaned.replace(/\u20b9\s*([0-9][0-9,\.]*)/g, "$1 rupees");
+	cleaned = cleaned.replace(/\u00a5\s*([0-9][0-9,\.]*)/g, "$1 yen");
 
 	// Replace stray punctuation that can create gibberish
 	cleaned = cleaned.replace(/[|\\*=_<>^~`{}[\]]+/g, " ");
@@ -5710,6 +5825,37 @@ async function fetchElevenVoices() {
 	}
 }
 
+async function recentVoiceIdsForUser(userId, language, limit = RECENT_VOICE_AVOID_COUNT) {
+	if (!userId) return [];
+	try {
+		const docs = await Video.find({
+			user: userId,
+			"elevenLabsVoice.voiceId": { $exists: true },
+		})
+			.sort({ createdAt: -1 })
+			.limit(Math.max(limit + 1, 4))
+			.select("elevenLabsVoice language category createdAt");
+
+		const targetLang = normalizeLanguageLabel(language || DEFAULT_LANGUAGE);
+		const ids = [];
+
+		for (const doc of docs) {
+			const vidVoice = doc?.elevenLabsVoice?.voiceId;
+			if (!vidVoice) continue;
+			const vidLang = normalizeLanguageLabel(doc.language || DEFAULT_LANGUAGE);
+			if (vidLang !== targetLang) continue;
+			if (ids.includes(vidVoice)) continue;
+			ids.push(vidVoice);
+			if (ids.length >= limit) break;
+		}
+
+		return ids;
+	} catch (e) {
+		console.warn("[Eleven] Unable to load recent ElevenLabs voices ?", e.message);
+		return [];
+	}
+}
+
 async function selectBestElevenVoice(
 	language,
 	category,
@@ -5743,14 +5889,14 @@ async function selectBestElevenVoice(
 
 	const slimVoices = voices
 		.filter((v) => v && (v.voice_id || v.voiceId))
-		.slice(0, 30)
 		.map((v) => ({
 			id: v.voice_id || v.voiceId,
 			name: v.name || "",
 			category: v.category || "",
 			labels: v.labels || {},
 			description: v.description || "",
-		}));
+		}))
+		.slice(0, 32);
 
 	let candidates = slimVoices;
 
@@ -5848,8 +5994,8 @@ async function selectBestElevenVoice(
 
 	const avoidText = avoidSet.size
 		? `
-The last video used these voice IDs: ${Array.from(avoidSet).join(", ")}.
-You MUST choose a different "id" than any of these from the voices array below.
+The last videos used these voice IDs: ${Array.from(avoidSet).join(", ")}.
+Choose a different "id" than any of these from the voices array below unless there is absolutely no comparable-quality option. Keep rotation fresh so we do not bounce between the same two voices.
 `
 		: "";
 
@@ -5863,6 +6009,8 @@ Goal:
 		tone.isSensitive ? "sensitive / serious" : "neutral to energetic"
 	}
 - It should sound like a real human news or sports broadcaster, never robotic.
+- Prioritise voices whose labels or descriptions imply "natural", "conversational", "narration", "warm", or "emotional range".
+- If several voices are close in quality, pick the one that keeps variety versus the recently used IDs while still sounding most human.
 
 ${
 	language === "English"
@@ -6082,6 +6230,8 @@ Narration rules:
 - Later segments deepen context: stakes, key players, what to watch, etc.
 - Stay within word caps so narration fits timing.
 - All narration MUST be in ${language}.
+- Rewrite numbers and units into spoken-friendly phrases: say "five dollars", "two point four million people", "seventy five percent", or "one hundred twenty thousand square feet" instead of raw symbols or acronyms.
+- Match the vocal emotion to the topic: excited and bright for wins/breakthroughs, calm and grounded for reflective pieces, compassionate and steady for tragedies.
 - If ${language} is English, keep wording in clear American English; avoid non-English words or translations unless they are proper names.
 - Ignore the country's native language; keep EVERY word in ${language} even if geo/country differs.
 - For nontragic topics, pacing should feel clear and slightly brisk.
@@ -7109,6 +7259,11 @@ One or two sentences only.
 		let lastVoiceMeta = null;
 		let avoidVoiceIds = [];
 		try {
+			avoidVoiceIds = await recentVoiceIdsForUser(
+				user._id,
+				language,
+				RECENT_VOICE_AVOID_COUNT
+			);
 			lastVoiceMeta = await Video.findOne({
 				user: user._id,
 				"elevenLabsVoice.voiceId": { $exists: true },
@@ -7116,12 +7271,14 @@ One or two sentences only.
 				.sort({ createdAt: -1 })
 				.select("elevenLabsVoice category language");
 			if (lastVoiceMeta?.elevenLabsVoice?.voiceId) {
-				avoidVoiceIds.push(lastVoiceMeta.elevenLabsVoice.voiceId);
 				console.log("[TTS] Last used ElevenLabs voice", {
 					voiceId: lastVoiceMeta.elevenLabsVoice.voiceId,
 					language: lastVoiceMeta.language,
 					category: lastVoiceMeta.category,
 				});
+			}
+			if (avoidVoiceIds.length) {
+				console.log("[TTS] Avoiding recent ElevenLabs voices", avoidVoiceIds);
 			}
 		} catch (e) {
 			console.warn(
