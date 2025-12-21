@@ -42,7 +42,13 @@ const GOOGLE_CSE_KEY =
 const GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
 
 const CHAT_MODEL = "gpt-5.1";
-const SYNC_SO_BASE = "https://api.sync.so/v2";
+const SYNC_SO_BASE = "https://api.sync.so";
+const SYNC_SO_LIPSYNC_PATHS = [
+	"/v2/lipsync",
+	"/v1/lipsync",
+	"/v1/lipsyncs",
+	"/lipsync",
+];
 const RUNWAY_VERSION = "2024-11-06";
 const RUNWAY_MODEL = "gen4_turbo";
 const TMP_DIR = path.join(os.tmpdir(), "agentai_long_video");
@@ -497,45 +503,63 @@ async function elevenLabsTTS(text, voiceId, outPath) {
 
 async function requestSyncSoJob({ presenterImage, audioPath }) {
 	if (!SYNC_SO_API_KEY) throw new Error("SYNC_SO_API_KEY missing");
-	const form = new FormData();
 	const audioBuf = fs.readFileSync(audioPath);
-	form.append("audio", new Blob([audioBuf]), "segment.mp3");
+	const presenterIsUrl = isHttpUrl(presenterImage);
+	const presenterBuf = presenterIsUrl
+		? null
+		: fs.readFileSync(presenterImage);
 
-	if (isHttpUrl(presenterImage)) {
-		form.append("image_url", presenterImage);
-	} else {
-		const imgBuf = fs.readFileSync(presenterImage);
-		form.append("image", new Blob([imgBuf]), "presenter.png");
+	let lastErr = null;
+	for (const pathSuffix of SYNC_SO_LIPSYNC_PATHS) {
+		const form = new FormData();
+		form.append("audio", new Blob([audioBuf]), "segment.mp3");
+		if (presenterIsUrl) {
+			form.append("image_url", presenterImage);
+		} else {
+			form.append("image", new Blob([presenterBuf]), "presenter.png");
+		}
+		const endpoint = `${SYNC_SO_BASE}${pathSuffix}`;
+		try {
+			const res = await withRetry(
+				async () =>
+					fetchWithTimeout(
+						endpoint,
+						{
+							method: "POST",
+							headers: {
+								Authorization: `Bearer ${SYNC_SO_API_KEY}`,
+							},
+							body: form,
+						},
+						20000
+					),
+				2,
+				"syncso-create"
+			);
+			if (res.status === 404) {
+				lastErr = new Error(`Sync.so endpoint not found: ${pathSuffix}`);
+				continue;
+			}
+			const data = await res.json().catch(() => ({}));
+			if (!res.ok || !data.id) {
+				lastErr = new Error(
+					`Sync.so lipsync creation failed (${res.status}): ${
+						data?.message || "unknown error"
+					}`
+				);
+				continue;
+			}
+			return { id: data.id, pollPath: pathSuffix };
+		} catch (e) {
+			lastErr = e;
+		}
 	}
-
-	const res = await withRetry(
-		async () =>
-			fetchWithTimeout(
-				`${SYNC_SO_BASE}/lipsync`,
-				{
-					method: "POST",
-					headers: {
-						Authorization: `Bearer ${SYNC_SO_API_KEY}`,
-					},
-					body: form,
-				},
-				20000
-			),
-		2,
-		"syncso-create"
-	);
-	const data = await res.json().catch(() => ({}));
-	if (!res.ok || !data.id)
-		throw new Error(
-			`Sync.so lipsync creation failed (${res.status}): ${
-				data?.message || "unknown error"
-			}`
-		);
-	return data.id;
+	throw lastErr || new Error("Sync.so lipsync creation failed");
 }
 
-async function pollSyncSoJob(id, label) {
-	const url = `${SYNC_SO_BASE}/lipsync/${id}`;
+async function pollSyncSoJob(id, pollPath, label) {
+	const pathSuffix = pollPath || "/v2/lipsync";
+	const url = `${SYNC_SO_BASE}${pathSuffix}/${id}`;
 	for (let i = 0; i < 90; i++) {
 		await sleep(2000);
 		const res = await fetchWithTimeout(
@@ -554,8 +578,15 @@ async function pollSyncSoJob(id, label) {
 }
 
 async function createLipSyncVideo({ presenterImage, audioPath, segIndex }) {
-	const id = await requestSyncSoJob({ presenterImage, audioPath });
-	const outputUrl = await pollSyncSoJob(id, `lipsync_seg_${segIndex}`);
+	const { id, pollPath } = await requestSyncSoJob({
+		presenterImage,
+		audioPath,
+	});
+	const outputUrl = await pollSyncSoJob(
+		id,
+		pollPath,
+		`lipsync_seg_${segIndex}`
+	);
 	return outputUrl;
 }
 
@@ -682,6 +713,12 @@ async function fetchCseChartImages(topic) {
 }
 
 async function selectTopic({ preferredTopicHint, dryRun }) {
+	if (preferredTopicHint) {
+		return {
+			topic: preferredTopicHint,
+			reason: "Using preferredTopicHint",
+		};
+	}
 	if (dryRun) {
 		return {
 			topic: preferredTopicHint || DEFAULT_TOPIC,
