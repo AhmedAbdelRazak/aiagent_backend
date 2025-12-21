@@ -238,6 +238,10 @@ const PHYSICAL_REALISM_HINT =
 	"single cohesive shot, realistic physics, natural hand-object contact, consistent lighting and shadows, no collage artifacts, no floating props";
 const EYE_REALISM_HINT =
 	"natural eye focus and blinking, subtle micro-expressions, no jittering pupils, no crossed or wall-eyed look";
+const NATURAL_MOTION_HINT =
+	"natural documentary realism, relaxed body language, subtle breathing, gentle head and eye micro-movements, organic blink cadence";
+const FRIENDLY_TONE_HINT =
+	"warm, approachable mood, neutral-to-friendly expressions, no eerie or ominous vibe";
 const SOFT_SAFETY_PAD =
 	"fully clothed, respectful framing, wholesome, safe for work, no sexualised framing, no injuries";
 const TOP5_RUNWAY_MOTION_HINT =
@@ -282,6 +286,20 @@ const RUNWAY_NEGATIVE_PROMPT = [
 	"unnatural eye movement",
 	"jittering pupils",
 	"dead eyes",
+	"empty stare",
+	"wide-eyed stare",
+	"uncanny",
+	"uncanny valley",
+	"creepy",
+	"scary",
+	"horror",
+	"eerie",
+	"sinister",
+	"menacing",
+	"glowing eyes",
+	"exaggerated blinking",
+	"twitching",
+	"jerky motion",
 	"lazy eye",
 	"unsafe text prompt",
 	"awkward pose",
@@ -575,6 +593,72 @@ const TOPIC_STOP_WORDS = new Set([
 	"5",
 ]);
 
+const GENERIC_TOPIC_TOKENS = new Set([
+	"celebrity",
+	"celeb",
+	"actor",
+	"actress",
+	"singer",
+	"rapper",
+	"musician",
+	"artist",
+	"influencer",
+	"player",
+	"team",
+	"coach",
+	"athlete",
+	"game",
+	"games",
+	"gaming",
+	"match",
+	"season",
+	"tournament",
+	"finals",
+	"movie",
+	"film",
+	"show",
+	"series",
+	"episode",
+	"trailer",
+	"album",
+	"song",
+	"tour",
+	"concert",
+	"event",
+	"award",
+	"awards",
+	"news",
+	"update",
+	"updates",
+	"latest",
+	"breaking",
+	"viral",
+	"trending",
+	"buzz",
+	"story",
+	"headline",
+	"official",
+	"report",
+	"reports",
+	"announcement",
+	"announced",
+	"release",
+	"released",
+	"launch",
+	"patch",
+	"version",
+	"review",
+	"reviews",
+	"result",
+	"results",
+	"score",
+	"scores",
+	"win",
+	"wins",
+	"loss",
+	"losses",
+]);
+
 const TOPIC_TOKEN_ALIASES = Object.freeze({
 	oscar: [
 		"oscars",
@@ -701,6 +785,14 @@ function normalizeTopicTokens(tokens = []) {
 				.filter(Boolean)
 		)
 	);
+}
+
+function filterSpecificTopicTokens(tokens = []) {
+	const norm = normalizeTopicTokens(tokens);
+	const filtered = norm.filter(
+		(t) => t.length >= 3 && !GENERIC_TOPIC_TOKENS.has(t)
+	);
+	return filtered.length ? filtered : norm;
 }
 
 function expandTopicTokens(tokens = []) {
@@ -1580,9 +1672,10 @@ Rules:
 			? " (use clear American English wording; no non-English words)"
 			: ""
 	}.
+- Keep sentences short and speakable for TTS; avoid tongue twisters, long lists, or nested clauses.
 - Intro must land who/what/when/why-now; middle segments carry stakes/impact/what's next; final segment ends cleanly, and the outro must include a direct question/CTA.
 - No filler or hype; keep facts from the originals. If something is unconfirmed, say it's unconfirmed instead of inventing.
-- Do NOT change overlays or counts—only polish scriptText to be complete and natural.
+- Do NOT change overlays or counts-only polish scriptText to be complete and natural.
 
 Segments (index + scriptText):
 ${segments.map((s, i) => `- ${i + 1}: ${s.scriptText || ""}`).join("\n")}
@@ -3319,7 +3412,7 @@ async function punchUpTop5Scripts(
 		language && language.trim() ? language.trim() : DEFAULT_LANGUAGE;
 	const englishNote =
 		langNote === DEFAULT_LANGUAGE
-			? " Keep it in clear, direct American English with simple, everyday words."
+			? " Keep it in clear, direct American English with simple, everyday words; avoid tongue twisters or long compound sentences."
 			: "";
 
 	const tightened = [];
@@ -3807,6 +3900,41 @@ async function fetchTop5LiveContext(outline = [], topic = "") {
 	return ctx;
 }
 
+async function fetchLiveContextForTopic(topic = "", limit = 3) {
+	if (!canUseGoogleSearch() || !topic) return [];
+	const max = Math.max(1, Math.min(Number(limit) || 3, 5));
+	const year = dayjs().format("YYYY");
+	const q = `${topic} latest news ${year}`;
+	try {
+		const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+			params: {
+				key: GOOGLE_CSE_KEY,
+				cx: GOOGLE_CSE_ID,
+				q,
+				num: max,
+				safe: "active",
+			},
+			timeout: GOOGLE_CSE_TIMEOUT_MS,
+		});
+		const items = Array.isArray(data?.items) ? data.items : [];
+		return items
+			.slice(0, max)
+			.map((it) => ({
+				title: String(it.title || "").slice(0, 180),
+				snippet: String(it.snippet || "").slice(0, 260),
+				link: it.link || it.formattedUrl || "",
+			}))
+			.filter((it) => it.title || it.snippet || it.link);
+	} catch (e) {
+		console.warn("[LiveContext] search failed", {
+			topic,
+			message: e.message,
+			status: e.response?.status,
+		});
+		return [];
+	}
+}
+
 async function fetchOgImage(url) {
 	if (!url) return null;
 	try {
@@ -3897,9 +4025,10 @@ async function fetchHighQualityImagesForTopic({
 }) {
 	const candidates = [];
 	const dedupeSet = new Set();
-	const primaryTokens = topicTokensFromTitle(topic);
-	const primaryMinMatch = minTopicTokenMatches(primaryTokens);
 	const normTopicTokens = expandTopicTokens(topicTokens);
+	const rawPrimaryTokens = topicTokensFromTitle(topic);
+	const primaryTokens = normTopicTokens.length ? normTopicTokens : rawPrimaryTokens;
+	const primaryMinMatch = minTopicTokenMatches(primaryTokens);
 	const tokensAvailable = normTopicTokens.length > 0;
 	const minTopicMatch = strictTopicMatch
 		? tokensAvailable
@@ -5278,13 +5407,13 @@ async function generateItvClipFromImage({
 			);
 			return data.id;
 		},
-		2,
+		1,
 		itvLabel
 	);
 
 	const vidUrl = await retry(
 		() => pollRunway(idVid, RUNWAY_ADMIN_KEY, pollLabel),
-		3,
+		1,
 		pollLabel
 	);
 
@@ -5588,7 +5717,7 @@ function buildRunwayPrompt(seg, globalStyle, category = "") {
 		seg?.countdownLabel || seg?.overlayText || seg?.label || "scene";
 	const fallbackPrompt = isTop5
 		? `Cinematic move through ${fallbackLabel} with real-world motion and depth; gentle dolly or slide, natural crowd/traffic movement, steady framing, no zoom-only moves`
-		: `${fallbackLabel} cinematic action shot`;
+		: `${fallbackLabel} cinematic action shot with natural, friendly human motion and subtle camera movement`;
 	const userPrompt = String(seg?.runwayPrompt || "").trim() || fallbackPrompt;
 
 	const parts = [
@@ -5600,6 +5729,8 @@ function buildRunwayPrompt(seg, globalStyle, category = "") {
 		QUALITY_BONUS,
 		PHYSICAL_REALISM_HINT,
 		EYE_REALISM_HINT,
+		NATURAL_MOTION_HINT,
+		FRIENDLY_TONE_HINT,
 		SOFT_SAFETY_PAD,
 		HUMAN_SAFETY,
 		BRAND_ENHANCEMENT_HINT,
@@ -6010,6 +6141,7 @@ Goal:
 	}
 - It should sound like a real human news or sports broadcaster, never robotic.
 - Prioritise voices whose labels or descriptions imply "natural", "conversational", "narration", "warm", or "emotional range".
+- Favor clear diction, low sibilance, and even pacing so the narration stays easy to understand.
 - If several voices are close in quality, pick the one that keeps variety versus the recently used IDs while still sounding most human.
 
 ${
@@ -6136,6 +6268,7 @@ async function buildVideoPlanWithGPT({
 	top5Outline,
 	top5LiveContext,
 	top5ImagePool,
+	liveWebContext,
 	ratio,
 	trendImageBriefs,
 	engagementTailSeconds,
@@ -6162,8 +6295,11 @@ async function buildVideoPlanWithGPT({
 			  null
 			: imageBriefs[0] || null;
 	const imageComment = String(trendStory?.imageComment || "").trim();
-	const liveContext = Array.isArray(top5LiveContext) ? top5LiveContext : [];
+	const top5Context = Array.isArray(top5LiveContext) ? top5LiveContext : [];
 	const liveImages = Array.isArray(top5ImagePool) ? top5ImagePool : [];
+	const liveTopicContext = Array.isArray(liveWebContext)
+		? liveWebContext
+		: [];
 	const top5NeedsExtraDetail =
 		category === "Top5" && Number.isFinite(duration) && duration >= 45;
 	const runwayAnimationNote =
@@ -6223,12 +6359,17 @@ Narration rules:
 - The final core segment must end on a complete thought; the engagement outro is its own segment with a clear CTA/question.
 - All core narration (intro + content) must fit inside the requested ${duration}s; outro sits on top with a tiny buffer so it never truncates mid-sentence.
 - Use the provided article headlines/snippets as your source of truth; if something is unconfirmed, state that instead of inventing details. Stay timely to the trend.
+- If live web context is provided below, prioritize it for the freshest details; if it conflicts with other sources, note it as unconfirmed.
 - Give each segment one concrete, visual detail or comparison that makes the scene easy to picture.
 - Stay accurate; do NOT invent fake scores, injuries, or quotes.
 - No "In this video" filler; keep like/subscribe wording ONLY in the final engagement segment.
 - Segment 1 must hook immediately.
 - Later segments deepen context: stakes, key players, what to watch, etc.
 - Stay within word caps so narration fits timing.
+- Keep sentences short and speakable; avoid tongue twisters, nested clauses, and long lists.
+- Prefer clear subject-verb-object phrasing; avoid ambiguous pronouns by repeating the subject when needed.
+- Expand acronyms on first mention and avoid heavy jargon unless briefly explained.
+- Use punctuation for natural pauses; avoid parentheses or brackets.
 - All narration MUST be in ${language}.
 - Rewrite numbers and units into spoken-friendly phrases: say "five dollars", "two point four million people", "seventy five percent", or "one hundred twenty thousand square feet" instead of raw symbols or acronyms.
 - Match the vocal emotion to the topic: excited and bright for wins/breakthroughs, calm and grounded for reflective pieces, compassionate and steady for tragedies.
@@ -6271,6 +6412,20 @@ Google Trends context:
 
 Article text snippet (may be truncated):
 ${snippet || "(no article text available)"}
+
+Latest live web context (use for the freshest details; if it conflicts, call it unconfirmed):
+${
+	liveTopicContext.length
+		? liveTopicContext
+				.map(
+					(item) =>
+						`- ${String(item.title || "").slice(0, 160)}${
+							item.snippet ? " - " + String(item.snippet || "").slice(0, 200) : ""
+						}`
+				)
+				.join("\n")
+		: "- (no live context available)"
+}
 
 Image notes for the orchestrator:
 - General comment about what the lead image depicts: ${
@@ -6320,12 +6475,16 @@ Critical visual rules:
 - Physical realism: body poses must be possible; props (mics, belts, ropes) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.
 - Eyes and faces must feel alive: natural blinks, gentle gaze shifts, no jittering pupils or crossed eyes.
 - Choose the imageIndex that visually matches the script beat (setting, action, subject); avoid lazy repeats.
+- Every chosen image must directly match the topic and the segment beat; never substitute unrelated celebrities, politicians, or off-topic scenery.
+- If a provided photo looks off-topic for that beat, pick a different imageIndex; do NOT bend the script to fit an unrelated image.
+- Keep the mood safe and non-threatening; no creepy, eerie, or horror vibes.
 - Use each imageIndex at most once before reusing any image.
 - Keep faces human and natural, no distortion.
 
 For each "runwayPrompt":
 - Describe motion consistent with what you actually see in that attached photo.
 - Explicitly include at least ONE motion verb.
+- Keep motion subtle and natural; avoid exaggerated facial motion or creepy stares.
 ${
 	forceStaticVisuals
 		? "- Keep motions to gentle camera moves (subtle zoom/pan) since we will not synthesize new video frames for sports topics."
@@ -6333,7 +6492,7 @@ ${
 }
 
 For each "negativePrompt":
-- List defects to avoid (extra limbs, extra heads, distorted faces, lowres, pixelated, blur, heavy motion blur, watermark, logo, text overlay, static frame, no motion, gore, nsfw).
+- List defects to avoid (extra limbs, extra heads, distorted faces, lowres, pixelated, blur, heavy motion blur, watermark, logo, text overlay, static frame, no motion, uncanny, creepy, scary, horror, eerie, gore, nsfw).
 
 Return JSON:
 {
@@ -6366,8 +6525,8 @@ ${outlineText}
 
 Latest live web context (use this to stay current and factual):
 ${
-	liveContext.length
-		? liveContext
+	top5Context.length
+		? top5Context
 				.slice()
 				.sort((a, b) => (b.rank || 0) - (a.rank || 0))
 				.map(
@@ -6415,7 +6574,7 @@ ${
 - Visual integrity is critical: humans must look human (no warped faces or hands), food must be appetizing and clearly that dish, and every chosen photo must obviously match the ranked item.
 - Every referenceImageUrl must directly show the ranked item (for food: a close-up of the dish/plating; for travel/cities: a recognisable landmark or skyline). Avoid portraits unless someone is eating that exact food. No unrelated objects or locations.
 - If a fresh image URL is provided above for that rank, use it. Otherwise, search current results and pick a sharp, descriptive editorial-style photo that matches the aspect ratio ${ratio}; avoid gstatic/thumbnail URLs.
-- Write the runwayPrompt to match the exact chosen photo and make the motion feel dynamic (camera move + subtle subject motion).
+- Write the runwayPrompt to match the exact chosen photo and make the motion feel dynamic but natural (camera move + subtle subject motion, no creepy expressions).
 
 You must select real reference photos via search before planning the visuals; do not leave any referenceImageUrl blank.
 
@@ -6432,6 +6591,7 @@ Visual rules:
 - Clear focal subject, good lighting.
 - Physical realism: body poses must be possible; props (mics, gear, objects) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.
 - Eyes and faces must feel alive: natural blinks, gentle gaze shifts, no jittering pupils or crossed eyes.
+- Keep the mood safe and non-threatening; no creepy, eerie, or horror vibes.
 - Avoid trademarks and logos; use generic jerseys and arenas.
 - If people are visible, faces must be natural, no distortion.
 - EVERY runwayPrompt must include explicit motion.
@@ -6440,7 +6600,7 @@ Visual rules:
 - Make the vibe fun and energetic; imagine upbeat Top 5 YouTube Shorts.
 
 "negativePrompt":
-- Include extra limbs, extra heads, mutated/fused fingers, broken joints, twisted necks, distorted faces, lowres, pixelated, blur, out of focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
+- Include extra limbs, extra heads, mutated/fused fingers, broken joints, twisted necks, distorted faces, lowres, pixelated, blur, out of focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, uncanny, creepy, scary, horror, eerie, gore, nsfw.
 
 Return JSON:
 {
@@ -6456,6 +6616,20 @@ ${baseIntro}
 
 No reliable Google Trends images are available.
 
+Latest live web context (use for the freshest details; if it conflicts, call it unconfirmed):
+${
+	liveTopicContext.length
+		? liveTopicContext
+				.map(
+					(item) =>
+						`- ${String(item.title || "").slice(0, 160)}${
+							item.snippet ? " - " + String(item.snippet || "").slice(0, 200) : ""
+						}`
+				)
+				.join("\n")
+		: "- (no live context available)"
+}
+
 You must imagine the visuals from scratch. For each segment output:
 - "index"
 - "scriptText"
@@ -6468,13 +6642,14 @@ Visual rules:
 - Clear focal subject, good lighting.
 - Physical realism: body poses must be possible; props (mics, tools, objects) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.
 - Eyes and faces must feel alive: natural blinks, gentle gaze shifts, no jittering pupils or crossed eyes.
+- Keep the mood safe and non-threatening; no creepy, eerie, or horror vibes.
 - Avoid trademarks and logos; use generic jerseys and arenas.
 - If people are visible, faces must be natural, no distortion.
 - EVERY runwayPrompt must include explicit motion.
 - Do NOT mention real names or brands in "runwayPrompt"; use roles.
 
 "negativePrompt":
-- Include extra limbs, extra heads, mutated/fused fingers, broken joints, twisted necks, distorted faces, lowres, pixelated, blur, out of focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, gore, nsfw.
+- Include extra limbs, extra heads, mutated/fused fingers, broken joints, twisted necks, distorted faces, lowres, pixelated, blur, out of focus, heavy motion blur, overexposed, underexposed, watermark, logo, text overlay, static frame, no motion, uncanny, creepy, scary, horror, eerie, gore, nsfw.
 
 Return JSON:
 {
@@ -6554,17 +6729,14 @@ Return JSON:
 		const validIndexes = segments
 			.map((s) => s.imageIndex)
 			.filter((v) => v !== null);
-		const distinctCount = new Set(validIndexes).size;
-		const desiredDistinct = Math.min(imgCount, segments.length, 5);
 
-		// If GPT barely used images, force round-robin to cover the curated pool
-		if (!validIndexes.length || distinctCount < desiredDistinct) {
+		// If GPT provided nothing, fall back to round-robin. Otherwise keep choices and fill nulls.
+		if (!validIndexes.length) {
 			segments = segments.map((seg, idx) => ({
 				...seg,
 				imageIndex: idx % imgCount,
 			}));
 		} else {
-			// Keep GPT's valid choices, fill nulls with round-robin
 			let rr = 0;
 			segments = segments.map((seg) => {
 				if (seg.imageIndex !== null) return seg;
@@ -6718,6 +6890,7 @@ exports.createVideo = async (req, res) => {
 		let topic = "";
 		let trendStory = null;
 		let trendArticleText = null;
+		let liveWebContext = [];
 
 		const userOverrides = Boolean(videoImage) || customPrompt.length > 0;
 		const requireScheduledTrends = isScheduledJob && category !== "Top5";
@@ -6814,6 +6987,9 @@ exports.createVideo = async (req, res) => {
 				trendStory.articles[0].url || null
 			);
 		}
+		if (category !== "Top5" && topic && canUseGoogleSearch()) {
+			liveWebContext = await fetchLiveContextForTopic(topic, 3);
+		}
 
 		/* 2. Segment timing */
 		const requestedTailSeconds = computeEngagementTail(duration, category);
@@ -6870,21 +7046,26 @@ exports.createVideo = async (req, res) => {
 					? trendStory.articles.map((a) => a.url).filter(Boolean)
 					: [];
 			const strongTopicTokens = collectStoryTokens(topic, trendStory);
-			const requireTokenMatch = strongTopicTokens.length > 0;
+			const specificTopicTokens = filterSpecificTopicTokens(strongTopicTokens);
+			const tokenSet = specificTopicTokens.length
+				? specificTopicTokens
+				: strongTopicTokens;
+			const requireTokenMatch = tokenSet.length > 0;
 			const anchorPhrases = buildAnchorPhrasesFromStory(trendStory);
+			const requireAnchorPhrase = anchorPhrases.length > 0;
 			trendImagesForRatio = await fetchHighQualityImagesForTopic({
 				topic,
 				ratio,
 				articleLinks,
 				desiredCount: 7,
 				limit: 16,
-				topicTokens: strongTopicTokens,
+				topicTokens: tokenSet,
 				requireAnyToken: requireTokenMatch,
 				negativeTitleRe:
 					/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
 				strictTopicMatch: true,
 				phraseAnchors: anchorPhrases,
-				requireAnchorPhrase: true,
+				requireAnchorPhrase,
 			});
 			if (trendImagesForRatio.length < 5) {
 				console.log(
@@ -6897,7 +7078,7 @@ exports.createVideo = async (req, res) => {
 					articleLinks,
 					desiredCount: 7,
 					limit: 16,
-					topicTokens: strongTopicTokens,
+					topicTokens: tokenSet,
 					requireAnyToken: requireTokenMatch,
 					negativeTitleRe:
 						/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
@@ -6912,14 +7093,14 @@ exports.createVideo = async (req, res) => {
 			}
 			trendImagesForRatio = prioritizeTokenMatchedUrls(
 				filterUploadCandidates(trendImagesForRatio, 7),
-				strongTopicTokens
+				tokenSet
 			);
 			console.log(
 				"[Trending] image search (relaxed/prioritized) count",
 				trendImagesForRatio.length
 			);
-			// Last-resort: if nothing survived strict/relaxed filters, do a loose grab
-			if (!trendImagesForRatio.length) {
+			// Last-resort: if nothing survived strict/relaxed filters, do a token-anchored grab
+			if (!trendImagesForRatio.length && tokenSet.length) {
 				try {
 					const loose = await fetchHighQualityImagesForTopic({
 						topic,
@@ -6927,20 +7108,24 @@ exports.createVideo = async (req, res) => {
 						articleLinks,
 						desiredCount: 8,
 						limit: 14,
-						topicTokens: [],
-						requireAnyToken: false,
-						negativeTitleRe: null,
+						topicTokens: tokenSet,
+						requireAnyToken: true,
+						negativeTitleRe:
+							/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
 						strictTopicMatch: false,
-						phraseAnchors: [],
+						phraseAnchors: anchorPhrases,
 						requireAnchorPhrase: false,
 					});
 					trendImagesForRatio = dedupeImageUrls(loose, 14);
 					console.log(
-						"[Trending] image search (loose) count",
+						"[Trending] image search (token-anchored) count",
 						trendImagesForRatio.length
 					);
 				} catch (e) {
-					console.warn("[Trending] loose image search failed ?", e.message);
+					console.warn(
+						"[Trending] token-anchored image search failed ?",
+						e.message
+					);
 				}
 			}
 			// Scheduled runs: ensure we aggressively try one more broad search if still empty
@@ -6952,11 +7137,12 @@ exports.createVideo = async (req, res) => {
 						articleLinks: [],
 						desiredCount: 10,
 						limit: 18,
-						topicTokens: [],
-						requireAnyToken: false,
-						negativeTitleRe: null,
+						topicTokens: tokenSet,
+						requireAnyToken: tokenSet.length > 0,
+						negativeTitleRe:
+							/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
 						strictTopicMatch: false,
-						phraseAnchors: [],
+						phraseAnchors: anchorPhrases,
 						requireAnchorPhrase: false,
 					});
 					trendImagesForRatio = dedupeImageUrls(broad, 18);
@@ -7056,6 +7242,7 @@ exports.createVideo = async (req, res) => {
 				top5Outline,
 				top5LiveContext,
 				top5ImagePool,
+				liveWebContext,
 				ratio,
 				trendImageBriefs: trendStory?.viralImageBriefs || [],
 				engagementTailSeconds,
@@ -7100,6 +7287,7 @@ Rewrite the following narration in active voice.
 Keep all important facts, remove filler.
 Maximum ${segWordCaps[i]} words.
 One or two sentences only.
+Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 
 "${s.scriptText}"
 `.trim();
@@ -7638,7 +7826,6 @@ One or two sentences only.
 		const runwaySafetyBans = new Set(); // image indexes that hit Runway safety and should not be retried
 		const staticOnlyImages = new Set(); // images we will use only as static fallback going forward
 		const staticFallbackUsed = new Set(); // track which images already used as static fallback to avoid repeats until all tried
-		let firstSafetyBan = null;
 		const allowRunway = useSora && !forceStaticVisuals;
 
 		for (let i = 0; i < segCnt; i++) {
@@ -7712,83 +7899,30 @@ One or two sentences only.
 					});
 				}
 			} else if (canUseRunway) {
-				const candidatesIdx = [];
+				const imgCount = trendImagePairs.length;
 				const baseIdx =
-					seg.imageIndex >= 0 && seg.imageIndex < trendImagePairs.length
-						? seg.imageIndex
-						: 0;
-				for (let k = 0; k < trendImagePairs.length; k++) {
-					const idx = (baseIdx + k) % trendImagePairs.length;
-					if (!candidatesIdx.includes(idx)) candidatesIdx.push(idx);
-				}
-				const runwayCandidates =
-					category === "Top5"
-						? [baseIdx] // lock intro/outro and ranked segments to their intended images
-						: candidatesIdx.filter((idx) => !staticOnlyImages.has(idx));
+					seg.imageIndex >= 0 && seg.imageIndex < imgCount ? seg.imageIndex : 0;
+				const runwayIdx = baseIdx;
+				const pair = trendImagePairs[runwayIdx] || trendImagePairs[0] || null;
+				const imgUrlCloudinary = pair?.cloudinaryUrl;
+				const imgUrlOriginal = imgUrlCloudinary || pair?.originalUrl;
 
 				console.log("[Runway] prompt preview", {
 					segment: segIndex,
 					promptPreview: promptText.slice(0, 160),
-					hasTrendImage: true,
-					candidates: runwayCandidates.length,
+					hasTrendImage: Boolean(pair),
+					imageIndex: runwayIdx,
 					staticOnly: Array.from(staticOnlyImages),
 				});
 
-				let safetyTriggered = false;
-				for (const idx of runwayCandidates) {
-					const pair = trendImagePairs[idx];
-					if (!pair || !pair.cloudinaryUrl) continue;
-					try {
-						clipPath = await generateItvClipFromImage({
-							segmentIndex: segIndex,
-							imgUrl: pair.cloudinaryUrl,
-							promptText,
-							negativePrompt,
-							ratio,
-							runwayDuration: rw,
-							promptStrength: category === "Top5" ? 0.6 : 0.55,
-						});
-						break;
-					} catch (e) {
-						const msg = String(e?.message || "");
-						const failureCode =
-							e?.response?.data?.failureCode || e?.response?.data?.code || "";
-						const isSafety =
-							/SAFETY/i.test(msg) ||
-							/SAFETY/i.test(String(failureCode || "")) ||
-							/HUMAN/i.test(String(failureCode || ""));
-						safetyTriggered = safetyTriggered || isSafety;
-						if (isSafety) {
-							runwaySafetyBans.add(idx);
-							staticOnlyImages.add(idx);
-							if (firstSafetyBan === null) firstSafetyBan = idx;
-						}
-						console.warn(
-							`[Seg ${segIndex}] Runway image_to_video failed for image #${idx}`,
-							msg
-						);
-						continue;
-					}
-				}
+				const shouldSkipRunway =
+					!pair ||
+					!imgUrlCloudinary ||
+					staticOnlyImages.has(runwayIdx) ||
+					runwaySafetyBans.has(runwayIdx);
 
-				if (!clipPath) {
-					const unusedStatic = candidatesIdx.filter(
-						(idx) => !staticFallbackUsed.has(idx)
-					);
-					const fallbackIdx =
-						category === "Top5"
-							? baseIdx // keep intro/outro unique and countdown aligned
-							: unusedStatic.find((idx) => staticOnlyImages.has(idx)) ??
-							  unusedStatic.find((idx) => runwaySafetyBans.has(idx)) ??
-							  unusedStatic[0] ??
-							  firstSafetyBan ??
-							  candidatesIdx[0] ??
-							  baseIdx;
-					staticFallbackUsed.add(fallbackIdx);
-					const pair =
-						trendImagePairs[fallbackIdx] || trendImagePairs[0] || null;
-					const imgUrlCloudinary = pair?.cloudinaryUrl;
-					const imgUrlOriginal = imgUrlCloudinary || pair?.originalUrl;
+				if (shouldSkipRunway) {
+					if (Number.isInteger(runwayIdx)) staticFallbackUsed.add(runwayIdx);
 					try {
 						clipPath = await generateStaticClipFromImage({
 							segmentIndex: segIndex,
@@ -7799,7 +7933,7 @@ One or two sentences only.
 						});
 					} catch (err) {
 						console.warn(
-							`[Seg ${segIndex}] Static fallback failed after Runway, using placeholder`,
+							`[Seg ${segIndex}] Static fallback failed, using placeholder`,
 							err.message
 						);
 						clipPath = await generatePlaceholderClip({
@@ -7807,6 +7941,52 @@ One or two sentences only.
 							ratio,
 							targetDuration: d,
 						});
+					}
+				} else {
+					try {
+						clipPath = await generateItvClipFromImage({
+							segmentIndex: segIndex,
+							imgUrl: imgUrlCloudinary,
+							promptText,
+							negativePrompt,
+							ratio,
+							runwayDuration: rw,
+							promptStrength: category === "Top5" ? 0.55 : 0.5,
+						});
+					} catch (e) {
+						const msg = String(e?.message || "");
+						const failureCode =
+							e?.response?.data?.failureCode || e?.response?.data?.code || "";
+						const isSafety =
+							/SAFETY/i.test(msg) ||
+							/SAFETY/i.test(String(failureCode || "")) ||
+							/HUMAN/i.test(String(failureCode || ""));
+						if (isSafety) runwaySafetyBans.add(runwayIdx);
+						staticOnlyImages.add(runwayIdx);
+						staticFallbackUsed.add(runwayIdx);
+						console.warn(
+							`[Seg ${segIndex}] Runway image_to_video failed for image #${runwayIdx}`,
+							msg
+						);
+						try {
+							clipPath = await generateStaticClipFromImage({
+								segmentIndex: segIndex,
+								imgUrlOriginal,
+								imgUrlCloudinary,
+								ratio,
+								targetDuration: d,
+							});
+						} catch (err) {
+							console.warn(
+								`[Seg ${segIndex}] Static fallback failed after Runway, using placeholder`,
+								err.message
+							);
+							clipPath = await generatePlaceholderClip({
+								segmentIndex: segIndex,
+								ratio,
+								targetDuration: d,
+							});
+						}
 					}
 				}
 			} else if (hasTrendImages) {

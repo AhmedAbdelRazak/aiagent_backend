@@ -24,6 +24,7 @@ dayjs.extend(tz);
 const Schedule = require("./models/Schedule");
 const Video = require("./models/Video");
 const { createVideo } = require("./controllers/videoController");
+const { createLongVideo } = require("./controllers/videoControllerLonger");
 
 /* ---------- Middleware ---------- */
 const { protect } = require("./middlewares/authMiddleware");
@@ -253,39 +254,57 @@ async function handleSchedule(sched) {
 		return;
 	}
 
-	if (!baseVideo || !baseVideo.category) {
-		try {
-			baseVideo = await Video.findOne({
-				user: (user && user._id) || user,
-				category: resolvedCategory,
-			})
-				.sort({ createdAt: -1 })
-				.lean();
-		} catch (e) {
-			console.warn("[Queue] No base video found; using defaults:", e.message);
+	const isLongSchedule =
+		String(sched.videoType || "").toLowerCase() === "long" ||
+		String(resolvedCategory || "").toLowerCase() === "longvideo";
+
+	if (!isLongSchedule) {
+		if (!baseVideo || !baseVideo.category) {
+			try {
+				baseVideo = await Video.findOne({
+					user: (user && user._id) || user,
+					category: resolvedCategory,
+				})
+					.sort({ createdAt: -1 })
+					.lean();
+			} catch (e) {
+				console.warn("[Queue] No base video found; using defaults:", e.message);
+			}
 		}
 	}
 
-	const body = {
-		category: resolvedCategory,
-		ratio: baseVideo?.ratio || "720:1280",
-		duration: baseVideo?.duration || 20,
-		language: baseVideo?.language || "English",
-		country: baseVideo?.country || "US",
-		customPrompt: "",
-		videoImage: baseVideo?.videoImage,
-		schedule: null,
-		useSora: Boolean(baseVideo?.useSora),
-		youtubeAccessToken: baseVideo?.youtubeAccessToken,
-		youtubeRefreshToken: baseVideo?.youtubeRefreshToken,
-		youtubeTokenExpiresAt: baseVideo?.youtubeTokenExpiresAt,
-		youtubeEmail: baseVideo?.youtubeEmail,
-	};
+	const body = isLongSchedule
+		? {
+				presenterImageUrl: sched.longVideoConfig?.presenterImageUrl || "",
+				voiceoverUrl: sched.longVideoConfig?.voiceoverUrl || "",
+				overlayAssets: sched.longVideoConfig?.overlayAssets || [],
+				preferredTopicHint: sched.longVideoConfig?.preferredTopicHint || "",
+				language: sched.longVideoConfig?.language || "en",
+				targetDurationSec: sched.longVideoConfig?.targetDurationSec || 180,
+				musicUrl: sched.longVideoConfig?.musicUrl || "",
+				dryRun: Boolean(sched.longVideoConfig?.dryRun),
+		  }
+		: {
+				category: resolvedCategory,
+				ratio: baseVideo?.ratio || "720:1280",
+				duration: baseVideo?.duration || 20,
+				language: baseVideo?.language || "English",
+				country: baseVideo?.country || "US",
+				customPrompt: "",
+				videoImage: baseVideo?.videoImage,
+				schedule: null,
+				useSora: Boolean(baseVideo?.useSora),
+				youtubeAccessToken: baseVideo?.youtubeAccessToken,
+				youtubeRefreshToken: baseVideo?.youtubeRefreshToken,
+				youtubeTokenExpiresAt: baseVideo?.youtubeTokenExpiresAt,
+				youtubeEmail: baseVideo?.youtubeEmail,
+		  };
 	const scheduleJobMeta = {
 		scheduleId: String(sched._id),
 		category: resolvedCategory,
 		baseVideoId: baseVideo?._id || baseVideo?.id || undefined,
 		useSora: Boolean(baseVideo?.useSora),
+		videoType: isLongSchedule ? "long" : "short",
 	};
 
 	// Mock req/res so createVideo can run from cron/queue
@@ -303,13 +322,19 @@ async function handleSchedule(sched) {
 	};
 
 	console.log(
-		`[Queue] Generating video for schedule ${sched._id} (${resolvedCategory})`
+		`[Queue] Generating ${
+			isLongSchedule ? "long video" : "video"
+		} for schedule ${sched._id} (${resolvedCategory})`
 	);
 
 	// IMPORTANT: Prevent “infinite retry loop” if createVideo fails:
 	// we push nextRun forward by FAIL_BACKOFF_MINUTES on failure.
 	try {
-		await createVideo(reqMock, resMock);
+		if (isLongSchedule) {
+			await createLongVideo(reqMock, resMock);
+		} else {
+			await createVideo(reqMock, resMock);
+		}
 		console.log(`[Queue] ✔ Video done for schedule ${sched._id}`);
 	} catch (err) {
 		console.error(

@@ -13,6 +13,15 @@ const scheduleSchema = new mongoose.Schema(
 			type: String,
 			required: true,
 		},
+		videoType: {
+			type: String,
+			enum: ["short", "long"],
+			default: "short",
+		},
+		longVideoConfig: {
+			type: mongoose.Schema.Types.Mixed,
+			default: null,
+		},
 		video: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: "Video",
