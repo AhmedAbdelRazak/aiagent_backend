@@ -240,7 +240,7 @@ const DEFAULT_BRAND_CANDLE_IMAGE_PATH = path.resolve(
 const DEFAULT_BRAND_CANDLE_IMAGE_URL = "";
 
 const PRESENTER_CANDLE_PROMPT =
-	"tiny, elegant lit candle in a glass holder with a subtle visible brand logo, placed far back on a rear table behind the presenter (background), on the presenter's right (viewer-left side); do NOT place on the foreground desk; keep it very small and natural size (standard tabletop jar, not oversized), roughly 1.8-2.6% of frame width and no larger than about 40% of the presenter's head height, clearly visible but not dominant and not in the foreground or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; NO LID or cap visible anywhere in frame (lid removed); only one candle; do NOT place on the viewer-right side; if the candle appears on the viewer-right, move it to viewer-left";
+	"tiny, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it very small and natural size (standard tabletop jar, not oversized), roughly 1.0-1.5% of frame width and no larger than about 20% of the presenter's head height, clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; only one candle; do NOT place on the viewer-left side";
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter.";
 const PRESENTER_WARDROBE_PROMPT =
@@ -2838,7 +2838,7 @@ Keep the SAME identity (Ahmed): same face structure, beard, glasses, and age.
 Location: clean desk, tasteful background, soft practical lighting, studio quality. ${STUDIO_EMPTY_PROMPT}
 Outfit: classy tailored suit or blazer with a neat shirt.
 Lighting: slightly darker cinematic look with a warm key light and gentle shadows (not too dark).
-Add ONE small branded candle on the rear table behind the presenter (viewer-left), subtle, classy, and lit; not on the foreground desk. No extra candles. If the candle reference has a lid, remove it; no lid in frame.
+Add ONE tiny branded candle on the desk to the presenter's left (viewer-right), near the back-right corner; subtle, classy, and lit; keep it small and not centered. No extra candles. If the candle reference has a lid, remove it; no lid in frame.
 Preserve the original performance timing and micro-expressions (eyebrows, blinks, subtle reactions).
 No text overlays, no extra people, no weird hands, no face warping, no mouth distortion.
 ${PRESENTER_CANDLE_PROMPT}
@@ -2880,7 +2880,7 @@ function buildBaselinePrompt(
 	return `
 Photorealistic talking-head video of the SAME person as the reference image.
 Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT} Keep ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the rear table behind the presenter (viewer-left side), in the background; keep it clear but not large or foreground. Do NOT place it on the foreground desk. Candle is tiny (about 1.8-2.6% of frame width, no larger than 40% of the presenter's head height), not oversized.
+Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is tiny (about 1.0-1.5% of frame width, no larger than about 20% of the presenter's head height).
 Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present. Keep the label, glass, and color unchanged.
 Flame flickers subtly; candlelight glow shifts naturally.
 If the reference candle has a lid, remove it; no lid visible anywhere in frame.
@@ -2933,8 +2933,8 @@ Edit the PERSON in reference tag "person".
 Keep the SAME identity (face, beard, glasses), SAME studio background, SAME lighting, SAME camera angle. ${STUDIO_EMPTY_PROMPT}
 ${candleLine}
 Keep the candle logo readable and undistorted.
-Add ${PRESENTER_CANDLE_PROMPT}. Keep the candle small, classy, and clearly on the rear table behind the presenter (not on the foreground desk).
-Place the candle on the rear table behind the presenter (viewer-left side); keep it clear but not foreground. Do NOT place it on the foreground desk. Candle is tiny (about 1.8-2.6% of frame width, no larger than 40% of the presenter's head height), not oversized.
+Add ${PRESENTER_CANDLE_PROMPT}. Keep the candle small, classy, and clearly on the desk to the presenter's left (viewer-right), not centered.
+Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but not in the foreground center. Do NOT place it in front of the presenter. Candle is tiny (about 1.0-1.5% of frame width, no larger than about 20% of the presenter's head height).
 Remove any lid or cap from the candle; do not show the lid in frame. If the reference candle includes a lid, remove it completely.
 Outfit: ${PRESENTER_WARDROBE_PROMPT}. Make the outfit different than the reference while staying classy.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
@@ -5118,7 +5118,7 @@ async function createImageMontageClip({
 				: `fps=${fps}`;
 		const trim = `trim=0:${perDur.toFixed(3)},setpts=PTS-STARTPTS`;
 		filterParts.push(
-			`[${idx}:v]${scale},${motion},${trim},format=yuv420p[${outLabel}]`
+			`[${idx}:v]${scale},${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`
 		);
 		vLabels.push(`[${outLabel}]`);
 	});
@@ -5137,7 +5137,7 @@ async function createImageMontageClip({
 			acc += perDur - crossfadeDur;
 			last = out;
 		}
-		filterParts.push(`[${last}]format=yuv420p[v]`);
+		filterParts.push(`[${last}]setsar=1,format=yuv420p[v]`);
 	} else {
 		filterParts.push(
 			`${vLabels.join("")}concat=n=${imagePaths.length}:v=1:a=0[v]`
@@ -5469,7 +5469,7 @@ Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PR
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: calm intro delivery with natural, subtle hand movement near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels. Keep the candle as-is (already lit).
 Keep the branded candle from the reference image. Keep the logo readable and undistorted. ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the rear table behind the presenter (viewer-left side), in the background; keep it clear but not large or foreground. Do NOT place it on the foreground desk. Candle is tiny (about 1.8-2.6% of frame width, no larger than 40% of the presenter's head height), not oversized.
+Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is tiny (about 1.0-1.5% of frame width, no larger than about 20% of the presenter's head height).
 Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present.
 If the reference candle has a lid, remove it; no lid visible anywhere in frame.
 Expression: ${introFace}. Calm and neutral, composed and professional with a subtle, light smile (not constant).
@@ -5486,7 +5486,7 @@ Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PR
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: small, natural intro gesture near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels. Keep the candle as-is (already lit).
 Keep the branded candle from the reference image. Keep the logo readable and undistorted. ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the rear table behind the presenter (viewer-left side), in the background; keep it clear but not large or foreground. Do NOT place it on the foreground desk. Candle is tiny (about 1.8-2.6% of frame width, no larger than 40% of the presenter's head height), not oversized.
+Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is tiny (about 1.0-1.5% of frame width, no larger than about 20% of the presenter's head height).
 Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present.
 If the reference candle has a lid, remove it; no lid visible anywhere in frame.
 Expression: ${introFace}. Calm and neutral; subtle, light smile only, not constant.
