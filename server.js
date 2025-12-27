@@ -106,6 +106,9 @@ const BODY_LIMIT = process.env.BODY_LIMIT || "50mb";
 app.use(express.json({ limit: BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
 
+// Serve generated assets (videos, sync staging)
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
 // Express CORS (same rules as Socket.IO)
 app.use(
 	cors({
@@ -242,7 +245,7 @@ async function handleSchedule(sched) {
 		baseVideo = sched.videos[sched.videos.length - 1];
 	}
 
-	const resolvedCategory =
+	let resolvedCategory =
 		sched.category || (baseVideo && baseVideo.category) || null;
 
 	if (!resolvedCategory) {
@@ -257,6 +260,11 @@ async function handleSchedule(sched) {
 	const isLongSchedule =
 		String(sched.videoType || "").toLowerCase() === "long" ||
 		String(resolvedCategory || "").toLowerCase() === "longvideo";
+
+	const longConfig = isLongSchedule ? sched.longVideoConfig || {} : null;
+	if (isLongSchedule && longConfig?.category) {
+		resolvedCategory = longConfig.category;
+	}
 
 	if (!isLongSchedule) {
 		if (!baseVideo || !baseVideo.category) {
@@ -275,14 +283,28 @@ async function handleSchedule(sched) {
 
 	const body = isLongSchedule
 		? {
-				presenterImageUrl: sched.longVideoConfig?.presenterImageUrl || "",
-				voiceoverUrl: sched.longVideoConfig?.voiceoverUrl || "",
-				overlayAssets: sched.longVideoConfig?.overlayAssets || [],
-				preferredTopicHint: sched.longVideoConfig?.preferredTopicHint || "",
-				language: sched.longVideoConfig?.language || "en",
-				targetDurationSec: sched.longVideoConfig?.targetDurationSec || 180,
-				musicUrl: sched.longVideoConfig?.musicUrl || "",
-				dryRun: Boolean(sched.longVideoConfig?.dryRun),
+				...(longConfig || {}),
+				category:
+					longConfig?.category ||
+					(resolvedCategory && !/longvideo/i.test(resolvedCategory)
+						? resolvedCategory
+						: "Entertainment"),
+				presenterAssetUrl:
+					longConfig?.presenterAssetUrl || longConfig?.presenterImageUrl || "",
+				voiceoverUrl: longConfig?.voiceoverUrl || "",
+				overlayAssets: Array.isArray(longConfig?.overlayAssets)
+					? longConfig.overlayAssets
+					: [],
+				preferredTopicHint: longConfig?.preferredTopicHint || "",
+				language: longConfig?.language || "en",
+				targetDurationSec: longConfig?.targetDurationSec || 180,
+				musicUrl: longConfig?.musicUrl || "",
+				disableMusic: Boolean(longConfig?.disableMusic),
+				dryRun: Boolean(longConfig?.dryRun),
+				youtubeAccessToken: longConfig?.youtubeAccessToken || "",
+				youtubeRefreshToken: longConfig?.youtubeRefreshToken || "",
+				youtubeTokenExpiresAt: longConfig?.youtubeTokenExpiresAt || "",
+				youtubeCategory: longConfig?.youtubeCategory || "",
 		  }
 		: {
 				category: resolvedCategory,

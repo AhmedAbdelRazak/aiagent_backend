@@ -20,6 +20,16 @@ const videoSchema = new mongoose.Schema(
 			trim: true,
 			// no longer required because we’ll autofill if missing
 		},
+		topics: [
+			{
+				type: String,
+				trim: true,
+			},
+		],
+		isLongVideo: {
+			type: Boolean,
+			default: false,
+		},
 
 		seoTitle: {
 			type: String,
@@ -120,6 +130,7 @@ const videoSchema = new mongoose.Schema(
 			type: Number,
 			enum: [
 				5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90,
+				120, 180, 240, 300,
 			],
 			default: 10,
 		},

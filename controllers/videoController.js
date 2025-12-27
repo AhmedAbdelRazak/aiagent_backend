@@ -1426,13 +1426,19 @@ function trimTrailingZeros(str = "") {
 function humanizeLargeNumber(num) {
 	if (!Number.isFinite(num)) return null;
 	if (num >= 1e9) {
-		return `${trimTrailingZeros((num / 1e9).toFixed(num % 1e9 === 0 ? 0 : 2))} billion`;
+		return `${trimTrailingZeros(
+			(num / 1e9).toFixed(num % 1e9 === 0 ? 0 : 2)
+		)} billion`;
 	}
 	if (num >= 1e6) {
-		return `${trimTrailingZeros((num / 1e6).toFixed(num % 1e6 === 0 ? 0 : 2))} million`;
+		return `${trimTrailingZeros(
+			(num / 1e6).toFixed(num % 1e6 === 0 ? 0 : 2)
+		)} million`;
 	}
 	if (num >= 1e3) {
-		return `${trimTrailingZeros((num / 1e3).toFixed(num % 1e3 === 0 ? 0 : 2))} thousand`;
+		return `${trimTrailingZeros(
+			(num / 1e3).toFixed(num % 1e3 === 0 ? 0 : 2)
+		)} thousand`;
 	}
 	if (num >= 1 && num < 10000) {
 		const spoken = numberToEnglish(Math.round(num));
@@ -1501,13 +1507,10 @@ function improveTTSPronunciation(text) {
 		return spoken || m;
 	});
 
-	text = text.replace(
-		/\b(\d{1,3}(?:,\d{3})*|\d+(?:\.\d+)?)%\b/g,
-		(m, num) => {
-			const spoken = scaleNumberForSpeech(num, 1);
-			return spoken ? `${spoken} percent` : `${num} percent`;
-		}
-	);
+	text = text.replace(/\b(\d{1,3}(?:,\d{3})*|\d+(?:\.\d+)?)%\b/g, (m, num) => {
+		const spoken = scaleNumberForSpeech(num, 1);
+		return spoken ? `${spoken} percent` : `${num} percent`;
+	});
 
 	text = text.replace(
 		/\bpopulation of\s+(\d[\d,\.]*)(\s*(million|billion|thousand|k|m|bn)?)\b/gi,
@@ -1555,10 +1558,7 @@ function improveTTSPronunciation(text) {
 		"miles per hour"
 	);
 
-	text = text.replace(
-		/\b([1-9]|1[0-9]|20)\b/g,
-		(_, n) => NUM_WORD[n] || n
-	);
+	text = text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
 
 	return text;
 }
@@ -4027,7 +4027,9 @@ async function fetchHighQualityImagesForTopic({
 	const dedupeSet = new Set();
 	const normTopicTokens = expandTopicTokens(topicTokens);
 	const rawPrimaryTokens = topicTokensFromTitle(topic);
-	const primaryTokens = normTopicTokens.length ? normTopicTokens : rawPrimaryTokens;
+	const primaryTokens = normTopicTokens.length
+		? normTopicTokens
+		: rawPrimaryTokens;
 	const primaryMinMatch = minTopicTokenMatches(primaryTokens);
 	const tokensAvailable = normTopicTokens.length > 0;
 	const minTopicMatch = strictTopicMatch
@@ -5956,7 +5958,11 @@ async function fetchElevenVoices() {
 	}
 }
 
-async function recentVoiceIdsForUser(userId, language, limit = RECENT_VOICE_AVOID_COUNT) {
+async function recentVoiceIdsForUser(
+	userId,
+	language,
+	limit = RECENT_VOICE_AVOID_COUNT
+) {
 	if (!userId) return [];
 	try {
 		const docs = await Video.find({
@@ -5982,7 +5988,10 @@ async function recentVoiceIdsForUser(userId, language, limit = RECENT_VOICE_AVOI
 
 		return ids;
 	} catch (e) {
-		console.warn("[Eleven] Unable to load recent ElevenLabs voices ?", e.message);
+		console.warn(
+			"[Eleven] Unable to load recent ElevenLabs voices ?",
+			e.message
+		);
 		return [];
 	}
 }
@@ -6297,9 +6306,7 @@ async function buildVideoPlanWithGPT({
 	const imageComment = String(trendStory?.imageComment || "").trim();
 	const top5Context = Array.isArray(top5LiveContext) ? top5LiveContext : [];
 	const liveImages = Array.isArray(top5ImagePool) ? top5ImagePool : [];
-	const liveTopicContext = Array.isArray(liveWebContext)
-		? liveWebContext
-		: [];
+	const liveTopicContext = Array.isArray(liveWebContext) ? liveWebContext : [];
 	const top5NeedsExtraDetail =
 		category === "Top5" && Number.isFinite(duration) && duration >= 45;
 	const runwayAnimationNote =
@@ -6420,7 +6427,9 @@ ${
 				.map(
 					(item) =>
 						`- ${String(item.title || "").slice(0, 160)}${
-							item.snippet ? " - " + String(item.snippet || "").slice(0, 200) : ""
+							item.snippet
+								? " - " + String(item.snippet || "").slice(0, 200)
+								: ""
 						}`
 				)
 				.join("\n")
@@ -6623,7 +6632,9 @@ ${
 				.map(
 					(item) =>
 						`- ${String(item.title || "").slice(0, 160)}${
-							item.snippet ? " - " + String(item.snippet || "").slice(0, 200) : ""
+							item.snippet
+								? " - " + String(item.snippet || "").slice(0, 200)
+								: ""
 						}`
 				)
 				.join("\n")
@@ -6803,6 +6814,7 @@ exports.createVideo = async (req, res) => {
 	const scheduleJobMeta =
 		req.scheduleJobMeta || req.body?.scheduleJobMeta || null;
 	const isScheduledJob = Boolean(scheduleJobMeta);
+	let finalPath = null;
 
 	try {
 		const {
@@ -8405,7 +8417,7 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 			.toLowerCase()
 			.replace(/[^\w\d]+/g, "_")
 			.replace(/^_+|_+$/g, "");
-		const finalPath = tmpFile(safeTitle || "video", ".mp4");
+		finalPath = tmpFile(safeTitle || "video", ".mp4");
 
 		await ffmpegPromise((c) =>
 			c
@@ -8604,6 +8616,10 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 		}
 		sendErr(err.message || "Internal error");
 		if (isScheduledJob) throw err;
+	} finally {
+		try {
+			if (finalPath) fs.unlinkSync(finalPath);
+		} catch {}
 	}
 };
 
