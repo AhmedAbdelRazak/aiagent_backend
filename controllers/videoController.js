@@ -52,6 +52,12 @@ cloudinary.config({
 });
 
 const PST_TZ = "America/Los_Angeles";
+const OWNER_ONLY_USER_ID = "683e3a0329b0515ff5f7a1e1";
+
+function isOwnerOnlyUser(req) {
+	const userId = req?.user?._id || req?.user?.id || req?.userId;
+	return String(userId || "") === OWNER_ONLY_USER_ID;
+}
 
 /* ---------------------------------------------------------------
  *  Runtime guards + ffmpeg bootstrap
@@ -6774,6 +6780,11 @@ exports.createVideo = async (req, res) => {
 	if (!VALID_RATIOS.includes(ratioIn))
 		return res.status(400).json({ error: "Bad ratio" });
 	if (!goodDur(durIn)) return res.status(400).json({ error: "Bad duration" });
+	if (!isOwnerOnlyUser(req)) {
+		return res.status(403).json({
+			error: "Video creation is temporarily restricted to the owner.",
+		});
+	}
 
 	const ratio = ratioIn;
 	const duration = +durIn;

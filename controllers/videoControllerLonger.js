@@ -76,6 +76,12 @@ const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
 
 const CHAT_MODEL =
 	process.env.OPENAI_CHAT_MODEL || process.env.CHAT_MODEL || "gpt-5.2";
+const OWNER_ONLY_USER_ID = "683e3a0329b0515ff5f7a1e1";
+
+function isOwnerOnlyUser(req) {
+	const userId = req?.user?._id || req?.user?.id || req?.userId;
+	return String(userId || "") === OWNER_ONLY_USER_ID;
+}
 
 const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVEN_FIXED_VOICE_ID = String(
@@ -7676,6 +7682,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 exports.createLongVideo = async (req, res) => {
 	const { errors, clean } = validateCreateBody(req.body || {});
 	if (errors.length) return res.status(400).json({ error: errors.join(", ") });
+	if (!isOwnerOnlyUser(req)) {
+		return res.status(403).json({
+			error: "Long video creation is temporarily restricted to the owner.",
+		});
+	}
 
 	const jobId = crypto.randomUUID();
 	const baseUrl = buildBaseUrl(req);
