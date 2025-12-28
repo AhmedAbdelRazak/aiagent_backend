@@ -54,6 +54,7 @@ const axios = require("axios");
 const dayjs = require("dayjs");
 const { google } = require("googleapis");
 const { OpenAI } = require("openai");
+const cloudinary = require("cloudinary").v2;
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
 const {
@@ -114,10 +115,23 @@ const UNIFORM_TTS_VOICE_SETTINGS = true;
 
 const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
 
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || "";
+const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || "";
+const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || "";
+const CLOUDINARY_THUMBNAIL_FOLDER = "long_video_thumbnails";
+
 const RUNWAY_VERSION = "2024-11-06";
 const RUNWAY_VIDEO_MODEL = "gen4_turbo";
 const RUNWAY_VIDEO_MODEL_FALLBACK = "gen4_turbo";
 const RUNWAY_IMAGE_MODEL = "gen4_image";
+
+if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET) {
+	cloudinary.config({
+		cloud_name: CLOUDINARY_CLOUD_NAME,
+		api_key: CLOUDINARY_API_KEY,
+		api_secret: CLOUDINARY_API_SECRET,
+	});
+}
 
 const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
 const SYNC_SO_BASE = "https://api.sync.so";
@@ -322,7 +336,7 @@ const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 
 // Music
-const MUSIC_VOLUME = clampNumber(0.18, 0.06, 0.5);
+const MUSIC_VOLUME = clampNumber(0.17, 0.06, 0.5);
 const MUSIC_DUCK_THRESHOLD = clampNumber(0.09, 0.03, 0.3);
 const MUSIC_DUCK_RATIO = clampNumber(6, 2, 14);
 const MUSIC_DUCK_ATTACK = clampNumber(25, 5, 200);
@@ -2901,6 +2915,7 @@ function formatTopicList(topics = []) {
 }
 
 const FILLER_WORD_REGEX = /\b(?:um+|uh+|erm+|er|ah+)\b/gi;
+const FILLER_PHRASE_REGEX = /\b(real quick)\b/gi;
 const LIKE_FILLER_REGEX = /([,.!?]\s+)like\s*,\s*/gi;
 const MICRO_EMOTE_REGEX = /\b(?:heh|whew)\b/gi;
 
@@ -2912,6 +2927,89 @@ function cleanupSpeechText(text = "") {
 	t = t.replace(/,\s*([.!?])/g, "$1");
 	t = t.replace(/\s+/g, " ").trim();
 	return t;
+}
+
+const WORD_CAP_SOFT_OVERAGE = 3;
+const BAD_TRAILING_TOKENS = new Set([
+	"and",
+	"or",
+	"but",
+	"so",
+	"because",
+	"with",
+	"to",
+	"for",
+	"that",
+	"which",
+	"who",
+	"whom",
+	"whose",
+	"what",
+	"when",
+	"where",
+	"why",
+	"how",
+	"as",
+	"is",
+	"are",
+	"was",
+	"were",
+	"be",
+	"been",
+	"being",
+	"can",
+	"could",
+	"would",
+	"should",
+	"might",
+	"may",
+	"will",
+	"just",
+	"into",
+	"about",
+	"from",
+	"at",
+]);
+
+function trimToWordCap(text = "", cap = 0) {
+	const clean = cleanupSpeechText(text);
+	if (!cap || cap <= 0) return clean;
+	const words = clean.split(/\s+/).filter(Boolean);
+	if (words.length <= cap) return clean;
+
+	const maxWords = cap + WORD_CAP_SOFT_OVERAGE;
+	const sentences = splitSentences(clean);
+	if (sentences.length > 1) {
+		let kept = [];
+		let count = 0;
+		for (const sentence of sentences) {
+			const w = countWords(sentence);
+			if (count + w <= maxWords) {
+				kept.push(sentence);
+				count += w;
+			} else {
+				break;
+			}
+		}
+		if (kept.length) {
+			let joined = cleanupSpeechText(kept.join(" "));
+			if (!endsWithTerminalPunctuation(joined)) joined += ".";
+			return cleanupSpeechText(joined);
+		}
+	}
+
+	let slice = words.slice(0, maxWords);
+	while (
+		slice.length &&
+		BAD_TRAILING_TOKENS.has(slice[slice.length - 1].toLowerCase())
+	) {
+		slice.pop();
+	}
+	let trimmed = slice.join(" ");
+	trimmed = trimmed.replace(/\b(and|or|but)\s+\w+$/i, "").trim();
+	if (!trimmed) trimmed = words.slice(0, cap).join(" ");
+	if (!endsWithTerminalPunctuation(trimmed)) trimmed += ".";
+	return cleanupSpeechText(trimmed);
 }
 
 const META_SENTENCE_PATTERNS = [
@@ -2968,6 +3066,11 @@ function stripFillerAndEmotes(
 	let t = String(text || "");
 
 	t = t.replace(FILLER_WORD_REGEX, (match) => {
+		if (counter.fillers >= maxFillers) return "";
+		counter.fillers += 1;
+		return match;
+	});
+	t = t.replace(FILLER_PHRASE_REGEX, (match) => {
 		if (counter.fillers >= maxFillers) return "";
 		counter.fillers += 1;
 		return match;
@@ -3048,7 +3151,7 @@ function buildIntroLine({ topics = [], shortTitle }) {
 	const subject = shortTitle
 		? shortTopicLabel(shortTitle, 4)
 		: formatTopicList(topics);
-	const line = `Hi there, my name is Ahmed. Quick update on ${subject}.`;
+	const line = `Quick update on ${subject}.`;
 	return sanitizeIntroOutroLine(line);
 }
 
@@ -3101,13 +3204,7 @@ function buildOutroLine({ topics = [], shortTitle, mood = "neutral" }) {
 		mood,
 		compact: true,
 	});
-	let line = `${question} Thanks for watching. Like the video, and see you next time.`;
-	if (countWords(line) > 18) {
-		line = `${question} Thanks for watching, like the video, see you next time.`;
-	}
-	if (countWords(line) > 16) {
-		line = `${question} Thanks for watching. Like the video. See you next time.`;
-	}
+	const line = `${question} Thanks for watching, like the video and see you next time.`;
 	return sanitizeIntroOutroLine(line);
 }
 
@@ -3576,14 +3673,9 @@ Return JSON ONLY:
 	// Enforce caps (hard trim if needed - keeps flow and avoids a second model call)
 	segments = segments.map((s, i) => {
 		const cap = wordCaps[i] || 22;
-		const words = s.text.split(/\s+/).filter(Boolean);
-		if (words.length <= cap) return s;
 		return {
 			...s,
-			text: words
-				.slice(0, cap)
-				.join(" ")
-				.replace(/[,;:]?$/, "."),
+			text: trimToWordCap(s.text, cap),
 		};
 	});
 
@@ -5564,6 +5656,7 @@ Create a YouTube thumbnail image (no text in the image).
 Use the provided person reference; keep the presenter look consistent with the studio desk setup and lighting.
 Composition: presenter on the right third, leave clean negative space on the left for headline text.
 Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
+If reference tag "context" is provided, use it only for subtle, topic-relevant background cues.
 Add subtle, tasteful visual cues related to: ${safeContext}.
 Style: ultra sharp, high contrast, professional, cinematic lighting, shallow depth of field.
 No logos, no extra people, no extra hands, no distortion, no text.
@@ -5641,6 +5734,51 @@ async function extractThumbnailFrame({ videoPath, outPath }) {
 	return dt?.kind === "image" ? outPath : null;
 }
 
+function pickThumbnailContextImage(segmentImagePaths) {
+	if (!segmentImagePaths || typeof segmentImagePaths.values !== "function")
+		return "";
+	for (const list of segmentImagePaths.values()) {
+		if (!Array.isArray(list)) continue;
+		for (const p of list) {
+			if (p && fs.existsSync(p)) return p;
+		}
+	}
+	return "";
+}
+
+function buildCloudinaryTransformForThumbnail() {
+	return [
+		{
+			crop: "fill",
+			gravity: "auto",
+			width: THUMBNAIL_WIDTH,
+			height: THUMBNAIL_HEIGHT,
+			quality: "auto:best",
+			fetch_format: "auto",
+		},
+	];
+}
+
+async function uploadThumbnailToCloudinary(filePath, { jobId } = {}) {
+	if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET)
+		return null;
+	if (!filePath || !fs.existsSync(filePath)) return null;
+
+	const publicId = `thumb_${jobId || crypto.randomUUID()}`;
+	const result = await cloudinary.uploader.upload(filePath, {
+		folder: CLOUDINARY_THUMBNAIL_FOLDER,
+		public_id: publicId,
+		overwrite: true,
+		resource_type: "image",
+		transformation: buildCloudinaryTransformForThumbnail(),
+	});
+	if (!result) return null;
+	return {
+		public_id: result.public_id,
+		url: result.secure_url || result.url,
+	};
+}
+
 async function createThumbnailImage({
 	jobId,
 	tmpDir,
@@ -5648,6 +5786,7 @@ async function createThumbnailImage({
 	candleLocalPath,
 	title,
 	topics,
+	contextImagePath,
 	fallbackVideoPath,
 }) {
 	const fallback = async (reason) => {
@@ -5688,6 +5827,13 @@ async function createThumbnailImage({
 				filename: "thumb_candle.png",
 			});
 			refs.push({ uri: candleUri, tag: "candle" });
+		}
+		if (contextImagePath && fs.existsSync(contextImagePath)) {
+			const contextUri = await runwayCreateEphemeralUpload({
+				filePath: contextImagePath,
+				filename: "thumb_context.png",
+			});
+			refs.push({ uri: contextUri, tag: "context" });
 		}
 
 		const prompt = buildThumbnailPrompt({ title, topics });
@@ -6114,9 +6260,25 @@ async function validateMusicFile(filePath) {
 	return true;
 }
 
+function buildMusicSearchTags(topic, categoryLabel) {
+	const baseTopic = String(topic || "").slice(0, 60);
+	const category = normalizeCategoryLabel(categoryLabel) || "";
+	if (category === "Sports") {
+		return `motivational, epic, energetic, sports, stadium, hype, cinematic, instrumental, ${baseTopic}`;
+	}
+	return `cinematic, upbeat, modern, instrumental, ${baseTopic}`;
+}
+
+function buildMusicSpeedPrefs(categoryLabel) {
+	const category = normalizeCategoryLabel(categoryLabel) || "";
+	if (category === "Sports") return ["high"];
+	return ["medium", "high"];
+}
+
 async function resolveBackgroundMusic({
 	jobId,
 	topic,
+	categoryLabel,
 	disableMusic,
 	requestedMusicUrl,
 }) {
@@ -6153,10 +6315,8 @@ async function resolveBackgroundMusic({
 	}
 
 	// 3) Jamendo based on topic (fallback)
-	const tags = `cinematic, upbeat, modern, instrumental, ${String(
-		topic || ""
-	).slice(0, 40)}`;
-	const speeds = ["medium", "high"];
+	const tags = buildMusicSearchTags(topic, categoryLabel);
+	const speeds = buildMusicSpeedPrefs(categoryLabel);
 	const candidates = await jamendoSearchTracks({
 		fuzzytags: tags,
 		speed: speeds,
@@ -6751,6 +6911,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		const musicLocalPath = await resolveBackgroundMusic({
 			jobId,
 			topic: topicTitles[0] || topicSummary,
+			categoryLabel,
 			disableMusic,
 			requestedMusicUrl: musicUrl,
 		});
@@ -6800,6 +6961,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let driftSec = 0;
 		let autoOverlayAssets = [];
 		let segmentImagePaths = new Map();
+		let thumbnailContextImage = "";
 		const maxRewriteAttempts = voiceoverUrl ? 0 : MAX_SCRIPT_REWRITES;
 
 		for (let attempt = 0; attempt <= maxRewriteAttempts; attempt++) {
@@ -7142,6 +7304,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		});
 		timeline = imagePrep.timeline;
 		segmentImagePaths = imagePrep.segmentImagePaths || new Map();
+		thumbnailContextImage = pickThumbnailContextImage(segmentImagePaths);
 		const imagePlanSummary = imagePrep.imagePlanSummary || [];
 
 		const finalPresenterSegments = [];
@@ -7628,6 +7791,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		let thumbnailUrl = "";
 		let thumbnailMetaPath = "";
 		let thumbnailMetaUrl = "";
+		let thumbnailCloudinary = null;
 		try {
 			const thumbTitle = script.shortTitle || seoMeta?.seoTitle || script.title;
 			const thumbTmp = await createThumbnailImage({
@@ -7637,6 +7801,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				candleLocalPath,
 				title: thumbTitle,
 				topics: topicPicks,
+				contextImagePath: thumbnailContextImage,
 				fallbackVideoPath: outputPath,
 			});
 			if (LONG_VIDEO_PERSIST_OUTPUT) {
@@ -7651,15 +7816,30 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			} else {
 				thumbnailPath = thumbTmp;
 			}
+			if (thumbnailPath) {
+				try {
+					thumbnailCloudinary = await uploadThumbnailToCloudinary(
+						thumbnailPath,
+						{ jobId }
+					);
+				} catch (e) {
+					logJob(jobId, "thumbnail cloudinary upload failed (ignored)", {
+						error: e.message,
+					});
+				}
+			}
 			updateJob(jobId, {
 				meta: {
 					...JOBS.get(jobId)?.meta,
 					thumbnailPath: thumbnailMetaPath || "",
 					thumbnailUrl: thumbnailMetaUrl || "",
+					thumbnailCloudinaryUrl: thumbnailCloudinary?.url || "",
+					thumbnailCloudinaryId: thumbnailCloudinary?.public_id || "",
 				},
 			});
 			logJob(jobId, "thumbnail ready", {
 				path: path.basename(thumbnailPath),
+				cloudinaryUrl: thumbnailCloudinary?.url || "",
 			});
 		} catch (e) {
 			logJob(jobId, "thumbnail generation failed (ignored)", {
@@ -7726,6 +7906,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				const durationForDoc = allowedDurations.has(durationValue)
 					? durationValue
 					: undefined;
+				const videoImage = thumbnailCloudinary?.url
+					? {
+							public_id: thumbnailCloudinary.public_id || "",
+							url: thumbnailCloudinary.url,
+					  }
+					: undefined;
 				const doc = await Video.create({
 					user: user._id,
 					category: categoryLabel,
@@ -7754,6 +7940,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						: youtubeTokenExpiresAt
 						? new Date(youtubeTokenExpiresAt)
 						: undefined,
+					...(videoImage ? { videoImage } : {}),
 				});
 				videoDocId = doc?._id ? String(doc._id) : null;
 			}
