@@ -56,7 +56,21 @@ const { google } = require("googleapis");
 const { OpenAI } = require("openai");
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
-const { googleTrendingCategoriesId } = require("../assets/utils");
+const {
+	googleTrendingCategoriesId,
+	EXPLICIT_EXCITED_CUES,
+	EXPLICIT_SERIOUS_CUES,
+	EXPLICIT_WARM_CUES,
+	EXPLICIT_THOUGHTFUL_CUES,
+	SERIOUS_TONE_TOKENS,
+	EXCITED_TONE_TOKENS,
+	ENTERTAINMENT_KEYWORDS,
+	TREND_SIGNAL_TOKENS,
+	CSE_ENTERTAINMENT_QUERIES,
+	TOPIC_STOP_WORDS,
+	GENERIC_TOPIC_TOKENS,
+	YT_CATEGORY_MAP,
+} = require("../assets/utils");
 
 const ffmpegStatic = require("ffmpeg-static");
 
@@ -74,8 +88,7 @@ try {
 
 const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
 
-const CHAT_MODEL =
-	process.env.OPENAI_CHAT_MODEL || process.env.CHAT_MODEL || "gpt-5.2";
+const CHAT_MODEL = "gpt-5.2";
 const OWNER_ONLY_USER_ID = "683e3a0329b0515ff5f7a1e1";
 
 function isOwnerOnlyUser(req) {
@@ -84,86 +97,45 @@ function isOwnerOnlyUser(req) {
 }
 
 const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY || "";
-const ELEVEN_FIXED_VOICE_ID = String(
-	process.env.ELEVENLABS_VOICE_ID ||
-		process.env.ELEVEN_VOICE_ID ||
-		"uKepyVD0sANZxUFnIoI2"
-).trim();
-const ELEVEN_TTS_MODEL =
-	process.env.ELEVENLABS_MODEL_ID ||
-	process.env.ELEVEN_TTS_MODEL ||
-	"eleven_turbo_v2_5";
+const ELEVEN_FIXED_VOICE_ID = "uKepyVD0sANZxUFnIoI2";
+const ELEVEN_TTS_MODEL = "eleven_turbo_v2_5";
 const ELEVEN_TTS_MODEL_FALLBACKS = String(
-	process.env.ELEVENLABS_MODEL_FALLBACKS ||
-		"eleven_multilingual_v2,eleven_monolingual_v1"
+	"eleven_multilingual_v2,eleven_monolingual_v1"
 )
 	.split(",")
 	.map((s) => s.trim())
 	.filter(Boolean);
 // TTS realism tuning (favor natural cadence, avoid over-stylization)
-const ELEVEN_TTS_STABILITY = clampNumber(
-	Number(process.env.ELEVEN_TTS_STABILITY || 0.66),
-	0.1,
-	1
-);
-const ELEVEN_TTS_SIMILARITY = clampNumber(
-	Number(process.env.ELEVEN_TTS_SIMILARITY || 0.94),
-	0.1,
-	1
-);
-const ELEVEN_TTS_STYLE = clampNumber(
-	Number(process.env.ELEVEN_TTS_STYLE || 0.18),
-	0,
-	1
-);
-const ELEVEN_TTS_SPEAKER_BOOST = process.env.ELEVEN_TTS_SPEAKER_BOOST !== "0";
-const UNIFORM_TTS_VOICE_SETTINGS = process.env.LONG_VIDEO_UNIFORM_TTS !== "0";
+const ELEVEN_TTS_STABILITY = clampNumber(0.78, 0.1, 1);
+const ELEVEN_TTS_SIMILARITY = clampNumber(0.94, 0.1, 1);
+const ELEVEN_TTS_STYLE = clampNumber(0.12, 0, 1);
+const ELEVEN_TTS_SPEAKER_BOOST = true;
+const UNIFORM_TTS_VOICE_SETTINGS = true;
 
-const RUNWAY_API_KEY =
-	process.env.RUNWAYML_API_SECRET ||
-	process.env.RUNWAY_API_KEY ||
-	process.env.RUNWAY_API_TOKEN ||
-	"";
+const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
 
-const RUNWAY_VERSION = process.env.RUNWAY_VERSION || "2024-11-06";
-const RUNWAY_VIDEO_MODEL = process.env.RUNWAY_MODEL || "gen4_turbo";
-const RUNWAY_VIDEO_MODEL_FALLBACK =
-	process.env.RUNWAY_MODEL_FALLBACK || "gen4_turbo";
-const RUNWAY_IMAGE_MODEL = process.env.RUNWAY_IMAGE_MODEL || "gen4_image";
+const RUNWAY_VERSION = "2024-11-06";
+const RUNWAY_VIDEO_MODEL = "gen4_turbo";
+const RUNWAY_VIDEO_MODEL_FALLBACK = "gen4_turbo";
+const RUNWAY_IMAGE_MODEL = "gen4_image";
 
 const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
-const SYNC_SO_BASE = (
-	process.env.SYNC_SO_BASE_URL ||
-	process.env.SYNC_SO_BASE ||
-	"https://api.sync.so"
-).replace(/\/+$/, "");
-const SYNC_SO_MODEL = process.env.SYNC_SO_MODEL || "lipsync-2";
-// const SYNC_SO_MODEL = process.env.SYNC_SO_MODEL || "lipsync-2-pro";
+const SYNC_SO_BASE = "https://api.sync.so";
+const SYNC_SO_MODEL = "lipsync-2";
+// const SYNC_SO_MODEL = "lipsync-2-pro";
 const SYNC_SO_GENERATE_PATH = "/v2/generate";
 
-const GOOGLE_CSE_ID =
-	process.env.GOOGLE_CSE_ID ||
-	process.env.GOOGLE_CUSTOM_SEARCH_CX ||
-	process.env.GOOGLE_CUSTOM_SEARCH_ID ||
-	null;
+const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
 
-const GOOGLE_CSE_KEY =
-	process.env.GOOGLE_CSE_KEY ||
-	process.env.GOOGLE_CUSTOM_SEARCH_KEY ||
-	process.env.GOOGLE_API_KEY ||
-	null;
+const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY || null;
 
 const GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
 
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
 const TRENDS_HTTP_TIMEOUT_MS = 60000;
-const LONG_VIDEO_TRENDS_GEO = String(process.env.LONG_VIDEO_TRENDS_GEO || "US")
-	.trim()
-	.toUpperCase();
-const LONG_VIDEO_TRENDS_CATEGORY = String(
-	process.env.LONG_VIDEO_TRENDS_CATEGORY || "Entertainment"
-).trim();
+const LONG_VIDEO_TRENDS_GEO = "US";
+const LONG_VIDEO_TRENDS_CATEGORY = "Entertainment";
 
 function normalizeTrendsApiUrl(raw) {
 	return String(raw || "")
@@ -189,32 +161,7 @@ function buildTrendsApiCandidates(baseUrl) {
 	return Array.from(new Set(list));
 }
 
-const YT_CATEGORY_MAP = {
-	Sports: "17",
-	Politics: "25",
-	Finance: "25",
-	Entertainment: "24",
-	Technology: "28",
-	Health: "0",
-	World: "0",
-	Lifestyle: "0",
-	Science: "0",
-	Other: "0",
-	Top5: "0",
-	Gaming: "20",
-	PetsAndAnimals: "15",
-	Business: "21",
-	Travel: "19",
-	FoodDrink: "0",
-	CelebrityNews: "25",
-	Climate: "0",
-	SocialIssues: "22",
-	Education: "27",
-	Fashion: "22",
-};
-const LONG_VIDEO_YT_CATEGORY = String(
-	process.env.LONG_VIDEO_YT_CATEGORY || "Entertainment"
-).trim();
+const LONG_VIDEO_YT_CATEGORY = "Entertainment";
 
 const BRAND_TAG = "SereneJannat";
 const BRAND_CREDIT = "Powered by Serene Jannat";
@@ -222,9 +169,8 @@ const CHANNEL_NAME = "Prime Time Brief";
 const INTRO_OVERLAY_TEXT = "https://serenejannat.com";
 const MERCH_INTRO =
 	"Support the channel & customize your own merch:\n" +
-	"https://www.serenejannat.com/\n" +
+	"https://serenejannat.com/our-products?category=candles/\n" +
 	"https://www.serenejannat.com/custom-gifts\n" +
-	"https://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec\n" +
 	"https://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n\n";
 
 const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID || "";
@@ -232,7 +178,8 @@ const JAMENDO_BASE = "https://api.jamendo.com/v3.0";
 
 const TMP_ROOT = path.join(os.tmpdir(), "agentai_long_video");
 const OUTPUT_DIR = path.join(__dirname, "../uploads/videos");
-const LONG_VIDEO_PERSIST_OUTPUT = process.env.LONG_VIDEO_PERSIST_OUTPUT === "1";
+const THUMBNAIL_DIR = path.join(__dirname, "../uploads/thumbnails");
+const LONG_VIDEO_PERSIST_OUTPUT = false;
 
 // Your classy suit reference (also default presenter)
 const DEFAULT_PRESENTER_ASSET_URL =
@@ -245,8 +192,26 @@ const DEFAULT_BRAND_CANDLE_IMAGE_PATH = path.resolve(
 );
 const DEFAULT_BRAND_CANDLE_IMAGE_URL = "";
 
+const PRESENTER_MASTER_SEED = 428911;
+const CANDLE_REF_SCALE = clampNumber(0.35, 0.1, 1);
+const CANDLE_WIDTH_PCT = clampNumber(0.03, 0.02, 0.1);
+const CANDLE_HEAD_HEIGHT_PCT = clampNumber(0.05, 0.04, 0.16);
+const CANDLE_X_PCT = clampNumber(0.74, 0.6, 0.9);
+const CANDLE_Y_PCT = clampNumber(0.76, 0.55, 0.92);
+const CANDLE_SIZE_DESC = `about ${Math.round(
+	CANDLE_WIDTH_PCT * 100
+)}% of frame width and no larger than about ${Math.round(
+	CANDLE_HEAD_HEIGHT_PCT * 100
+)}% of the presenter's head height`;
+const CANDLE_POSITION_DESC = `centered around ${Math.round(
+	CANDLE_X_PCT * 100
+)}% of frame width (from left) and ${Math.round(
+	CANDLE_Y_PCT * 100
+)}% of frame height (from top), with the base resting on the desk`;
+
 const PRESENTER_CANDLE_PROMPT =
-	"small, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it a realistic small tabletop size (about a 6-8 oz jar, not oversized), roughly 3-4% of frame width and no larger than about 12% of the presenter's head height; keep it fully on the desk with a safe margin from the edge (at least one and a half candle-widths inboard), clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; only one candle; do NOT place on the viewer-left side";
+	"small, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it a realistic small tabletop size (about a 4-6 oz jar, not oversized), " +
+	`${CANDLE_SIZE_DESC}; keep it fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge; position it consistently, ${CANDLE_POSITION_DESC}; clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; do not place the lid on the desk; show open wax surface; only one candle; do NOT place on the viewer-left side; keep the candle in the exact same spot across shots.`;
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter.";
 const PRESENTER_WARDROBE_PROMPT =
@@ -257,324 +222,135 @@ const PRESENTER_MOTION_STYLE =
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
 const DEFAULT_OUTPUT_FPS = 30;
-const DEFAULT_SCALE_MODE = process.env.LONG_VIDEO_FIT_MODE || "cover";
-const VIDEO_CRF = clampNumber(
-	Number(process.env.LONG_VIDEO_VIDEO_CRF || 18),
-	14,
-	28
-);
+const DEFAULT_SCALE_MODE = "cover";
+const DEFAULT_IMAGE_SCALE_MODE = "blur";
+const INTERMEDIATE_VIDEO_CRF = clampNumber(16, 12, 24);
+const FINAL_VIDEO_CRF = clampNumber(15, 10, 20);
+const INTERMEDIATE_PRESET = "fast";
+const FINAL_PRESET = "slow";
+const AUDIO_BITRATE = "256k";
+const FINAL_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.0:LRA=11";
+const FINAL_MASTER_MAX_HEIGHT = 2160;
+const FINAL_MASTER_MIN_HEIGHT = 1080;
+const FINAL_GOP_SECONDS = 2;
+const FINAL_COLOR_SPACE = "bt709";
+const FINAL_COLOR_RANGE = "tv";
+const WATERMARK_TEXT = "https://serenejannat.com";
+const WATERMARK_FONT_SIZE_PCT = 0.042;
+const WATERMARK_MARGIN_PCT = 0.035;
+const WATERMARK_OPACITY = 0.55;
+const WATERMARK_SHADOW_OPACITY = 0.3;
+const WATERMARK_SHADOW_PX = 2;
+const CSE_PREFERRED_IMG_SIZE = "xlarge";
+const CSE_FALLBACK_IMG_SIZE = "large";
+const CSE_MIN_IMAGE_SHORT_EDGE = 720;
+const THUMBNAIL_RATIO = "1280:720";
+const THUMBNAIL_WIDTH = 1280;
+const THUMBNAIL_HEIGHT = 720;
+const THUMBNAIL_TEXT_MAX_WORDS = 7;
+const THUMBNAIL_TEXT_BASE_MAX_CHARS = 18;
+const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.56;
+const THUMBNAIL_TEXT_BOX_OPACITY = 0.34;
+const THUMBNAIL_TEXT_MARGIN_PCT = 0.06;
+const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
+const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
+const THUMBNAIL_SEED_OFFSET = 913;
 
 // Intro (seconds)
-const DEFAULT_INTRO_SEC = Number(process.env.LONG_VIDEO_INTRO_SEC || 3.2);
-const INTRO_MIN_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_MIN_SEC || 2),
-	2,
-	4
-);
-const INTRO_MAX_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_MAX_SEC || 4),
-	2,
-	5
-);
+const DEFAULT_INTRO_SEC = 3.2;
+const INTRO_MIN_SEC = clampNumber(2, 2, 4);
+const INTRO_MAX_SEC = clampNumber(4, 2, 5);
 // Outro (seconds)
-const OUTRO_MIN_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_OUTRO_MIN_SEC || 3),
-	3,
-	6
-);
-const OUTRO_MAX_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_OUTRO_MAX_SEC || 6),
-	3,
-	6
-);
-const DEFAULT_OUTRO_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_OUTRO_SEC || 4.8),
-	OUTRO_MIN_SEC,
-	OUTRO_MAX_SEC
-);
-const OUTRO_SMILE_TAIL_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_OUTRO_SMILE_TAIL_SEC || 1.0),
-	0.6,
-	2.0
-);
-const INTRO_VIDEO_BLUR_SIGMA = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_BLUR_SIGMA || 2.6),
-	0,
-	8
-);
-const INTRO_TEXT_FADE_IN_START = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_TEXT_FADE_IN_START || 0.5),
-	0,
-	1.5
-);
-const INTRO_TEXT_FADE_IN_DUR = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_TEXT_FADE_IN_DUR || 0.55),
-	0.15,
-	1.2
-);
-const INTRO_TEXT_X_PCT = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_TEXT_X_PCT || 0.12),
-	0.04,
-	0.2
-);
-const INTRO_TEXT_Y_PCT = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_TEXT_Y_PCT || 0.44),
-	0.2,
-	0.6
-);
-const INTRO_SUBTITLE_Y_PCT = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_SUBTITLE_Y_PCT || 0.58),
-	0.3,
-	0.7
-);
-const FINAL_FADE_OUT_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_FINAL_FADE_OUT_SEC || 0.5),
-	0,
-	1.2
-);
+const OUTRO_MIN_SEC = clampNumber(3, 3, 6);
+const OUTRO_MAX_SEC = clampNumber(6, 3, 6);
+const DEFAULT_OUTRO_SEC = clampNumber(4.8, OUTRO_MIN_SEC, OUTRO_MAX_SEC);
+const OUTRO_SMILE_TAIL_SEC = clampNumber(1.0, 0.6, 2.0);
+const INTRO_VIDEO_BLUR_SIGMA = clampNumber(2.6, 0, 8);
+const INTRO_TEXT_FADE_IN_START = clampNumber(0.5, 0, 1.5);
+const INTRO_TEXT_FADE_IN_DUR = clampNumber(0.55, 0.15, 1.2);
+const INTRO_TEXT_X_PCT = clampNumber(0.12, 0.04, 0.2);
+const INTRO_TEXT_Y_PCT = clampNumber(0.44, 0.2, 0.6);
+const INTRO_SUBTITLE_Y_PCT = clampNumber(0.58, 0.3, 0.7);
+const FINAL_FADE_OUT_SEC = clampNumber(0.5, 0, 1.2);
 
 // Script pacing
-const SCRIPT_VOICE_WPS = Number(process.env.LONG_VIDEO_SCRIPT_WPS || 2.75); // used only for word caps
+const SCRIPT_VOICE_WPS = 2.75; // used only for word caps
 // Slightly faster default pacing (~10-12% more words).
-const SCRIPT_PACE_BIAS = clampNumber(
-	Number(process.env.LONG_VIDEO_SCRIPT_PACE_BIAS || 1.12),
-	0.85,
-	1.35
-);
-const SEGMENT_TARGET_SEC = Number(
-	process.env.LONG_VIDEO_SEGMENT_TARGET_SEC || 8
-);
-const MAX_SEGMENTS = Number(process.env.LONG_VIDEO_MAX_SEGMENTS || 45);
-const SCRIPT_TOLERANCE_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_SCRIPT_TOLERANCE_SEC || 3.5),
-	2,
-	4
-);
-const MAX_SCRIPT_REWRITES = clampNumber(
-	Number(process.env.LONG_VIDEO_SCRIPT_REWRITES || 4),
-	0,
-	5
-);
-const MAX_FILLER_WORDS_PER_VIDEO = clampNumber(
-	Number(process.env.LONG_VIDEO_MAX_FILLERS || 0),
-	0,
-	2
-);
-const MAX_FILLER_WORDS_PER_SEGMENT = clampNumber(
-	Number(process.env.LONG_VIDEO_MAX_FILLERS_PER_SEGMENT || 0),
-	0,
-	2
-);
-const MAX_MICRO_EMOTES_PER_VIDEO = clampNumber(
-	Number(process.env.LONG_VIDEO_MAX_MICRO_EMOTES || 0),
-	0,
-	1
-);
-const ENABLE_MICRO_EMOTES = process.env.LONG_VIDEO_ENABLE_MICRO_EMOTES !== "0";
+const SCRIPT_PACE_BIAS = clampNumber(1.12, 0.85, 1.35);
+const SEGMENT_TARGET_SEC = 8;
+const MAX_SEGMENTS = 45;
+const SCRIPT_TOLERANCE_SEC = clampNumber(3.5, 2, 4);
+const MAX_SCRIPT_REWRITES = clampNumber(4, 0, 5);
+const MAX_FILLER_WORDS_PER_VIDEO = clampNumber(0, 0, 2);
+const MAX_FILLER_WORDS_PER_SEGMENT = clampNumber(0, 0, 2);
+const MAX_MICRO_EMOTES_PER_VIDEO = clampNumber(0, 0, 1);
+const ENABLE_MICRO_EMOTES = true;
 
 // Audio processing
-const AUDIO_SR = Number(process.env.LONG_VIDEO_AUDIO_SR || 48000);
+const AUDIO_SR = 48000;
 const AUDIO_CHANNELS = 1; // mono voice for stability + smaller sync payload
-const GLOBAL_ATEMPO_MIN = Number(
-	process.env.LONG_VIDEO_GLOBAL_ATEMPO_MIN || 0.97
-);
-const GLOBAL_ATEMPO_MAX = Number(
-	process.env.LONG_VIDEO_GLOBAL_ATEMPO_MAX || 1.05
-);
-const INTRO_ATEMPO_MIN = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_ATEMPO_MIN || 0.97),
-	0.9,
-	1.05
-);
-const INTRO_ATEMPO_MAX = clampNumber(
-	Number(process.env.LONG_VIDEO_INTRO_ATEMPO_MAX || 1.06),
-	1.0,
-	1.15
-);
-const OUTRO_ATEMPO_MIN = clampNumber(
-	Number(process.env.LONG_VIDEO_OUTRO_ATEMPO_MIN || 0.97),
-	0.9,
-	1.05
-);
-const OUTRO_ATEMPO_MAX = clampNumber(
-	Number(process.env.LONG_VIDEO_OUTRO_ATEMPO_MAX || 1.06),
-	1.0,
-	1.15
-);
-const SEGMENT_PAD_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_SEGMENT_PAD_SEC || 0.08),
-	0,
-	0.3
-);
-const VOICE_SPEED_BOOST = clampNumber(
-	Number(process.env.LONG_VIDEO_VOICE_SPEED_BOOST || 1.0),
-	0.98,
-	1.08
-);
+const GLOBAL_ATEMPO_MIN = 0.97;
+const GLOBAL_ATEMPO_MAX = 1.05;
+const INTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
+const INTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
+const OUTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
+const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
+const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
+const VOICE_SPEED_BOOST = clampNumber(1.0, 0.98, 1.08);
 
 // Sync input prep
-const SYNC_SO_INPUT_FPS = Number(process.env.SYNC_SO_INPUT_FPS || 30);
-const SYNC_SO_INPUT_CRF = Number(process.env.SYNC_SO_INPUT_CRF || 22);
-const SYNC_SO_MAX_BYTES = Number(process.env.SYNC_SO_MAX_BYTES || 19_900_000);
-const SYNC_SO_PRE_MAX_EDGE = clampNumber(
-	Number(process.env.SYNC_SO_PRE_MAX_EDGE || 960),
-	640,
-	1280
-);
-const SYNC_SO_PRESCALE_ALWAYS = process.env.SYNC_SO_PRESCALE_ALWAYS === "1";
-const SYNC_SO_PRESCALE_SIZE_PCT = clampNumber(
-	Number(process.env.SYNC_SO_PRESCALE_SIZE_PCT || 0.85),
-	0.5,
-	0.98
-);
-const SYNC_SO_PRESCALE_MIN_SEC = clampNumber(
-	Number(process.env.SYNC_SO_PRESCALE_MIN_SEC || 9),
-	4,
-	15
-);
-const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(
-	Number(process.env.SYNC_SO_FALLBACK_MAX_EDGE || 960),
-	640,
-	1280
-);
-const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(
-	Number(process.env.SYNC_SO_SEGMENT_MAX_RETRIES || 2),
-	0,
-	5
-);
-const SYNC_SO_RETRY_DELAY_MS = clampNumber(
-	Number(process.env.SYNC_SO_RETRY_DELAY_MS || 1500),
-	250,
-	5000
-);
-const SYNC_SO_REQUEST_GAP_MS = clampNumber(
-	Number(process.env.SYNC_SO_REQUEST_GAP_MS || 350),
-	0,
-	2000
-);
-const REQUIRE_LIPSYNC = process.env.LONG_VIDEO_REQUIRE_LIPSYNC !== "0";
+const SYNC_SO_INPUT_FPS = 30;
+const SYNC_SO_INPUT_CRF = 22;
+const SYNC_SO_MAX_BYTES = 19_900_000;
+const SYNC_SO_PRE_MAX_EDGE = clampNumber(960, 640, 1280);
+const SYNC_SO_PRESCALE_ALWAYS = false;
+const SYNC_SO_PRESCALE_SIZE_PCT = clampNumber(0.85, 0.5, 0.98);
+const SYNC_SO_PRESCALE_MIN_SEC = clampNumber(9, 4, 15);
+const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(960, 640, 1280);
+const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(2, 0, 5);
+const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
+const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
+const REQUIRE_LIPSYNC = true;
 
 // Presenter stability
 const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
-const USE_MOTION_REF_BASELINE =
-	process.env.LONG_VIDEO_USE_MOTION_REF_BASELINE !== "0";
-const BASELINE_DUR_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_BASELINE_DUR_SEC || 12),
-	6,
-	15
-);
-const BASELINE_VARIANTS = clampNumber(
-	Number(process.env.LONG_VIDEO_BASELINE_VARIANTS || 2),
-	1,
-	3
-);
-const CAMERA_ZOOM_OUT = clampNumber(
-	Number(process.env.LONG_VIDEO_CAMERA_ZOOM_OUT || 0.9),
-	0.84,
-	1.0
-);
+const USE_MOTION_REF_BASELINE = true;
+const BASELINE_DUR_SEC = clampNumber(12, 6, 15);
+const BASELINE_VARIANTS = clampNumber(2, 1, 3);
+const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 
 // Music
-const MUSIC_VOLUME = clampNumber(
-	Number(process.env.LONG_VIDEO_MUSIC_VOLUME || 0.18),
-	0.06,
-	0.5
-);
-const MUSIC_DUCK_THRESHOLD = clampNumber(
-	Number(process.env.LONG_VIDEO_MUSIC_DUCK_THRESHOLD || 0.09),
-	0.03,
-	0.3
-);
-const MUSIC_DUCK_RATIO = clampNumber(
-	Number(process.env.LONG_VIDEO_MUSIC_DUCK_RATIO || 6),
-	2,
-	14
-);
-const MUSIC_DUCK_ATTACK = clampNumber(
-	Number(process.env.LONG_VIDEO_MUSIC_DUCK_ATTACK || 25),
-	5,
-	200
-);
-const MUSIC_DUCK_RELEASE = clampNumber(
-	Number(process.env.LONG_VIDEO_MUSIC_DUCK_RELEASE || 260),
-	40,
-	1200
-);
-const MUSIC_DUCK_MAKEUP = clampNumber(
-	Number(process.env.LONG_VIDEO_MUSIC_DUCK_MAKEUP || 1.6),
-	1,
-	4
-);
+const MUSIC_VOLUME = clampNumber(0.18, 0.06, 0.5);
+const MUSIC_DUCK_THRESHOLD = clampNumber(0.09, 0.03, 0.3);
+const MUSIC_DUCK_RATIO = clampNumber(6, 2, 14);
+const MUSIC_DUCK_ATTACK = clampNumber(25, 5, 200);
+const MUSIC_DUCK_RELEASE = clampNumber(260, 40, 1200);
+const MUSIC_DUCK_MAKEUP = clampNumber(1.6, 1, 4);
 
-const DEFAULT_MUSIC_URL = String(
-	process.env.LONG_VIDEO_DEFAULT_MUSIC_URL || ""
-).trim();
-const DEFAULT_MUSIC_PATH = String(
-	process.env.LONG_VIDEO_DEFAULT_MUSIC_PATH || ""
-).trim();
+const DEFAULT_MUSIC_URL = "";
+const DEFAULT_MUSIC_PATH = "";
 
 // Overlays
 // Larger overlays by default; cap size relative to frame width.
-const OVERLAY_SCALE = clampNumber(
-	Number(process.env.LONG_VIDEO_OVERLAY_SCALE || 0.4),
-	0.14,
-	0.55
-);
-const OVERLAY_MAX_WIDTH_PCT = clampNumber(
-	Number(process.env.LONG_VIDEO_OVERLAY_MAX_WIDTH_PCT || 0.45),
-	0.28,
-	0.5
-);
-const OVERLAY_BORDER_PX = clampNumber(
-	Number(process.env.LONG_VIDEO_OVERLAY_BORDER_PX || 6),
-	0,
-	18
-);
-const OVERLAY_MARGIN_PX = clampNumber(
-	Number(process.env.LONG_VIDEO_OVERLAY_MARGIN_PX || 28),
-	6,
-	120
-);
+const OVERLAY_SCALE = clampNumber(0.4, 0.14, 0.55);
+const OVERLAY_MAX_WIDTH_PCT = clampNumber(0.45, 0.28, 0.5);
+const OVERLAY_BORDER_PX = clampNumber(6, 0, 18);
+const OVERLAY_MARGIN_PX = clampNumber(28, 6, 120);
 const OVERLAY_DEFAULT_POSITION = "topRight";
-const MAX_AUTO_OVERLAYS = clampNumber(
-	Number(process.env.LONG_VIDEO_MAX_AUTO_OVERLAYS || 10),
-	3,
-	16
-);
+const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 
 // Content visual mix (presenter vs static images)
-const CONTENT_PRESENTER_RATIO = clampNumber(
-	Number(process.env.LONG_VIDEO_CONTENT_PRESENTER_RATIO || 0.5),
-	0.2,
-	0.8
-);
-const IMAGE_SEGMENT_TARGET_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_IMAGE_TARGET_SEC || 4.6),
-	2.5,
-	8
-);
-const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(
-	Number(process.env.LONG_VIDEO_IMAGE_MIN_IMAGES || 2),
-	1,
-	6
-);
-const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(
-	Number(process.env.LONG_VIDEO_IMAGE_MAX_IMAGES || 4),
-	2,
-	8
-);
-const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(
-	Number(process.env.LONG_VIDEO_IMAGE_MULTI_MIN_SEC || 5.5),
-	3,
-	12
-);
+const CONTENT_PRESENTER_RATIO = clampNumber(0.5, 0.2, 0.8);
+const IMAGE_SEGMENT_TARGET_SEC = clampNumber(4.6, 2.5, 8);
+const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
+const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(4, 2, 8);
+const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(5.5, 3, 12);
 
-const ENABLE_LONG_VIDEO_OVERLAYS =
-	process.env.LONG_VIDEO_ENABLE_OVERLAYS === "1";
+const ENABLE_LONG_VIDEO_OVERLAYS = false;
 
-const LONG_VIDEO_KEEP_TMP = process.env.LONG_VIDEO_KEEP_TMP === "1";
+const LONG_VIDEO_KEEP_TMP = false;
 
 /* ---------------------------------------------------------------
  * In-memory job store
@@ -630,6 +406,7 @@ function ensureDir(dir) {
 }
 ensureDir(TMP_ROOT);
 if (LONG_VIDEO_PERSIST_OUTPUT) ensureDir(OUTPUT_DIR);
+if (LONG_VIDEO_PERSIST_OUTPUT) ensureDir(THUMBNAIL_DIR);
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
@@ -741,9 +518,6 @@ function canExecBin(bin, args = ["-version"]) {
 
 const FFMPEG_CANDIDATES = [
 	(typeof ffmpegStatic === "string" && ffmpegStatic.trim()) || null,
-	process.env.FFMPEG_PATH && process.env.FFMPEG_PATH.trim(),
-	process.env.FFMPEG && process.env.FFMPEG.trim(),
-	process.env.FFMPEG_BIN && process.env.FFMPEG_BIN.trim(),
 	"ffmpeg",
 	os.platform() === "win32" ? "ffmpeg.exe" : "/usr/bin/ffmpeg",
 ].filter(Boolean);
@@ -764,9 +538,6 @@ else
 	);
 
 function resolveFfprobePath() {
-	const env = String(process.env.FFPROBE_PATH || "").trim();
-	if (env && canExecBin(env, ["-version"])) return env;
-
 	if (ffmpegPath) {
 		const dir = path.dirname(ffmpegPath);
 		const probeName = os.platform() === "win32" ? "ffprobe.exe" : "ffprobe";
@@ -779,7 +550,7 @@ function resolveFfprobePath() {
 	if (os.platform() === "win32" && canExecBin("ffprobe.exe", ["-version"]))
 		return "ffprobe.exe";
 
-	return process.env.FFPROBE_PATH || "ffprobe";
+	return os.platform() === "win32" ? "ffprobe.exe" : "ffprobe";
 }
 
 const ffprobePath = resolveFfprobePath();
@@ -1088,6 +859,7 @@ function validateCreateBody(body = {}) {
 	const outRatio = parseRatio(DEFAULT_OUTPUT_RATIO);
 	const fps = clampNumber(Number(DEFAULT_OUTPUT_FPS), 15, 60);
 	const scaleMode = DEFAULT_SCALE_MODE;
+	const imageScaleMode = DEFAULT_IMAGE_SCALE_MODE;
 
 	const introSec = clampNumber(DEFAULT_INTRO_SEC, INTRO_MIN_SEC, INTRO_MAX_SEC);
 	const outroSec = clampNumber(DEFAULT_OUTRO_SEC, OUTRO_MIN_SEC, OUTRO_MAX_SEC);
@@ -1109,7 +881,7 @@ function validateCreateBody(body = {}) {
 			targetDurationSec: duration,
 			introSec,
 			outroSec,
-			output: { ...outRatio, fps, scaleMode },
+			output: { ...outRatio, fps, scaleMode, imageScaleMode },
 			presenterAssetUrl,
 			voiceoverUrl: "",
 			voiceId,
@@ -1133,128 +905,12 @@ function validateCreateBody(body = {}) {
 }
 
 function buildBaseUrl(req) {
-	return (
-		process.env.BASE_URL || `${req.protocol || "http"}://${req.get("host")}`
-	);
+	return `${req.protocol || "http"}://${req.get("host")}`;
 }
 
 /* ---------------------------------------------------------------
  * Topic + CSE
  * ------------------------------------------------------------- */
-
-const CSE_ENTERTAINMENT_QUERIES = [
-	"trending entertainment news",
-	"most searched celebrity today",
-	"viral celebrity news",
-	"celebrity scandal trending",
-	"box office records this week",
-	"top streaming shows right now",
-	"most watched netflix today",
-	"most watched hulu today",
-	"new movie trailer trending",
-	"new tv series trending",
-	"music video trending on youtube",
-	"album debut trending",
-	"concert tour trending",
-	"award show news",
-	"hollywood breaking news",
-	"viral tiktok drama",
-	"youtube controversy trending",
-	"viral internet story today",
-	"celebrity breakup news",
-];
-
-const TOPIC_STOP_WORDS = new Set([
-	"the",
-	"a",
-	"an",
-	"and",
-	"or",
-	"but",
-	"if",
-	"to",
-	"of",
-	"for",
-	"in",
-	"on",
-	"at",
-	"by",
-	"with",
-	"from",
-	"about",
-	"this",
-	"that",
-	"these",
-	"those",
-	"is",
-	"are",
-	"was",
-	"were",
-	"be",
-	"been",
-	"being",
-	"into",
-	"as",
-	"over",
-	"under",
-	"after",
-	"before",
-	"vs",
-	"vs.",
-	"news",
-	"latest",
-	"breaking",
-	"update",
-	"today",
-	"week",
-	"weekly",
-	"official",
-	"full",
-	"trending",
-	"viral",
-	"top",
-	"most",
-	"biggest",
-	"new",
-]);
-
-const GENERIC_TOPIC_TOKENS = new Set([
-	"movie",
-	"movies",
-	"film",
-	"films",
-	"tv",
-	"show",
-	"shows",
-	"series",
-	"season",
-	"episode",
-	"trailer",
-	"song",
-	"songs",
-	"album",
-	"albums",
-	"music",
-	"celebrity",
-	"celebrities",
-	"hollywood",
-	"entertainment",
-	"scandal",
-	"viral",
-	"trending",
-	"top",
-	"most",
-	"biggest",
-	"news",
-	"update",
-	"streaming",
-	"box",
-	"office",
-	"release",
-	"premiere",
-	"tour",
-	"concert",
-]);
 
 const TOPIC_TOKEN_ALIASES = Object.freeze({
 	oscar: ["oscars", "academy awards", "academy award"],
@@ -1266,69 +922,6 @@ const TOPIC_TOKEN_ALIASES = Object.freeze({
 	"golden globe": ["golden globes"],
 	"golden globes": ["golden globe"],
 });
-
-const ENTERTAINMENT_KEYWORDS = [
-	"movie",
-	"film",
-	"tv",
-	"series",
-	"streaming",
-	"box office",
-	"trailer",
-	"celebrity",
-	"actor",
-	"actress",
-	"singer",
-	"rapper",
-	"album",
-	"song",
-	"tour",
-	"concert",
-	"award",
-	"oscar",
-	"grammy",
-	"emmy",
-	"golden globe",
-	"hollywood",
-	"netflix",
-	"hulu",
-	"disney",
-	"hbo",
-	"youtube",
-	"tiktok",
-];
-
-const TREND_SIGNAL_TOKENS = [
-	"trending",
-	"viral",
-	"most",
-	"top",
-	"record",
-	"breaks",
-	"surges",
-	"explodes",
-	"buzz",
-	"buzzy",
-	"hot",
-	"headline",
-	"breaking",
-	"scandal",
-	"backlash",
-	"controversy",
-	"streams",
-	"viewers",
-	"box office",
-	"chart",
-	"charts",
-	"no. 1",
-	"debuts",
-	"premiere",
-	"launches",
-	"drops",
-	"announces",
-	"teaser",
-	"trailer",
-];
 
 function tokenizeLabel(text = "") {
 	return String(text || "")
@@ -1586,7 +1179,10 @@ async function fetchTrendsStories({
 	return [];
 }
 
-async function fetchCseItems(queries, { num = 4, searchType = null } = {}) {
+async function fetchCseItems(
+	queries,
+	{ num = 4, searchType = null, imgSize = null } = {}
+) {
 	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
 	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
 	if (!list.length) return [];
@@ -1607,7 +1203,10 @@ async function fetchCseItems(queries, { num = 4, searchType = null } = {}) {
 					hl: "en",
 					...(searchType ? { searchType } : {}),
 					...(searchType === "image"
-						? { imgType: "photo", imgSize: "large" }
+						? {
+								imgType: "photo",
+								imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
+						  }
 						: {}),
 				},
 				timeout: 12000,
@@ -1686,9 +1285,6 @@ Return JSON ONLY:
 		const resp = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [{ role: "user", content: ask }],
-			...(process.env.OPENAI_JSON_MODE === "1"
-				? { response_format: { type: "json_object" } }
-				: {}),
 		});
 
 		const parsed = parseJsonFlexible(
@@ -1889,9 +1485,6 @@ Avoid broad listicles. Keep each short and searchable.
 			const resp = await openai.chat.completions.create({
 				model: CHAT_MODEL,
 				messages: [{ role: "user", content: ask }],
-				...(process.env.OPENAI_JSON_MODE === "1"
-					? { response_format: { type: "json_object" } }
-					: {}),
 			});
 			const parsed = parseJsonFlexible(
 				resp?.choices?.[0]?.message?.content || ""
@@ -2010,11 +1603,30 @@ async function fetchCseImages(topic, extraTokens = []) {
 		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
 	}
 
-	let items = await fetchCseItems(queries, { num: 8, searchType: "image" });
+	let items = await fetchCseItems(queries, {
+		num: 8,
+		searchType: "image",
+		imgSize: CSE_PREFERRED_IMG_SIZE,
+	});
+	if (!items.length) {
+		items = await fetchCseItems(queries, {
+			num: 8,
+			searchType: "image",
+			imgSize: CSE_FALLBACK_IMG_SIZE,
+		});
+	}
 	if (!items.length) {
 		items = await fetchCseItems(fallbackQueries, {
 			num: 8,
 			searchType: "image",
+			imgSize: CSE_PREFERRED_IMG_SIZE,
+		});
+	}
+	if (!items.length) {
+		items = await fetchCseItems(fallbackQueries, {
+			num: 8,
+			searchType: "image",
+			imgSize: CSE_FALLBACK_IMG_SIZE,
 		});
 	}
 	const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
@@ -2033,17 +1645,42 @@ async function fetchCseImages(topic, extraTokens = []) {
 		if (info.count < minMatches) continue;
 		const w = Number(it.image?.width || 0);
 		const h = Number(it.image?.height || 0);
-		if (w && h && Math.min(w, h) < 420) continue;
-		candidates.push(url);
-		if (candidates.length >= 12) break;
+		if (w && h && Math.min(w, h) < CSE_MIN_IMAGE_SHORT_EDGE) continue;
+		const urlText = `${it.link || ""} ${
+			it.image?.contextLink || ""
+		}`.toLowerCase();
+		const urlMatches = matchTokens.filter((tok) =>
+			urlText.includes(tok)
+		).length;
+		const score = info.count + urlMatches * 0.75;
+		candidates.push({ url, score, urlMatches, w, h });
+		if (candidates.length >= 14) break;
+	}
+
+	candidates.sort((a, b) => {
+		if (b.score !== a.score) return b.score - a.score;
+		if (b.w !== a.w) return b.w - a.w;
+		return b.h - a.h;
+	});
+
+	let pool = candidates;
+	if (matchTokens.length >= 2) {
+		const strict = candidates.filter((c) => c.urlMatches >= 1);
+		if (strict.length) {
+			const relaxed = candidates.filter((c) => c.urlMatches < 1);
+			pool = [...strict, ...relaxed];
+		}
 	}
 
 	const filtered = [];
-	for (const u of candidates) {
-		if (!isProbablyDirectImageUrl(u)) continue;
-		const ct = await headContentType(u, 7000);
+	const seen = new Set();
+	for (const c of pool) {
+		if (!c?.url || seen.has(c.url)) continue;
+		seen.add(c.url);
+		if (!isProbablyDirectImageUrl(c.url)) continue;
+		const ct = await headContentType(c.url, 7000);
 		if (ct && !ct.startsWith("image/")) continue;
-		filtered.push(u);
+		filtered.push(c.url);
 		if (filtered.length >= 6) break;
 	}
 	return filtered;
@@ -2055,6 +1692,18 @@ function sanitizeOverlayQuery(query = "") {
 		.replace(/\s+/g, " ")
 		.trim()
 		.slice(0, 80);
+}
+
+function ensureTopicInQuery(query = "", topicLabel = "") {
+	const base = sanitizeOverlayQuery(query);
+	const topic = sanitizeOverlayQuery(topicLabel);
+	if (!topic) return base;
+	if (!base) return topic;
+	const baseTokens = new Set(tokenizeLabel(base));
+	const topicTokens = tokenizeLabel(topic);
+	const hasTopicToken = topicTokens.some((t) => baseTokens.has(t));
+	if (hasTopicToken) return base;
+	return sanitizeOverlayQuery(`${topic} ${base}`) || topic;
 }
 
 function buildOverlayQueryFallback(text = "", topic = "") {
@@ -2075,10 +1724,18 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 		filterSpecificTopicTokens([...tokenizeLabel(q), ...topicTokens])
 	);
 	const minMatches = minTopicTokenMatches(tokens);
-	const items = await fetchCseItems([q], {
+	let items = await fetchCseItems([q], {
 		num: Math.min(10, Math.max(8, target * 2)),
 		searchType: "image",
+		imgSize: CSE_PREFERRED_IMG_SIZE,
 	});
+	if (!items.length) {
+		items = await fetchCseItems([q], {
+			num: Math.min(10, Math.max(8, target * 2)),
+			searchType: "image",
+			imgSize: CSE_FALLBACK_IMG_SIZE,
+		});
+	}
 	const candidates = [];
 	const maxCandidates = Math.max(10, target * 3);
 
@@ -2094,17 +1751,40 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 		if (info.count < minMatches) continue;
 		const w = Number(it.image?.width || 0);
 		const h = Number(it.image?.height || 0);
-		if (w && h && Math.min(w, h) < 420) continue;
-		candidates.push(url);
+		if (w && h && Math.min(w, h) < CSE_MIN_IMAGE_SHORT_EDGE) continue;
+		const urlText = `${it.link || ""} ${
+			it.image?.contextLink || ""
+		}`.toLowerCase();
+		const urlMatches = tokens.filter((tok) => urlText.includes(tok)).length;
+		const score = info.count + urlMatches * 0.75;
+		candidates.push({ url, score, urlMatches, w, h });
 		if (candidates.length >= maxCandidates) break;
 	}
 
+	candidates.sort((a, b) => {
+		if (b.score !== a.score) return b.score - a.score;
+		if (b.w !== a.w) return b.w - a.w;
+		return b.h - a.h;
+	});
+
+	let pool = candidates;
+	if (tokens.length >= 2) {
+		const strict = candidates.filter((c) => c.urlMatches >= 1);
+		if (strict.length) {
+			const relaxed = candidates.filter((c) => c.urlMatches < 1);
+			pool = [...strict, ...relaxed];
+		}
+	}
+
 	const filtered = [];
-	for (const u of candidates) {
-		if (!isProbablyDirectImageUrl(u)) continue;
-		const ct = await headContentType(u, 7000);
+	const seen = new Set();
+	for (const c of pool) {
+		if (!c?.url || seen.has(c.url)) continue;
+		seen.add(c.url);
+		if (!isProbablyDirectImageUrl(c.url)) continue;
+		const ct = await headContentType(c.url, 7000);
 		if (ct && !ct.startsWith("image/")) continue;
-		filtered.push(u);
+		filtered.push(c.url);
 		if (filtered.length >= target) break;
 	}
 
@@ -2137,7 +1817,7 @@ async function buildOverlayAssetsFromSegments({
 		const cueRaw = Array.isArray(seg.overlayCues) ? seg.overlayCues[0] : null;
 		const cueQuery =
 			cueRaw?.query || buildOverlayQueryFallback(seg.text, topicLabel);
-		const query = sanitizeOverlayQuery(cueQuery);
+		const query = ensureTopicInQuery(cueQuery, topicLabel);
 		if (!query) continue;
 		const rawPos = String(cueRaw?.position || OVERLAY_DEFAULT_POSITION);
 		const position = rawPos.startsWith("bottom")
@@ -2246,8 +1926,7 @@ function resolveSegmentImageQuery(seg, topics = []) {
 	const cueRaw = Array.isArray(seg?.overlayCues) ? seg.overlayCues[0] : null;
 	const cueQuery =
 		cueRaw?.query || buildOverlayQueryFallback(seg?.text || "", topicLabel);
-	const query =
-		sanitizeOverlayQuery(cueQuery) || sanitizeOverlayQuery(topicLabel);
+	const query = ensureTopicInQuery(cueQuery, topicLabel);
 	return { query, topicLabel };
 }
 
@@ -2503,11 +2182,48 @@ async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
 	return null;
 }
 
+async function maybeScaleCandleReference(inputPath, tmpDir, jobId) {
+	if (!inputPath || !fs.existsSync(inputPath)) return inputPath;
+	if (
+		!ffmpegPath ||
+		!Number.isFinite(CANDLE_REF_SCALE) ||
+		CANDLE_REF_SCALE >= 0.98
+	) {
+		return inputPath;
+	}
+	const suffix = jobId || crypto.randomUUID();
+	const outPath = path.join(tmpDir, `candle_ref_scaled_${suffix}.png`);
+	try {
+		await spawnBin(
+			ffmpegPath,
+			[
+				"-i",
+				inputPath,
+				"-vf",
+				`scale=iw*${CANDLE_REF_SCALE}:ih*${CANDLE_REF_SCALE}:flags=lanczos`,
+				"-y",
+				outPath,
+			],
+			"candle_ref_scale",
+			{ timeoutMs: 120000 }
+		);
+		const detected = detectFileType(outPath);
+		if (detected?.kind === "image") return outPath;
+	} catch (e) {
+		logJob(jobId, "brand candle scale failed (using original)", {
+			error: e.message,
+		});
+	}
+	safeUnlink(outPath);
+	return inputPath;
+}
+
 async function ensureLocalBrandCandleImage(tmpDir, jobId) {
 	const localPath = DEFAULT_BRAND_CANDLE_IMAGE_PATH;
 	if (localPath && fs.existsSync(localPath)) {
 		const detected = detectFileType(localPath);
-		if (detected?.kind === "image") return localPath;
+		if (detected?.kind === "image")
+			return await maybeScaleCandleReference(localPath, tmpDir, jobId);
 		logJob(jobId, "brand candle local invalid", {
 			path: localPath,
 			detected: detected?.kind || "unknown",
@@ -2535,7 +2251,7 @@ async function ensureLocalBrandCandleImage(tmpDir, jobId) {
 			safeUnlink(outPath);
 			return null;
 		}
-		return outPath;
+		return await maybeScaleCandleReference(outPath, tmpDir, jobId);
 	};
 
 	try {
@@ -2844,7 +2560,7 @@ Keep the SAME identity (Ahmed): same face structure, beard, glasses, and age.
 Location: clean desk, tasteful background, soft practical lighting, studio quality. ${STUDIO_EMPTY_PROMPT}
 Outfit: classy tailored suit or blazer with a neat shirt.
 Lighting: slightly darker cinematic look with a warm key light and gentle shadows (not too dark).
-Add ONE small branded candle on the desk to the presenter's left (viewer-right), near the back-right corner; subtle, classy, and lit; keep it smaller and not centered, fully supported on the desk with a safe margin from the edge (no overhang, at least one and a half candle-widths inboard). No extra candles. If the candle reference has a lid, remove it; no lid in frame.
+Add ONE small branded candle on the desk to the presenter's left (viewer-right), near the back-right corner; subtle, classy, and lit; keep it smaller and not centered, fully supported on the desk with a safe margin from the edge (no overhang, at least two candle-widths inboard). No extra candles. If the candle reference has a lid, remove it; no lid anywhere in frame or on the desk.
 Preserve the original performance timing and micro-expressions (eyebrows, blinks, subtle reactions).
 No text overlays, no extra people, no weird hands, no face warping, no mouth distortion.
 ${PRESENTER_CANDLE_PROMPT}
@@ -2886,10 +2602,10 @@ function buildBaselinePrompt(
 	return `
 Photorealistic talking-head video of the SAME person as the reference image.
 Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT} Keep ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (about 3-4% of frame width, no larger than about 12% of the presenter's head height) and set fully on the desk with a safe margin from the edge (at least one and a half candle-widths inboard).
+Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
 Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present. Keep the label, glass, and color unchanged.
 Flame flickers subtly; candlelight glow shifts naturally.
-If the reference candle has a lid, remove it; no lid visible anywhere in frame.
+If the reference candle has a lid, remove it; no lid visible anywhere in frame or on the desk.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 ${expressionLine}
 Motion: ${motionHint} ${variantHint}
@@ -2931,8 +2647,8 @@ async function createPresenterMasterImage({
 		}
 
 		const candleLine = candleLocalPath
-			? 'Use the exact branded candle from reference tag "candle" (do not redesign), scale it down to a realistic small tabletop size, and remove any lid or cap so the candle is open; do not show the lid.'
-			: "Add a small, elegant lit candle with a subtle brand logo (no lid or cap).";
+			? 'Use the exact branded candle from reference tag "candle" (do not redesign), scale it down to a realistic small tabletop size (about one-third the reference size), and remove any lid or cap so the candle is open; do not show the lid anywhere in frame.'
+			: "Add a small, elegant lit candle with a subtle brand logo (no lid or cap anywhere in frame).";
 
 		const prompt = `
 Edit the PERSON in reference tag "person".
@@ -2940,8 +2656,8 @@ Keep the SAME identity (face, beard, glasses), SAME studio background, SAME ligh
 ${candleLine}
 Keep the candle logo readable and undistorted.
 Add ${PRESENTER_CANDLE_PROMPT}. Keep the candle small, classy, and clearly on the desk to the presenter's left (viewer-right), not centered.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (about 3-4% of frame width, no larger than about 12% of the presenter's head height) and set fully on the desk with a safe margin from the edge (at least one and a half candle-widths inboard).
-Remove any lid or cap from the candle; do not show the lid in frame. If the reference candle includes a lid, remove it completely.
+Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
+Remove any lid or cap from the candle; do not show the lid anywhere in frame or on the desk. If the reference candle includes a lid, remove it completely.
 Outfit: ${PRESENTER_WARDROBE_PROMPT}. Make the outfit different than the reference while staying classy.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Expression: calm and friendly with a brief, subtle light smile only (not constant). Mouth relaxed at rest.
@@ -2958,7 +2674,7 @@ No distortion, no warped face, no extra hands.
 					referenceImages: refs,
 					promptText: prompt,
 					ratio: outputRatio,
-					seed: seedFromJobId(jobId),
+					seed: PRESENTER_MASTER_SEED,
 				}),
 			{ retries: 2, baseDelayMs: 900, label: "runway_text_to_image" }
 		);
@@ -3024,69 +2740,6 @@ function allocateTopicSegments(segmentCount, topics = []) {
 	return ranges;
 }
 
-const SERIOUS_TONE_TOKENS = [
-	"death",
-	"died",
-	"dead",
-	"funeral",
-	"tragedy",
-	"tragic",
-	"shooting",
-	"killed",
-	"arrest",
-	"charged",
-	"lawsuit",
-	"sued",
-	"trial",
-	"court",
-	"sentenced",
-	"prison",
-	"jail",
-	"hospital",
-	"illness",
-	"cancer",
-	"injury",
-	"accident",
-	"crash",
-	"assault",
-	"abuse",
-	"allegation",
-	"controversy",
-	"backlash",
-	"scandal",
-	"divorce",
-	"breakup",
-	"custody",
-	"banned",
-	"leak",
-	"hack",
-];
-
-const EXCITED_TONE_TOKENS = [
-	"trailer",
-	"premiere",
-	"debut",
-	"launch",
-	"announcement",
-	"announced",
-	"return",
-	"comeback",
-	"wins",
-	"won",
-	"record",
-	"breaks",
-	"box office",
-	"no. 1",
-	"chart",
-	"tour",
-	"album",
-	"single",
-	"surprise",
-	"teaser",
-	"first look",
-	"reveal",
-];
-
 function inferTonePlan({ topic, topics, angle, liveContext }) {
 	const topicLine =
 		Array.isArray(topics) && topics.length
@@ -3142,71 +2795,6 @@ function normalizeExpression(raw, mood = "neutral") {
 	if (mood === "excited") return "excited";
 	return "neutral";
 }
-
-const EXPLICIT_EXCITED_CUES = [
-	"wow",
-	"huge",
-	"massive",
-	"wild",
-	"crazy",
-	"insane",
-	"shocking",
-	"record",
-	"no. 1",
-	"number one",
-	"surge",
-	"explodes",
-	"blows up",
-	"viral",
-	"first look",
-	"teaser",
-	"trailer",
-	"premiere",
-];
-
-const EXPLICIT_SERIOUS_CUES = [
-	"tragic",
-	"heartbreaking",
-	"sad",
-	"sorrow",
-	"grief",
-	"mourning",
-	"death",
-	"died",
-	"killed",
-	"lawsuit",
-	"sued",
-	"arrest",
-	"charged",
-	"trial",
-	"court",
-	"injury",
-	"accident",
-	"hospital",
-];
-
-const EXPLICIT_WARM_CUES = [
-	"good news",
-	"happy",
-	"joy",
-	"joyful",
-	"delighted",
-	"smile",
-	"love",
-	"congrats",
-	"celebrate",
-	"thank you",
-];
-
-const EXPLICIT_THOUGHTFUL_CUES = [
-	"think",
-	"consider",
-	"maybe",
-	"might",
-	"question",
-	"what if",
-	"why",
-];
 
 function inferExplicitExpression(text = "") {
 	const t = String(text || "").toLowerCase();
@@ -3326,6 +2914,51 @@ function cleanupSpeechText(text = "") {
 	return t;
 }
 
+const META_SENTENCE_PATTERNS = [
+	/\b(outro|intro)\b/i,
+	/\b(in this video|in this clip|in this segment|next video|next clip)\b/i,
+	/\b(next|this|that|first|second|third|final)\s+segment\b/i,
+	/\b(move on to the outro|moving to the outro|go to the outro)\b/i,
+];
+
+function isMetaSentence(sentence = "") {
+	const s = String(sentence || "").toLowerCase();
+	return META_SENTENCE_PATTERNS.some((rx) => rx.test(s));
+}
+
+function splitSentences(text = "") {
+	const raw = String(text || "").trim();
+	if (!raw) return [];
+	const parts = raw.split(/([.!?])\s+/);
+	const sentences = [];
+	for (let i = 0; i < parts.length; i += 2) {
+		const chunk = String(parts[i] || "").trim();
+		const punct = String(parts[i + 1] || "").trim();
+		const sentence = `${chunk}${punct}`.trim();
+		if (sentence) sentences.push(sentence);
+	}
+	return sentences.length ? sentences : [raw];
+}
+
+function stripMetaNarration(text = "") {
+	const raw = String(text || "").trim();
+	if (!raw) return raw;
+	const parts = splitSentences(raw);
+	const kept = parts.filter((p) => !isMetaSentence(p));
+	const cleaned = cleanupSpeechText(kept.join(" "));
+	if (cleaned) return cleaned;
+	const softened = raw
+		.replace(/\b(outro|intro)\b/gi, "")
+		.replace(
+			/\b(in this video|in this clip|in this segment|next video|next clip)\b/gi,
+			""
+		)
+		.replace(/\b(next|this|that|first|second|third|final)\s+segment\b/gi, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	return cleanupSpeechText(softened);
+}
+
 function stripFillerAndEmotes(
 	text = "",
 	state,
@@ -3387,8 +3020,9 @@ function limitFillerAndEmotesAcrossSegments(segments = [], opts = {}) {
 }
 
 function sanitizeIntroOutroLine(text = "") {
+	const base = stripMetaNarration(text);
 	const { text: cleaned } = stripFillerAndEmotes(
-		text,
+		base,
 		{ fillers: 0, emotes: 0 },
 		{ maxFillers: 0, maxEmotes: 0 }
 	);
@@ -3396,12 +3030,18 @@ function sanitizeIntroOutroLine(text = "") {
 }
 
 function stripAllFillers(text = "") {
+	const base = stripMetaNarration(text);
 	const { text: cleaned } = stripFillerAndEmotes(
-		text,
+		base,
 		{ fillers: 0, emotes: 0 },
 		{ maxFillers: 0, maxEmotes: 0 }
 	);
 	return cleaned;
+}
+
+function sanitizeSegmentText(text = "") {
+	const cleaned = stripAllFillers(text);
+	return cleaned || "Quick update.";
 }
 
 function buildIntroLine({ topics = [], shortTitle }) {
@@ -3721,7 +3361,7 @@ async function generateScript({
 	const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
 	const mood = tonePlan?.mood || "neutral";
 	const outroGuide = includeOutro
-		? "Last segment: clean wrap that tees up the outro (no like/subscribe CTA)."
+		? "Last segment: clean wrap that naturally closes the story and leaves space for the closing line (no like/subscribe CTA)."
 		: "Last segment: wrap + CTA question.";
 	const toneGuide =
 		mood === "serious"
@@ -3730,7 +3370,7 @@ async function generateScript({
 			? `Segment 0: high-energy, upbeat hook. ${outroGuide}`
 			: `Segment 0: confident, neutral hook. ${outroGuide}`;
 	const ctaLine = includeOutro
-		? "End the LAST segment of EACH topic with one short, topic-specific engagement question for comments. Do NOT add like/subscribe in content; the outro handles thanks and likes."
+		? "End the LAST segment of EACH topic with one short, topic-specific engagement question for comments. Do NOT add like/subscribe in content; the closing line handles thanks and likes."
 		: "Last segment ends with ONE short CTA question (comment + subscribe).";
 
 	const topicPlanLines = topicRanges
@@ -3817,6 +3457,7 @@ Style rules (IMPORTANT):
 - Keep pacing steady and conversational; no sudden speed-ups.
 - Slightly brisk, natural American delivery; avoid drawn-out phrasing.
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
+- Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic), but stay professional.
 - Use contractions. Punchy sentences. A little playful, but not cringe.
 - Avoid staccato punctuation. Do NOT put commas between single words.
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
@@ -3827,6 +3468,7 @@ Style rules (IMPORTANT):
 - Avoid specific dates, rankings, or stats unless they appear in the provided context above.
 - Avoid filler words ("um", "uh", "like", "ah"). Use zero filler words in the entire script.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
+- Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - Segment 0 must be a strong hook that makes people stay.
 - Segment 0 follows the tone plan; middle segments stay conversational/neutral; last segment wraps with the tone plan.
 - Each topic is its own mini story with clear transitions.
@@ -3868,9 +3510,6 @@ Return JSON ONLY:
 	const resp = await openai.chat.completions.create({
 		model: CHAT_MODEL,
 		messages: [{ role: "user", content: prompt }],
-		...(process.env.OPENAI_JSON_MODE === "1"
-			? { response_format: { type: "json_object" } }
-			: {}),
 	});
 
 	const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
@@ -3964,8 +3603,12 @@ Return JSON ONLY:
 		maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
 		maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
 		maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
-		noFillerSegmentIndices: [0],
+		noFillerSegmentIndices: [0, 1, 2],
 	});
+	segments = segments.map((s) => ({
+		...s,
+		text: sanitizeSegmentText(s.text),
+	}));
 	// Smooth expressions so adjacent segments stay coherent.
 	const smoothed = smoothExpressionPlan(
 		segments.map((s) => s.expression),
@@ -4053,21 +3696,25 @@ async function synthesizeTtsWav({
 	label,
 	voiceId,
 	voiceSettings,
+	modelId,
+	modelOrder,
 }) {
 	const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
 	const mp3 = path.join(tmpDir, `${safeLabel}_${jobId}.mp3`);
 	const wav = path.join(tmpDir, `${safeLabel}_${jobId}.wav`);
 	const cleanText = stripAllFillers(text);
-	await elevenLabsTTS({
+	const usedModelId = await elevenLabsTTS({
 		text: cleanText,
 		outMp3Path: mp3,
 		voiceId,
 		voiceSettings,
+		modelId,
+		modelOrder,
 	});
 	await mp3ToCleanWav(mp3, wav);
 	safeUnlink(mp3);
 	const durationSec = await probeDurationSeconds(wav);
-	return { wavPath: wav, durationSec };
+	return { wavPath: wav, durationSec, modelId: usedModelId };
 }
 
 async function fitWavToTargetDuration({
@@ -4195,7 +3842,11 @@ function normalizeYouTubeTags(tags = []) {
 	).slice(0, 15);
 }
 
-async function uploadToYouTube(u, fp, { title, description, tags, category }) {
+async function uploadToYouTube(
+	u,
+	fp,
+	{ title, description, tags, category, thumbnailPath, jobId }
+) {
 	const o = buildYouTubeOAuth2Client(u);
 	if (!o) throw new Error("YouTube OAuth missing");
 	const yt = google.youtube({ version: "v3", auth: o });
@@ -4223,7 +3874,25 @@ async function uploadToYouTube(u, fp, { title, description, tags, category }) {
 		},
 		{ maxContentLength: Infinity, maxBodyLength: Infinity }
 	);
-	return `https://www.youtube.com/watch?v=${data.id}`;
+
+	const videoId = data?.id;
+	if (videoId && thumbnailPath && fs.existsSync(thumbnailPath)) {
+		try {
+			await yt.thumbnails.set({
+				videoId,
+				media: { body: fs.createReadStream(thumbnailPath) },
+			});
+			logJob(jobId, "youtube thumbnail set", {
+				path: path.basename(thumbnailPath),
+			});
+		} catch (e) {
+			logJob(jobId, "youtube thumbnail upload failed (ignored)", {
+				error: e.message,
+			});
+		}
+	}
+
+	return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
 async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
@@ -4332,7 +4001,14 @@ async function streamToString(readable, limitBytes = 2000) {
 	});
 }
 
-async function elevenLabsTTS({ text, outMp3Path, voiceId, voiceSettings }) {
+async function elevenLabsTTS({
+	text,
+	outMp3Path,
+	voiceId,
+	voiceSettings,
+	modelId,
+	modelOrder,
+}) {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
 	const vId = String(voiceId || ELEVEN_FIXED_VOICE_ID).trim();
 	if (!vId) throw new Error("ELEVENLABS voiceId missing");
@@ -4350,15 +4026,21 @@ async function elevenLabsTTS({ text, outMp3Path, voiceId, voiceSettings }) {
 		},
 	};
 
-	const models = [];
-	if (ELEVEN_TTS_MODEL) models.push(ELEVEN_TTS_MODEL);
-	for (const m of ELEVEN_TTS_MODEL_FALLBACKS) {
-		if (!models.includes(m)) models.push(m);
+	let models = [];
+	if (modelId) {
+		models = [modelId];
+	} else if (Array.isArray(modelOrder) && modelOrder.length) {
+		models = modelOrder.filter(Boolean);
+	} else {
+		if (ELEVEN_TTS_MODEL) models.push(ELEVEN_TTS_MODEL);
+		for (const m of ELEVEN_TTS_MODEL_FALLBACKS) {
+			if (!models.includes(m)) models.push(m);
+		}
 	}
 
 	let lastErr = null;
-	for (const modelId of models) {
-		const payload = { ...basePayload, model_id: modelId };
+	for (const candidateModel of models) {
+		const payload = { ...basePayload, model_id: candidateModel };
 		const doReq = async () => {
 			const res = await axios.post(url, payload, {
 				headers: {
@@ -4395,11 +4077,11 @@ async function elevenLabsTTS({ text, outMp3Path, voiceId, voiceSettings }) {
 				baseDelayMs: 700,
 				label: "elevenlabs_tts",
 			});
-			return outMp3Path;
+			return candidateModel;
 		} catch (e) {
 			lastErr = e;
 			if (isElevenModelNotFound(e)) {
-				console.warn(`[ElevenLabs] Model not found: ${modelId}`);
+				console.warn(`[ElevenLabs] Model not found: ${candidateModel}`);
 				continue;
 			}
 			throw e;
@@ -4819,15 +4501,15 @@ async function normalizeClip(
 			"-c:v",
 			"libx264",
 			"-preset",
-			"veryfast",
+			INTERMEDIATE_PRESET,
 			"-crf",
-			String(VIDEO_CRF),
+			String(INTERMEDIATE_VIDEO_CRF),
 			"-pix_fmt",
 			"yuv420p",
 			"-c:a",
 			"aac",
 			"-b:a",
-			"160k",
+			AUDIO_BITRATE,
 			"-movflags",
 			"+faststart",
 			outPath,
@@ -5097,6 +4779,11 @@ async function createImageMontageClip({
 	const w = makeEven(output.w);
 	const h = makeEven(output.h);
 	const fps = Number(output.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+	const imageScaleMode = String(
+		output.imageScaleMode || DEFAULT_IMAGE_SCALE_MODE
+	)
+		.trim()
+		.toLowerCase();
 	const perDur = Math.max(0.2, dur / imagePaths.length);
 	const labelNum = Number(label);
 	const useCrossfade =
@@ -5112,20 +4799,42 @@ async function createImageMontageClip({
 	imagePaths.forEach((imgPath, idx) => {
 		inputs.push("-loop", "1", "-i", imgPath);
 		const outLabel = `v${idx}`;
-		const scale = `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}`;
-		const panX = idx % 2 === 0 ? "0" : "iw*0.03";
-		const panY = idx % 3 === 0 ? "0" : "ih*0.02";
-		const motionMode = idx % 3;
-		const motion =
-			motionMode === 0
-				? `zoompan=z='min(1.08,zoom+0.0007)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps}`
-				: motionMode === 1
-				? `zoompan=z='min(1.06,zoom+0.0006)':x='iw/2-(iw/zoom/2)+${panX}':y='ih/2-(ih/zoom/2)+${panY}':d=1:fps=${fps}`
-				: `fps=${fps}`;
 		const trim = `trim=0:${perDur.toFixed(3)},setpts=PTS-STARTPTS`;
-		filterParts.push(
-			`[${idx}:v]${scale},${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`
-		);
+		if (imageScaleMode === "blur") {
+			const bg = `bg${idx}`;
+			const fg = `fg${idx}`;
+			const bg2 = `bg2${idx}`;
+			const fg2 = `fg2${idx}`;
+			filterParts.push(`[${idx}:v]split=2[${bg}][${fg}]`);
+			filterParts.push(
+				`[${bg}]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},gblur=sigma=18[${bg2}]`
+			);
+			filterParts.push(
+				`[${fg}]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos[${fg2}]`
+			);
+			filterParts.push(
+				`[${bg2}][${fg2}]overlay=(W-w)/2:(H-h)/2,fps=${fps},${trim},setsar=1,format=yuv420p[${outLabel}]`
+			);
+		} else {
+			const scale =
+				imageScaleMode === "contain"
+					? `scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`
+					: `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}`;
+			const panX = idx % 2 === 0 ? "0" : "iw*0.03";
+			const panY = idx % 3 === 0 ? "0" : "ih*0.02";
+			const motionMode = idx % 3;
+			const motion =
+				imageScaleMode === "cover"
+					? motionMode === 0
+						? `zoompan=z='min(1.08,zoom+0.0007)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps}`
+						: motionMode === 1
+						? `zoompan=z='min(1.06,zoom+0.0006)':x='iw/2-(iw/zoom/2)+${panX}':y='ih/2-(ih/zoom/2)+${panY}':d=1:fps=${fps}`
+						: `fps=${fps}`
+					: `fps=${fps}`;
+			filterParts.push(
+				`[${idx}:v]${scale},${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`
+			);
+		}
 		vLabels.push(`[${outLabel}]`);
 	});
 
@@ -5164,9 +4873,9 @@ async function createImageMontageClip({
 			"-c:v",
 			"libx264",
 			"-preset",
-			"veryfast",
+			INTERMEDIATE_PRESET,
 			"-crf",
-			String(VIDEO_CRF),
+			String(INTERMEDIATE_VIDEO_CRF),
 			"-pix_fmt",
 			"yuv420p",
 			"-movflags",
@@ -5236,9 +4945,9 @@ async function fitVideoToDuration(inVideo, targetSec, outVideo, padSec = 0) {
 			"-c:v",
 			"libx264",
 			"-preset",
-			"veryfast",
+			INTERMEDIATE_PRESET,
 			"-crf",
-			String(VIDEO_CRF),
+			String(INTERMEDIATE_VIDEO_CRF),
 			"-pix_fmt",
 			"yuv420p",
 			"-movflags",
@@ -5271,7 +4980,7 @@ async function mergeVideoWithAudio(videoPath, audioPath, outPath) {
 			"-c:a",
 			"aac",
 			"-b:a",
-			"160k",
+			AUDIO_BITRATE,
 			"-ar",
 			String(AUDIO_SR),
 			"-ac",
@@ -5413,15 +5122,15 @@ async function concatClips(clips, outPath, outCfg) {
 		"-c:v",
 		"libx264",
 		"-preset",
-		"medium",
+		INTERMEDIATE_PRESET,
 		"-crf",
-		String(VIDEO_CRF),
+		String(INTERMEDIATE_VIDEO_CRF),
 		"-pix_fmt",
 		"yuv420p",
 		"-c:a",
 		"aac",
 		"-b:a",
-		"160k",
+		AUDIO_BITRATE,
 		"-ar",
 		String(AUDIO_SR),
 		"-ac",
@@ -5475,7 +5184,7 @@ Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PR
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: calm intro delivery with natural, subtle hand movement near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels. Keep the candle as-is (already lit).
 Keep the branded candle from the reference image. Keep the logo readable and undistorted. ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (about 3-4% of frame width, no larger than about 12% of the presenter's head height) and set fully on the desk with a safe margin from the edge (at least one and a half candle-widths inboard).
+Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
 Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present.
 If the reference candle has a lid, remove it; no lid visible anywhere in frame.
 Expression: ${introFace}. Calm and neutral, composed and professional with a subtle, light smile (not constant).
@@ -5492,7 +5201,7 @@ Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PR
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: small, natural intro gesture near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels. Keep the candle as-is (already lit).
 Keep the branded candle from the reference image. Keep the logo readable and undistorted. ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (about 3-4% of frame width, no larger than about 12% of the presenter's head height) and set fully on the desk with a safe margin from the edge (at least one and a half candle-widths inboard).
+Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
 Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present.
 If the reference candle has a lid, remove it; no lid visible anywhere in frame.
 Expression: ${introFace}. Calm and neutral; subtle, light smile only, not constant.
@@ -5558,9 +5267,9 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 					"-c:v",
 					"libx264",
 					"-preset",
-					"veryfast",
+					INTERMEDIATE_PRESET,
 					"-crf",
-					String(VIDEO_CRF),
+					String(INTERMEDIATE_VIDEO_CRF),
 					"-pix_fmt",
 					"yuv420p",
 					"-movflags",
@@ -5616,6 +5325,84 @@ function escapeDrawtext(s = "") {
 		.replace(/\]/g, "\\]")
 		.replace(new RegExp(placeholder, "g"), "\\n")
 		.trim();
+}
+
+function resolveWatermarkFontFile() {
+	const candidates = [
+		"C:/Windows/Fonts/segoesc.ttf",
+		"C:/Windows/Fonts/segoepr.ttf",
+		"C:/Windows/Fonts/segoeprb.ttf",
+		"C:/Windows/Fonts/BRUSHSCI.TTF",
+		"C:/Windows/Fonts/ITCEDSCR.TTF",
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+		"/Library/Fonts/Arial.ttf",
+	];
+	for (const p of candidates) {
+		try {
+			if (p && fs.existsSync(p)) return p;
+		} catch {}
+	}
+	return resolveFontFile();
+}
+
+const WATERMARK_FONT_FILE = resolveWatermarkFontFile();
+if (!WATERMARK_FONT_FILE) {
+	console.warn(
+		"[LongVideo] WARN - Watermark font not found. Falling back to default drawtext font."
+	);
+}
+
+function resolveThumbnailFontFile() {
+	const candidates = [
+		"C:/Windows/Fonts/impact.ttf",
+		"C:/Windows/Fonts/arialbd.ttf",
+		"C:/Windows/Fonts/arialblack.ttf",
+		"C:/Windows/Fonts/arial.ttf",
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+		"/Library/Fonts/Arial Bold.ttf",
+	];
+	for (const p of candidates) {
+		try {
+			if (p && fs.existsSync(p)) return p;
+		} catch {}
+	}
+	return resolveFontFile();
+}
+
+const THUMBNAIL_FONT_FILE = resolveThumbnailFontFile();
+if (!THUMBNAIL_FONT_FILE) {
+	console.warn(
+		"[LongVideo] WARN - Thumbnail font not found. Falling back to default drawtext font."
+	);
+}
+
+function buildWatermarkFilter() {
+	const text = escapeDrawtext(WATERMARK_TEXT);
+	const fontFile = WATERMARK_FONT_FILE
+		? `:fontfile='${escapeDrawtext(WATERMARK_FONT_FILE)}'`
+		: "";
+	return (
+		`drawtext=text='${text}'` +
+		`${fontFile}` +
+		`:fontsize=h*${WATERMARK_FONT_SIZE_PCT}` +
+		`:fontcolor=white@${WATERMARK_OPACITY.toFixed(2)}` +
+		`:shadowcolor=black@${WATERMARK_SHADOW_OPACITY.toFixed(2)}` +
+		`:shadowx=${WATERMARK_SHADOW_PX}` +
+		`:shadowy=${WATERMARK_SHADOW_PX}` +
+		`:x=w*${WATERMARK_MARGIN_PCT}` +
+		`:y=h-th-h*${WATERMARK_MARGIN_PCT}`
+	);
+}
+
+function computeFinalMasterSize(outCfg = {}) {
+	const baseW = Number(outCfg?.w || 0) || 1280;
+	const baseH = Number(outCfg?.h || 0) || 720;
+	const ratio = baseW > 0 && baseH > 0 ? baseW / baseH : 16 / 9;
+	let targetH =
+		baseH >= FINAL_MASTER_MAX_HEIGHT ? baseH : FINAL_MASTER_MAX_HEIGHT;
+	if (targetH < FINAL_MASTER_MIN_HEIGHT) targetH = FINAL_MASTER_MIN_HEIGHT;
+	const targetW = makeEven(targetH * ratio);
+	return { w: makeEven(targetW), h: makeEven(targetH) };
 }
 
 function hardTruncateText(text = "", maxChars = 40) {
@@ -5700,6 +5487,247 @@ function fitIntroText(
 	}
 
 	return { text: wrap.text, fontScale, lines: wrap.lines, truncated };
+}
+
+function cleanThumbnailText(text = "") {
+	return String(text || "")
+		.replace(/["'`]/g, "")
+		.replace(/[^a-z0-9\s]/gi, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function sanitizeThumbnailContext(text = "") {
+	const banned = [
+		"death",
+		"dead",
+		"died",
+		"killed",
+		"shooting",
+		"murder",
+		"suicide",
+		"funeral",
+		"tragedy",
+		"tragic",
+		"memorial",
+		"accident",
+		"crash",
+		"assault",
+		"abuse",
+		"lawsuit",
+		"arrest",
+		"charged",
+		"trial",
+		"court",
+		"injury",
+		"hospital",
+	];
+	let cleaned = String(text || "");
+	for (const word of banned) {
+		cleaned = cleaned.replace(new RegExp(`\\b${word}\\b`, "gi"), "");
+	}
+	return cleaned.replace(/\s+/g, " ").trim();
+}
+
+function buildThumbnailText(title = "") {
+	const cleaned = cleanThumbnailText(title);
+	if (!cleaned) return { text: "", fontScale: 1 };
+	const words = cleaned.split(" ").filter(Boolean);
+	const trimmed = words.slice(0, THUMBNAIL_TEXT_MAX_WORDS).join(" ");
+	const fit = fitIntroText(trimmed, {
+		baseMaxChars: THUMBNAIL_TEXT_BASE_MAX_CHARS,
+		preferLines: 2,
+		maxLines: 2,
+	});
+	return {
+		text: fit.text || trimmed,
+		fontScale: fit.fontScale || 1,
+	};
+}
+
+function buildThumbnailPrompt({ title, topics }) {
+	const topicLine = Array.isArray(topics)
+		? topics
+				.map((t) => t.displayTopic || t.topic)
+				.filter(Boolean)
+				.join(" / ")
+		: "";
+	const contextRaw = [title, topicLine]
+		.filter(Boolean)
+		.join(" | ")
+		.slice(0, 240);
+	const safeContext =
+		sanitizeThumbnailContext(contextRaw) ||
+		cleanThumbnailText(topicLine || title || "");
+	return `
+Create a YouTube thumbnail image (no text in the image).
+Use the provided person reference; keep the presenter look consistent with the studio desk setup and lighting.
+Composition: presenter on the right third, leave clean negative space on the left for headline text.
+Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
+Add subtle, tasteful visual cues related to: ${safeContext}.
+Style: ultra sharp, high contrast, professional, cinematic lighting, shallow depth of field.
+No logos, no extra people, no extra hands, no distortion, no text.
+`.trim();
+}
+
+async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
+	const { text, fontScale } = buildThumbnailText(title);
+	const safeText = escapeDrawtext(text);
+	const fontFile = THUMBNAIL_FONT_FILE
+		? `:fontfile='${escapeDrawtext(THUMBNAIL_FONT_FILE)}'`
+		: "";
+	const fontSize = Math.max(
+		42,
+		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
+	);
+	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
+
+	const filters = [
+		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
+		"eq=contrast=1.05:saturation=1.08:brightness=0.02",
+		"unsharp=5:5:0.7",
+		`drawbox=x=0:y=0:w=w*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:h=h:color=black@${THUMBNAIL_TEXT_BOX_OPACITY}:t=fill`,
+	];
+	if (safeText) {
+		filters.push(
+			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.5:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2`
+		);
+	}
+
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-i",
+			inputPath,
+			"-vf",
+			filters.join(","),
+			"-frames:v",
+			"1",
+			"-q:v",
+			"2",
+			"-y",
+			outputPath,
+		],
+		"thumbnail_render",
+		{ timeoutMs: 180000 }
+	);
+
+	return outputPath;
+}
+
+async function extractThumbnailFrame({ videoPath, outPath }) {
+	if (!videoPath || !fs.existsSync(videoPath) || !ffmpegPath) return null;
+	const dur = await probeDurationSeconds(videoPath);
+	const safeDur = Number.isFinite(dur) && dur > 1 ? dur : 2.5;
+	const seek = Math.max(0.5, Math.min(safeDur * 0.25, safeDur - 0.5));
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-ss",
+			seek.toFixed(3),
+			"-i",
+			videoPath,
+			"-frames:v",
+			"1",
+			"-q:v",
+			"2",
+			"-y",
+			outPath,
+		],
+		"thumbnail_frame",
+		{ timeoutMs: 120000 }
+	);
+	const dt = detectFileType(outPath);
+	return dt?.kind === "image" ? outPath : null;
+}
+
+async function createThumbnailImage({
+	jobId,
+	tmpDir,
+	presenterLocalPath,
+	candleLocalPath,
+	title,
+	topics,
+	fallbackVideoPath,
+}) {
+	const fallback = async (reason) => {
+		logJob(jobId, "thumbnail fallback", { reason });
+		let sourcePath = presenterLocalPath;
+		if (fallbackVideoPath && fs.existsSync(fallbackVideoPath)) {
+			const framePath = path.join(tmpDir, `thumb_frame_${jobId}.jpg`);
+			try {
+				const extracted = await extractThumbnailFrame({
+					videoPath: fallbackVideoPath,
+					outPath: framePath,
+				});
+				if (extracted) sourcePath = extracted;
+			} catch {}
+		}
+		const finalPath = path.join(tmpDir, `thumb_${jobId}.jpg`);
+		await renderThumbnailOverlay({
+			inputPath: sourcePath,
+			outputPath: finalPath,
+			title,
+		});
+		return finalPath;
+	};
+
+	if (!RUNWAY_API_KEY) return await fallback("runway_missing");
+
+	const detected = detectFileType(presenterLocalPath);
+	if (detected?.kind !== "image") return await fallback("presenter_not_image");
+	try {
+		const personUri = await runwayCreateEphemeralUpload({
+			filePath: presenterLocalPath,
+			filename: "thumb_person.png",
+		});
+		const refs = [{ uri: personUri, tag: "person" }];
+		if (candleLocalPath && fs.existsSync(candleLocalPath)) {
+			const candleUri = await runwayCreateEphemeralUpload({
+				filePath: candleLocalPath,
+				filename: "thumb_candle.png",
+			});
+			refs.push({ uri: candleUri, tag: "candle" });
+		}
+
+		const prompt = buildThumbnailPrompt({ title, topics });
+		logJob(jobId, "thumbnail prompt", {
+			prompt: prompt.slice(0, 260),
+		});
+		const seed = (seedFromJobId(jobId) + THUMBNAIL_SEED_OFFSET) >>> 0;
+		let outUrl = "";
+		try {
+			outUrl = await withRetries(
+				() =>
+					runwayTextToImage({
+						referenceImages: refs,
+						promptText: prompt,
+						ratio: THUMBNAIL_RATIO,
+						seed,
+					}),
+				{ retries: 1, baseDelayMs: 800, label: "runway_thumb_text_to_image" }
+			);
+		} catch (e) {
+			logJob(jobId, "thumbnail runway failed", { error: e.message });
+			return await fallback(e.message || "runway_failed");
+		}
+
+		const basePath = path.join(tmpDir, `thumb_base_${jobId}.png`);
+		await downloadToFile(outUrl, basePath, 90000, 2);
+		const dt = detectFileType(basePath);
+		if (dt?.kind !== "image") return await fallback("thumbnail_base_invalid");
+
+		const finalPath = path.join(tmpDir, `thumb_${jobId}.jpg`);
+		await renderThumbnailOverlay({
+			inputPath: basePath,
+			outputPath: finalPath,
+			title,
+		});
+		return finalPath;
+	} catch (e) {
+		logJob(jobId, "thumbnail generation error", { error: e.message });
+		return await fallback(e.message || "thumbnail_failed");
+	}
 }
 
 async function createIntroClip({
@@ -5803,15 +5831,15 @@ async function createIntroClip({
 			"-c:v",
 			"libx264",
 			"-preset",
-			"veryfast",
+			INTERMEDIATE_PRESET,
 			"-crf",
-			String(VIDEO_CRF),
+			String(INTERMEDIATE_VIDEO_CRF),
 			"-pix_fmt",
 			"yuv420p",
 			"-c:a",
 			"aac",
 			"-b:a",
-			"160k",
+			AUDIO_BITRATE,
 			"-shortest",
 			"-movflags",
 			"+faststart",
@@ -6008,15 +6036,15 @@ async function applyOverlays(baseVideoPath, overlays, outPath) {
 			"-c:v",
 			"libx264",
 			"-preset",
-			"medium",
+			INTERMEDIATE_PRESET,
 			"-crf",
-			String(VIDEO_CRF),
+			String(INTERMEDIATE_VIDEO_CRF),
 			"-pix_fmt",
 			"yuv420p",
 			"-c:a",
 			"aac",
 			"-b:a",
-			"160k",
+			AUDIO_BITRATE,
 			"-shortest",
 			"-movflags",
 			"+faststart",
@@ -6208,7 +6236,7 @@ async function mixBackgroundMusic(
 		"-c:a",
 		"aac",
 		"-b:a",
-		"160k",
+		AUDIO_BITRATE,
 		"-shortest",
 		"-movflags",
 		"+faststart",
@@ -6220,7 +6248,12 @@ async function mixBackgroundMusic(
 	return outPath;
 }
 
-async function finalizeVideoWithFadeOut({ inputPath, outputPath, fadeOutSec }) {
+async function finalizeVideoWithFadeOut({
+	inputPath,
+	outputPath,
+	fadeOutSec,
+	outCfg = {},
+}) {
 	const dur = await probeDurationSeconds(inputPath);
 	const safeFade =
 		Number.isFinite(fadeOutSec) && fadeOutSec > 0 ? fadeOutSec : 0;
@@ -6229,69 +6262,82 @@ async function finalizeVideoWithFadeOut({ inputPath, outputPath, fadeOutSec }) {
 		0,
 		dur > 0 ? Math.min(1.2, dur / 2) : 0
 	);
+	const shouldFade = Boolean(fadeDur && dur && dur >= 0.4);
+	const start = shouldFade ? Math.max(0, dur - fadeDur) : 0;
 
-	if (!fadeDur || !dur || dur < 0.4) {
-		await spawnBin(
-			ffmpegPath,
-			[
-				"-i",
-				inputPath,
-				"-c:v",
-				"copy",
-				"-c:a",
-				"aac",
-				"-b:a",
-				"160k",
-				"-ar",
-				String(AUDIO_SR),
-				"-ac",
-				"2",
-				"-movflags",
-				"+faststart",
-				"-y",
-				outputPath,
-			],
-			"finalize",
-			{ timeoutMs: 240000 }
+	const { w: outW, h: outH } = computeFinalMasterSize(outCfg);
+	const fps = Number(outCfg?.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+	const gop = Math.max(12, Math.round(fps * FINAL_GOP_SECONDS));
+
+	const videoFilters = [
+		`scale=${outW}:${outH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${outW}:${outH}`,
+		`fps=${fps}`,
+		buildWatermarkFilter(),
+	];
+	if (shouldFade) {
+		videoFilters.push(
+			`fade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`
 		);
-		return;
 	}
+	videoFilters.push("format=yuv420p");
 
-	const start = Math.max(0, dur - fadeDur);
+	const audioFilters = [
+		`aresample=${AUDIO_SR}`,
+		"aformat=channel_layouts=stereo:sample_fmts=fltp",
+	];
+	if (shouldFade) {
+		audioFilters.push(
+			`afade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`
+		);
+	}
+	audioFilters.push(FINAL_LOUDNORM_FILTER);
+
 	await spawnBin(
 		ffmpegPath,
 		[
 			"-i",
 			inputPath,
 			"-vf",
-			`fade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
+			videoFilters.join(","),
 			"-af",
-			`afade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(
-				3
-			)},aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp`,
+			audioFilters.join(","),
 			"-c:v",
 			"libx264",
 			"-preset",
-			"medium",
+			FINAL_PRESET,
 			"-crf",
-			String(VIDEO_CRF),
+			String(FINAL_VIDEO_CRF),
 			"-pix_fmt",
 			"yuv420p",
+			"-g",
+			String(gop),
+			"-keyint_min",
+			String(gop),
+			"-sc_threshold",
+			"0",
 			"-c:a",
 			"aac",
 			"-b:a",
-			"160k",
+			AUDIO_BITRATE,
 			"-ar",
 			String(AUDIO_SR),
 			"-ac",
 			"2",
 			"-movflags",
 			"+faststart",
+			"-colorspace",
+			FINAL_COLOR_SPACE,
+			"-color_primaries",
+			FINAL_COLOR_SPACE,
+			"-color_trc",
+			FINAL_COLOR_SPACE,
+			"-color_range",
+			FINAL_COLOR_RANGE,
 			"-y",
 			outputPath,
 		],
-		"finalize_fade",
-		{ timeoutMs: 240000 }
+		"final_master",
+		{ timeoutMs: 480000 }
 	);
 }
 
@@ -6617,6 +6663,11 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		const resolveVoiceSettings = (expression, text) =>
 			lockedVoiceSettings ||
 			buildVoiceSettingsForExpression(expression, tonePlan?.mood, text);
+		const ttsModelOrder = [
+			ELEVEN_TTS_MODEL,
+			...ELEVEN_TTS_MODEL_FALLBACKS,
+		].filter(Boolean);
+		let ttsModelId = "";
 
 		const introVoiceSettings = resolveVoiceSettings(introExpression, introLine);
 		const introTts = await synthesizeTtsWav({
@@ -6626,7 +6677,10 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			label: "intro",
 			voiceId: effectiveVoiceId,
 			voiceSettings: introVoiceSettings,
+			modelId: ttsModelId || undefined,
+			modelOrder: ttsModelOrder,
 		});
+		if (introTts?.modelId) ttsModelId = introTts.modelId;
 		const introFit = await fitWavToTargetDuration({
 			wavPath: introTts.wavPath,
 			targetSec: introDurationSec,
@@ -6661,7 +6715,10 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			label: "outro",
 			voiceId: effectiveVoiceId,
 			voiceSettings: outroVoiceSettings,
+			modelId: ttsModelId || undefined,
+			modelOrder: ttsModelOrder,
 		});
+		if (outroTts?.modelId) ttsModelId = outroTts.modelId;
 		const outroFit = await fitWavToTargetDuration({
 			wavPath: outroTts.wavPath,
 			targetSec: outroDurationSec,
@@ -6815,6 +6872,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				logJob(jobId, "eleven voice locked", {
 					voiceId: effectiveVoiceId,
 					attempt,
+					modelId: ttsModelId || "auto",
 				});
 
 				for (const seg of segments) {
@@ -6829,13 +6887,17 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						`tts_clean_${jobId}_${seg.index}.wav`
 					);
 
-					const voiceSettings = resolveVoiceSettings(seg.expression, seg.text);
-					await elevenLabsTTS({
-						text: seg.text,
+					const cleanText = sanitizeSegmentText(seg.text);
+					const voiceSettings = resolveVoiceSettings(seg.expression, cleanText);
+					const usedModelId = await elevenLabsTTS({
+						text: cleanText,
 						outMp3Path: mp3,
 						voiceId: effectiveVoiceId,
 						voiceSettings,
+						modelId: ttsModelId || undefined,
+						modelOrder: ttsModelOrder,
 					});
+					if (!ttsModelId && usedModelId) ttsModelId = usedModelId;
 					await mp3ToCleanWav(mp3, cleanWav);
 					safeUnlink(mp3);
 
@@ -6927,6 +6989,7 @@ Topic assignment by segment (do NOT change order): ${topicsLine}
 
 Rules:
 - Keep the same topic and tone (US audience, fun, not formal).
+- Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic).
 - Keep EXACTLY ${segments.length} segments.
 - Preserve smooth transitions.
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
@@ -6934,10 +6997,11 @@ Rules:
 - Improve clarity and specificity; avoid vague filler phrasing or repeating the question.
 - Avoid filler words ("um", "uh", "like", "ah"). Use zero filler words in the entire script.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
+- Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - End the LAST segment of EACH topic with one short, topic-specific engagement question for comments.
 - Topic questions must be short and end with a single question mark.
-- Do NOT ask for likes or subscribe in content; the outro handles thanks and likes.
-- Last segment ends with a clean wrap that tees up the outro. Do NOT include a like/subscribe CTA.
+- Do NOT ask for likes or subscribe in content; the closing line handles thanks and likes.
+- Last segment ends with a clean wrap that leads into the closing line; do NOT mention the outro or transitions to it. Do NOT include a like/subscribe CTA.
 
 Return JSON ONLY: { "segments":[{"index":0,"text":"..."}] }
 
@@ -6948,9 +7012,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const resp2 = await openai.chat.completions.create({
 				model: CHAT_MODEL,
 				messages: [{ role: "user", content: rewritePrompt }],
-				...(process.env.OPENAI_JSON_MODE === "1"
-					? { response_format: { type: "json_object" } }
-					: {}),
 			});
 			const parsed2 = parseJsonFlexible(
 				resp2?.choices?.[0]?.message?.content || ""
@@ -6986,9 +7047,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
 				maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
 				maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
-				noFillerSegmentIndices: [0],
+				noFillerSegmentIndices: [0, 1, 2],
 			});
 			segments.splice(0, segments.length, ...fillerLimited);
+			segments = segments.map((s) => ({
+				...s,
+				text: sanitizeSegmentText(s.text),
+			}));
 		}
 
 		// Apply global atempo to each segment (may be 1.0 within tolerance)
@@ -7423,9 +7488,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				"-c:v",
 				"libx264",
 				"-preset",
-				"veryfast",
+				INTERMEDIATE_PRESET,
 				"-crf",
-				String(VIDEO_CRF),
+				String(INTERMEDIATE_VIDEO_CRF),
 				"-pix_fmt",
 				"yuv420p",
 				"-movflags",
@@ -7555,7 +7620,52 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			inputPath: mixedPath,
 			outputPath,
 			fadeOutSec: FINAL_FADE_OUT_SEC,
+			outCfg: output,
 		});
+
+		// 16.2) Thumbnail (AI-assisted)
+		let thumbnailPath = "";
+		let thumbnailUrl = "";
+		let thumbnailMetaPath = "";
+		let thumbnailMetaUrl = "";
+		try {
+			const thumbTitle = script.shortTitle || seoMeta?.seoTitle || script.title;
+			const thumbTmp = await createThumbnailImage({
+				jobId,
+				tmpDir,
+				presenterLocalPath: presenterLocal,
+				candleLocalPath,
+				title: thumbTitle,
+				topics: topicPicks,
+				fallbackVideoPath: outputPath,
+			});
+			if (LONG_VIDEO_PERSIST_OUTPUT) {
+				const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
+				fs.copyFileSync(thumbTmp, finalThumb);
+				thumbnailPath = finalThumb;
+				thumbnailUrl = `${baseUrl}/uploads/thumbnails/${path.basename(
+					finalThumb
+				)}`;
+				thumbnailMetaPath = thumbnailPath;
+				thumbnailMetaUrl = thumbnailUrl;
+			} else {
+				thumbnailPath = thumbTmp;
+			}
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					thumbnailPath: thumbnailMetaPath || "",
+					thumbnailUrl: thumbnailMetaUrl || "",
+				},
+			});
+			logJob(jobId, "thumbnail ready", {
+				path: path.basename(thumbnailPath),
+			});
+		} catch (e) {
+			logJob(jobId, "thumbnail generation failed (ignored)", {
+				error: e.message,
+			});
+		}
 
 		// 16.5) YouTube upload (optional)
 		let youtubeLink = "";
@@ -7579,6 +7689,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						description: seoMeta?.seoDescription || script.title,
 						tags: seoMeta?.tags || [BRAND_TAG],
 						category: youtubeCategoryFinal || LONG_VIDEO_YT_CATEGORY,
+						thumbnailPath,
+						jobId,
 					});
 					logJob(jobId, "youtube upload complete", { youtubeLink });
 				} else {
