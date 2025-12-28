@@ -209,9 +209,9 @@ const DEFAULT_BRAND_CANDLE_IMAGE_PATH = path.resolve(
 const DEFAULT_BRAND_CANDLE_IMAGE_URL = "";
 
 const PRESENTER_MASTER_SEED = 428911;
-const CANDLE_REF_SCALE = clampNumber(0.35, 0.1, 1);
-const CANDLE_WIDTH_PCT = clampNumber(0.03, 0.02, 0.1);
-const CANDLE_HEAD_HEIGHT_PCT = clampNumber(0.05, 0.04, 0.16);
+const CANDLE_REF_SCALE = clampNumber(0.3, 0.1, 1);
+const CANDLE_WIDTH_PCT = clampNumber(0.026, 0.02, 0.1);
+const CANDLE_HEAD_HEIGHT_PCT = clampNumber(0.045, 0.04, 0.16);
 const CANDLE_X_PCT = clampNumber(0.74, 0.6, 0.9);
 const CANDLE_Y_PCT = clampNumber(0.76, 0.55, 0.92);
 const CANDLE_SIZE_DESC = `about ${Math.round(
@@ -226,10 +226,10 @@ const CANDLE_POSITION_DESC = `centered around ${Math.round(
 )}% of frame height (from top), with the base resting on the desk`;
 
 const PRESENTER_CANDLE_PROMPT =
-	"small, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it a realistic small tabletop size (about a 4-6 oz jar, not oversized), " +
+	"small, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it a realistic small tabletop size (about a 3-4 oz jar, not oversized), " +
 	`${CANDLE_SIZE_DESC}; keep it fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge; position it consistently, ${CANDLE_POSITION_DESC}; clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; do not place the lid on the desk; show open wax surface; only one candle; do NOT place on the viewer-left side; keep the candle in the exact same spot across shots.`;
 const STUDIO_EMPTY_PROMPT =
-	"Studio is empty; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter.";
+	"Studio is empty and closed set; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes (even blurred/bokeh), no reflections of people, no human shapes, no motion behind the presenter; background must be static and free of any human presence.";
 const PRESENTER_WARDROBE_PROMPT =
 	"classy tailored suit or blazer with a neat shirt; clean, camera-ready outfit";
 const PRESENTER_MOTION_STYLE =
@@ -267,12 +267,12 @@ const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
 const THUMBNAIL_TEXT_MAX_WORDS = 7;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 18;
-const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.56;
-const THUMBNAIL_TEXT_BOX_OPACITY = 0.34;
+const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.5;
+const THUMBNAIL_TEXT_BOX_OPACITY = 0.24;
 const THUMBNAIL_CONTEXT_OVERLAY_ALPHA = 0.22;
 const THUMBNAIL_CONTEXT_BLUR_SIGMA = 16;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.06;
-const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
+const THUMBNAIL_TEXT_SIZE_PCT = 0.115;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
 const THUMBNAIL_SEED_OFFSET = 913;
 
@@ -2583,6 +2583,7 @@ function buildRestylePrompt({ mood = "neutral" } = {}) {
 Restyle the provided performance video into a classy modern studio.
 Keep the SAME identity (Ahmed): same face structure, beard, glasses, and age.
 Location: clean desk, tasteful background, soft practical lighting, studio quality. ${STUDIO_EMPTY_PROMPT}
+Background must be static and free of any human shapes or movement.
 Outfit: classy tailored suit or blazer with a neat shirt.
 Lighting: slightly darker cinematic look with a warm key light and gentle shadows (not too dark).
 Add ONE small branded candle on the desk to the presenter's left (viewer-right), near the back-right corner; subtle, classy, and lit; keep it smaller and not centered, fully supported on the desk with a safe margin from the edge (no overhang, at least two candle-widths inboard). No extra candles. If the candle reference has a lid, remove it; no lid anywhere in frame or on the desk.
@@ -2627,7 +2628,7 @@ function buildBaselinePrompt(
 
 	return `
 Photorealistic talking-head video of the SAME person as the reference image.
-Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT} Keep ${PRESENTER_CANDLE_PROMPT}.
+Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT} Background is static and locked-off; no moving shapes or people behind the presenter. Keep ${PRESENTER_CANDLE_PROMPT}.
 Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
 Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present. Keep the label, glass, and color unchanged.
 Flame flickers subtly; candlelight glow shifts naturally.
@@ -2674,12 +2675,12 @@ async function createPresenterMasterImage({
 		}
 
 		const candleLine = candleLocalPath
-			? 'Use the exact branded candle from reference tag "candle" (do not redesign), scale it down to a realistic small tabletop size (about one-third the reference size), and remove any lid or cap so the candle is open; do not show the lid anywhere in frame.'
+			? 'Use the exact branded candle from reference tag "candle" (do not redesign), scale it down to a realistic small tabletop size (about one-quarter the reference size), keep the label intact and readable, and remove any lid or cap so the candle is open; do not show the lid anywhere in frame.'
 			: "Add a small, elegant lit candle with a subtle brand logo (no lid or cap anywhere in frame).";
 
 		const prompt = `
 Edit the PERSON in reference tag "person".
-Keep the SAME identity (face, beard, glasses), SAME studio background, SAME lighting, SAME camera angle. ${STUDIO_EMPTY_PROMPT}
+Keep the SAME identity (face, beard, glasses), SAME studio background, SAME lighting, SAME camera angle. ${STUDIO_EMPTY_PROMPT} Background must be static and free of any human shapes or movement.
 ${candleLine}
 Keep the candle logo readable and undistorted.
 Add ${PRESENTER_CANDLE_PROMPT}. Keep the candle small, classy, and clearly on the desk to the presenter's left (viewer-right), not centered.
@@ -2936,7 +2937,7 @@ function formatTopicList(topics = []) {
 	return `${labels[0]}, ${labels[1]}, and ${labels[2]}`;
 }
 
-const FILLER_WORD_REGEX = /\b(?:um+|uh+|erm+|er|ah+)\b/gi;
+const FILLER_WORD_REGEX = /\b(?:um+|uh+|uhm+|erm+|er|ah+|hmm+|mm+|mhm+)\b/gi;
 const FILLER_PHRASE_REGEX = /\b(real quick)\b/gi;
 const LIKE_FILLER_REGEX = /([,.!?]\s+)like\s*,\s*/gi;
 const MICRO_EMOTE_REGEX = /\b(?:heh|whew)\b/gi;
@@ -3211,8 +3212,7 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral" }) {
 
 	if (isMulti) {
 		const multiLong = `today we're covering a few updates, starting with ${firstTopic}.`;
-		const multiExplicit =
-			`today we will cover multiple topics, first up is ${firstTopic}.`;
+		const multiExplicit = `today we will cover multiple topics, first up is ${firstTopic}.`;
 		const multiStart = `we're starting with ${firstTopic}.`;
 		const multiFirst = `first up is ${firstTopic}.`;
 		const multiLets = `let's start with ${firstTopic}.`;
@@ -5720,6 +5720,7 @@ function fitIntroText(
 
 function cleanThumbnailText(text = "") {
 	return String(text || "")
+		.replace(/([a-z])([A-Z])/g, "$1 $2")
 		.replace(/["'`]/g, "")
 		.replace(/[^a-z0-9\s]/gi, " ")
 		.replace(/\s+/g, " ")
@@ -5775,27 +5776,17 @@ function buildThumbnailText(title = "") {
 }
 
 function buildThumbnailPrompt({ title, topics }) {
-	const topicLine = Array.isArray(topics)
-		? topics
-				.map((t) => t.displayTopic || t.topic)
-				.filter(Boolean)
-				.join(" / ")
-		: "";
-	const contextRaw = [title, topicLine]
-		.filter(Boolean)
-		.join(" | ")
-		.slice(0, 240);
-	const safeContext = sanitizeThumbnailContext(contextRaw);
-	const contextLabel = safeContext || "today's top story";
 	return `
 Create a YouTube thumbnail image (no text in the image).
 Use the provided person reference; keep the presenter look consistent with the studio desk setup and lighting.
+Background must be empty and clean (no people, no silhouettes, no reflections, no motion).
 Composition: presenter on the right third, leave clean negative space on the left for headline text.
-Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
+Face must be sharp and natural; no warping or extra limbs.
+Add the branded candle on the desk to the presenter's left (viewer-right), small and slightly smaller than a typical jar, realistic, lit, no lid; keep the label intact and readable.
 If reference tag "context" is provided, use it only for subtle, topic-relevant background cues.
-Add subtle, tasteful visual cues related to: ${contextLabel}.
+Add subtle, tasteful entertainment-news cues (abstract, non-branded) and a gentle dark gradient on the left for text space (not a flat rectangle).
 Style: ultra sharp, high contrast, professional, cinematic lighting, shallow depth of field.
-No logos, no extra people, no extra hands, no distortion, no text.
+No extra people, no extra hands, no distortion, no text; no logos except the candle label.
 `.trim();
 }
 
@@ -5803,10 +5794,12 @@ function buildSafeThumbnailPrompt() {
 	return `
 Create a YouTube thumbnail image (no text in the image).
 Use the provided person reference; keep the presenter look consistent with the studio desk setup and lighting.
+Background must be empty and clean (no people, no silhouettes, no reflections, no motion).
 Composition: presenter on the right third, leave clean negative space on the left for headline text.
-Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
+Face must be sharp and natural; no warping or extra limbs.
+Add the branded candle on the desk to the presenter's left (viewer-right), small and slightly smaller than a typical jar, realistic, lit, no lid; keep the label intact and readable.
 Style: ultra sharp, high contrast, professional, cinematic lighting, shallow depth of field.
-No logos, no extra people, no extra hands, no distortion, no text.
+No extra people, no extra hands, no distortion, no text; no logos except the candle label.
 `.trim();
 }
 
@@ -5846,10 +5839,12 @@ async function renderThumbnailOverlay({
 	const overlayFilters = [];
 	if (safeText) {
 		overlayFilters.push(
-			`drawbox=x=0:y=0:w=iw*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:h=ih:color=black@${THUMBNAIL_TEXT_BOX_OPACITY}:t=fill`,
-			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.5:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2`
+			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.7:shadowcolor=black@0.65:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2`
 		);
 	}
+	const overlayTail = overlayFilters.length
+		? `,${overlayFilters.join(",")}`
+		: "";
 
 	const hasContext =
 		contextImagePath && fs.existsSync(contextImagePath) ? true : false;
@@ -5864,10 +5859,8 @@ async function renderThumbnailOverlay({
 		];
 		const filterComplex = [
 			`[0:v]${baseFilters.join(",")}[base]`,
-			`[1:v]${contextFilters.join(",")}[ctx]`,
-			`[base][ctx]overlay=0:0:format=auto${
-				overlayFilters.length ? `,${overlayFilters.join(",")}` : ""
-			}[out]`,
+			`[1:v]${contextFilters.join(",")}[panel]`,
+			`[base][panel]overlay=0:0:format=auto${overlayTail}[out]`,
 		].join(";");
 		await spawnBin(
 			ffmpegPath,
@@ -5893,13 +5886,27 @@ async function renderThumbnailOverlay({
 		return outputPath;
 	}
 
+	const panelFilters = [
+		`gblur=sigma=${THUMBNAIL_CONTEXT_BLUR_SIGMA}`,
+		"format=rgba",
+		`colorchannelmixer=aa=${THUMBNAIL_TEXT_BOX_OPACITY}`,
+		`crop=iw*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:ih:0:0`,
+	];
+	const filterComplex = [
+		`[0:v]${baseFilters.join(",")}[base]`,
+		`[base]split=2[fg][bg]`,
+		`[bg]${panelFilters.join(",")}[panel]`,
+		`[fg][panel]overlay=0:0:format=auto${overlayTail}[out]`,
+	].join(";");
 	await spawnBin(
 		ffmpegPath,
 		[
 			"-i",
 			inputPath,
-			"-vf",
-			[...baseFilters, ...overlayFilters].join(","),
+			"-filter_complex",
+			filterComplex,
+			"-map",
+			"[out]",
 			"-frames:v",
 			"1",
 			"-q:v",
@@ -6113,6 +6120,7 @@ async function createThumbnailImage({
 			inputPath: basePath,
 			outputPath: finalPath,
 			title,
+			contextImagePath,
 		});
 		return finalPath;
 	} catch (e) {
@@ -7035,10 +7043,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			shortTitle: script.shortTitle || script.title,
 			mood: introOutroMood,
 		});
-		const introExpression =
-			tonePlan?.mood === "serious" ? "serious" : "warm";
-		const outroExpression =
-			tonePlan?.mood === "serious" ? "neutral" : "warm";
+		const introExpression = tonePlan?.mood === "serious" ? "serious" : "warm";
+		const outroExpression = tonePlan?.mood === "serious" ? "neutral" : "warm";
 
 		logJob(jobId, "orchestrator plan", {
 			mood: introOutroMood,
