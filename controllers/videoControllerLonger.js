@@ -209,9 +209,9 @@ const DEFAULT_BRAND_CANDLE_IMAGE_PATH = path.resolve(
 const DEFAULT_BRAND_CANDLE_IMAGE_URL = "";
 
 const PRESENTER_MASTER_SEED = 428911;
-const CANDLE_REF_SCALE = clampNumber(0.3, 0.1, 1);
-const CANDLE_WIDTH_PCT = clampNumber(0.026, 0.02, 0.1);
-const CANDLE_HEAD_HEIGHT_PCT = clampNumber(0.045, 0.04, 0.16);
+const CANDLE_REF_SCALE = clampNumber(0.35, 0.1, 1);
+const CANDLE_WIDTH_PCT = clampNumber(0.03, 0.02, 0.1);
+const CANDLE_HEAD_HEIGHT_PCT = clampNumber(0.05, 0.04, 0.16);
 const CANDLE_X_PCT = clampNumber(0.74, 0.6, 0.9);
 const CANDLE_Y_PCT = clampNumber(0.76, 0.55, 0.92);
 const CANDLE_SIZE_DESC = `about ${Math.round(
@@ -226,7 +226,7 @@ const CANDLE_POSITION_DESC = `centered around ${Math.round(
 )}% of frame height (from top), with the base resting on the desk`;
 
 const PRESENTER_CANDLE_PROMPT =
-	"small, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it a realistic small tabletop size (about a 3-4 oz jar, not oversized), " +
+	"small, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it a realistic small tabletop size (about a 4-6 oz jar, not oversized), " +
 	`${CANDLE_SIZE_DESC}; keep it fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge; position it consistently, ${CANDLE_POSITION_DESC}; clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; do not place the lid on the desk; show open wax surface; only one candle; do NOT place on the viewer-left side; keep the candle in the exact same spot across shots.`;
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and closed set; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes (even blurred/bokeh), no reflections of people, no human shapes, no motion behind the presenter; background must be static and free of any human presence.";
@@ -311,10 +311,10 @@ const AUDIO_SR = 48000;
 const AUDIO_CHANNELS = 1; // mono voice for stability + smaller sync payload
 const GLOBAL_ATEMPO_MIN = 0.97;
 const GLOBAL_ATEMPO_MAX = 1.05;
-const INTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
-const INTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
-const OUTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
-const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
+const INTRO_ATEMPO_MIN = 1.0;
+const INTRO_ATEMPO_MAX = 1.0;
+const OUTRO_ATEMPO_MIN = 1.0;
+const OUTRO_ATEMPO_MAX = 1.0;
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
 const VOICE_SPEED_BOOST = clampNumber(1.0, 0.98, 1.08);
 
@@ -2675,7 +2675,7 @@ async function createPresenterMasterImage({
 		}
 
 		const candleLine = candleLocalPath
-			? 'Use the exact branded candle from reference tag "candle" (do not redesign), scale it down to a realistic small tabletop size (about one-quarter the reference size), keep the label intact and readable, and remove any lid or cap so the candle is open; do not show the lid anywhere in frame.'
+			? 'Use the exact branded candle from reference tag "candle" (do not redesign), scale it down to a realistic small tabletop size (about one-third the reference size), and remove any lid or cap so the candle is open; do not show the lid anywhere in frame.'
 			: "Add a small, elegant lit candle with a subtle brand logo (no lid or cap anywhere in frame).";
 
 		const prompt = `
@@ -5782,7 +5782,7 @@ Use the provided person reference; keep the presenter look consistent with the s
 Background must be empty and clean (no people, no silhouettes, no reflections, no motion).
 Composition: presenter on the right third, leave clean negative space on the left for headline text.
 Face must be sharp and natural; no warping or extra limbs.
-Add the branded candle on the desk to the presenter's left (viewer-right), small and slightly smaller than a typical jar, realistic, lit, no lid; keep the label intact and readable.
+Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
 If reference tag "context" is provided, use it only for subtle, topic-relevant background cues.
 Add subtle, tasteful entertainment-news cues (abstract, non-branded) and a gentle dark gradient on the left for text space (not a flat rectangle).
 Style: ultra sharp, high contrast, professional, cinematic lighting, shallow depth of field.
@@ -5797,7 +5797,7 @@ Use the provided person reference; keep the presenter look consistent with the s
 Background must be empty and clean (no people, no silhouettes, no reflections, no motion).
 Composition: presenter on the right third, leave clean negative space on the left for headline text.
 Face must be sharp and natural; no warping or extra limbs.
-Add the branded candle on the desk to the presenter's left (viewer-right), small and slightly smaller than a typical jar, realistic, lit, no lid; keep the label intact and readable.
+Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
 Style: ultra sharp, high contrast, professional, cinematic lighting, shallow depth of field.
 No extra people, no extra hands, no distortion, no text; no logos except the candle label.
 `.trim();
@@ -7118,7 +7118,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		});
 		if (!introFit.durationSec)
 			throw new Error("Intro voice generation failed (empty duration)");
-		const introAudioPath = introFit.wavPath;
+		let introAudioPath = introFit.wavPath;
 		introDurationSec = introFit.durationSec || introDurationSec;
 		if (introDurationSec < INTRO_MIN_SEC || introDurationSec > INTRO_MAX_SEC) {
 			logJob(jobId, "intro duration outside target range", {
@@ -7156,7 +7156,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		});
 		if (!outroFit.durationSec)
 			throw new Error("Outro voice generation failed (empty duration)");
-		const outroAudioPath = outroFit.wavPath;
+		let outroAudioPath = outroFit.wavPath;
 		outroDurationSec = outroFit.durationSec || outroDurationSec;
 		if (outroDurationSec < OUTRO_MIN_SEC || outroDurationSec > OUTRO_MAX_SEC) {
 			logJob(jobId, "outro duration outside target range", {
@@ -7514,6 +7514,36 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					0
 				),
 			});
+		}
+
+		// Apply the same pacing to intro/outro so the voice sounds uniform.
+		if (!voiceoverUrl && Math.abs(globalAtempo - 1) >= 0.002) {
+			try {
+				const introAdj = path.join(tmpDir, `intro_audio_${jobId}_g.wav`);
+				await applyGlobalAtempoToWav(introAudioPath, introAdj, globalAtempo);
+				safeUnlink(introAudioPath);
+				introAudioPath = introAdj;
+				const newIntroDur = await probeDurationSeconds(introAudioPath);
+				if (Number.isFinite(newIntroDur) && newIntroDur > 0)
+					introDurationSec = newIntroDur;
+			} catch (e) {
+				logJob(jobId, "intro atempo align failed (ignored)", {
+					error: e.message,
+				});
+			}
+			try {
+				const outroAdj = path.join(tmpDir, `outro_audio_${jobId}_g.wav`);
+				await applyGlobalAtempoToWav(outroAudioPath, outroAdj, globalAtempo);
+				safeUnlink(outroAudioPath);
+				outroAudioPath = outroAdj;
+				const newOutroDur = await probeDurationSeconds(outroAudioPath);
+				if (Number.isFinite(newOutroDur) && newOutroDur > 0)
+					outroDurationSec = newOutroDur;
+			} catch (e) {
+				logJob(jobId, "outro atempo align failed (ignored)", {
+					error: e.message,
+				});
+			}
 		}
 
 		// Apply global atempo to each segment (may be 1.0 within tolerance)
