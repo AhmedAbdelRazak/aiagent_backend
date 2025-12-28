@@ -112,6 +112,7 @@ const ELEVEN_TTS_SIMILARITY = clampNumber(0.94, 0.1, 1);
 const ELEVEN_TTS_STYLE = clampNumber(0.12, 0, 1);
 const ELEVEN_TTS_SPEAKER_BOOST = true;
 const UNIFORM_TTS_VOICE_SETTINGS = true;
+const FORCE_NEUTRAL_TTS = true;
 
 const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
 
@@ -180,6 +181,7 @@ const LONG_VIDEO_YT_CATEGORY = "Entertainment";
 const BRAND_TAG = "SereneJannat";
 const BRAND_CREDIT = "Powered by Serene Jannat";
 const CHANNEL_NAME = "Prime Time Brief";
+const PRESENTER_NAME = "Ahmed";
 const INTRO_OVERLAY_TEXT = "https://serenejannat.com";
 const MERCH_INTRO =
 	"Support the channel & customize your own merch:\n" +
@@ -258,6 +260,8 @@ const WATERMARK_SHADOW_PX = 2;
 const CSE_PREFERRED_IMG_SIZE = "xlarge";
 const CSE_FALLBACK_IMG_SIZE = "large";
 const CSE_MIN_IMAGE_SHORT_EDGE = 720;
+const SUBTLE_EXPRESSION_NOTE =
+	"Expression intensity: subtle and restrained; avoid big smiles, frowns, or exaggerated emotion.";
 const THUMBNAIL_RATIO = "1280:720";
 const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
@@ -265,6 +269,8 @@ const THUMBNAIL_TEXT_MAX_WORDS = 7;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 18;
 const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.56;
 const THUMBNAIL_TEXT_BOX_OPACITY = 0.34;
+const THUMBNAIL_CONTEXT_OVERLAY_ALPHA = 0.22;
+const THUMBNAIL_CONTEXT_BLUR_SIGMA = 16;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.06;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
@@ -2409,6 +2415,11 @@ function seedFromJobId(jobId) {
 	return h.readUInt32BE(0);
 }
 
+function seedFromText(text = "") {
+	const h = crypto.createHash("sha256").update(String(text)).digest();
+	return h.readUInt32BE(0);
+}
+
 function pickIntroExpression(jobId) {
 	void jobId;
 	return "calm, neutral expression with relaxed eyes";
@@ -2565,7 +2576,7 @@ function buildRestylePrompt({ mood = "neutral" } = {}) {
 	const expr = normalizeExpression(mood);
 	const smileLine =
 		expr === "warm"
-			? "Allow a natural friendly smile toward the end of the clip (not constant)."
+			? "Allow a very subtle friendly smile toward the end of the clip (not constant)."
 			: "";
 
 	return `
@@ -2577,6 +2588,7 @@ Lighting: slightly darker cinematic look with a warm key light and gentle shadow
 Add ONE small branded candle on the desk to the presenter's left (viewer-right), near the back-right corner; subtle, classy, and lit; keep it smaller and not centered, fully supported on the desk with a safe margin from the edge (no overhang, at least two candle-widths inboard). No extra candles. If the candle reference has a lid, remove it; no lid anywhere in frame or on the desk.
 Preserve the original performance timing and micro-expressions (eyebrows, blinks, subtle reactions).
 No text overlays, no extra people, no weird hands, no face warping, no mouth distortion.
+${SUBTLE_EXPRESSION_NOTE}
 ${PRESENTER_CANDLE_PROMPT}
 ${smileLine}
 `.trim();
@@ -2589,19 +2601,19 @@ function buildBaselinePrompt(
 ) {
 	const expr = normalizeExpression(expression);
 	let expressionLine =
-		"Expression: calm and professional with a subtle, light smile (not constant).";
+		"Expression: calm and professional with a very subtle, light smile (not constant).";
 	if (expr === "warm")
 		expressionLine =
-			"Expression: friendly and approachable with a light, natural smile (not constant).";
+			"Expression: friendly and approachable with a light, subtle smile (not constant).";
 	if (expr === "excited")
 		expressionLine =
-			"Expression: energized and engaged, subtle smile only, no exaggerated grin.";
+			"Expression: energized and engaged, very subtle smile only; keep it restrained.";
 	if (expr === "serious")
 		expressionLine =
-			"Expression: serious but calm, neutral mouth, low-energy delivery, soft eye contact.";
+			"Expression: serious but calm, neutral mouth, low-energy delivery, soft eye contact, restrained expression.";
 	if (expr === "thoughtful")
 		expressionLine =
-			"Expression: thoughtful and attentive, relaxed mouth, gentle eye focus, minimal smile.";
+			"Expression: thoughtful and attentive, relaxed mouth, gentle eye focus, minimal smile, restrained.";
 
 	const variantHint =
 		variant === 1
@@ -2622,6 +2634,7 @@ Flame flickers subtly; candlelight glow shifts naturally.
 If the reference candle has a lid, remove it; no lid visible anywhere in frame or on the desk.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 ${expressionLine}
+${SUBTLE_EXPRESSION_NOTE}
 Motion: ${motionHint} ${variantHint}
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
@@ -2828,6 +2841,15 @@ function coerceExpressionForNaturalness(rawExpression, text, mood = "neutral") {
 	if (mood === "excited" && base === "excited") return "excited";
 	if (base === "warm") return "warm";
 	if (base === "neutral" && mood !== "serious") return "warm";
+	return "neutral";
+}
+
+function mapVideoExpression(expression, mood = "neutral") {
+	const base = normalizeExpression(expression, mood);
+	if (base === "excited") return "warm";
+	if (base === "warm") return "warm";
+	if (base === "serious") return "serious";
+	if (base === "thoughtful") return "neutral";
 	return "neutral";
 }
 
@@ -3147,11 +3169,126 @@ function sanitizeSegmentText(text = "") {
 	return cleaned || "Quick update.";
 }
 
-function buildIntroLine({ topics = [], shortTitle }) {
+function pickIntroCandidate(
+	lines = [],
+	prefix,
+	{ maxWords = 14, seed = null } = {}
+) {
+	const unique = uniqueStrings(lines).filter(Boolean);
+	if (!unique.length) return "";
+	const scored = unique.map((line) => ({
+		line,
+		words: countWords(`${prefix} ${line}`),
+	}));
+	const fit = scored.filter((item) => item.words <= maxWords);
+	if (fit.length) {
+		if (Number.isFinite(seed)) {
+			return fit[Math.abs(seed) % fit.length].line;
+		}
+		return fit[0].line;
+	}
+	scored.sort((a, b) => a.words - b.words);
+	return scored[0]?.line || "";
+}
+
+function buildIntroLine({ topics = [], shortTitle, mood = "neutral" }) {
+	const name = PRESENTER_NAME || "your host";
+	const prefix = `Hi everyone, this is ${name} and`;
+	const topicCount = Array.isArray(topics) ? topics.length : 0;
+	const isMulti = topicCount > 1;
 	const subject = shortTitle
-		? shortTopicLabel(shortTitle, 4)
+		? shortTopicLabel(shortTitle, isMulti ? 3 : 4)
 		: formatTopicList(topics);
-	const line = `Quick update on ${subject}.`;
+	const firstTopic = topicCount
+		? shortTopicLabel(
+				topics[0]?.displayTopic || topics[0]?.topic || topics[0],
+				3
+		  )
+		: subject;
+
+	let candidates = [];
+	const safeMood = mood || "neutral";
+
+	if (isMulti) {
+		const multiLong = `today we're covering a few updates, starting with ${firstTopic}.`;
+		const multiExplicit =
+			`today we will cover multiple topics, first up is ${firstTopic}.`;
+		const multiStart = `we're starting with ${firstTopic}.`;
+		const multiFirst = `first up is ${firstTopic}.`;
+		const multiLets = `let's start with ${firstTopic}.`;
+		const multiKick = `kicking off with ${firstTopic}.`;
+		if (safeMood === "excited") {
+			candidates = [
+				multiKick,
+				multiFirst,
+				multiStart,
+				multiLets,
+				multiExplicit,
+				multiLong,
+			];
+		} else if (safeMood === "serious") {
+			candidates = [
+				multiStart,
+				multiFirst,
+				multiLets,
+				multiExplicit,
+				multiLong,
+			];
+		} else {
+			candidates = [
+				multiFirst,
+				multiStart,
+				multiLets,
+				multiExplicit,
+				multiLong,
+			];
+		}
+	} else {
+		const singleDirect = `today we're covering ${subject}.`;
+		const singleTalking = `today we're talking about ${subject}.`;
+		const singleUpdate = `here's the update on ${subject}.`;
+		const singleShort = `we're talking about ${subject}.`;
+		const singleQuick = `we've got a quick update on ${subject}.`;
+		const singleFormal = `today we will be talking about ${subject}.`;
+		const singleLatest = `here's the latest on ${subject}.`;
+		const singleDive = `today we're diving into ${subject}.`;
+		if (safeMood === "serious") {
+			candidates = [
+				singleLatest,
+				singleDirect,
+				singleUpdate,
+				singleTalking,
+				singleShort,
+				singleFormal,
+			];
+		} else if (safeMood === "excited") {
+			candidates = [
+				singleDive,
+				singleDirect,
+				singleUpdate,
+				singleQuick,
+				singleTalking,
+				singleShort,
+				singleFormal,
+			];
+		} else {
+			candidates = [
+				singleDirect,
+				singleUpdate,
+				singleTalking,
+				singleShort,
+				singleQuick,
+				singleFormal,
+			];
+		}
+	}
+
+	const maxWords = isMulti ? 16 : 14;
+	const seed = seedFromText(
+		`${subject}|${safeMood}|${isMulti ? "multi" : "single"}`
+	);
+	const picked = pickIntroCandidate(candidates, prefix, { maxWords, seed });
+	const line = picked ? `${prefix} ${picked}` : `${prefix} ${subject}.`;
 	return sanitizeIntroOutroLine(line);
 }
 
@@ -5648,22 +5785,46 @@ function buildThumbnailPrompt({ title, topics }) {
 		.filter(Boolean)
 		.join(" | ")
 		.slice(0, 240);
-	const safeContext =
-		sanitizeThumbnailContext(contextRaw) ||
-		cleanThumbnailText(topicLine || title || "");
+	const safeContext = sanitizeThumbnailContext(contextRaw);
+	const contextLabel = safeContext || "today's top story";
 	return `
 Create a YouTube thumbnail image (no text in the image).
 Use the provided person reference; keep the presenter look consistent with the studio desk setup and lighting.
 Composition: presenter on the right third, leave clean negative space on the left for headline text.
 Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
 If reference tag "context" is provided, use it only for subtle, topic-relevant background cues.
-Add subtle, tasteful visual cues related to: ${safeContext}.
+Add subtle, tasteful visual cues related to: ${contextLabel}.
 Style: ultra sharp, high contrast, professional, cinematic lighting, shallow depth of field.
 No logos, no extra people, no extra hands, no distortion, no text.
 `.trim();
 }
 
-async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
+function buildSafeThumbnailPrompt() {
+	return `
+Create a YouTube thumbnail image (no text in the image).
+Use the provided person reference; keep the presenter look consistent with the studio desk setup and lighting.
+Composition: presenter on the right third, leave clean negative space on the left for headline text.
+Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
+Style: ultra sharp, high contrast, professional, cinematic lighting, shallow depth of field.
+No logos, no extra people, no extra hands, no distortion, no text.
+`.trim();
+}
+
+function isRunwaySafetyError(err) {
+	const msg = String(err?.message || err || "");
+	return (
+		msg.includes("SAFETY.TEXT") ||
+		msg.includes("INPUT_PREPROCESSING.SAFETY") ||
+		msg.includes("INPUT_PREPROCESSING.SAFETY.TEXT")
+	);
+}
+
+async function renderThumbnailOverlay({
+	inputPath,
+	outputPath,
+	title,
+	contextImagePath,
+}) {
 	const { text, fontScale } = buildThumbnailText(title);
 	const safeText = escapeDrawtext(text);
 	const fontFile = THUMBNAIL_FONT_FILE
@@ -5675,16 +5836,61 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 	);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
 
-	const filters = [
-		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
+	const baseFilters = [
+		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos`,
+		`crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
+		"format=rgba",
 		"eq=contrast=1.05:saturation=1.08:brightness=0.02",
 		"unsharp=5:5:0.7",
-		`drawbox=x=0:y=0:w=w*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:h=h:color=black@${THUMBNAIL_TEXT_BOX_OPACITY}:t=fill`,
 	];
+	const overlayFilters = [];
 	if (safeText) {
-		filters.push(
+		overlayFilters.push(
+			`drawbox=x=0:y=0:w=iw*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:h=ih:color=black@${THUMBNAIL_TEXT_BOX_OPACITY}:t=fill`,
 			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.5:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2`
 		);
+	}
+
+	const hasContext =
+		contextImagePath && fs.existsSync(contextImagePath) ? true : false;
+	if (hasContext) {
+		const contextFilters = [
+			`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos`,
+			`crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
+			`gblur=sigma=${THUMBNAIL_CONTEXT_BLUR_SIGMA}`,
+			"format=rgba",
+			`colorchannelmixer=aa=${THUMBNAIL_CONTEXT_OVERLAY_ALPHA}`,
+			`crop=iw*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:ih:0:0`,
+		];
+		const filterComplex = [
+			`[0:v]${baseFilters.join(",")}[base]`,
+			`[1:v]${contextFilters.join(",")}[ctx]`,
+			`[base][ctx]overlay=0:0:format=auto${
+				overlayFilters.length ? `,${overlayFilters.join(",")}` : ""
+			}[out]`,
+		].join(";");
+		await spawnBin(
+			ffmpegPath,
+			[
+				"-i",
+				inputPath,
+				"-i",
+				contextImagePath,
+				"-filter_complex",
+				filterComplex,
+				"-map",
+				"[out]",
+				"-frames:v",
+				"1",
+				"-q:v",
+				"2",
+				"-y",
+				outputPath,
+			],
+			"thumbnail_render",
+			{ timeoutMs: 180000 }
+		);
+		return outputPath;
 	}
 
 	await spawnBin(
@@ -5693,7 +5899,7 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 			"-i",
 			inputPath,
 			"-vf",
-			filters.join(","),
+			[...baseFilters, ...overlayFilters].join(","),
 			"-frames:v",
 			"1",
 			"-q:v",
@@ -5708,11 +5914,18 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 	return outputPath;
 }
 
-async function extractThumbnailFrame({ videoPath, outPath }) {
+async function extractThumbnailFrame({ videoPath, outPath, seekSec }) {
 	if (!videoPath || !fs.existsSync(videoPath) || !ffmpegPath) return null;
 	const dur = await probeDurationSeconds(videoPath);
 	const safeDur = Number.isFinite(dur) && dur > 1 ? dur : 2.5;
-	const seek = Math.max(0.5, Math.min(safeDur * 0.25, safeDur - 0.5));
+	const maxSeek = Math.max(0.5, safeDur - 0.5);
+	const requested = Number(seekSec);
+	const fallbackSeek = Math.min(2.5, safeDur * 0.12);
+	const seek = clampNumber(
+		Number.isFinite(requested) && requested > 0 ? requested : fallbackSeek,
+		0.5,
+		maxSeek
+	);
 	await spawnBin(
 		ffmpegPath,
 		[
@@ -5788,6 +6001,7 @@ async function createThumbnailImage({
 	topics,
 	contextImagePath,
 	fallbackVideoPath,
+	seekSec,
 }) {
 	const fallback = async (reason) => {
 		logJob(jobId, "thumbnail fallback", { reason });
@@ -5798,6 +6012,7 @@ async function createThumbnailImage({
 				const extracted = await extractThumbnailFrame({
 					videoPath: fallbackVideoPath,
 					outPath: framePath,
+					seekSec,
 				});
 				if (extracted) sourcePath = extracted;
 			} catch {}
@@ -5807,6 +6022,7 @@ async function createThumbnailImage({
 			inputPath: sourcePath,
 			outputPath: finalPath,
 			title,
+			contextImagePath,
 		});
 		return finalPath;
 	};
@@ -5854,8 +6070,37 @@ async function createThumbnailImage({
 				{ retries: 1, baseDelayMs: 800, label: "runway_thumb_text_to_image" }
 			);
 		} catch (e) {
-			logJob(jobId, "thumbnail runway failed", { error: e.message });
-			return await fallback(e.message || "runway_failed");
+			if (isRunwaySafetyError(e)) {
+				logJob(jobId, "thumbnail runway safety fallback", {
+					error: e.message,
+				});
+				const safePrompt = buildSafeThumbnailPrompt();
+				const safeRefs = refs.filter((ref) => ref.tag !== "context");
+				try {
+					outUrl = await withRetries(
+						() =>
+							runwayTextToImage({
+								referenceImages: safeRefs,
+								promptText: safePrompt,
+								ratio: THUMBNAIL_RATIO,
+								seed,
+							}),
+						{
+							retries: 1,
+							baseDelayMs: 800,
+							label: "runway_thumb_text_to_image_safe",
+						}
+					);
+				} catch (safeErr) {
+					logJob(jobId, "thumbnail runway failed", {
+						error: safeErr.message,
+					});
+					return await fallback(safeErr.message || "runway_failed");
+				}
+			} else {
+				logJob(jobId, "thumbnail runway failed", { error: e.message });
+				return await fallback(e.message || "runway_failed");
+			}
 		}
 
 		const basePath = path.join(tmpDir, `thumb_base_${jobId}.png`);
@@ -6783,14 +7028,17 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		const introLine = buildIntroLine({
 			topics: topicPicks,
 			shortTitle: script.shortTitle || script.title,
+			mood: tonePlan?.mood || "neutral",
 		});
 		const outroLine = buildOutroLine({
 			topics: topicPicks,
 			shortTitle: script.shortTitle || script.title,
 			mood: introOutroMood,
 		});
-		const introExpression = "neutral";
-		const outroExpression = "warm";
+		const introExpression =
+			tonePlan?.mood === "serious" ? "serious" : "warm";
+		const outroExpression =
+			tonePlan?.mood === "serious" ? "neutral" : "warm";
 
 		logJob(jobId, "orchestrator plan", {
 			mood: introOutroMood,
@@ -6815,14 +7063,26 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			},
 		});
 
+		const neutralVoiceSettings = buildVoiceSettingsForExpression(
+			"neutral",
+			"neutral",
+			"",
+			{ uniform: true }
+		);
 		const lockedVoiceSettings = UNIFORM_TTS_VOICE_SETTINGS
-			? buildVoiceSettingsForExpression("neutral", tonePlan?.mood, "", {
-					uniform: true,
-			  })
+			? FORCE_NEUTRAL_TTS
+				? neutralVoiceSettings
+				: buildVoiceSettingsForExpression("neutral", tonePlan?.mood, "", {
+						uniform: true,
+				  })
 			: null;
-		const resolveVoiceSettings = (expression, text) =>
-			lockedVoiceSettings ||
-			buildVoiceSettingsForExpression(expression, tonePlan?.mood, text);
+		const resolveVoiceSettings = (expression, text) => {
+			if (FORCE_NEUTRAL_TTS) return lockedVoiceSettings || neutralVoiceSettings;
+			return (
+				lockedVoiceSettings ||
+				buildVoiceSettingsForExpression(expression, tonePlan?.mood, text)
+			);
+		};
 		const ttsModelOrder = [
 			ELEVEN_TTS_MODEL,
 			...ELEVEN_TTS_MODEL_FALLBACKS,
@@ -6937,23 +7197,26 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			segments.map((s) => s.expression),
 			tonePlan?.mood
 		);
-		segments = segments.map((s, i) => ({
-			...s,
-			expression: smoothedExpressions[i] || s.expression,
-			videoExpression: "neutral",
-			topicIndex:
-				Number.isFinite(Number(s.topicIndex)) && Number(s.topicIndex) >= 0
-					? Number(s.topicIndex)
-					: 0,
-			topicLabel:
-				String(s.topicLabel || "").trim() ||
-				String(
-					topicPicks?.[Number(s.topicIndex)]?.displayTopic ||
-						topicPicks?.[Number(s.topicIndex)]?.topic ||
-						""
-				).trim() ||
-				String(topicTitles[0] || "").trim(),
-		}));
+		segments = segments.map((s, i) => {
+			const finalExpression = smoothedExpressions[i] || s.expression;
+			return {
+				...s,
+				expression: finalExpression,
+				videoExpression: mapVideoExpression(finalExpression, tonePlan?.mood),
+				topicIndex:
+					Number.isFinite(Number(s.topicIndex)) && Number(s.topicIndex) >= 0
+						? Number(s.topicIndex)
+						: 0,
+				topicLabel:
+					String(s.topicLabel || "").trim() ||
+					String(
+						topicPicks?.[Number(s.topicIndex)]?.displayTopic ||
+							topicPicks?.[Number(s.topicIndex)]?.topic ||
+							""
+					).trim() ||
+					String(topicTitles[0] || "").trim(),
+			};
+		});
 
 		let cleanedWavs = [];
 		let sumCleanDur = 0;
@@ -6962,6 +7225,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let autoOverlayAssets = [];
 		let segmentImagePaths = new Map();
 		let thumbnailContextImage = "";
+		let scriptWasRewritten = false;
+		let scriptRewriteAttempts = 0;
 		const maxRewriteAttempts = voiceoverUrl ? 0 : MAX_SCRIPT_REWRITES;
 
 		for (let attempt = 0; attempt <= maxRewriteAttempts; attempt++) {
@@ -7216,6 +7481,33 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				...s,
 				text: sanitizeSegmentText(s.text),
 			}));
+			scriptWasRewritten = true;
+			scriptRewriteAttempts = attempt + 1;
+		}
+
+		if (scriptWasRewritten) {
+			script.segments = segments.map((s) => ({
+				index: s.index,
+				topicIndex: s.topicIndex,
+				topicLabel: s.topicLabel,
+				text: s.text,
+				expression: s.expression,
+				overlayCues: s.overlayCues || [],
+			}));
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					script: { title: script.title, segments: script.segments },
+				},
+			});
+			logJob(jobId, "script rewritten", {
+				attempts: scriptRewriteAttempts,
+				segments: script.segments.length,
+				words: script.segments.reduce(
+					(acc, seg) => acc + countWords(seg.text),
+					0
+				),
+			});
 		}
 
 		// Apply global atempo to each segment (may be 1.0 within tolerance)
@@ -7794,6 +8086,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		let thumbnailCloudinary = null;
 		try {
 			const thumbTitle = script.shortTitle || seoMeta?.seoTitle || script.title;
+			const thumbSeekSec = Number.isFinite(introDurationSec)
+				? introDurationSec + 0.8
+				: 2.5;
 			const thumbTmp = await createThumbnailImage({
 				jobId,
 				tmpDir,
@@ -7803,6 +8098,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				topics: topicPicks,
 				contextImagePath: thumbnailContextImage,
 				fallbackVideoPath: outputPath,
+				seekSec: thumbSeekSec,
 			});
 			if (LONG_VIDEO_PERSIST_OUTPUT) {
 				const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
