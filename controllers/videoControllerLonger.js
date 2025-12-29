@@ -1635,9 +1635,6 @@ async function fetchCseContext(topic, extraTokens = []) {
 		: [];
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
-	const criteria = buildImageMatchCriteria(topic, extraTokens);
-	const requireContext =
-		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
 	const queries = [
 		`${topic} latest news`,
 		`${topic} trending`,
@@ -1676,6 +1673,9 @@ async function fetchCseImages(topic, extraTokens = []) {
 		: [];
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
+	const criteria = buildImageMatchCriteria(topic, extraTokens);
+	const requireContext =
+		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
 
 	const queries = [
 		`${topic} press photo`,
