@@ -805,6 +805,64 @@ async function headContentType(url, timeoutMs = 8000) {
 	}
 }
 
+function parseMetaAttributes(tag = "") {
+	const attrs = {};
+	const re = /([a-zA-Z0-9:_-]+)\s*=\s*["']([^"']+)["']/g;
+	let match = null;
+	while ((match = re.exec(tag))) {
+		const key = String(match[1] || "").toLowerCase();
+		const val = String(match[2] || "").trim();
+		if (key && val) attrs[key] = val;
+	}
+	return attrs;
+}
+
+function extractOpenGraphImage(html = "", baseUrl = "") {
+	const metaTags = String(html || "").match(/<meta[^>]+>/gi) || [];
+	const priority = [
+		"og:image:secure_url",
+		"og:image",
+		"twitter:image:src",
+		"twitter:image",
+	];
+	for (const key of priority) {
+		for (const tag of metaTags) {
+			const attrs = parseMetaAttributes(tag);
+			const prop = attrs.property || attrs.name || "";
+			if (!prop || prop.toLowerCase() !== key) continue;
+			const content = attrs.content || "";
+			if (!content) continue;
+			try {
+				const resolved = new URL(content, baseUrl);
+				if (!/^https?:$/i.test(resolved.protocol)) continue;
+				return resolved.toString();
+			} catch {
+				continue;
+			}
+		}
+	}
+	return "";
+}
+
+async function fetchOpenGraphImageUrl(pageUrl, timeoutMs = 9000) {
+	try {
+		if (!/^https?:\/\//i.test(pageUrl || "")) return null;
+		const res = await axios.get(pageUrl, {
+			timeout: timeoutMs,
+			maxContentLength: 1024 * 1024,
+			maxBodyLength: 1024 * 1024,
+			headers: { "User-Agent": "agentai-long-video/2.0" },
+			validateStatus: (s) => s >= 200 && s < 400,
+		});
+		const html = String(res.data || "");
+		if (!html) return null;
+		const og = extractOpenGraphImage(html, pageUrl);
+		return og || null;
+	} catch {
+		return null;
+	}
+}
+
 /* ---------------------------------------------------------------
  * File type detection
  * ------------------------------------------------------------- */
@@ -1934,7 +1992,11 @@ async function fetchCseImages(topic, extraTokens = []) {
 		seen.add(c.url);
 		if (!isProbablyDirectImageUrl(c.url)) continue;
 		const ct = await headContentType(c.url, 7000);
-		if (ct && !ct.startsWith("image/")) continue;
+		if (ct) {
+			if (!ct.startsWith("image/")) continue;
+		} else if (!isProbablyDirectImageUrl(c.url)) {
+			continue;
+		}
 		filtered.push(c.url);
 		if (filtered.length >= 6) break;
 	}
@@ -2078,7 +2140,11 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 		seen.add(c.url);
 		if (!isProbablyDirectImageUrl(c.url)) continue;
 		const ct = await headContentType(c.url, 7000);
-		if (ct && !ct.startsWith("image/")) continue;
+		if (ct) {
+			if (!ct.startsWith("image/")) continue;
+		} else if (!isProbablyDirectImageUrl(c.url)) {
+			continue;
+		}
 		filtered.push(c.url);
 		if (filtered.length >= target) break;
 	}
@@ -6042,6 +6108,7 @@ async function collectThumbnailTopicImages({
 	jobId,
 	maxImages = THUMBNAIL_TOPIC_MAX_IMAGES,
 	contextText = "",
+	contextItems = [],
 }) {
 	const target = Math.max(0, Math.floor(maxImages));
 	if (!target) return [];
@@ -6057,6 +6124,15 @@ async function collectThumbnailTopicImages({
 	);
 	const contextTokens =
 		contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
+	const contextBySignature = new Map();
+	for (const entry of Array.isArray(contextItems) ? contextItems : []) {
+		const sig = topicSignature(entry?.topic || "");
+		if (!sig) continue;
+		contextBySignature.set(
+			sig,
+			Array.isArray(entry.context) ? entry.context : []
+		);
+	}
 	const urls = [];
 	const seen = new Set();
 	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
@@ -6068,7 +6144,38 @@ async function collectThumbnailTopicImages({
 		const mergedTokens = contextTokens.length
 			? [...contextTokens, ...extraTokens]
 			: extraTokens;
-		const hits = await fetchCseImages(label, mergedTokens);
+		let hits = await fetchCseImages(label, mergedTokens);
+		if (!hits.length) {
+			const sig = topicSignature(label);
+			const ctxItems = contextBySignature.get(sig) || [];
+			const articleUrls = uniqueStrings(
+				[
+					...(Array.isArray(t?.trendStory?.articles)
+						? t.trendStory.articles.map((a) => a?.url)
+						: []),
+					...ctxItems.map((c) => c?.link),
+				],
+				{ limit: 6 }
+			);
+			const ogHits = [];
+			for (const pageUrl of articleUrls) {
+				if (ogHits.length >= 3) break;
+				if (!pageUrl || ogHits.includes(pageUrl)) continue;
+				const og = await fetchOpenGraphImageUrl(pageUrl);
+				if (!og) continue;
+				if (isLikelyWatermarkedSource(og, pageUrl)) continue;
+				const ct = await headContentType(og, 7000);
+				if (ct && !ct.startsWith("image/")) continue;
+				ogHits.push(og);
+			}
+			if (ogHits.length) {
+				logJob(jobId, "thumbnail topic images fallback og", {
+					topic: label,
+					count: ogHits.length,
+				});
+				hits = ogHits;
+			}
+		}
 		for (const url of hits) {
 			if (urls.length >= maxUrls) break;
 			if (!url || seen.has(url)) continue;
@@ -7137,6 +7244,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				jobId,
 				maxImages: THUMBNAIL_TOPIC_MAX_IMAGES,
 				contextText: script.title || seoMeta?.seoTitle || "",
+				contextItems: topicContexts,
 			});
 			const thumbTmp = await createThumbnailImage({
 				jobId,
