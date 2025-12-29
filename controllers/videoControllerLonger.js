@@ -1034,6 +1034,28 @@ const CONTEXT_STOP_TOKENS = new Set([
 	"said",
 	"say",
 	"details",
+	"return",
+	"returns",
+	"returning",
+	"back",
+	"revival",
+	"reboot",
+	"comeback",
+	"cast",
+	"watch",
+	"watching",
+	"hulu",
+	"netflix",
+	"prime",
+	"amazon",
+	"disney",
+	"disneyplus",
+	"hbo",
+	"hbomax",
+	"peacock",
+	"paramount",
+	"paramountplus",
+	"apple",
 ]);
 
 function filterContextTokens(tokens = []) {
@@ -1727,8 +1749,11 @@ async function fetchCseImages(topic, extraTokens = []) {
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
 	const criteria = buildImageMatchCriteria(topic, extraTokens);
+	const rawTokenCount = tokenizeLabel(topic).length;
 	const requireContext =
-		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
+		STRICT_TOPIC_IMAGE_MATCH &&
+		criteria.contextTokens.length > 0 &&
+		rawTokenCount <= 3;
 	const topicLower = String(topic || "").toLowerCase();
 	const contextPhrases = uniqueStrings(
 		Array.isArray(extraTokens) ? extraTokens : [],
@@ -1862,12 +1887,10 @@ async function fetchCseImages(topic, extraTokens = []) {
 			: { count: 0 };
 		const hasPhrase = phraseInfo.count >= 1;
 		const hasWordMatch = info.count >= criteria.minWordMatches;
-		const requirePhrase =
-			criteria.wordTokens.length <= 2 && Boolean(criteria.phraseToken);
-		const allowWordOnly = criteria.wordTokens.length < 2;
+		const requirePhrase = rawTokenCount <= 2 && Boolean(criteria.phraseToken);
 		if (requirePhrase) {
 			if (!hasPhrase) continue;
-		} else if (!hasPhrase && !(allowWordOnly && hasWordMatch)) {
+		} else if (!hasPhrase && !hasWordMatch) {
 			continue;
 		}
 		if (requireContext) {
@@ -1953,8 +1976,11 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 	if (!q) return [];
 	const target = clampNumber(Number(maxResults) || 4, 1, 12);
 	const criteria = buildImageMatchCriteriaForQuery(q, topicTokens);
+	const queryTokenCount = tokenizeLabel(q).length;
 	const requireContext =
-		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
+		STRICT_TOPIC_IMAGE_MATCH &&
+		criteria.contextTokens.length > 0 &&
+		queryTokenCount <= 3;
 	let items = await fetchCseItems([q], {
 		num: Math.min(10, Math.max(8, target * 2)),
 		searchType: "image",
@@ -2005,12 +2031,10 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 			: { count: 0 };
 		const hasPhrase = phraseInfo.count >= 1;
 		const hasWordMatch = info.count >= criteria.minWordMatches;
-		const requirePhrase =
-			criteria.wordTokens.length <= 2 && Boolean(criteria.phraseToken);
-		const allowWordOnly = criteria.wordTokens.length < 2;
+		const requirePhrase = queryTokenCount <= 2 && Boolean(criteria.phraseToken);
 		if (requirePhrase) {
 			if (!hasPhrase) continue;
-		} else if (!hasPhrase && !(allowWordOnly && hasWordMatch)) {
+		} else if (!hasPhrase && !hasWordMatch) {
 			continue;
 		}
 		if (requireContext) {
