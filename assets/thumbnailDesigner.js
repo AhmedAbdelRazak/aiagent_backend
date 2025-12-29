@@ -509,7 +509,7 @@ async function composeThumbnailBase({
 		const panelY =
 			panelCount > 1 ? margin : Math.max(0, Math.round((H - panelH) / 2));
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = "if(gt(ih,iw)\\,(ih-oh)*0.18\\,(ih-oh)/2)";
+		const panelCropY = "if(gt(ih\\,iw)\\,(ih-oh)*0.18\\,(ih-oh)/2)";
 		filters.push(
 			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel1i]`
 		);
@@ -524,7 +524,7 @@ async function composeThumbnailBase({
 		const panel2Idx = 3;
 		const panel2Y = Math.max(0, margin * 2 + panelH);
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = "if(gt(ih,iw)\\,(ih-oh)*0.18\\,(ih-oh)/2)";
+		const panelCropY = "if(gt(ih\\,iw)\\,(ih-oh)*0.18\\,(ih-oh)/2)";
 		filters.push(
 			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel2i]`
 		);
