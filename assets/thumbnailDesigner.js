@@ -90,10 +90,9 @@ Create a YouTube thumbnail image (no text in the image).
 Use the provided person reference; keep identity, face shape, and wardrobe consistent with the studio desk setup and lighting.
 Composition: presenter on the right third (face and shoulders fully inside the right third), leave the left ~45% clean for headline text.
 ${topicImageLine}
-Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
 Style: ultra sharp, clean, premium, high contrast, cinematic studio lighting, shallow depth of field, crisp subject separation.
 Expression: confident, intrigued, camera-ready.
-No logos, no watermarks, no extra people, no extra hands, no distortion, no text.
+No candles, no logos, no watermarks, no extra people, no extra hands, no distortion, no text.
 `.trim();
 }
 
@@ -137,7 +136,10 @@ async function withRetries(fn, { retries = 1, baseDelayMs = 900, log } = {}) {
 }
 
 async function downloadUrlToFile(url, outPath) {
-	const res = await axios.get(url, { responseType: "arraybuffer", timeout: 60000 });
+	const res = await axios.get(url, {
+		responseType: "arraybuffer",
+		timeout: 60000,
+	});
 	if (!res?.data) throw new Error("thumbnail download empty");
 	fs.writeFileSync(outPath, res.data);
 	return outPath;
@@ -195,7 +197,11 @@ async function generateOpenAiThumbnailBase({
 		});
 	};
 
-	const resp = await withRetries(doRequest, { retries: 1, baseDelayMs: 900, log });
+	const resp = await withRetries(doRequest, {
+		retries: 1,
+		baseDelayMs: 900,
+		log,
+	});
 
 	const image = resp?.data?.[0];
 	if (image?.b64_json) {

@@ -6739,6 +6739,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			tmpDir,
 			jobId
 		);
+		const presenterBaseLocal = presenterLocal;
 		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
 		const candleLocalPath = await ensureLocalBrandCandleImage(tmpDir, jobId);
 		const detected = detectFileType(presenterLocal);
@@ -6851,8 +6852,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const thumbTmp = await createThumbnailImage({
 				jobId,
 				tmpDir,
-				presenterLocalPath: presenterLocal,
-				candleLocalPath,
+				presenterLocalPath: presenterBaseLocal,
+				candleLocalPath: null,
 				title: thumbTitle,
 				topics: topicPicks,
 				topicImagePaths: thumbTopicImages,
