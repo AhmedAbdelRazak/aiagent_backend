@@ -1077,6 +1077,24 @@ function buildImageMatchCriteria(topic = "", extraTokens = []) {
 	};
 }
 
+function buildImageMatchCriteriaForQuery(query = "", topicTokens = []) {
+	const topicNorm = normalizeTopicTokens(topicTokens);
+	const specific = filterSpecificTopicTokens(topicNorm);
+	const wordTokens = specific.length ? specific : topicNorm;
+	const phraseToken = topicNorm.length >= 2 ? topicNorm.join(" ") : "";
+	const extra = tokenizeLabel(query);
+	const wordSet = new Set(wordTokens);
+	const contextTokens = filterSpecificTopicTokens(
+		extra.filter((tok) => !wordSet.has(String(tok).toLowerCase()))
+	);
+	return {
+		wordTokens,
+		phraseToken,
+		contextTokens: contextTokens.slice(0, 6),
+		minWordMatches: minImageTokenMatches(wordTokens),
+	};
+}
+
 function cleanTopicCandidate(title = "") {
 	let t = String(title || "")
 		.replace(/\s*[-|]\s*[^-|]{2,}$/g, "")
@@ -1675,7 +1693,9 @@ async function fetchCseImages(topic, extraTokens = []) {
 	const category = inferEntertainmentCategory(baseTokens);
 	const criteria = buildImageMatchCriteria(topic, extraTokens);
 	const requireContext =
-		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
+		STRICT_TOPIC_IMAGE_MATCH &&
+		criteria.contextTokens.length > 0 &&
+		criteria.wordTokens.length < 2;
 
 	const queries = [
 		`${topic} press photo`,
@@ -1774,10 +1794,26 @@ async function fetchCseImages(topic, extraTokens = []) {
 		if (isLikelyWatermarkedSource(url, contextLink)) continue;
 		const fields = [it.title, it.snippet, it.link, contextLink];
 		const info = topicMatchInfo(criteria.wordTokens, fields);
-		const phraseInfo = criteria.phraseToken
-			? topicMatchInfo([criteria.phraseToken], fields)
+		const phraseTokens = [];
+		if (criteria.phraseToken) {
+			phraseTokens.push(criteria.phraseToken);
+			const compact = criteria.phraseToken.replace(/\s+/g, "");
+			if (compact && compact !== criteria.phraseToken)
+				phraseTokens.push(compact);
+		}
+		const phraseInfo = phraseTokens.length
+			? topicMatchInfo(phraseTokens, fields)
 			: { count: 0 };
-		if (phraseInfo.count < 1 && info.count < criteria.minWordMatches) continue;
+		const hasPhrase = phraseInfo.count >= 1;
+		const hasWordMatch = info.count >= criteria.minWordMatches;
+		const requirePhrase =
+			criteria.wordTokens.length <= 2 && Boolean(criteria.phraseToken);
+		const allowWordOnly = criteria.wordTokens.length < 2;
+		if (requirePhrase) {
+			if (!hasPhrase) continue;
+		} else if (!hasPhrase && !(allowWordOnly && hasWordMatch)) {
+			continue;
+		}
 		if (requireContext) {
 			const ctx = topicMatchInfo(criteria.contextTokens, fields);
 			if (ctx.count < 1) continue;
@@ -1860,9 +1896,11 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 	const q = sanitizeOverlayQuery(query);
 	if (!q) return [];
 	const target = clampNumber(Number(maxResults) || 4, 1, 12);
-	const criteria = buildImageMatchCriteria(q, topicTokens);
+	const criteria = buildImageMatchCriteriaForQuery(q, topicTokens);
 	const requireContext =
-		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
+		STRICT_TOPIC_IMAGE_MATCH &&
+		criteria.contextTokens.length > 0 &&
+		criteria.wordTokens.length < 2;
 	let items = await fetchCseItems([q], {
 		num: Math.min(10, Math.max(8, target * 2)),
 		searchType: "image",
@@ -1901,10 +1939,26 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 		if (isLikelyWatermarkedSource(url, contextLink)) continue;
 		const fields = [it.title, it.snippet, it.link, contextLink];
 		const info = topicMatchInfo(criteria.wordTokens, fields);
-		const phraseInfo = criteria.phraseToken
-			? topicMatchInfo([criteria.phraseToken], fields)
+		const phraseTokens = [];
+		if (criteria.phraseToken) {
+			phraseTokens.push(criteria.phraseToken);
+			const compact = criteria.phraseToken.replace(/\s+/g, "");
+			if (compact && compact !== criteria.phraseToken)
+				phraseTokens.push(compact);
+		}
+		const phraseInfo = phraseTokens.length
+			? topicMatchInfo(phraseTokens, fields)
 			: { count: 0 };
-		if (phraseInfo.count < 1 && info.count < criteria.minWordMatches) continue;
+		const hasPhrase = phraseInfo.count >= 1;
+		const hasWordMatch = info.count >= criteria.minWordMatches;
+		const requirePhrase =
+			criteria.wordTokens.length <= 2 && Boolean(criteria.phraseToken);
+		const allowWordOnly = criteria.wordTokens.length < 2;
+		if (requirePhrase) {
+			if (!hasPhrase) continue;
+		} else if (!hasPhrase && !(allowWordOnly && hasWordMatch)) {
+			continue;
+		}
 		if (requireContext) {
 			const ctx = topicMatchInfo(criteria.contextTokens, fields);
 			if (ctx.count < 1) continue;
