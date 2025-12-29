@@ -53,7 +53,8 @@ const child_process = require("child_process");
 const axios = require("axios");
 const dayjs = require("dayjs");
 const { google } = require("googleapis");
-const { OpenAI } = require("openai");
+const { OpenAI, toFile } = require("openai");
+const cloudinary = require("cloudinary").v2;
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
 const {
@@ -87,6 +88,12 @@ try {
  * ------------------------------------------------------------- */
 
 const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
+
+cloudinary.config({
+	cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+	api_key: process.env.CLOUDINARY_API_KEY,
+	api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 const CHAT_MODEL = "gpt-5.2";
 const OWNER_ONLY_USER_ID = "683e3a0329b0515ff5f7a1e1";
@@ -263,6 +270,8 @@ const THUMBNAIL_MIN_BYTES = 12000;
 const THUMBNAIL_FRAME_JPEG_Q = 2;
 const THUMBNAIL_FRAME_MIN_SEC = 0.8;
 const THUMBNAIL_FRAME_SAMPLE_PCTS = [0.1, 0.28, 0.46, 0.64, 0.82];
+const THUMBNAIL_CLOUDINARY_FOLDER = "aivideomatic/long_thumbnails";
+const THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX = "long_thumb";
 
 // Intro (seconds)
 const DEFAULT_INTRO_SEC = 3.2;
@@ -5560,6 +5569,13 @@ function buildThumbnailPrompt({ title, topics }) {
 				.filter(Boolean)
 				.join(" / ")
 		: "";
+	const keywordLine = Array.isArray(topics)
+		? topics
+				.flatMap((t) => (Array.isArray(t.keywords) ? t.keywords : []))
+				.filter(Boolean)
+				.slice(0, 10)
+				.join(", ")
+		: "";
 	const contextRaw = [title, topicLine]
 		.filter(Boolean)
 		.join(" | ")
@@ -5567,12 +5583,15 @@ function buildThumbnailPrompt({ title, topics }) {
 	const safeContext =
 		sanitizeThumbnailContext(contextRaw) ||
 		cleanThumbnailText(topicLine || title || "");
+	const safeKeywords =
+		sanitizeThumbnailContext(keywordLine) || cleanThumbnailText(keywordLine);
+	const topicFocus = [safeContext, safeKeywords].filter(Boolean).join(" | ");
 	return `
 Create a YouTube thumbnail image (no text in the image).
 Use the provided person reference; keep identity, face shape, and wardrobe consistent with the studio desk setup and lighting.
 Composition: presenter on the right third, leave clean negative space on the left for headline text.
 Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
-Add subtle, tasteful visual cues related to: ${safeContext}.
+Add subtle, tasteful visual cues related to: ${topicFocus}.
 Style: ultra sharp, clean, premium, high contrast, cinematic studio lighting, shallow depth of field, crisp subject separation.
 Expression: confident, intrigued, camera-ready.
 No logos, no watermarks, no extra people, no extra hands, no distortion, no text.
@@ -5595,7 +5614,7 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
 		"eq=contrast=1.08:saturation=1.12:brightness=0.02",
 		"unsharp=5:5:0.8",
-		`drawbox=x=0:y=0:w=w*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:h=h:color=black@${THUMBNAIL_TEXT_BOX_OPACITY}:t=fill`,
+		`drawbox=x=0:y=0:w=iw*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:h=ih:color=black@${THUMBNAIL_TEXT_BOX_OPACITY}:t=fill`,
 	];
 	if (safeText) {
 		filters.push(
@@ -5667,6 +5686,12 @@ function ensureThumbnailFile(filePath, minBytes = THUMBNAIL_MIN_BYTES) {
 	const dt = detectFileType(filePath);
 	if (!dt || dt.kind !== "image") throw new Error("thumbnail_invalid");
 	return filePath;
+}
+
+async function toOpenAiFile(filePath) {
+	const buf = fs.readFileSync(filePath);
+	const name = path.basename(filePath);
+	return await toFile(buf, name);
 }
 
 async function extractBestThumbnailFrame({ videoPath, tmpDir, jobId }) {
@@ -5785,17 +5810,24 @@ async function generateOpenAiThumbnailBase({
 		});
 		const doRequest = async () => {
 			if (imagePaths.length) {
-				const inputs = imagePaths.map((p) => fs.createReadStream(p));
-				return await openai.images.edit({
-					model: OPENAI_IMAGE_MODEL,
-					image: inputs.length === 1 ? inputs[0] : inputs,
-					prompt: cleanPrompt,
-					size: OPENAI_THUMBNAIL_SIZE,
-					quality: OPENAI_THUMBNAIL_QUALITY,
-					output_format: "png",
-					background: "auto",
-					input_fidelity: OPENAI_THUMBNAIL_INPUT_FIDELITY,
-				});
+				const inputs = [];
+				for (const p of imagePaths) {
+					try {
+						inputs.push(await toOpenAiFile(p));
+					} catch {}
+				}
+				if (inputs.length) {
+					return await openai.images.edit({
+						model: OPENAI_IMAGE_MODEL,
+						image: inputs.length === 1 ? inputs[0] : inputs,
+						prompt: cleanPrompt,
+						size: OPENAI_THUMBNAIL_SIZE,
+						quality: OPENAI_THUMBNAIL_QUALITY,
+						output_format: "png",
+						background: "auto",
+						input_fidelity: OPENAI_THUMBNAIL_INPUT_FIDELITY,
+					});
+				}
 			}
 
 			return await openai.images.generate({
@@ -5829,6 +5861,37 @@ async function generateOpenAiThumbnailBase({
 	}
 
 	return null;
+}
+
+function assertCloudinaryReady() {
+	if (
+		!process.env.CLOUDINARY_CLOUD_NAME ||
+		!process.env.CLOUDINARY_API_KEY ||
+		!process.env.CLOUDINARY_API_SECRET
+	) {
+		throw new Error(
+			"Cloudinary credentials missing (CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET)."
+		);
+	}
+}
+
+async function uploadThumbnailToCloudinary(filePath, jobId) {
+	assertCloudinaryReady();
+	ensureThumbnailFile(filePath);
+
+	const publicId = `${THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX}_${jobId}_${Date.now()}`;
+	const result = await cloudinary.uploader.upload(filePath, {
+		public_id: publicId,
+		folder: THUMBNAIL_CLOUDINARY_FOLDER,
+		resource_type: "image",
+		overwrite: true,
+	});
+	return {
+		public_id: result.public_id,
+		url: result.secure_url,
+		width: result.width,
+		height: result.height,
+	};
 }
 
 async function createThumbnailImage({
@@ -6597,6 +6660,9 @@ function computeNextRun({ scheduleType, timeOfDay, startDate }) {
 async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 	const tmpDir = path.join(TMP_ROOT, `job_${jobId}`);
 	ensureDir(tmpDir);
+	let thumbnailPath = "";
+	let thumbnailUrl = "";
+	let thumbnailCloudinaryId = "";
 
 	try {
 		updateJob(jobId, { status: "running", progressPct: 1 });
@@ -6684,6 +6750,14 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			);
 		if (!process.env.CHATGPT_API_TOKEN)
 			throw new Error("CHATGPT_API_TOKEN missing.");
+		if (
+			!process.env.CLOUDINARY_CLOUD_NAME ||
+			!process.env.CLOUDINARY_API_KEY ||
+			!process.env.CLOUDINARY_API_SECRET
+		)
+			throw new Error(
+				"Cloudinary credentials missing (CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET)."
+			);
 		if (!ELEVEN_API_KEY)
 			throw new Error(
 				"ELEVENLABS_API_KEY missing (required for intro/outro voice)."
@@ -6839,6 +6913,49 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				youtubeCategory: youtubeCategoryFinal,
 			},
 		});
+
+		// 5.5) Thumbnail (early, topic-first) + Cloudinary upload
+		try {
+			const thumbTitle = script.shortTitle || seoMeta?.seoTitle || script.title;
+			const thumbTmp = await createThumbnailImage({
+				jobId,
+				tmpDir,
+				presenterLocalPath: presenterLocal,
+				candleLocalPath,
+				title: thumbTitle,
+				topics: topicPicks,
+			});
+			ensureThumbnailFile(thumbTmp);
+			let thumbLocalPath = thumbTmp;
+			if (LONG_VIDEO_PERSIST_OUTPUT) {
+				const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
+				fs.copyFileSync(thumbTmp, finalThumb);
+				ensureThumbnailFile(finalThumb);
+				thumbLocalPath = finalThumb;
+			}
+			const uploaded = await uploadThumbnailToCloudinary(thumbLocalPath, jobId);
+			thumbnailPath = thumbLocalPath;
+			thumbnailUrl = uploaded.url;
+			thumbnailCloudinaryId = uploaded.public_id;
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					thumbnailPath: thumbnailPath || "",
+					thumbnailUrl: thumbnailUrl || "",
+					thumbnailCloudinaryId: thumbnailCloudinaryId || "",
+				},
+			});
+			logJob(jobId, "thumbnail ready (early)", {
+				path: path.basename(thumbnailPath),
+				cloudinary: Boolean(thumbnailUrl),
+			});
+			updateJob(jobId, { progressPct: 20 });
+		} catch (e) {
+			logJob(jobId, "thumbnail generation failed (early)", {
+				error: e.message,
+			});
+			throw e;
+		}
 
 		// 6) Orchestrator plan (intro/outro) + voice prep
 		const introOutroMood = "neutral";
@@ -7845,43 +7962,10 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			outCfg: output,
 		});
 
-		// 16.2) Thumbnail (AI-assisted)
-		let thumbnailPath = "";
-		let thumbnailUrl = "";
-		let thumbnailMetaPath = "";
-		let thumbnailMetaUrl = "";
+		// 16.2) Thumbnail (already generated earlier)
 		try {
-			const thumbTitle = script.shortTitle || seoMeta?.seoTitle || script.title;
-			const thumbTmp = await createThumbnailImage({
-				jobId,
-				tmpDir,
-				presenterLocalPath: presenterLocal,
-				candleLocalPath,
-				title: thumbTitle,
-				topics: topicPicks,
-				fallbackVideoPath: outputPath,
-			});
-			ensureThumbnailFile(thumbTmp);
-			if (LONG_VIDEO_PERSIST_OUTPUT) {
-				const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
-				fs.copyFileSync(thumbTmp, finalThumb);
-				ensureThumbnailFile(finalThumb);
-				thumbnailPath = finalThumb;
-				thumbnailUrl = `${baseUrl}/uploads/thumbnails/${path.basename(
-					finalThumb
-				)}`;
-				thumbnailMetaPath = thumbnailPath;
-				thumbnailMetaUrl = thumbnailUrl;
-			} else {
-				thumbnailPath = thumbTmp;
-			}
-			updateJob(jobId, {
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					thumbnailPath: thumbnailMetaPath || "",
-					thumbnailUrl: thumbnailMetaUrl || "",
-				},
-			});
+			if (!thumbnailPath) throw new Error("thumbnail_missing");
+			ensureThumbnailFile(thumbnailPath);
 			logJob(jobId, "thumbnail ready", {
 				path: path.basename(thumbnailPath),
 			});
@@ -7967,6 +8051,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					outputUrl: outputUrl || "",
 					localFilePath: localFilePath || "",
 					youtubeLink,
+					videoImage: thumbnailUrl
+						? {
+								public_id: thumbnailCloudinaryId || "",
+								url: thumbnailUrl,
+						  }
+						: undefined,
 					language: languageLabel,
 					country: LONG_VIDEO_TRENDS_GEO,
 					youtubeEmail: user?.youtubeEmail || "",
