@@ -1693,9 +1693,27 @@ async function fetchCseImages(topic, extraTokens = []) {
 	const category = inferEntertainmentCategory(baseTokens);
 	const criteria = buildImageMatchCriteria(topic, extraTokens);
 	const requireContext =
-		STRICT_TOPIC_IMAGE_MATCH &&
-		criteria.contextTokens.length > 0 &&
-		criteria.wordTokens.length < 2;
+		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
+	const topicLower = String(topic || "").toLowerCase();
+	const contextPhrases = uniqueStrings(
+		Array.isArray(extraTokens) ? extraTokens : [],
+		{ limit: 6 }
+	)
+		.map((p) => sanitizeOverlayQuery(p))
+		.filter((p) => p && p.length <= 42 && !p.toLowerCase().includes(topicLower))
+		.slice(0, 2);
+	const contextHint = criteria.contextTokens.slice(0, 2).join(" ");
+	const contextQueries = [];
+	if (contextHint) {
+		contextQueries.push(
+			`${topic} ${contextHint} photo`,
+			`${topic} ${contextHint} press photo`,
+			`${topic} ${contextHint} still`
+		);
+	}
+	for (const phrase of contextPhrases) {
+		contextQueries.push(`${topic} ${phrase} photo`);
+	}
 
 	const queries = [
 		`${topic} press photo`,
@@ -1728,14 +1746,17 @@ async function fetchCseImages(topic, extraTokens = []) {
 		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
 	}
 
-	let items = await fetchCseItems(queries, {
+	const searchQueries = contextQueries.length
+		? [...contextQueries, ...queries]
+		: queries;
+	let items = await fetchCseItems(searchQueries, {
 		num: 8,
 		searchType: "image",
 		imgSize: CSE_PREFERRED_IMG_SIZE,
 		imgColorType: CSE_PREFERRED_IMG_COLOR,
 	});
 	if (!items.length) {
-		items = await fetchCseItems(queries, {
+		items = await fetchCseItems(searchQueries, {
 			num: 8,
 			searchType: "image",
 			imgSize: CSE_FALLBACK_IMG_SIZE,
@@ -1759,14 +1780,14 @@ async function fetchCseImages(topic, extraTokens = []) {
 		});
 	}
 	if (!items.length) {
-		items = await fetchCseItems(queries, {
+		items = await fetchCseItems(searchQueries, {
 			num: 8,
 			searchType: "image",
 			imgSize: CSE_PREFERRED_IMG_SIZE,
 		});
 	}
 	if (!items.length) {
-		items = await fetchCseItems(queries, {
+		items = await fetchCseItems(searchQueries, {
 			num: 8,
 			searchType: "image",
 			imgSize: CSE_FALLBACK_IMG_SIZE,
@@ -1898,9 +1919,7 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 	const target = clampNumber(Number(maxResults) || 4, 1, 12);
 	const criteria = buildImageMatchCriteriaForQuery(q, topicTokens);
 	const requireContext =
-		STRICT_TOPIC_IMAGE_MATCH &&
-		criteria.contextTokens.length > 0 &&
-		criteria.wordTokens.length < 2;
+		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
 	let items = await fetchCseItems([q], {
 		num: Math.min(10, Math.max(8, target * 2)),
 		searchType: "image",
@@ -5540,7 +5559,7 @@ function escapeDrawtext(s = "") {
 		.replace(/%/g, "\\%")
 		.replace(/\[/g, "\\[")
 		.replace(/\]/g, "\\]")
-		.replace(new RegExp(placeholder, "g"), "\\n")
+		.replace(new RegExp(placeholder, "g"), "\\\\n")
 		.trim();
 }
 
@@ -5708,6 +5727,7 @@ function fitIntroText(
 
 function cleanThumbnailText(text = "") {
 	return String(text || "")
+		.replace(/([a-z])([A-Z])/g, "$1 $2")
 		.replace(/["'`]/g, "")
 		.replace(/[^a-z0-9\s]/gi, " ")
 		.replace(/\s+/g, " ")
@@ -5759,12 +5779,6 @@ function buildThumbnailText(title = "") {
 	const pretty = titleCaseIfLower(cleaned);
 	const words = pretty.split(" ").filter(Boolean);
 	const trimmedWords = words.slice(0, THUMBNAIL_TEXT_MAX_WORDS);
-	if (trimmedWords.length === 2) {
-		return {
-			text: `${trimmedWords[0]}\n${trimmedWords[1]}`,
-			fontScale: 1,
-		};
-	}
 	const trimmed = trimmedWords.join(" ");
 	const fit = fitIntroText(trimmed, {
 		baseMaxChars: THUMBNAIL_TEXT_BASE_MAX_CHARS,
