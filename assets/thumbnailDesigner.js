@@ -113,6 +113,44 @@ function collectThumbnailInputImages({
 	return list.slice(0, MAX_INPUT_IMAGES);
 }
 
+function readFileHeader(filePath, bytes = 12) {
+	try {
+		const fd = fs.openSync(filePath, "r");
+		const buf = Buffer.alloc(bytes);
+		const read = fs.readSync(fd, buf, 0, bytes, 0);
+		fs.closeSync(fd);
+		return buf.slice(0, read);
+	} catch {
+		return null;
+	}
+}
+
+function inferImageMime(filePath) {
+	const head = readFileHeader(filePath, 12);
+	if (head && head.length >= 4) {
+		// PNG
+		if (
+			head[0] === 0x89 &&
+			head[1] === 0x50 &&
+			head[2] === 0x4e &&
+			head[3] === 0x47
+		)
+			return "image/png";
+		// JPEG
+		if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)
+			return "image/jpeg";
+		// WEBP
+		if (head.toString("ascii", 0, 4) === "RIFF" &&
+			head.toString("ascii", 8, 12) === "WEBP")
+			return "image/webp";
+	}
+	const ext = path.extname(filePath).toLowerCase();
+	if (ext === ".png") return "image/png";
+	if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+	if (ext === ".webp") return "image/webp";
+	return null;
+}
+
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
 }
@@ -171,7 +209,9 @@ async function generateOpenAiThumbnailBase({
 			for (const p of imagePaths) {
 				try {
 					const buf = fs.readFileSync(p);
-					inputs.push(await toFile(buf, path.basename(p)));
+					const mime = inferImageMime(p);
+					if (!mime) continue;
+					inputs.push(await toFile(buf, path.basename(p), { type: mime }));
 				} catch {}
 			}
 			if (inputs.length) {
