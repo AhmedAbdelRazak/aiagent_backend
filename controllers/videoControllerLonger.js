@@ -1012,6 +1012,41 @@ function filterSpecificTopicTokens(tokens = []) {
 	return filtered.length ? filtered : norm;
 }
 
+const CONTEXT_STOP_TOKENS = new Set([
+	...TOPIC_STOP_WORDS,
+	"what",
+	"know",
+	"known",
+	"why",
+	"how",
+	"reports",
+	"report",
+	"reported",
+	"dies",
+	"died",
+	"death",
+	"dead",
+	"age",
+	"aged",
+	"year",
+	"years",
+	"says",
+	"said",
+	"say",
+	"details",
+]);
+
+function filterContextTokens(tokens = []) {
+	const norm = normalizeTopicTokens(tokens);
+	const filtered = norm.filter(
+		(t) =>
+			t.length >= 3 &&
+			!GENERIC_TOPIC_TOKENS.has(t) &&
+			!CONTEXT_STOP_TOKENS.has(t)
+	);
+	return filtered.length ? filtered : [];
+}
+
 function expandTopicTokens(tokens = []) {
 	const base = normalizeTopicTokens(tokens);
 	const out = new Set(base);
@@ -1066,7 +1101,7 @@ function buildImageMatchCriteria(topic = "", extraTokens = []) {
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
 		: [];
 	const wordSet = new Set(normalizeTopicTokens(wordTokens));
-	const contextTokens = filterSpecificTopicTokens(
+	const contextTokens = filterContextTokens(
 		extra.filter((tok) => !wordSet.has(String(tok).toLowerCase()))
 	);
 	return {
@@ -1084,7 +1119,7 @@ function buildImageMatchCriteriaForQuery(query = "", topicTokens = []) {
 	const phraseToken = topicNorm.length >= 2 ? topicNorm.join(" ") : "";
 	const extra = tokenizeLabel(query);
 	const wordSet = new Set(wordTokens);
-	const contextTokens = filterSpecificTopicTokens(
+	const contextTokens = filterContextTokens(
 		extra.filter((tok) => !wordSet.has(String(tok).toLowerCase()))
 	);
 	return {
@@ -5746,6 +5781,7 @@ function sanitizeThumbnailContext(text = "") {
 		"death",
 		"dead",
 		"died",
+		"dies",
 		"killed",
 		"shooting",
 		"murder",
@@ -5780,10 +5816,11 @@ function buildThumbnailText(title = "") {
 	const words = pretty.split(" ").filter(Boolean);
 	const trimmedWords = words.slice(0, THUMBNAIL_TEXT_MAX_WORDS);
 	const trimmed = trimmedWords.join(" ");
+	const baseChars = Math.max(THUMBNAIL_TEXT_BASE_MAX_CHARS, 14);
 	const fit = fitIntroText(trimmed, {
-		baseMaxChars: THUMBNAIL_TEXT_BASE_MAX_CHARS,
-		preferLines: 2,
-		maxLines: 2,
+		baseMaxChars: baseChars,
+		preferLines: 1,
+		maxLines: 1,
 	});
 	return {
 		text: fit.text || trimmed,
@@ -5980,6 +6017,7 @@ async function collectThumbnailTopicImages({
 	tmpDir,
 	jobId,
 	maxImages = THUMBNAIL_TOPIC_MAX_IMAGES,
+	contextText = "",
 }) {
 	const target = Math.max(0, Math.floor(maxImages));
 	if (!target) return [];
@@ -5990,6 +6028,11 @@ async function collectThumbnailTopicImages({
 	const topicList = Array.isArray(topics) ? topics : [];
 	if (!topicList.length) return [];
 
+	const contextQuery = sanitizeOverlayQuery(
+		sanitizeThumbnailContext(contextText)
+	);
+	const contextTokens =
+		contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
 	const urls = [];
 	const seen = new Set();
 	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
@@ -5998,7 +6041,10 @@ async function collectThumbnailTopicImages({
 		const label = t?.displayTopic || t?.topic || "";
 		if (!label) continue;
 		const extraTokens = Array.isArray(t?.keywords) ? t.keywords : [];
-		const hits = await fetchCseImages(label, extraTokens);
+		const mergedTokens = contextTokens.length
+			? [...contextTokens, ...extraTokens]
+			: extraTokens;
+		const hits = await fetchCseImages(label, mergedTokens);
 		for (const url of hits) {
 			if (urls.length >= maxUrls) break;
 			if (!url || seen.has(url)) continue;
@@ -7066,6 +7112,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				tmpDir,
 				jobId,
 				maxImages: THUMBNAIL_TOPIC_MAX_IMAGES,
+				contextText: script.title || seoMeta?.seoTitle || "",
 			});
 			const thumbTmp = await createThumbnailImage({
 				jobId,
