@@ -6907,6 +6907,7 @@ exports.createVideo = async (req, res) => {
 		const recentVideos = await Video.find({
 			user: user._id,
 			category,
+			isLongVideo: false,
 			createdAt: { $gte: threeDaysAgo },
 		}).select("topic seoTitle");
 		const normRecent = [];
@@ -6931,6 +6932,7 @@ exports.createVideo = async (req, res) => {
 			const top5Cutoff = dayjs().subtract(180, "day").toDate();
 			const historicTop5 = await Video.find({
 				category: "Top5",
+				isLongVideo: false,
 				createdAt: { $gte: top5Cutoff },
 			}).select("topic seoTitle");
 
@@ -8766,6 +8768,7 @@ exports.updateVideo = async (req, res, next) => {
 				_id: { $ne: videoId },
 				category: updates.category || video.category,
 				topic: updates.topic || video.topic,
+				isLongVideo: false,
 			});
 			if (existing) {
 				return res.status(400).json({
