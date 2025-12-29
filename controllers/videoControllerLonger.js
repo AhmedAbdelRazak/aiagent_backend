@@ -254,17 +254,44 @@ const WATERMARK_SHADOW_PX = 2;
 const CSE_PREFERRED_IMG_SIZE = "xlarge";
 const CSE_FALLBACK_IMG_SIZE = "large";
 const CSE_MIN_IMAGE_SHORT_EDGE = 720;
+const WATERMARK_URL_TOKENS = [
+	"gettyimages",
+	"getty",
+	"alamy",
+	"shutterstock",
+	"istock",
+	"istockphoto",
+	"adobestock",
+	"depositphotos",
+	"dreamstime",
+	"123rf",
+	"bigstock",
+	"bigstockphoto",
+	"fotolia",
+	"pond5",
+	"envato",
+	"stockphoto",
+	"stockphotography",
+	"imagebroker",
+	"imago-images",
+	"wireimage",
+	"pressphoto",
+	"newscom",
+	"pixelsquid",
+	"watermark",
+];
 const THUMBNAIL_RATIO = "1280:720";
 const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
-const THUMBNAIL_TEXT_MAX_WORDS = 7;
-const THUMBNAIL_TEXT_BASE_MAX_CHARS = 18;
-const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.56;
-const THUMBNAIL_TEXT_BOX_OPACITY = 0.34;
-const THUMBNAIL_TEXT_MARGIN_PCT = 0.06;
+const THUMBNAIL_TEXT_MAX_WORDS = 3;
+const THUMBNAIL_TEXT_BASE_MAX_CHARS = 14;
+const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.42;
+const THUMBNAIL_TEXT_BOX_OPACITY = 0.28;
+const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
-const THUMBNAIL_TOPIC_MAX_IMAGES = clampNumber(2, 1, 4);
+const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.18;
+const THUMBNAIL_TOPIC_MAX_IMAGES = clampNumber(1, 1, 4);
 const THUMBNAIL_TOPIC_MIN_EDGE = clampNumber(900, 640, 1400);
 const THUMBNAIL_TOPIC_MIN_BYTES = clampNumber(60000, 20000, 500000);
 const THUMBNAIL_TOPIC_MAX_DOWNLOADS = clampNumber(6, 2, 12);
@@ -1259,6 +1286,11 @@ async function fetchCseItems(
 	return results;
 }
 
+function isLikelyWatermarkedSource(url = "", contextLink = "") {
+	const hay = `${url} ${contextLink}`.toLowerCase();
+	return WATERMARK_URL_TOKENS.some((token) => hay.includes(token));
+}
+
 async function pickTrendingTopicFromCse() {
 	const items = await fetchCseItems(CSE_ENTERTAINMENT_QUERIES, { num: 5 });
 	if (!items.length) return null;
@@ -1656,11 +1688,13 @@ async function fetchCseImages(topic, extraTokens = []) {
 	for (const it of items) {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) continue;
+		const contextLink = it.image?.contextLink || "";
+		if (isLikelyWatermarkedSource(url, contextLink)) continue;
 		const info = topicMatchInfo(matchTokens, [
 			it.title,
 			it.snippet,
 			it.link,
-			it.image?.contextLink || "",
+			contextLink,
 		]);
 		if (info.count < minMatches) continue;
 		const w = Number(it.image?.width || 0);
@@ -1762,11 +1796,13 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 	for (const it of items) {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) continue;
+		const contextLink = it.image?.contextLink || "";
+		if (isLikelyWatermarkedSource(url, contextLink)) continue;
 		const info = topicMatchInfo(tokens, [
 			it.title,
 			it.snippet,
 			it.link,
-			it.image?.contextLink || "",
+			contextLink,
 		]);
 		if (info.count < minMatches) continue;
 		const w = Number(it.image?.width || 0);
@@ -5576,6 +5612,7 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
 	);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
+	const textYExpr = `min(h-text_h, max(0, (h-text_h)/2 + h*${THUMBNAIL_TEXT_Y_OFFSET_PCT}))`;
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
@@ -5585,7 +5622,7 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 	];
 	if (safeText) {
 		filters.push(
-			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.5:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2`
+			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.5:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=${textYExpr}`
 		);
 	}
 

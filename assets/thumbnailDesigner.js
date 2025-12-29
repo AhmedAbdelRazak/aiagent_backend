@@ -23,9 +23,9 @@ const DEFAULT_IMAGE_INPUT_FIDELITY = "high";
 const MAX_INPUT_IMAGES = 4;
 const DEFAULT_CANVAS_WIDTH = 1280;
 const DEFAULT_CANVAS_HEIGHT = 720;
-const LEFT_PANEL_PCT = 0.56;
-const PANEL_MARGIN_PCT = 0.04;
-const PRESENTER_OVERLAP_PCT = 0.02;
+const LEFT_PANEL_PCT = 0.48;
+const PANEL_MARGIN_PCT = 0.035;
+const PRESENTER_OVERLAP_PCT = 0.06;
 
 const SORA_MODEL = process.env.SORA_MODEL || "sora-2-pro";
 const SORA_THUMBNAIL_ENABLED =
@@ -115,7 +115,7 @@ function buildThumbnailPrompt({ title, topics, topicImageCount = 0 }) {
 	return `
 Create a YouTube thumbnail image (no text in the image).
 Use the provided person reference; keep identity, face shape, and wardrobe consistent with the studio desk setup and lighting.
-Composition: presenter on the right third (face and shoulders fully inside the right third), leave the left ~45% clean for headline text.
+Composition: presenter on the right third (face and shoulders fully inside the right third), leave the left ~40% clean for headline text.
 ${topicImageLine}
 Style: ultra sharp, clean, premium, high contrast, cinematic studio lighting, shallow depth of field, crisp subject separation.
 Expression: confident, intrigued, camera-ready.
@@ -153,7 +153,7 @@ function buildSoraThumbnailPrompt({ title, topics }) {
 	const prompt = `
 Cinematic studio background plate for a YouTube thumbnail.
 No people, no faces, no text, no logos, no watermarks.
-Left side clean and brighter for headline text and topic panels; right side darker and unobtrusive.
+Left ~40% is clean, brighter, and ready for headline text + one hero image; right side darker and unobtrusive.
 Subtle topic-related props or atmosphere inspired by: ${topicFocus}.
 High contrast, crisp detail, premium lighting, shallow depth of field, soft vignette, rich but tasteful color.
 `.trim();
