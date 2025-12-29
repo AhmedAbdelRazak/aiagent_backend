@@ -153,9 +153,9 @@ function buildSoraThumbnailPrompt({ title, topics }) {
 	const prompt = `
 Cinematic studio background plate for a YouTube thumbnail.
 No people, no faces, no text, no logos, no watermarks.
-Left side has clean space reserved for topic imagery and headline text; right side is darker and unobtrusive.
+Left side clean and brighter for headline text and topic panels; right side darker and unobtrusive.
 Subtle topic-related props or atmosphere inspired by: ${topicFocus}.
-High-end lighting, crisp detail, cinematic depth of field, premium look.
+High contrast, crisp detail, premium lighting, shallow depth of field, soft vignette, rich but tasteful color.
 `.trim();
 
 	return prompt.length > SORA_PROMPT_CHAR_LIMIT
@@ -224,6 +224,12 @@ function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
 }
 
+function makeEven(n) {
+	const x = Math.round(Number(n) || 0);
+	if (!Number.isFinite(x) || x <= 0) return 2;
+	return x % 2 === 0 ? x : x + 1;
+}
+
 function soraSizeForRatio(ratio) {
 	switch (ratio) {
 		case "720:1280":
@@ -281,21 +287,21 @@ async function downloadUrlToFile(url, outPath) {
 }
 
 async function extractFrameFromVideo({ videoPath, outPath }) {
-	await runFfmpeg(
-		[
-			"-ss",
-			"0.4",
-			"-i",
-			videoPath,
-			"-frames:v",
-			"1",
-			"-q:v",
-			"2",
-			"-y",
-			outPath,
-		],
-		"sora_thumbnail_frame"
-	);
+	const ext = path.extname(outPath).toLowerCase();
+	const useJpegQ = ext === ".jpg" || ext === ".jpeg";
+	const args = [
+		"-ss",
+		"0.4",
+		"-i",
+		videoPath,
+		"-frames:v",
+		"1",
+	];
+	if (useJpegQ) {
+		args.push("-q:v", "2");
+	}
+	args.push("-y", outPath);
+	await runFfmpeg(args, "sora_thumbnail_frame");
 	return outPath;
 }
 
@@ -385,7 +391,7 @@ async function generateSoraThumbnailFrame({
 	const buf = Buffer.from(await response.arrayBuffer());
 	const videoPath = path.join(tmpDir, `thumb_sora_${jobId}.mp4`);
 	fs.writeFileSync(videoPath, buf);
-	const framePath = path.join(tmpDir, `thumb_sora_${jobId}.jpg`);
+	const framePath = path.join(tmpDir, `thumb_sora_${jobId}.png`);
 	await extractFrameFromVideo({ videoPath, outPath: framePath });
 	return framePath;
 }
@@ -472,13 +478,17 @@ async function composeThumbnailBase({
 	width = DEFAULT_CANVAS_WIDTH,
 	height = DEFAULT_CANVAS_HEIGHT,
 }) {
-	const W = Math.max(1, Math.round(width));
-	const H = Math.max(1, Math.round(height));
+	const W = makeEven(Math.max(2, Math.round(width)));
+	const H = makeEven(Math.max(2, Math.round(height)));
 	const leftW = Math.max(1, Math.round(W * LEFT_PANEL_PCT));
 	const margin = Math.max(4, Math.round(W * PANEL_MARGIN_PCT));
 	const overlap = Math.max(0, Math.round(W * PRESENTER_OVERLAP_PCT));
-	const presenterW = Math.max(1, W - leftW + overlap);
-	const presenterX = Math.max(0, leftW - overlap);
+	let presenterW = Math.max(2, W - leftW + overlap);
+	presenterW = makeEven(Math.min(W, presenterW));
+	const presenterX = Math.max(
+		0,
+		Math.min(W - presenterW, leftW - overlap)
+	);
 
 	const topics = Array.isArray(topicImagePaths)
 		? topicImagePaths.filter(Boolean).slice(0, 2)
@@ -493,10 +503,10 @@ async function composeThumbnailBase({
 	const inputs = [baseImagePath, presenterImagePath, ...topics];
 	const filters = [];
 	filters.push(
-		`[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}[base]`
+		`[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}[base]`
 	);
 	filters.push(
-		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=decrease,pad=${presenterW}:${H}:(ow-iw)/2:(oh-ih)/2[presenter]`
+		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${presenterW}:${H}:(ow-iw)/2:(oh-ih)/2[presenter]`
 	);
 
 	let current = "[base]";
@@ -506,7 +516,7 @@ async function composeThumbnailBase({
 		const panelY =
 			panelCount > 1 ? margin : Math.max(0, Math.round((H - panelH) / 2));
 		filters.push(
-			`[${panel1Idx}:v]scale=${panelW}:${panelH}:force_original_aspect_ratio=increase,crop=${panelW}:${panelH}[panel1]`
+			`[${panel1Idx}:v]scale=${panelW}:${panelH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelW}:${panelH}[panel1]`
 		);
 		filters.push(`${current}[panel1]overlay=${margin}:${panelY}[tmp1]`);
 		current = "[tmp1]";
@@ -516,7 +526,7 @@ async function composeThumbnailBase({
 		const panel2Idx = 3;
 		const panel2Y = Math.max(0, margin * 2 + panelH);
 		filters.push(
-			`[${panel2Idx}:v]scale=${panelW}:${panelH}:force_original_aspect_ratio=increase,crop=${panelW}:${panelH}[panel2]`
+			`[${panel2Idx}:v]scale=${panelW}:${panelH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelW}:${panelH}[panel2]`
 		);
 		filters.push(`${current}[panel2]overlay=${margin}:${panel2Y}[tmp2]`);
 		current = "[tmp2]";
@@ -524,6 +534,8 @@ async function composeThumbnailBase({
 
 	filters.push(`${current}[presenter]overlay=${presenterX}:0[outv]`);
 
+	const outExt = path.extname(outPath).toLowerCase();
+	const useJpegQ = outExt === ".jpg" || outExt === ".jpeg";
 	const args = [];
 	for (const input of inputs) {
 		args.push("-i", input);
@@ -534,12 +546,10 @@ async function composeThumbnailBase({
 		"-map",
 		"[outv]",
 		"-frames:v",
-		"1",
-		"-q:v",
-		"2",
-		"-y",
-		outPath
+		"1"
 	);
+	if (useJpegQ) args.push("-q:v", "2");
+	args.push("-y", outPath);
 
 	await runFfmpeg(args, "thumbnail_compose");
 	return outPath;
@@ -583,7 +593,7 @@ async function generateThumbnailCompositeBase({
 		}
 	}
 
-	const outPath = path.join(tmpDir, `thumb_composite_${jobId}.jpg`);
+	const outPath = path.join(tmpDir, `thumb_composite_${jobId}.png`);
 	return await composeThumbnailBase({
 		baseImagePath,
 		presenterImagePath,
