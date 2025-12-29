@@ -153,7 +153,7 @@ function buildSoraThumbnailPrompt({ title, topics }) {
 	const prompt = `
 Cinematic studio background plate for a YouTube thumbnail.
 No people, no faces, no text, no logos, no watermarks.
-Left ~40% is clean, brighter, and ready for headline text + one hero image; right side darker and unobtrusive.
+Left ~40% is clean, brighter, and ready for headline text + one hero image; no furniture or props on the left; smooth gradient backdrop.
 Subtle topic-related props or atmosphere inspired by: ${topicFocus}.
 High contrast, crisp detail, premium lighting, shallow depth of field, soft vignette, rich but tasteful color.
 `.trim();
@@ -499,7 +499,7 @@ async function composeThumbnailBase({
 		`[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}[base]`
 	);
 	filters.push(
-		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${presenterW}:${H}:(ow-iw)/2:(oh-ih)/2[presenter]`
+		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)/2[presenter]`
 	);
 
 	let current = "[base]";
@@ -508,8 +508,10 @@ async function composeThumbnailBase({
 		const panel1Idx = 2;
 		const panelY =
 			panelCount > 1 ? margin : Math.max(0, Math.round((H - panelH) / 2));
+		const panelCropX = "(iw-ow)/2";
+		const panelCropY = "if(gt(ih,iw),(ih-oh)*0.18,(ih-oh)/2)";
 		filters.push(
-			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}[panel1i]`
+			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel1i]`
 		);
 		filters.push(
 			`[panel1i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=black@0.35[panel1]`
@@ -521,8 +523,10 @@ async function composeThumbnailBase({
 	if (panelCount >= 2) {
 		const panel2Idx = 3;
 		const panel2Y = Math.max(0, margin * 2 + panelH);
+		const panelCropX = "(iw-ow)/2";
+		const panelCropY = "if(gt(ih,iw),(ih-oh)*0.18,(ih-oh)/2)";
 		filters.push(
-			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}[panel2i]`
+			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel2i]`
 		);
 		filters.push(
 			`[panel2i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=black@0.35[panel2]`

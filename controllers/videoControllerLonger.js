@@ -254,6 +254,9 @@ const WATERMARK_SHADOW_PX = 2;
 const CSE_PREFERRED_IMG_SIZE = "xlarge";
 const CSE_FALLBACK_IMG_SIZE = "large";
 const CSE_PREFERRED_IMG_COLOR = "color";
+const STRICT_TOPIC_IMAGE_MATCH =
+	String(process.env.STRICT_TOPIC_IMAGE_MATCH ?? "true").toLowerCase() !==
+	"false";
 const CSE_MIN_IMAGE_SHORT_EDGE = 720;
 const WATERMARK_URL_TOKENS = [
 	"gettyimages",
@@ -278,6 +281,7 @@ const WATERMARK_URL_TOKENS = [
 	"historicimages",
 	"historic-images",
 	"wireimage",
+	"fdic",
 	"pressphoto",
 	"newscom",
 	"pixelsquid",
@@ -1026,6 +1030,14 @@ function minTopicTokenMatches(tokens = []) {
 	return 1;
 }
 
+function minImageTokenMatches(tokens = []) {
+	const norm = normalizeTopicTokens(tokens);
+	if (!norm.length) return 0;
+	if (norm.length >= 4) return 3;
+	if (norm.length >= 2) return 2;
+	return 1;
+}
+
 function topicMatchInfo(tokens = [], fields = []) {
 	const norm = expandTopicTokens(tokens);
 	if (!norm.length) return { count: 0, matchedTokens: [], normTokens: [] };
@@ -1041,6 +1053,28 @@ function topicMatchInfo(tokens = [], fields = []) {
 		.join(" ");
 	const matchedTokens = norm.filter((tok) => hay.includes(tok));
 	return { count: matchedTokens.length, matchedTokens, normTokens: norm };
+}
+
+function buildImageMatchCriteria(topic = "", extraTokens = []) {
+	const rawTokens = tokenizeLabel(topic);
+	const baseTokens = topicTokensFromTitle(topic);
+	const wordSource = baseTokens.length >= 2 ? baseTokens : rawTokens;
+	const specificWords = filterSpecificTopicTokens(wordSource);
+	const wordTokens = specificWords.length ? specificWords : wordSource;
+	const phraseToken = rawTokens.length >= 2 ? rawTokens.join(" ") : "";
+	const extra = Array.isArray(extraTokens)
+		? extraTokens.flatMap((t) => tokenizeLabel(t))
+		: [];
+	const wordSet = new Set(normalizeTopicTokens(wordTokens));
+	const contextTokens = filterSpecificTopicTokens(
+		extra.filter((tok) => !wordSet.has(String(tok).toLowerCase()))
+	);
+	return {
+		wordTokens,
+		phraseToken,
+		contextTokens: contextTokens.slice(0, 6),
+		minWordMatches: minImageTokenMatches(wordTokens),
+	};
 }
 
 function cleanTopicCandidate(title = "") {
@@ -1504,14 +1538,26 @@ async function selectTopics({
 		if (!story?.topic) continue;
 		if (isDuplicateTopic(story.topic, topics, usedSet)) continue;
 		const displayTopic = cleanTopicLabel(story.topic) || story.topic;
+		const storyKeywords = uniqueStrings(
+			[
+				story.topic,
+				story.rawTitle || "",
+				...(story.keywords || []),
+				...(story.searchPhrases || []),
+				...(story.articles || []).map((a) => a.title),
+			],
+			{ limit: 12 }
+		);
 		topics.push({
 			topic: story.topic,
 			displayTopic,
 			angle: "",
 			reason: "Google Trends",
-			keywords: topicTokensFromTitle(story.topic)
-				.concat(topicTokensFromTitle(story.rawTitle || ""))
-				.slice(0, 10),
+			keywords: storyKeywords.length
+				? storyKeywords
+				: topicTokensFromTitle(story.topic)
+						.concat(topicTokensFromTitle(story.rawTitle || ""))
+						.slice(0, 10),
 			trendStory: story,
 		});
 		addUsedTopicVariants(usedSet, story.topic);
@@ -1589,6 +1635,9 @@ async function fetchCseContext(topic, extraTokens = []) {
 		: [];
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
+	const criteria = buildImageMatchCriteria(topic, extraTokens);
+	const requireContext =
+		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
 	const queries = [
 		`${topic} latest news`,
 		`${topic} trending`,
@@ -1717,32 +1766,33 @@ async function fetchCseImages(topic, extraTokens = []) {
 			imgSize: CSE_FALLBACK_IMG_SIZE,
 		});
 	}
-	const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
-	const minMatches = minTopicTokenMatches(matchTokens);
-
 	const candidates = [];
 	for (const it of items) {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) continue;
 		const contextLink = it.image?.contextLink || "";
 		if (isLikelyWatermarkedSource(url, contextLink)) continue;
-		const info = topicMatchInfo(matchTokens, [
-			it.title,
-			it.snippet,
-			it.link,
-			contextLink,
-		]);
-		if (info.count < minMatches) continue;
+		const fields = [it.title, it.snippet, it.link, contextLink];
+		const info = topicMatchInfo(criteria.wordTokens, fields);
+		const phraseInfo = criteria.phraseToken
+			? topicMatchInfo([criteria.phraseToken], fields)
+			: { count: 0 };
+		if (phraseInfo.count < 1 && info.count < criteria.minWordMatches) continue;
+		if (requireContext) {
+			const ctx = topicMatchInfo(criteria.contextTokens, fields);
+			if (ctx.count < 1) continue;
+		}
 		const w = Number(it.image?.width || 0);
 		const h = Number(it.image?.height || 0);
 		if (w && h && Math.min(w, h) < CSE_MIN_IMAGE_SHORT_EDGE) continue;
 		const urlText = `${it.link || ""} ${
 			it.image?.contextLink || ""
 		}`.toLowerCase();
-		const urlMatches = matchTokens.filter((tok) =>
+		const urlMatches = criteria.wordTokens.filter((tok) =>
 			urlText.includes(tok)
 		).length;
-		const score = info.count + urlMatches * 0.75;
+		const phraseBoost = phraseInfo.count ? 1.5 : 0;
+		const score = info.count + urlMatches * 0.75 + phraseBoost;
 		candidates.push({ url, score, urlMatches, w, h });
 		if (candidates.length >= 14) break;
 	}
@@ -1754,7 +1804,7 @@ async function fetchCseImages(topic, extraTokens = []) {
 	});
 
 	let pool = candidates;
-	if (matchTokens.length >= 2) {
+	if (criteria.wordTokens.length >= 2) {
 		const strict = candidates.filter((c) => c.urlMatches >= 1);
 		if (strict.length) {
 			const relaxed = candidates.filter((c) => c.urlMatches < 1);
@@ -1810,10 +1860,9 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 	const q = sanitizeOverlayQuery(query);
 	if (!q) return [];
 	const target = clampNumber(Number(maxResults) || 4, 1, 12);
-	const tokens = expandTopicTokens(
-		filterSpecificTopicTokens([...tokenizeLabel(q), ...topicTokens])
-	);
-	const minMatches = minTopicTokenMatches(tokens);
+	const criteria = buildImageMatchCriteria(q, topicTokens);
+	const requireContext =
+		STRICT_TOPIC_IMAGE_MATCH && criteria.contextTokens.length > 0;
 	let items = await fetchCseItems([q], {
 		num: Math.min(10, Math.max(8, target * 2)),
 		searchType: "image",
@@ -1850,21 +1899,27 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 		if (!url || !/^https:\/\//i.test(url)) continue;
 		const contextLink = it.image?.contextLink || "";
 		if (isLikelyWatermarkedSource(url, contextLink)) continue;
-		const info = topicMatchInfo(tokens, [
-			it.title,
-			it.snippet,
-			it.link,
-			contextLink,
-		]);
-		if (info.count < minMatches) continue;
+		const fields = [it.title, it.snippet, it.link, contextLink];
+		const info = topicMatchInfo(criteria.wordTokens, fields);
+		const phraseInfo = criteria.phraseToken
+			? topicMatchInfo([criteria.phraseToken], fields)
+			: { count: 0 };
+		if (phraseInfo.count < 1 && info.count < criteria.minWordMatches) continue;
+		if (requireContext) {
+			const ctx = topicMatchInfo(criteria.contextTokens, fields);
+			if (ctx.count < 1) continue;
+		}
 		const w = Number(it.image?.width || 0);
 		const h = Number(it.image?.height || 0);
 		if (w && h && Math.min(w, h) < CSE_MIN_IMAGE_SHORT_EDGE) continue;
 		const urlText = `${it.link || ""} ${
 			it.image?.contextLink || ""
 		}`.toLowerCase();
-		const urlMatches = tokens.filter((tok) => urlText.includes(tok)).length;
-		const score = info.count + urlMatches * 0.75;
+		const urlMatches = criteria.wordTokens.filter((tok) =>
+			urlText.includes(tok)
+		).length;
+		const phraseBoost = phraseInfo.count ? 1.5 : 0;
+		const score = info.count + urlMatches * 0.75 + phraseBoost;
 		candidates.push({ url, score, urlMatches, w, h });
 		if (candidates.length >= maxCandidates) break;
 	}
@@ -1876,7 +1931,7 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 	});
 
 	let pool = candidates;
-	if (tokens.length >= 2) {
+	if (criteria.wordTokens.length >= 2) {
 		const strict = candidates.filter((c) => c.urlMatches >= 1);
 		if (strict.length) {
 			const relaxed = candidates.filter((c) => c.urlMatches < 1);
@@ -5605,6 +5660,13 @@ function cleanThumbnailText(text = "") {
 		.trim();
 }
 
+function titleCaseIfLower(text = "") {
+	const cleaned = String(text || "").trim();
+	if (!cleaned) return "";
+	if (/[A-Z]/.test(cleaned)) return cleaned;
+	return cleaned.replace(/\b[a-z]/g, (m) => m.toUpperCase());
+}
+
 function sanitizeThumbnailContext(text = "") {
 	const banned = [
 		"death",
@@ -5640,8 +5702,16 @@ function sanitizeThumbnailContext(text = "") {
 function buildThumbnailText(title = "") {
 	const cleaned = cleanThumbnailText(title);
 	if (!cleaned) return { text: "", fontScale: 1 };
-	const words = cleaned.split(" ").filter(Boolean);
-	const trimmed = words.slice(0, THUMBNAIL_TEXT_MAX_WORDS).join(" ");
+	const pretty = titleCaseIfLower(cleaned);
+	const words = pretty.split(" ").filter(Boolean);
+	const trimmedWords = words.slice(0, THUMBNAIL_TEXT_MAX_WORDS);
+	if (trimmedWords.length === 2) {
+		return {
+			text: `${trimmedWords[0]}\n${trimmedWords[1]}`,
+			fontScale: 1,
+		};
+	}
+	const trimmed = trimmedWords.join(" ");
 	const fit = fitIntroText(trimmed, {
 		baseMaxChars: THUMBNAIL_TEXT_BASE_MAX_CHARS,
 		preferLines: 2,
