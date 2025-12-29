@@ -253,6 +253,7 @@ const WATERMARK_SHADOW_OPACITY = 0.3;
 const WATERMARK_SHADOW_PX = 2;
 const CSE_PREFERRED_IMG_SIZE = "xlarge";
 const CSE_FALLBACK_IMG_SIZE = "large";
+const CSE_PREFERRED_IMG_COLOR = "color";
 const CSE_MIN_IMAGE_SHORT_EDGE = 720;
 const WATERMARK_URL_TOKENS = [
 	"gettyimages",
@@ -274,6 +275,8 @@ const WATERMARK_URL_TOKENS = [
 	"stockphotography",
 	"imagebroker",
 	"imago-images",
+	"historicimages",
+	"historic-images",
 	"wireimage",
 	"pressphoto",
 	"newscom",
@@ -284,13 +287,13 @@ const THUMBNAIL_RATIO = "1280:720";
 const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
 const THUMBNAIL_TEXT_MAX_WORDS = 3;
-const THUMBNAIL_TEXT_BASE_MAX_CHARS = 14;
-const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.42;
+const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
+const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.38;
 const THUMBNAIL_TEXT_BOX_OPACITY = 0.28;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
-const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.18;
+const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.22;
 const THUMBNAIL_TOPIC_MAX_IMAGES = clampNumber(1, 1, 4);
 const THUMBNAIL_TOPIC_MIN_EDGE = clampNumber(900, 640, 1400);
 const THUMBNAIL_TOPIC_MIN_BYTES = clampNumber(60000, 20000, 500000);
@@ -1228,7 +1231,7 @@ async function fetchTrendsStories({
 
 async function fetchCseItems(
 	queries,
-	{ num = 4, searchType = null, imgSize = null } = {}
+	{ num = 4, searchType = null, imgSize = null, imgColorType = null } = {}
 ) {
 	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
 	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
@@ -1253,6 +1256,7 @@ async function fetchCseItems(
 						? {
 								imgType: "photo",
 								imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
+								...(imgColorType ? { imgColorType } : {}),
 						  }
 						: {}),
 				},
@@ -1659,7 +1663,39 @@ async function fetchCseImages(topic, extraTokens = []) {
 		num: 8,
 		searchType: "image",
 		imgSize: CSE_PREFERRED_IMG_SIZE,
+		imgColorType: CSE_PREFERRED_IMG_COLOR,
 	});
+	if (!items.length) {
+		items = await fetchCseItems(queries, {
+			num: 8,
+			searchType: "image",
+			imgSize: CSE_FALLBACK_IMG_SIZE,
+			imgColorType: CSE_PREFERRED_IMG_COLOR,
+		});
+	}
+	if (!items.length) {
+		items = await fetchCseItems(fallbackQueries, {
+			num: 8,
+			searchType: "image",
+			imgSize: CSE_PREFERRED_IMG_SIZE,
+			imgColorType: CSE_PREFERRED_IMG_COLOR,
+		});
+	}
+	if (!items.length) {
+		items = await fetchCseItems(fallbackQueries, {
+			num: 8,
+			searchType: "image",
+			imgSize: CSE_FALLBACK_IMG_SIZE,
+			imgColorType: CSE_PREFERRED_IMG_COLOR,
+		});
+	}
+	if (!items.length) {
+		items = await fetchCseItems(queries, {
+			num: 8,
+			searchType: "image",
+			imgSize: CSE_PREFERRED_IMG_SIZE,
+		});
+	}
 	if (!items.length) {
 		items = await fetchCseItems(queries, {
 			num: 8,
@@ -1782,7 +1818,23 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 		num: Math.min(10, Math.max(8, target * 2)),
 		searchType: "image",
 		imgSize: CSE_PREFERRED_IMG_SIZE,
+		imgColorType: CSE_PREFERRED_IMG_COLOR,
 	});
+	if (!items.length) {
+		items = await fetchCseItems([q], {
+			num: Math.min(10, Math.max(8, target * 2)),
+			searchType: "image",
+			imgSize: CSE_FALLBACK_IMG_SIZE,
+			imgColorType: CSE_PREFERRED_IMG_COLOR,
+		});
+	}
+	if (!items.length) {
+		items = await fetchCseItems([q], {
+			num: Math.min(10, Math.max(8, target * 2)),
+			searchType: "image",
+			imgSize: CSE_PREFERRED_IMG_SIZE,
+		});
+	}
 	if (!items.length) {
 		items = await fetchCseItems([q], {
 			num: Math.min(10, Math.max(8, target * 2)),
@@ -6856,7 +6908,21 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 
 		// 5.5) Thumbnail (early, topic-first) + Cloudinary upload
 		try {
-			const thumbTitle = script.shortTitle || seoMeta?.seoTitle || script.title;
+			const topicLabel =
+				topicPicks?.[0]?.displayTopic || topicPicks?.[0]?.topic || "";
+			const topicWords = cleanThumbnailText(topicLabel)
+				.split(" ")
+				.filter(Boolean);
+			const shortLabel = script.shortTitle || "";
+			const shortWords = cleanThumbnailText(shortLabel)
+				.split(" ")
+				.filter(Boolean);
+			let thumbTitle = script.shortTitle || seoMeta?.seoTitle || script.title;
+			if (topicWords.length && topicWords.length <= 3) {
+				thumbTitle = topicLabel;
+			} else if (shortWords.length && shortWords.length <= 3) {
+				thumbTitle = shortLabel;
+			}
 			const thumbTopicImages = await collectThumbnailTopicImages({
 				topics: topicPicks,
 				tmpDir,

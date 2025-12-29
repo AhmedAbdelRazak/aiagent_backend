@@ -27,7 +27,7 @@ const LEFT_PANEL_PCT = 0.48;
 const PANEL_MARGIN_PCT = 0.035;
 const PRESENTER_OVERLAP_PCT = 0.06;
 
-const SORA_MODEL = process.env.SORA_MODEL || "sora-2-pro";
+const SORA_MODEL = process.env.SORA_MODEL || "sora-2";
 const SORA_THUMBNAIL_ENABLED =
 	String(process.env.SORA_THUMBNAIL_ENABLED ?? "true").toLowerCase() !==
 	"false";
@@ -489,6 +489,9 @@ async function composeThumbnailBase({
 		panelCount > 1
 			? Math.max(1, Math.round((H - margin * 3) / 2))
 			: Math.max(1, H - margin * 2);
+	const panelBorder = Math.max(4, Math.round(W * 0.004));
+	const panelInnerW = Math.max(1, panelW - panelBorder * 2);
+	const panelInnerH = Math.max(1, panelH - panelBorder * 2);
 
 	const inputs = [baseImagePath, presenterImagePath, ...topics];
 	const filters = [];
@@ -506,7 +509,10 @@ async function composeThumbnailBase({
 		const panelY =
 			panelCount > 1 ? margin : Math.max(0, Math.round((H - panelH) / 2));
 		filters.push(
-			`[${panel1Idx}:v]scale=${panelW}:${panelH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelW}:${panelH}[panel1]`
+			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}[panel1i]`
+		);
+		filters.push(
+			`[panel1i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=black@0.35[panel1]`
 		);
 		filters.push(`${current}[panel1]overlay=${margin}:${panelY}[tmp1]`);
 		current = "[tmp1]";
@@ -516,7 +522,10 @@ async function composeThumbnailBase({
 		const panel2Idx = 3;
 		const panel2Y = Math.max(0, margin * 2 + panelH);
 		filters.push(
-			`[${panel2Idx}:v]scale=${panelW}:${panelH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelW}:${panelH}[panel2]`
+			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}[panel2i]`
+		);
+		filters.push(
+			`[panel2i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=black@0.35[panel2]`
 		);
 		filters.push(`${current}[panel2]overlay=${margin}:${panel2Y}[tmp2]`);
 		current = "[tmp2]";
