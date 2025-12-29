@@ -2324,7 +2324,10 @@ function buildShortsWatermarkFilter(ratio) {
 			: SHORTS_WATERMARK_FONT_PCT_LANDSCAPE;
 	let fontSize = Math.max(18, Math.round(height * fontFactor));
 	const marginX = Math.max(12, Math.round(width * SHORTS_WATERMARK_MARGIN_PCT));
-	const marginY = Math.max(12, Math.round(height * SHORTS_WATERMARK_MARGIN_PCT));
+	const marginY = Math.max(
+		12,
+		Math.round(height * SHORTS_WATERMARK_MARGIN_PCT)
+	);
 	const rawText = SHORTS_WATERMARK_TEXT;
 	const text = escapeDrawtext(rawText);
 
