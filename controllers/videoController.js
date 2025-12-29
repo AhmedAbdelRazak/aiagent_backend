@@ -218,6 +218,12 @@ const TEXTY_IMAGE_URL_RE =
 	/(logo|poster|banner|cover|keyart|titlecard|thumbnail|thumb|promo|template|vector|watermark|wallpaper)/i;
 const OFF_TOPIC_IMAGE_TITLE_RE =
 	/(stock|wallpaper|logo|poster|banner|cover|keyart|titlecard|thumbnail|thumb|promo|template|vector|illustration|clipart|scene|still|screengrab|trailer|clip)/i;
+
+const SHORTS_WATERMARK_TEXT = "https://serenejannat.com";
+const SHORTS_WATERMARK_OPACITY = 0.55;
+const SHORTS_WATERMARK_MARGIN_PCT = 0.035;
+const SHORTS_WATERMARK_FONT_PCT_PORTRAIT = 0.022;
+const SHORTS_WATERMARK_FONT_PCT_LANDSCAPE = 0.028;
 const TRAILING_COMMA_RE = /,\s*([}\]])/g;
 
 const MAX_SILENCE_PAD = 0.35;
@@ -2305,6 +2311,34 @@ function wrapOverlayText(text = "", frameWidth = 1080, fontSize = 64) {
 	}
 	if (current.length) lines.push(current);
 	return lines.join("\n");
+}
+
+function buildShortsWatermarkFilter(ratio) {
+	const res = targetResolutionForRatio(ratio);
+	const width = res?.width || 1080;
+	const height = res?.height || 1920;
+	const aspect = width / height;
+	const fontFactor =
+		aspect < 1
+			? SHORTS_WATERMARK_FONT_PCT_PORTRAIT
+			: SHORTS_WATERMARK_FONT_PCT_LANDSCAPE;
+	let fontSize = Math.max(18, Math.round(height * fontFactor));
+	const marginX = Math.max(12, Math.round(width * SHORTS_WATERMARK_MARGIN_PCT));
+	const marginY = Math.max(12, Math.round(height * SHORTS_WATERMARK_MARGIN_PCT));
+	const rawText = SHORTS_WATERMARK_TEXT;
+	const text = escapeDrawtext(rawText);
+
+	const maxWidth = Math.max(120, width - marginX * 2);
+	const approxCharWidth = fontSize * 0.56;
+	const approxTextWidth = rawText.length * approxCharWidth;
+	if (approxTextWidth > maxWidth) {
+		const scale = maxWidth / approxTextWidth;
+		fontSize = Math.max(14, Math.floor(fontSize * scale));
+	}
+
+	return `drawtext=fontfile=${FONT_PATH_FFMPEG}:text='${text}':fontsize=${fontSize}:fontcolor=white@${SHORTS_WATERMARK_OPACITY.toFixed(
+		2
+	)}:shadowcolor=black@0.55:shadowx=2:shadowy=2:x=w-text_w-${marginX}:y=h-text_h-${marginY}`;
 }
 
 async function overlayCountdownSlate({
@@ -8429,11 +8463,13 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 			.replace(/[^\w\d]+/g, "_")
 			.replace(/^_+|_+$/g, "");
 		finalPath = tmpFile(safeTitle || "video", ".mp4");
+		const watermarkFilter = buildShortsWatermarkFilter(ratio);
 
 		await ffmpegPromise((c) =>
 			c
 				.input(norm(silentFixed))
 				.input(norm(mixed))
+				.videoFilters(watermarkFilter)
 				.outputOptions(
 					"-map",
 					"0:v",
