@@ -228,6 +228,10 @@ const CANDLE_POSITION_DESC = `centered around ${Math.round(
 const PRESENTER_CANDLE_PROMPT =
 	"small, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it a realistic small tabletop size (about a 4-6 oz jar, not oversized), " +
 	`${CANDLE_SIZE_DESC}; keep it fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge; position it consistently, ${CANDLE_POSITION_DESC}; clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; do not place the lid on the desk; show open wax surface; only one candle; do NOT place on the viewer-left side; keep the candle in the exact same spot across shots.`;
+const PRESENTER_CANDLE_LOCK_PROMPT =
+	"The branded candle already exists in the reference image. Keep it in the exact same position, size, and orientation; do not add, duplicate, move, or resize it. Only one candle.";
+const PRESENTER_DESK_CLEAR_PROMPT =
+	"Desk is clean and uncluttered; no candles, jars, cups, or props on the desk.";
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and closed set; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes (even blurred/bokeh), no reflections of people, no human shapes, no motion behind the presenter; background must be static and free of any human presence.";
 const PRESENTER_WARDROBE_PROMPT =
@@ -885,9 +889,17 @@ function validateCreateBody(body = {}) {
 	const outroSec = clampNumber(DEFAULT_OUTRO_SEC, OUTRO_MIN_SEC, OUTRO_MAX_SEC);
 
 	const presenterAssetUrl = DEFAULT_PRESENTER_ASSET_URL;
-	const voiceId = "";
-	const enableRunwayPresenterMotion = true;
-	const enableWardrobeEdit = ENABLE_WARDROBE_EDIT;
+	const voiceId = String(body.voiceId || "").trim();
+	const voiceoverUrl = String(body.voiceoverUrl || "").trim();
+	const enableRunwayPresenterMotion = Boolean(
+		body.enableRunwayPresenterMotion ||
+			body.allowRunwayVideo ||
+			body.enableRunwayVideo
+	);
+	const enableWardrobeEdit =
+		typeof body.enableWardrobeEdit === "boolean"
+			? body.enableWardrobeEdit
+			: ENABLE_WARDROBE_EDIT;
 	const disableMusic = false;
 
 	return {
@@ -903,7 +915,7 @@ function validateCreateBody(body = {}) {
 			outroSec,
 			output: { ...outRatio, fps, scaleMode, imageScaleMode },
 			presenterAssetUrl,
-			voiceoverUrl: "",
+			voiceoverUrl,
 			voiceId,
 			musicUrl: "",
 			disableMusic,
@@ -2285,6 +2297,108 @@ async function ensureLocalBrandCandleImage(tmpDir, jobId) {
 	return null;
 }
 
+async function probeImageDimensions(filePath) {
+	if (!filePath || !fs.existsSync(filePath)) return null;
+	const info = await probeMedia(filePath);
+	const stream =
+		Array.isArray(info?.streams) &&
+		info.streams.find(
+			(s) =>
+				s.codec_type === "video" &&
+				Number.isFinite(Number(s.width)) &&
+				Number.isFinite(Number(s.height))
+		);
+	if (!stream) return null;
+	const w = Number(stream.width);
+	const h = Number(stream.height);
+	if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0)
+		return null;
+	return { w, h };
+}
+
+async function applyCandleOverlayToImage({
+	baseImagePath,
+	candleImagePath,
+	outputRatio,
+	outPath,
+	jobId,
+}) {
+	if (!ffmpegPath)
+		throw new Error("FFmpeg not found (required for candle overlay)");
+	if (!baseImagePath || !fs.existsSync(baseImagePath))
+		throw new Error("Base image missing for candle overlay");
+	if (!candleImagePath || !fs.existsSync(candleImagePath))
+		throw new Error("Candle image missing for candle overlay");
+
+	const outCfg = parseRatio(outputRatio || DEFAULT_OUTPUT_RATIO);
+	const targetW = makeEven(outCfg.w);
+	const targetH = makeEven(outCfg.h);
+
+	let candleAspect = 1;
+	try {
+		const dims = await probeImageDimensions(candleImagePath);
+		if (dims?.w && dims?.h) candleAspect = dims.h / dims.w;
+	} catch {}
+
+	let candleW = Math.max(8, Math.round(targetW * CANDLE_WIDTH_PCT));
+	let candleH = Math.max(8, Math.round(candleW * candleAspect));
+	const maxCandleH = Math.max(8, Math.round(targetH * CANDLE_HEAD_HEIGHT_PCT));
+	if (candleH > maxCandleH) {
+		candleH = maxCandleH;
+		candleW = Math.max(8, Math.round(candleH / candleAspect));
+	}
+
+	let x = Math.round(targetW * CANDLE_X_PCT - candleW / 2);
+	let y = Math.round(targetH * CANDLE_Y_PCT - candleH / 2);
+
+	const marginX = Math.round(candleW * 2);
+	const marginY = Math.round(candleH * 0.6);
+	const minX = Math.max(0, marginX);
+	const maxX = Math.max(minX, targetW - marginX - candleW);
+	const minY = 0;
+	const maxY = Math.max(minY, targetH - candleH - marginY);
+	x = clampNumber(x, minX, maxX);
+	y = clampNumber(y, minY, maxY);
+
+	const filter = [
+		`[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${targetW}:${targetH},format=rgba[base]`,
+		`[1:v]scale=${candleW}:-1:flags=lanczos,format=rgba[candle]`,
+		`[base][candle]overlay=${Math.round(x)}:${Math.round(
+			y
+		)}:format=auto,format=rgba[out]`,
+	].join(";");
+
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-i",
+			baseImagePath,
+			"-i",
+			candleImagePath,
+			"-filter_complex",
+			filter,
+			"-map",
+			"[out]",
+			"-frames:v",
+			"1",
+			"-y",
+			outPath,
+		],
+		"candle_overlay",
+		{ timeoutMs: 120000 }
+	);
+
+	logJob(jobId, "candle overlay applied", {
+		path: path.basename(outPath),
+		candleW,
+		candleH,
+		x,
+		y,
+	});
+
+	return outPath;
+}
+
 function runwayHeadersJson() {
 	return {
 		Authorization: `Bearer ${RUNWAY_API_KEY}`,
@@ -2586,11 +2700,10 @@ Location: clean desk, tasteful background, soft practical lighting, studio quali
 Background must be static and free of any human shapes or movement.
 Outfit: classy tailored suit or blazer with a neat shirt.
 Lighting: slightly darker cinematic look with a warm key light and gentle shadows (not too dark).
-Add ONE small branded candle on the desk to the presenter's left (viewer-right), near the back-right corner; subtle, classy, and lit; keep it smaller and not centered, fully supported on the desk with a safe margin from the edge (no overhang, at least two candle-widths inboard). No extra candles. If the candle reference has a lid, remove it; no lid anywhere in frame or on the desk.
+Desk: ${PRESENTER_DESK_CLEAR_PROMPT}
 Preserve the original performance timing and micro-expressions (eyebrows, blinks, subtle reactions).
 No text overlays, no extra people, no weird hands, no face warping, no mouth distortion.
 ${SUBTLE_EXPRESSION_NOTE}
-${PRESENTER_CANDLE_PROMPT}
 ${smileLine}
 `.trim();
 }
@@ -2628,8 +2741,8 @@ function buildBaselinePrompt(
 
 	return `
 Photorealistic talking-head video of the SAME person as the reference image.
-Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT} Background is static and locked-off; no moving shapes or people behind the presenter. Keep ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
+Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT} Background is static and locked-off; no moving shapes or people behind the presenter. Keep ${PRESENTER_CANDLE_LOCK_PROMPT}.
+Keep the candle fixed in the same spot, ${CANDLE_POSITION_DESC}; do NOT move, resize, or duplicate it. Do NOT place it in front of the presenter.
 Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present. Keep the label, glass, and color unchanged.
 Flame flickers subtly; candlelight glow shifts naturally.
 If the reference candle has a lid, remove it; no lid visible anywhere in frame or on the desk.
@@ -2666,26 +2779,11 @@ async function createPresenterMasterImage({
 			filename: "person.png",
 		});
 		const refs = [{ uri: personUri, tag: "person" }];
-		if (candleLocalPath && fs.existsSync(candleLocalPath)) {
-			const candleUri = await runwayCreateEphemeralUpload({
-				filePath: candleLocalPath,
-				filename: "candle.jpg",
-			});
-			refs.push({ uri: candleUri, tag: "candle" });
-		}
-
-		const candleLine = candleLocalPath
-			? 'Use the exact branded candle from reference tag "candle" (do not redesign), scale it down to a realistic small tabletop size (about one-third the reference size), and remove any lid or cap so the candle is open; do not show the lid anywhere in frame.'
-			: "Add a small, elegant lit candle with a subtle brand logo (no lid or cap anywhere in frame).";
 
 		const prompt = `
 Edit the PERSON in reference tag "person".
 Keep the SAME identity (face, beard, glasses), SAME studio background, SAME lighting, SAME camera angle. ${STUDIO_EMPTY_PROMPT} Background must be static and free of any human shapes or movement.
-${candleLine}
-Keep the candle logo readable and undistorted.
-Add ${PRESENTER_CANDLE_PROMPT}. Keep the candle small, classy, and clearly on the desk to the presenter's left (viewer-right), not centered.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
-Remove any lid or cap from the candle; do not show the lid anywhere in frame or on the desk. If the reference candle includes a lid, remove it completely.
+Desk: ${PRESENTER_DESK_CLEAR_PROMPT} (Candle will be composited later for consistency.)
 Outfit: ${PRESENTER_WARDROBE_PROMPT}. Make the outfit different than the reference while staying classy.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Expression: calm and friendly with a brief, subtle light smile only (not constant). Mouth relaxed at rest.
@@ -4380,6 +4478,42 @@ async function mp3ToCleanWav(mp3Path, wavPath) {
 	);
 }
 
+async function normalizeWavAudio(inWav, outWav) {
+	const trimLead =
+		"silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB";
+	const trimTail =
+		"areverse,silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB,areverse";
+
+	const af = [
+		`aresample=${AUDIO_SR}`,
+		"aformat=channel_layouts=mono",
+		trimLead,
+		trimTail,
+		"loudnorm=I=-16:TP=-1.5:LRA=11",
+	].join(",");
+
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-y",
+			"-i",
+			inWav,
+			"-vn",
+			"-af",
+			af,
+			"-acodec",
+			"pcm_s16le",
+			"-ar",
+			String(AUDIO_SR),
+			"-ac",
+			String(AUDIO_CHANNELS),
+			outWav,
+		],
+		"wav_normalize",
+		{ timeoutMs: 120000 }
+	);
+}
+
 async function applyGlobalAtempoToWav(inWav, outWav, atempo) {
 	const chain = buildAtempoFilterChain(atempo);
 	await spawnBin(
@@ -5412,10 +5546,8 @@ Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: calm intro delivery with natural, subtle hand movement near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels. Keep the candle as-is (already lit).
-Keep the branded candle from the reference image. Keep the logo readable and undistorted. ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
-Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present.
-If the reference candle has a lid, remove it; no lid visible anywhere in frame.
+Keep the candle exactly as it appears in the reference image. ${PRESENTER_CANDLE_LOCK_PROMPT}
+Keep the candle fixed at ${CANDLE_POSITION_DESC}. If the reference candle has a lid, remove it; no lid visible anywhere in frame.
 Expression: ${introFace}. Calm and neutral, composed and professional with a subtle, light smile (not constant).
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes. Briefly glance toward the open title area, then back to the camera.
@@ -5429,10 +5561,8 @@ Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: small, natural intro gesture near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels. Keep the candle as-is (already lit).
-Keep the branded candle from the reference image. Keep the logo readable and undistorted. ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
-Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present.
-If the reference candle has a lid, remove it; no lid visible anywhere in frame.
+Keep the candle exactly as it appears in the reference image. ${PRESENTER_CANDLE_LOCK_PROMPT}
+Keep the candle fixed at ${CANDLE_POSITION_DESC}. If the reference candle has a lid, remove it; no lid visible anywhere in frame.
 Expression: ${introFace}. Calm and neutral; subtle, light smile only, not constant.
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes.
@@ -6792,7 +6922,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 	try {
 		updateJob(jobId, { status: "running", progressPct: 1 });
 
-		const {
+		let {
 			preferredTopicHint,
 			category,
 			language,
@@ -6810,9 +6940,27 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			youtubeTokenExpiresAt,
 			youtubeCategory,
 		} = payload;
-		const enableRunwayPresenterMotion = true;
-		const enableWardrobeEdit = true;
-		const effectiveVoiceId = String(voiceId || ELEVEN_FIXED_VOICE_ID).trim();
+		const enableRunwayPresenterMotion = Boolean(
+			payload.enableRunwayPresenterMotion
+		);
+		const enableWardrobeEdit =
+			typeof payload.enableWardrobeEdit === "boolean"
+				? payload.enableWardrobeEdit
+				: ENABLE_WARDROBE_EDIT;
+		const effectiveVoiceId = String(ELEVEN_FIXED_VOICE_ID).trim();
+		const suppliedVoiceId = String(voiceId || "").trim();
+		if (suppliedVoiceId && suppliedVoiceId !== effectiveVoiceId) {
+			logJob(jobId, "voiceId ignored (fixed voice enforced)", {
+				suppliedVoiceId: "(provided)",
+			});
+		}
+		const suppliedVoiceoverUrl = String(voiceoverUrl || "").trim();
+		if (suppliedVoiceoverUrl) {
+			logJob(jobId, "voiceoverUrl ignored (fixed voice enforced)", {
+				voiceoverUrl: "(provided)",
+			});
+		}
+		voiceoverUrl = "";
 		const contentTargetSec = Number(targetDurationSec || 0);
 		const categoryLabel =
 			normalizeCategoryLabel(category) || LONG_VIDEO_TRENDS_CATEGORY;
@@ -6842,6 +6990,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			output,
 			presenterAssetUrl: presenterAssetUrl ? "(provided)" : "(none)",
 			hasVoiceoverUrl: Boolean(voiceoverUrl),
+			voiceoverUrlProvided: Boolean(suppliedVoiceoverUrl),
 			hasMusicUrl: Boolean(musicUrl),
 			hasCseKeys: Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY),
 			hasRunway: Boolean(RUNWAY_API_KEY),
@@ -6931,6 +7080,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			tmpDir,
 			jobId
 		);
+		let presenterVideoLocal = presenterLocal;
 		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
 		const candleLocalPath = await ensureLocalBrandCandleImage(tmpDir, jobId);
 		const detected = detectFileType(presenterLocal);
@@ -6947,7 +7097,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			brandCandlePath: candleLocalPath ? path.basename(candleLocalPath) : null,
 		});
 
-		// 3) Recreate presenter with candle + wardrobe (mandatory)
+		// 3) Recreate presenter (wardrobe), then add a deterministic candle overlay
 		presenterLocal = await createPresenterMasterImage({
 			jobId,
 			presenterLocalPath: presenterLocal,
@@ -6955,10 +7105,28 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			candleLocalPath,
 		});
 		const masterDetected = detectFileType(presenterLocal);
-		presenterIsVideo = masterDetected?.kind === "video";
-		presenterIsImage = masterDetected?.kind === "image";
-		if (!presenterIsImage)
+		if (masterDetected?.kind !== "image")
 			throw new Error("Presenter master image is invalid or not an image");
+
+		presenterVideoLocal = presenterLocal;
+		if (candleLocalPath && fs.existsSync(candleLocalPath)) {
+			const candleOut = path.join(
+				tmpDir,
+				`presenter_master_candle_${jobId}.png`
+			);
+			presenterVideoLocal = await applyCandleOverlayToImage({
+				baseImagePath: presenterLocal,
+				candleImagePath: candleLocalPath,
+				outputRatio: output.ratio,
+				outPath: candleOut,
+				jobId,
+			});
+		}
+		const videoDetected = detectFileType(presenterVideoLocal);
+		presenterIsVideo = videoDetected?.kind === "video";
+		presenterIsImage = videoDetected?.kind === "image";
+		if (!presenterIsImage)
+			throw new Error("Presenter video image is invalid or not an image");
 
 		updateJob(jobId, { progressPct: 12 });
 
@@ -7267,18 +7435,134 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				);
 				safeUnlink(voicePath);
 
-				// naive equal split by expected segment durations
 				const totalVoiceDur = await probeDurationSeconds(voiceWav);
-				const per = totalVoiceDur / segments.length;
+				const expectedContentDur = Number(narrationTargetSec) || 0;
+				const expectedTotalDur =
+					Number(introDurationSec || 0) +
+					Number(narrationTargetSec || 0) +
+					Number(outroDurationSec || 0);
+				const diffContent = Math.abs(totalVoiceDur - expectedContentDur);
+				const diffTotal = Math.abs(totalVoiceDur - expectedTotalDur);
+				const fullToleranceSec = Math.max(2.5, expectedTotalDur * 0.12);
+				let voiceoverScope =
+					diffTotal <= diffContent && diffTotal <= fullToleranceSec
+						? "full"
+						: "content";
+				let voiceWavForSegments = voiceWav;
+
+				if (voiceoverScope === "full") {
+					const paceScale =
+						expectedTotalDur > 0 ? totalVoiceDur / expectedTotalDur : 1;
+					const introVoiceDur = Math.max(
+						0.2,
+						Number(introDurationSec || 0) * paceScale
+					);
+					const outroVoiceDur = Math.max(
+						0.2,
+						Number(outroDurationSec || 0) * paceScale
+					);
+					const contentVoiceDur = Math.max(
+						0,
+						totalVoiceDur - introVoiceDur - outroVoiceDur
+					);
+
+					if (contentVoiceDur >= 1) {
+						const sliceWav = async (startSec, durSec, outPath, label) => {
+							await spawnBin(
+								ffmpegPath,
+								[
+									"-i",
+									voiceWav,
+									"-ss",
+									Number(startSec || 0).toFixed(3),
+									"-t",
+									Number(durSec || 0).toFixed(3),
+									"-vn",
+									"-acodec",
+									"pcm_s16le",
+									"-ar",
+									String(AUDIO_SR),
+									"-ac",
+									String(AUDIO_CHANNELS),
+									"-y",
+									outPath,
+								],
+								label,
+								{ timeoutMs: 120000 }
+							);
+						};
+
+						const introOut = path.join(tmpDir, `voice_intro_${jobId}.wav`);
+						const contentOut = path.join(tmpDir, `voice_content_${jobId}.wav`);
+						const outroOut = path.join(tmpDir, `voice_outro_${jobId}.wav`);
+						await sliceWav(0, introVoiceDur, introOut, "split_voiceover_intro");
+						await sliceWav(
+							introVoiceDur,
+							contentVoiceDur,
+							contentOut,
+							"split_voiceover_content"
+						);
+						await sliceWav(
+							introVoiceDur + contentVoiceDur,
+							outroVoiceDur,
+							outroOut,
+							"split_voiceover_outro"
+						);
+
+						safeUnlink(introAudioPath);
+						safeUnlink(outroAudioPath);
+						introAudioPath = introOut;
+						outroAudioPath = outroOut;
+						voiceWavForSegments = contentOut;
+
+						const introDurActual = await probeDurationSeconds(introAudioPath);
+						if (Number.isFinite(introDurActual) && introDurActual > 0)
+							introDurationSec = introDurActual;
+						const outroDurActual = await probeDurationSeconds(outroAudioPath);
+						if (Number.isFinite(outroDurActual) && outroDurActual > 0)
+							outroDurationSec = outroDurActual;
+
+						logJob(jobId, "voiceover scope", {
+							scope: "full",
+							totalVoiceDur: Number(totalVoiceDur.toFixed(3)),
+							introDurationSec: Number(introDurationSec.toFixed(3)),
+							outroDurationSec: Number(outroDurationSec.toFixed(3)),
+							contentVoiceDur: Number(contentVoiceDur.toFixed(3)),
+						});
+					} else {
+						voiceoverScope = "content";
+					}
+				}
+
+				if (voiceoverScope === "content") {
+					logJob(jobId, "voiceover scope", {
+						scope: "content",
+						totalVoiceDur: Number(totalVoiceDur.toFixed(3)),
+					});
+					try {
+						const norm = path.join(tmpDir, `voice_${jobId}_norm.wav`);
+						await normalizeWavAudio(voiceWav, norm);
+						safeUnlink(voiceWav);
+						voiceWavForSegments = norm;
+					} catch (e) {
+						logJob(jobId, "voiceover normalize failed (ignored)", {
+							error: e.message,
+						});
+						voiceWavForSegments = voiceWav;
+					}
+				}
+
+				const totalSegDur = await probeDurationSeconds(voiceWavForSegments);
+				const per = totalSegDur / segments.length;
 				for (let i = 0; i < segments.length; i++) {
 					const start = i * per;
-					const dur = i === segments.length - 1 ? totalVoiceDur - start : per;
+					const dur = i === segments.length - 1 ? totalSegDur - start : per;
 					const out = path.join(tmpDir, `vo_clean_${jobId}_${i}.wav`);
 					await spawnBin(
 						ffmpegPath,
 						[
 							"-i",
-							voiceWav,
+							voiceWavForSegments,
 							"-ss",
 							start.toFixed(3),
 							"-t",
@@ -7300,6 +7584,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					cleanedWavs.push({ index: i, wav: out, cleanDur: d });
 					sumCleanDur += d;
 				}
+				if (voiceWavForSegments && voiceWavForSegments !== voiceWav)
+					safeUnlink(voiceWavForSegments);
 				safeUnlink(voiceWav);
 			} else {
 				logJob(jobId, "eleven voice locked", {
@@ -7712,7 +7998,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			expressionsNeeded.unshift("neutral");
 
 		if (presenterIsVideo) {
-			pushBaselineVariant("neutral", presenterLocal);
+			pushBaselineVariant("neutral", presenterVideoLocal);
 			logJob(jobId, "presenter is video; baseline uses provided video");
 		} else if (
 			enableRunwayPresenterMotion &&
@@ -7723,7 +8009,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				for (let v = 0; v < BASELINE_VARIANTS; v++) {
 					try {
 						const runwayUri = await runwayCreateEphemeralUpload({
-							filePath: presenterLocal,
+							filePath: presenterVideoLocal,
 							filename: `presenter_${expr}.png`,
 						});
 						const prompt = buildBaselinePrompt(expr, motionRefVideo, v);
@@ -7818,7 +8104,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					"-loop",
 					"1",
 					"-i",
-					presenterLocal,
+					presenterVideoLocal,
 					"-t",
 					BASELINE_DUR_SEC.toFixed(3),
 					"-an",
