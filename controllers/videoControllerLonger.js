@@ -5612,7 +5612,9 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
 	);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
-	const textYExpr = `min(h-text_h, max(0, (h-text_h)/2 + h*${THUMBNAIL_TEXT_Y_OFFSET_PCT}))`;
+	const textYOffset = Math.round(
+		THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_Y_OFFSET_PCT
+	);
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
@@ -5622,7 +5624,7 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 	];
 	if (safeText) {
 		filters.push(
-			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.5:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=${textYExpr}`
+			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.5:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2+${textYOffset}`
 		);
 	}
 

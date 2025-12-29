@@ -289,14 +289,7 @@ async function downloadUrlToFile(url, outPath) {
 async function extractFrameFromVideo({ videoPath, outPath }) {
 	const ext = path.extname(outPath).toLowerCase();
 	const useJpegQ = ext === ".jpg" || ext === ".jpeg";
-	const args = [
-		"-ss",
-		"0.4",
-		"-i",
-		videoPath,
-		"-frames:v",
-		"1",
-	];
+	const args = ["-ss", "0.4", "-i", videoPath, "-frames:v", "1"];
 	if (useJpegQ) {
 		args.push("-q:v", "2");
 	}
@@ -485,10 +478,7 @@ async function composeThumbnailBase({
 	const overlap = Math.max(0, Math.round(W * PRESENTER_OVERLAP_PCT));
 	let presenterW = Math.max(2, W - leftW + overlap);
 	presenterW = makeEven(Math.min(W, presenterW));
-	const presenterX = Math.max(
-		0,
-		Math.min(W - presenterW, leftW - overlap)
-	);
+	const presenterX = Math.max(0, Math.min(W - presenterW, leftW - overlap));
 
 	const topics = Array.isArray(topicImagePaths)
 		? topicImagePaths.filter(Boolean).slice(0, 2)
