@@ -53,7 +53,7 @@ const child_process = require("child_process");
 const axios = require("axios");
 const dayjs = require("dayjs");
 const { google } = require("googleapis");
-const { OpenAI, toFile } = require("openai");
+const { OpenAI } = require("openai");
 const cloudinary = require("cloudinary").v2;
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
@@ -72,6 +72,11 @@ const {
 	GENERIC_TOPIC_TOKENS,
 	YT_CATEGORY_MAP,
 } = require("../assets/utils");
+const {
+	buildThumbnailPrompt,
+	collectThumbnailInputImages,
+	generateOpenAiThumbnailBase,
+} = require("../assets/thumbnailDesigner");
 
 const ffmpegStatic = require("ffmpeg-static");
 
@@ -261,6 +266,10 @@ const THUMBNAIL_TEXT_BOX_OPACITY = 0.34;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.06;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
+const THUMBNAIL_TOPIC_MAX_IMAGES = clampNumber(2, 1, 4);
+const THUMBNAIL_TOPIC_MIN_EDGE = clampNumber(900, 640, 1400);
+const THUMBNAIL_TOPIC_MIN_BYTES = clampNumber(60000, 20000, 500000);
+const THUMBNAIL_TOPIC_MAX_DOWNLOADS = clampNumber(6, 2, 12);
 const THUMBNAIL_SEED_OFFSET = 913;
 const OPENAI_IMAGE_MODEL = "gpt-image-1";
 const OPENAI_THUMBNAIL_SIZE = "1536x1024";
@@ -5562,42 +5571,6 @@ function buildThumbnailText(title = "") {
 	};
 }
 
-function buildThumbnailPrompt({ title, topics }) {
-	const topicLine = Array.isArray(topics)
-		? topics
-				.map((t) => t.displayTopic || t.topic)
-				.filter(Boolean)
-				.join(" / ")
-		: "";
-	const keywordLine = Array.isArray(topics)
-		? topics
-				.flatMap((t) => (Array.isArray(t.keywords) ? t.keywords : []))
-				.filter(Boolean)
-				.slice(0, 10)
-				.join(", ")
-		: "";
-	const contextRaw = [title, topicLine]
-		.filter(Boolean)
-		.join(" | ")
-		.slice(0, 240);
-	const safeContext =
-		sanitizeThumbnailContext(contextRaw) ||
-		cleanThumbnailText(topicLine || title || "");
-	const safeKeywords =
-		sanitizeThumbnailContext(keywordLine) || cleanThumbnailText(keywordLine);
-	const topicFocus = [safeContext, safeKeywords].filter(Boolean).join(" | ");
-	return `
-Create a YouTube thumbnail image (no text in the image).
-Use the provided person reference; keep identity, face shape, and wardrobe consistent with the studio desk setup and lighting.
-Composition: presenter on the right third, leave clean negative space on the left for headline text.
-Add the branded candle on the desk to the presenter's left (viewer-right), small, realistic, lit, no lid.
-Add subtle, tasteful visual cues related to: ${topicFocus}.
-Style: ultra sharp, clean, premium, high contrast, cinematic studio lighting, shallow depth of field, crisp subject separation.
-Expression: confident, intrigued, camera-ready.
-No logos, no watermarks, no extra people, no extra hands, no distortion, no text.
-`.trim();
-}
-
 async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 	const { text, fontScale } = buildThumbnailText(title);
 	const safeText = escapeDrawtext(text);
@@ -5688,12 +5661,6 @@ function ensureThumbnailFile(filePath, minBytes = THUMBNAIL_MIN_BYTES) {
 	return filePath;
 }
 
-async function toOpenAiFile(filePath) {
-	const buf = fs.readFileSync(filePath);
-	const name = path.basename(filePath);
-	return await toFile(buf, name);
-}
-
 async function extractBestThumbnailFrame({ videoPath, tmpDir, jobId }) {
 	if (!videoPath || !fs.existsSync(videoPath) || !ffmpegPath) return null;
 	const dur = await probeDurationSeconds(videoPath);
@@ -5774,93 +5741,111 @@ async function extractBestThumbnailFrame({ videoPath, tmpDir, jobId }) {
 	return best.path;
 }
 
-function collectThumbnailInputImages({
-	presenterLocalPath,
-	candleLocalPath,
-	baseFramePath,
-}) {
-	const list = [];
-	const add = (p) => {
-		if (!p) return;
-		if (!fs.existsSync(p)) return;
-		const dt = detectFileType(p);
-		if (dt?.kind !== "image") return;
-		if (!list.includes(p)) list.push(p);
+async function probeImageDimensions(filePath) {
+	const info = await probeMedia(filePath);
+	const stream = Array.isArray(info?.streams)
+		? info.streams.find((s) => s.codec_type === "video")
+		: null;
+	return {
+		width: Number(stream?.width || 0),
+		height: Number(stream?.height || 0),
 	};
-	add(baseFramePath);
-	add(presenterLocalPath);
-	add(candleLocalPath);
-	return list;
 }
 
-async function generateOpenAiThumbnailBase({
-	jobId,
+async function collectThumbnailTopicImages({
+	topics = [],
 	tmpDir,
-	prompt,
-	imagePaths = [],
+	jobId,
+	maxImages = THUMBNAIL_TOPIC_MAX_IMAGES,
 }) {
-	if (!process.env.CHATGPT_API_TOKEN) return null;
-	const cleanPrompt = String(prompt || "").trim();
-	if (!cleanPrompt) return null;
+	const target = Math.max(0, Math.floor(maxImages));
+	if (!target) return [];
+	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) {
+		logJob(jobId, "thumbnail topic images skipped (CSE missing)");
+		return [];
+	}
+	const topicList = Array.isArray(topics) ? topics : [];
+	if (!topicList.length) return [];
 
-	const outPath = path.join(tmpDir, `thumb_openai_${jobId}.png`);
-	try {
-		logJob(jobId, "thumbnail openai prompt", {
-			prompt: cleanPrompt.slice(0, 260),
-		});
-		const doRequest = async () => {
-			if (imagePaths.length) {
-				const inputs = [];
-				for (const p of imagePaths) {
-					try {
-						inputs.push(await toOpenAiFile(p));
-					} catch {}
-				}
-				if (inputs.length) {
-					return await openai.images.edit({
-						model: OPENAI_IMAGE_MODEL,
-						image: inputs.length === 1 ? inputs[0] : inputs,
-						prompt: cleanPrompt,
-						size: OPENAI_THUMBNAIL_SIZE,
-						quality: OPENAI_THUMBNAIL_QUALITY,
-						output_format: "png",
-						background: "auto",
-						input_fidelity: OPENAI_THUMBNAIL_INPUT_FIDELITY,
-					});
-				}
-			}
-
-			return await openai.images.generate({
-				model: OPENAI_IMAGE_MODEL,
-				prompt: cleanPrompt,
-				size: OPENAI_THUMBNAIL_SIZE,
-				quality: OPENAI_THUMBNAIL_QUALITY,
-				output_format: "png",
-				background: "auto",
-			});
-		};
-
-		const resp = await withRetries(doRequest, {
-			retries: 1,
-			baseDelayMs: 900,
-			label: "openai_thumbnail",
-		});
-
-		const image = resp?.data?.[0];
-		if (image?.b64_json) {
-			decodeBase64ToFile(image.b64_json, outPath);
-			return outPath;
+	const urls = [];
+	const seen = new Set();
+	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
+	for (const t of topicList) {
+		if (urls.length >= maxUrls) break;
+		const label = t?.displayTopic || t?.topic || "";
+		if (!label) continue;
+		const extraTokens = Array.isArray(t?.keywords) ? t.keywords : [];
+		const hits = await fetchCseImages(label, extraTokens);
+		for (const url of hits) {
+			if (urls.length >= maxUrls) break;
+			if (!url || seen.has(url)) continue;
+			seen.add(url);
+			urls.push(url);
 		}
-		if (image?.url) {
-			await downloadToFile(image.url, outPath, 90000, 2);
-			return outPath;
-		}
-	} catch (e) {
-		logJob(jobId, "thumbnail openai failed", { error: e.message });
-		return null;
 	}
 
-	return null;
+	if (!urls.length) return [];
+
+	const candidates = [];
+	const downloadCount = Math.min(urls.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
+	for (let i = 0; i < downloadCount; i++) {
+		const url = urls[i];
+		const extGuess = path
+			.extname(String(url).split("?")[0] || "")
+			.toLowerCase();
+		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".jpg";
+		const out = path.join(tmpDir, `thumb_topic_${jobId}_${i}${ext}`);
+		try {
+			await downloadToFile(url, out, 25000, 1);
+			const detected = detectFileType(out);
+			if (!detected || detected.kind !== "image") {
+				safeUnlink(out);
+				continue;
+			}
+			const st = fs.statSync(out);
+			if (!st?.size || st.size < 4096) {
+				safeUnlink(out);
+				continue;
+			}
+			const dims = await probeImageDimensions(out);
+			const minEdge = Math.min(dims.width || 0, dims.height || 0);
+			if (minEdge && minEdge < CSE_MIN_IMAGE_SHORT_EDGE) {
+				safeUnlink(out);
+				continue;
+			}
+			candidates.push({
+				path: out,
+				size: st.size,
+				width: dims.width || 0,
+				height: dims.height || 0,
+			});
+		} catch {
+			safeUnlink(out);
+		}
+	}
+
+	if (!candidates.length) return [];
+
+	const preferred = candidates.filter((c) => {
+		const minEdge = Math.min(c.width || 0, c.height || 0);
+		if (minEdge && minEdge < THUMBNAIL_TOPIC_MIN_EDGE) return false;
+		return c.size >= THUMBNAIL_TOPIC_MIN_BYTES;
+	});
+
+	const pickPool = preferred.length ? preferred : candidates;
+	pickPool.sort((a, b) => b.size - a.size);
+	const selected = pickPool.slice(0, target).map((c) => c.path);
+
+	for (const c of candidates) {
+		if (!selected.includes(c.path)) safeUnlink(c.path);
+	}
+
+	logJob(jobId, "thumbnail topic images selected", {
+		count: selected.length,
+		target,
+	});
+
+	return selected;
 }
 
 function assertCloudinaryReady() {
@@ -5901,118 +5886,58 @@ async function createThumbnailImage({
 	candleLocalPath,
 	title,
 	topics,
-	fallbackVideoPath,
+	topicImagePaths = [],
 }) {
-	const prompt = buildThumbnailPrompt({ title, topics });
+	const prompt = buildThumbnailPrompt({
+		title,
+		topics,
+		topicImageCount: Array.isArray(topicImagePaths)
+			? topicImagePaths.length
+			: 0,
+	});
 	const presenterDetected = presenterLocalPath
 		? detectFileType(presenterLocalPath)
 		: null;
 	const presenterImagePath =
 		presenterDetected?.kind === "image" ? presenterLocalPath : null;
-	let bestFramePath = null;
-	if (fallbackVideoPath && fs.existsSync(fallbackVideoPath)) {
-		try {
-			bestFramePath = await extractBestThumbnailFrame({
-				videoPath: fallbackVideoPath,
-				tmpDir,
-				jobId,
-			});
-		} catch {}
-	}
-	const fallbackSource = bestFramePath || presenterImagePath;
-
-	const fallback = async (reason) => {
-		logJob(jobId, "thumbnail fallback", { reason });
-		if (!fallbackSource) throw new Error("thumbnail_base_missing");
-		const finalPath = path.join(tmpDir, `thumb_${jobId}.jpg`);
-		await renderThumbnailOverlay({
-			inputPath: fallbackSource,
-			outputPath: finalPath,
-			title,
-		});
-		return finalPath;
-	};
-
-	if (RUNWAY_API_KEY && presenterImagePath) {
-		try {
-			const personUri = await runwayCreateEphemeralUpload({
-				filePath: presenterImagePath,
-				filename: "thumb_person.png",
-			});
-			const refs = [{ uri: personUri, tag: "person" }];
-			if (candleLocalPath && fs.existsSync(candleLocalPath)) {
-				const candleUri = await runwayCreateEphemeralUpload({
-					filePath: candleLocalPath,
-					filename: "thumb_candle.png",
-				});
-				refs.push({ uri: candleUri, tag: "candle" });
-			}
-
-			logJob(jobId, "thumbnail prompt", {
-				prompt: prompt.slice(0, 260),
-			});
-			const seed = (seedFromJobId(jobId) + THUMBNAIL_SEED_OFFSET) >>> 0;
-			let outUrl = "";
-			try {
-				outUrl = await withRetries(
-					() =>
-						runwayTextToImage({
-							referenceImages: refs,
-							promptText: prompt,
-							ratio: THUMBNAIL_RATIO,
-							seed,
-						}),
-					{ retries: 1, baseDelayMs: 800, label: "runway_thumb_text_to_image" }
-				);
-			} catch (e) {
-				logJob(jobId, "thumbnail runway failed", { error: e.message });
-				outUrl = "";
-			}
-
-			if (outUrl) {
-				const basePath = path.join(tmpDir, `thumb_base_${jobId}.png`);
-				await downloadToFile(outUrl, basePath, 90000, 2);
-				const dt = detectFileType(basePath);
-				if (dt?.kind === "image") {
-					const finalPath = path.join(tmpDir, `thumb_${jobId}.jpg`);
-					await renderThumbnailOverlay({
-						inputPath: basePath,
-						outputPath: finalPath,
-						title,
-					});
-					return finalPath;
-				}
-			}
-		} catch (e) {
-			logJob(jobId, "thumbnail runway error", { error: e.message });
-		}
-	}
+	if (!presenterImagePath)
+		throw new Error("thumbnail_presenter_missing_or_invalid");
 
 	const openAiInputs = collectThumbnailInputImages({
 		presenterLocalPath: presenterImagePath,
 		candleLocalPath,
-		baseFramePath: bestFramePath,
+		topicImagePaths,
 	});
+	if (!openAiInputs.length) throw new Error("thumbnail_inputs_missing");
+
+	logJob(jobId, "thumbnail openai prompt", {
+		prompt: prompt.slice(0, 260),
+		inputs: openAiInputs.length,
+		topicImages: Array.isArray(topicImagePaths) ? topicImagePaths.length : 0,
+	});
+
 	const openAiBase = await generateOpenAiThumbnailBase({
 		jobId,
 		tmpDir,
 		prompt,
 		imagePaths: openAiInputs,
+		openai,
+		model: OPENAI_IMAGE_MODEL,
+		size: OPENAI_THUMBNAIL_SIZE,
+		quality: OPENAI_THUMBNAIL_QUALITY,
+		inputFidelity: OPENAI_THUMBNAIL_INPUT_FIDELITY,
+		log: (msg, extra) => logJob(jobId, msg, extra),
 	});
-	if (openAiBase) {
-		const dt = detectFileType(openAiBase);
-		if (dt?.kind === "image") {
-			const finalPath = path.join(tmpDir, `thumb_${jobId}.jpg`);
-			await renderThumbnailOverlay({
-				inputPath: openAiBase,
-				outputPath: finalPath,
-				title,
-			});
-			return finalPath;
-		}
-	}
+	const dt = detectFileType(openAiBase);
+	if (dt?.kind !== "image") throw new Error("thumbnail_openai_invalid");
 
-	return await fallback("thumbnail_generation_failed");
+	const finalPath = path.join(tmpDir, `thumb_${jobId}.jpg`);
+	await renderThumbnailOverlay({
+		inputPath: openAiBase,
+		outputPath: finalPath,
+		title,
+	});
+	return finalPath;
 }
 
 async function createIntroClip({
@@ -6917,6 +6842,12 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		// 5.5) Thumbnail (early, topic-first) + Cloudinary upload
 		try {
 			const thumbTitle = script.shortTitle || seoMeta?.seoTitle || script.title;
+			const thumbTopicImages = await collectThumbnailTopicImages({
+				topics: topicPicks,
+				tmpDir,
+				jobId,
+				maxImages: THUMBNAIL_TOPIC_MAX_IMAGES,
+			});
 			const thumbTmp = await createThumbnailImage({
 				jobId,
 				tmpDir,
@@ -6924,6 +6855,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				candleLocalPath,
 				title: thumbTitle,
 				topics: topicPicks,
+				topicImagePaths: thumbTopicImages,
 			});
 			ensureThumbnailFile(thumbTmp);
 			let thumbLocalPath = thumbTmp;
