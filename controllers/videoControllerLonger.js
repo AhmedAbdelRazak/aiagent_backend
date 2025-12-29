@@ -72,9 +72,7 @@ const {
 	GENERIC_TOPIC_TOKENS,
 	YT_CATEGORY_MAP,
 } = require("../assets/utils");
-const {
-	generateThumbnailCompositeBase,
-} = require("../assets/thumbnailDesigner");
+const { generateThumbnailPackage } = require("../assets/thumbnailDesigner");
 
 const ffmpegStatic = require("ffmpeg-static");
 
@@ -302,6 +300,9 @@ const THUMBNAIL_TOPIC_MAX_IMAGES = clampNumber(1, 1, 4);
 const THUMBNAIL_TOPIC_MIN_EDGE = clampNumber(900, 640, 1400);
 const THUMBNAIL_TOPIC_MIN_BYTES = clampNumber(60000, 20000, 500000);
 const THUMBNAIL_TOPIC_MAX_DOWNLOADS = clampNumber(6, 2, 12);
+const REQUIRE_THUMBNAIL_TOPIC_IMAGES =
+	String(process.env.REQUIRE_THUMBNAIL_TOPIC_IMAGES ?? "true").toLowerCase() !==
+	"false";
 const THUMBNAIL_SEED_OFFSET = 913;
 const THUMBNAIL_MIN_BYTES = 12000;
 const THUMBNAIL_FRAME_JPEG_Q = 2;
@@ -6184,7 +6185,13 @@ async function collectThumbnailTopicImages({
 		}
 	}
 
-	if (!urls.length) return [];
+	if (!urls.length) {
+		logJob(jobId, "thumbnail topic images none", {
+			reason: "no_urls",
+			target,
+		});
+		return [];
+	}
 
 	const candidates = [];
 	const downloadCount = Math.min(urls.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
@@ -6224,7 +6231,13 @@ async function collectThumbnailTopicImages({
 		}
 	}
 
-	if (!candidates.length) return [];
+	if (!candidates.length) {
+		logJob(jobId, "thumbnail topic images none", {
+			reason: "no_candidates",
+			target,
+		});
+		return [];
+	}
 
 	const preferred = candidates.filter((c) => {
 		const minEdge = Math.min(c.width || 0, c.height || 0);
@@ -7161,7 +7174,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			topicContexts.push({ topic: t.topic, context: ctx });
 			liveContext = liveContext.concat(ctx || []);
 		}
-		const cseImages = [];
 		logJob(jobId, "cse context", {
 			count: liveContext.length,
 			byTopic: topicContexts.map((tc) => ({
@@ -7169,7 +7181,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				count: Array.isArray(tc.context) ? tc.context.length : 0,
 			})),
 		});
-		logJob(jobId, "cse images", { count: cseImages.length });
 		const tonePlan = inferTonePlan({
 			topics: topicPicks,
 			liveContext,
@@ -7223,49 +7234,26 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 
 		// 5.5) Thumbnail (early, topic-first) + Cloudinary upload
 		try {
-			const topicLabel =
-				topicPicks?.[0]?.displayTopic || topicPicks?.[0]?.topic || "";
-			const topicWords = cleanThumbnailText(topicLabel)
-				.split(" ")
-				.filter(Boolean);
-			const shortLabel = script.shortTitle || "";
-			const shortWords = cleanThumbnailText(shortLabel)
-				.split(" ")
-				.filter(Boolean);
-			let thumbTitle = script.shortTitle || seoMeta?.seoTitle || script.title;
-			if (topicWords.length && topicWords.length <= 3) {
-				thumbTitle = topicLabel;
-			} else if (shortWords.length && shortWords.length <= 3) {
-				thumbTitle = shortLabel;
-			}
-			const thumbTopicImages = await collectThumbnailTopicImages({
-				topics: topicPicks,
-				tmpDir,
-				jobId,
-				maxImages: THUMBNAIL_TOPIC_MAX_IMAGES,
-				contextText: script.title || seoMeta?.seoTitle || "",
-				contextItems: topicContexts,
-			});
-			const thumbTmp = await createThumbnailImage({
+			const thumbResult = await generateThumbnailPackage({
 				jobId,
 				tmpDir,
 				presenterLocalPath: presenterBaseLocal,
-				title: thumbTitle,
+				title: script.title,
+				shortTitle: script.shortTitle,
+				seoTitle: seoMeta?.seoTitle,
 				topics: topicPicks,
-				topicImagePaths: thumbTopicImages,
+				openai,
+				log: (msg, extra) => logJob(jobId, msg, extra),
 			});
-			ensureThumbnailFile(thumbTmp);
-			let thumbLocalPath = thumbTmp;
+			let thumbLocalPath = thumbResult.localPath;
 			if (LONG_VIDEO_PERSIST_OUTPUT) {
 				const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
-				fs.copyFileSync(thumbTmp, finalThumb);
-				ensureThumbnailFile(finalThumb);
+				fs.copyFileSync(thumbLocalPath, finalThumb);
 				thumbLocalPath = finalThumb;
 			}
-			const uploaded = await uploadThumbnailToCloudinary(thumbLocalPath, jobId);
 			thumbnailPath = thumbLocalPath;
-			thumbnailUrl = uploaded.url;
-			thumbnailCloudinaryId = uploaded.public_id;
+			thumbnailUrl = thumbResult.url;
+			thumbnailCloudinaryId = thumbResult.publicId;
 			updateJob(jobId, {
 				meta: {
 					...JOBS.get(jobId)?.meta,
@@ -8294,7 +8282,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		// 16.2) Thumbnail (already generated earlier)
 		try {
 			if (!thumbnailPath) throw new Error("thumbnail_missing");
-			ensureThumbnailFile(thumbnailPath);
 			logJob(jobId, "thumbnail ready", {
 				path: path.basename(thumbnailPath),
 			});
