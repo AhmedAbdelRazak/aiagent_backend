@@ -48,8 +48,7 @@ const CANDLE_KEY_MAX_CORNER_DIFF = parseNumber(
 	40
 );
 const CANDLE_TRIM_TOP_PCT = parseNumber(process.env.CANDLE_TRIM_TOP_PCT, 0.12);
-const ENABLE_CANDLE_RESTYLE =
-	String(process.env.ENABLE_CANDLE_RESTYLE || "1") !== "0";
+const ENABLE_CANDLE_RESTYLE = 1;
 const CANDLE_RESTYLE_MODEL =
 	process.env.CANDLE_RESTYLE_MODEL || DEFAULT_IMAGE_MODEL;
 const CANDLE_RESTYLE_SIZE = process.env.CANDLE_RESTYLE_SIZE || "1024x1024";
@@ -477,10 +476,13 @@ function buildWardrobeEditPrompt({ title, topics, categoryLabel }) {
 		`${title || ""} ${topicFocus || ""}`
 	);
 	return `
-Keep everything identical to the reference image, including face, glasses, beard, hairline, skin texture, studio background, desk, and lighting.
+Keep EVERYTHING identical to the reference image (pixel-level match) except the outfit in the masked torso region.
+Face, glasses, beard, hairline, skin texture, eye shape, eye color, eyebrows, ears, and head shape must remain EXACTLY the same.
+Studio background, desk, lighting, color grading, camera angle, framing, and all background objects must remain EXACTLY the same.
 Only change the clothing on the torso area to: ${wardrobe}.
 No tie. No formal suit jacket. Keep it youthful, lively, and fancy-casual.
-Do NOT change facial features or body proportions. Do NOT change the studio or desk.
+Do NOT alter facial features, hair, or body proportions. Do NOT alter the studio, desk, or props.
+If any non-wardrobe area would change, leave it unchanged.
 ${expressionLine}
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 No extra people, no text, no logos.
