@@ -93,7 +93,7 @@ const SORA_MODEL = process.env.SORA_MODEL || "sora-2";
 const SORA_THUMBNAIL_ENABLED =
 	String(process.env.SORA_THUMBNAIL_ENABLED ?? "true").toLowerCase() !==
 	"false";
-const SORA_THUMBNAIL_SECONDS = 4;
+const SORA_THUMBNAIL_SECONDS = "4";
 const SORA_POLL_INTERVAL_MS = 2000;
 const SORA_MAX_POLL_ATTEMPTS = 120;
 const SORA_PROMPT_CHAR_LIMIT = 320;
@@ -1335,7 +1335,7 @@ function escapeDrawtext(s = "") {
 		.replace(/%/g, "\\%")
 		.replace(/\[/g, "\\[")
 		.replace(/\]/g, "\\]")
-		.replace(new RegExp(placeholder, "g"), "\\\\n")
+		.replace(new RegExp(placeholder, "g"), "\\n")
 		.trim();
 }
 
@@ -1364,6 +1364,23 @@ function hardTruncateText(text = "", maxChars = 40) {
 	return t.slice(0, Math.max(0, maxChars)).trimEnd();
 }
 
+const WRAP_AVOID_END_WORDS = new Set([
+	"a",
+	"an",
+	"and",
+	"at",
+	"by",
+	"for",
+	"from",
+	"in",
+	"of",
+	"on",
+	"or",
+	"the",
+	"to",
+	"with",
+]);
+
 function wrapText(text = "", maxCharsPerLine = 36, maxLines = 2) {
 	const words = String(text || "")
 		.trim()
@@ -1391,6 +1408,19 @@ function wrapText(text = "", maxCharsPerLine = 36, maxLines = 2) {
 	}
 
 	if (line) lines.push(line);
+	if (lines.length > 1) {
+		for (let i = 0; i < lines.length - 1; i++) {
+			const parts = lines[i].split(" ").filter(Boolean);
+			if (parts.length < 2) continue;
+			const last = parts[parts.length - 1];
+			if (!WRAP_AVOID_END_WORDS.has(last.toLowerCase())) continue;
+			const combined = `${last} ${lines[i + 1]}`.trim();
+			if (combined.length <= maxCharsPerLine) {
+				lines[i] = parts.slice(0, -1).join(" ");
+				lines[i + 1] = combined;
+			}
+		}
+	}
 	const maxLineLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
 	return {
 		text: lines.join("\n").trim(),
