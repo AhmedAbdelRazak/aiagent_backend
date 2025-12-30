@@ -1559,7 +1559,6 @@ async function fetchCseImages(topic, extraTokens = []) {
 	const minMatches = minImageTokenMatches(matchTokens);
 
 	const candidates = [];
-	const smallCandidates = [];
 	for (const it of items) {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) continue;
