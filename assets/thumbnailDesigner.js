@@ -994,14 +994,14 @@ async function composeThumbnailBase({
 		? topicImagePaths.filter(Boolean).slice(0, 2)
 		: [];
 	const panelCount = topics.length;
-	const panelW = Math.max(1, leftW - margin * 2);
+	const panelW = makeEven(Math.max(2, leftW - margin * 2));
 	const panelH =
 		panelCount > 1
-			? Math.max(1, Math.round((H - margin * 3) / 2))
-			: Math.max(1, H - margin * 2);
+			? makeEven(Math.max(2, Math.round((H - margin * 3) / 2)))
+			: makeEven(Math.max(2, H - margin * 2));
 	const panelBorder = Math.max(4, Math.round(W * 0.004));
-	const panelInnerW = Math.max(1, panelW - panelBorder * 2);
-	const panelInnerH = Math.max(1, panelH - panelBorder * 2);
+	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
+	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
 
 	const inputs = [baseImagePath, presenterImagePath, ...topics];
 	const filters = [];
@@ -1019,7 +1019,7 @@ async function composeThumbnailBase({
 		const panelY =
 			panelCount > 1 ? margin : Math.max(0, Math.round((H - panelH) / 2));
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = "if(gt(ih\\,iw)\\,(ih-oh)*0.18\\,(ih-oh)/2)";
+		const panelCropY = "(ih-oh)/2";
 		filters.push(
 			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel1i]`
 		);
@@ -1034,7 +1034,7 @@ async function composeThumbnailBase({
 		const panel2Idx = 3;
 		const panel2Y = Math.max(0, margin * 2 + panelH);
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = "if(gt(ih\\,iw)\\,(ih-oh)*0.18\\,(ih-oh)/2)";
+		const panelCropY = "(ih-oh)/2";
 		filters.push(
 			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel2i]`
 		);

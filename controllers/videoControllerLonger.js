@@ -54,7 +54,7 @@ const axios = require("axios");
 const dayjs = require("dayjs");
 const { google } = require("googleapis");
 const { OpenAI } = require("openai");
-const cloudinary = require("cloudinary").v2;
+const { generateThumbnailPackage } = require("../assets/thumbnailDesigner");
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
 const {
@@ -72,7 +72,6 @@ const {
 	GENERIC_TOPIC_TOKENS,
 	YT_CATEGORY_MAP,
 } = require("../assets/utils");
-const { generateThumbnailPackage } = require("../assets/thumbnailDesigner");
 
 const ffmpegStatic = require("ffmpeg-static");
 
@@ -89,12 +88,6 @@ try {
  * ------------------------------------------------------------- */
 
 const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
-
-cloudinary.config({
-	cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-	api_key: process.env.CLOUDINARY_API_KEY,
-	api_secret: process.env.CLOUDINARY_API_SECRET,
-});
 
 const CHAT_MODEL = "gpt-5.2";
 const OWNER_ONLY_USER_ID = "683e3a0329b0515ff5f7a1e1";
@@ -251,65 +244,7 @@ const WATERMARK_SHADOW_OPACITY = 0.3;
 const WATERMARK_SHADOW_PX = 2;
 const CSE_PREFERRED_IMG_SIZE = "xlarge";
 const CSE_FALLBACK_IMG_SIZE = "large";
-const CSE_PREFERRED_IMG_COLOR = "color";
-const STRICT_TOPIC_IMAGE_MATCH =
-	String(process.env.STRICT_TOPIC_IMAGE_MATCH ?? "true").toLowerCase() !==
-	"false";
 const CSE_MIN_IMAGE_SHORT_EDGE = 720;
-const WATERMARK_URL_TOKENS = [
-	"gettyimages",
-	"getty",
-	"alamy",
-	"shutterstock",
-	"istock",
-	"istockphoto",
-	"adobestock",
-	"depositphotos",
-	"dreamstime",
-	"123rf",
-	"bigstock",
-	"bigstockphoto",
-	"fotolia",
-	"pond5",
-	"envato",
-	"stockphoto",
-	"stockphotography",
-	"imagebroker",
-	"imago-images",
-	"historicimages",
-	"historic-images",
-	"wireimage",
-	"fdic",
-	"pressphoto",
-	"newscom",
-	"pixelsquid",
-	"watermark",
-];
-const THUMBNAIL_RATIO = "1280:720";
-const THUMBNAIL_WIDTH = 1280;
-const THUMBNAIL_HEIGHT = 720;
-const THUMBNAIL_TEXT_MAX_WORDS = 3;
-const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
-const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.38;
-const THUMBNAIL_TEXT_BOX_OPACITY = 0.28;
-const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
-const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
-const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
-const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.22;
-const THUMBNAIL_TOPIC_MAX_IMAGES = clampNumber(1, 1, 4);
-const THUMBNAIL_TOPIC_MIN_EDGE = clampNumber(900, 640, 1400);
-const THUMBNAIL_TOPIC_MIN_BYTES = clampNumber(60000, 20000, 500000);
-const THUMBNAIL_TOPIC_MAX_DOWNLOADS = clampNumber(6, 2, 12);
-const REQUIRE_THUMBNAIL_TOPIC_IMAGES =
-	String(process.env.REQUIRE_THUMBNAIL_TOPIC_IMAGES ?? "true").toLowerCase() !==
-	"false";
-const THUMBNAIL_SEED_OFFSET = 913;
-const THUMBNAIL_MIN_BYTES = 12000;
-const THUMBNAIL_FRAME_JPEG_Q = 2;
-const THUMBNAIL_FRAME_MIN_SEC = 0.8;
-const THUMBNAIL_FRAME_SAMPLE_PCTS = [0.1, 0.28, 0.46, 0.64, 0.82];
-const THUMBNAIL_CLOUDINARY_FOLDER = "aivideomatic/long_thumbnails";
-const THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX = "long_thumb";
 
 // Intro (seconds)
 const DEFAULT_INTRO_SEC = 3.2;
@@ -806,64 +741,6 @@ async function headContentType(url, timeoutMs = 8000) {
 	}
 }
 
-function parseMetaAttributes(tag = "") {
-	const attrs = {};
-	const re = /([a-zA-Z0-9:_-]+)\s*=\s*["']([^"']+)["']/g;
-	let match = null;
-	while ((match = re.exec(tag))) {
-		const key = String(match[1] || "").toLowerCase();
-		const val = String(match[2] || "").trim();
-		if (key && val) attrs[key] = val;
-	}
-	return attrs;
-}
-
-function extractOpenGraphImage(html = "", baseUrl = "") {
-	const metaTags = String(html || "").match(/<meta[^>]+>/gi) || [];
-	const priority = [
-		"og:image:secure_url",
-		"og:image",
-		"twitter:image:src",
-		"twitter:image",
-	];
-	for (const key of priority) {
-		for (const tag of metaTags) {
-			const attrs = parseMetaAttributes(tag);
-			const prop = attrs.property || attrs.name || "";
-			if (!prop || prop.toLowerCase() !== key) continue;
-			const content = attrs.content || "";
-			if (!content) continue;
-			try {
-				const resolved = new URL(content, baseUrl);
-				if (!/^https?:$/i.test(resolved.protocol)) continue;
-				return resolved.toString();
-			} catch {
-				continue;
-			}
-		}
-	}
-	return "";
-}
-
-async function fetchOpenGraphImageUrl(pageUrl, timeoutMs = 9000) {
-	try {
-		if (!/^https?:\/\//i.test(pageUrl || "")) return null;
-		const res = await axios.get(pageUrl, {
-			timeout: timeoutMs,
-			maxContentLength: 1024 * 1024,
-			maxBodyLength: 1024 * 1024,
-			headers: { "User-Agent": "agentai-long-video/2.0" },
-			validateStatus: (s) => s >= 200 && s < 400,
-		});
-		const html = String(res.data || "");
-		if (!html) return null;
-		const og = extractOpenGraphImage(html, pageUrl);
-		return og || null;
-	} catch {
-		return null;
-	}
-}
-
 /* ---------------------------------------------------------------
  * File type detection
  * ------------------------------------------------------------- */
@@ -1071,63 +948,6 @@ function filterSpecificTopicTokens(tokens = []) {
 	return filtered.length ? filtered : norm;
 }
 
-const CONTEXT_STOP_TOKENS = new Set([
-	...TOPIC_STOP_WORDS,
-	"what",
-	"know",
-	"known",
-	"why",
-	"how",
-	"reports",
-	"report",
-	"reported",
-	"dies",
-	"died",
-	"death",
-	"dead",
-	"age",
-	"aged",
-	"year",
-	"years",
-	"says",
-	"said",
-	"say",
-	"details",
-	"return",
-	"returns",
-	"returning",
-	"back",
-	"revival",
-	"reboot",
-	"comeback",
-	"cast",
-	"watch",
-	"watching",
-	"hulu",
-	"netflix",
-	"prime",
-	"amazon",
-	"disney",
-	"disneyplus",
-	"hbo",
-	"hbomax",
-	"peacock",
-	"paramount",
-	"paramountplus",
-	"apple",
-]);
-
-function filterContextTokens(tokens = []) {
-	const norm = normalizeTopicTokens(tokens);
-	const filtered = norm.filter(
-		(t) =>
-			t.length >= 3 &&
-			!GENERIC_TOPIC_TOKENS.has(t) &&
-			!CONTEXT_STOP_TOKENS.has(t)
-	);
-	return filtered.length ? filtered : [];
-}
-
 function expandTopicTokens(tokens = []) {
 	const base = normalizeTopicTokens(tokens);
 	const out = new Set(base);
@@ -1146,14 +966,6 @@ function minTopicTokenMatches(tokens = []) {
 	return 1;
 }
 
-function minImageTokenMatches(tokens = []) {
-	const norm = normalizeTopicTokens(tokens);
-	if (!norm.length) return 0;
-	if (norm.length >= 4) return 3;
-	if (norm.length >= 2) return 2;
-	return 1;
-}
-
 function topicMatchInfo(tokens = [], fields = []) {
 	const norm = expandTopicTokens(tokens);
 	if (!norm.length) return { count: 0, matchedTokens: [], normTokens: [] };
@@ -1169,46 +981,6 @@ function topicMatchInfo(tokens = [], fields = []) {
 		.join(" ");
 	const matchedTokens = norm.filter((tok) => hay.includes(tok));
 	return { count: matchedTokens.length, matchedTokens, normTokens: norm };
-}
-
-function buildImageMatchCriteria(topic = "", extraTokens = []) {
-	const rawTokens = tokenizeLabel(topic);
-	const baseTokens = topicTokensFromTitle(topic);
-	const wordSource = baseTokens.length >= 2 ? baseTokens : rawTokens;
-	const specificWords = filterSpecificTopicTokens(wordSource);
-	const wordTokens = specificWords.length ? specificWords : wordSource;
-	const phraseToken = rawTokens.length >= 2 ? rawTokens.join(" ") : "";
-	const extra = Array.isArray(extraTokens)
-		? extraTokens.flatMap((t) => tokenizeLabel(t))
-		: [];
-	const wordSet = new Set(normalizeTopicTokens(wordTokens));
-	const contextTokens = filterContextTokens(
-		extra.filter((tok) => !wordSet.has(String(tok).toLowerCase()))
-	);
-	return {
-		wordTokens,
-		phraseToken,
-		contextTokens: contextTokens.slice(0, 6),
-		minWordMatches: minImageTokenMatches(wordTokens),
-	};
-}
-
-function buildImageMatchCriteriaForQuery(query = "", topicTokens = []) {
-	const topicNorm = normalizeTopicTokens(topicTokens);
-	const specific = filterSpecificTopicTokens(topicNorm);
-	const wordTokens = specific.length ? specific : topicNorm;
-	const phraseToken = topicNorm.length >= 2 ? topicNorm.join(" ") : "";
-	const extra = tokenizeLabel(query);
-	const wordSet = new Set(wordTokens);
-	const contextTokens = filterContextTokens(
-		extra.filter((tok) => !wordSet.has(String(tok).toLowerCase()))
-	);
-	return {
-		wordTokens,
-		phraseToken,
-		contextTokens: contextTokens.slice(0, 6),
-		minWordMatches: minImageTokenMatches(wordTokens),
-	};
 }
 
 function cleanTopicCandidate(title = "") {
@@ -1399,7 +1171,7 @@ async function fetchTrendsStories({
 
 async function fetchCseItems(
 	queries,
-	{ num = 4, searchType = null, imgSize = null, imgColorType = null } = {}
+	{ num = 4, searchType = null, imgSize = null } = {}
 ) {
 	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
 	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
@@ -1424,7 +1196,6 @@ async function fetchCseItems(
 						? {
 								imgType: "photo",
 								imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
-								...(imgColorType ? { imgColorType } : {}),
 						  }
 						: {}),
 				},
@@ -1456,11 +1227,6 @@ async function fetchCseItems(
 		}
 	}
 	return results;
-}
-
-function isLikelyWatermarkedSource(url = "", contextLink = "") {
-	const hay = `${url} ${contextLink}`.toLowerCase();
-	return WATERMARK_URL_TOKENS.some((token) => hay.includes(token));
 }
 
 async function pickTrendingTopicFromCse() {
@@ -1672,26 +1438,14 @@ async function selectTopics({
 		if (!story?.topic) continue;
 		if (isDuplicateTopic(story.topic, topics, usedSet)) continue;
 		const displayTopic = cleanTopicLabel(story.topic) || story.topic;
-		const storyKeywords = uniqueStrings(
-			[
-				story.topic,
-				story.rawTitle || "",
-				...(story.keywords || []),
-				...(story.searchPhrases || []),
-				...(story.articles || []).map((a) => a.title),
-			],
-			{ limit: 12 }
-		);
 		topics.push({
 			topic: story.topic,
 			displayTopic,
 			angle: "",
 			reason: "Google Trends",
-			keywords: storyKeywords.length
-				? storyKeywords
-				: topicTokensFromTitle(story.topic)
-						.concat(topicTokensFromTitle(story.rawTitle || ""))
-						.slice(0, 10),
+			keywords: topicTokensFromTitle(story.topic)
+				.concat(topicTokensFromTitle(story.rawTitle || ""))
+				.slice(0, 10),
 			trendStory: story,
 		});
 		addUsedTopicVariants(usedSet, story.topic);
@@ -1807,32 +1561,6 @@ async function fetchCseImages(topic, extraTokens = []) {
 		: [];
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
-	const criteria = buildImageMatchCriteria(topic, extraTokens);
-	const rawTokenCount = tokenizeLabel(topic).length;
-	const requireContext =
-		STRICT_TOPIC_IMAGE_MATCH &&
-		criteria.contextTokens.length > 0 &&
-		rawTokenCount <= 3;
-	const topicLower = String(topic || "").toLowerCase();
-	const contextPhrases = uniqueStrings(
-		Array.isArray(extraTokens) ? extraTokens : [],
-		{ limit: 6 }
-	)
-		.map((p) => sanitizeOverlayQuery(p))
-		.filter((p) => p && p.length <= 42 && !p.toLowerCase().includes(topicLower))
-		.slice(0, 2);
-	const contextHint = criteria.contextTokens.slice(0, 2).join(" ");
-	const contextQueries = [];
-	if (contextHint) {
-		contextQueries.push(
-			`${topic} ${contextHint} photo`,
-			`${topic} ${contextHint} press photo`,
-			`${topic} ${contextHint} still`
-		);
-	}
-	for (const phrase of contextPhrases) {
-		contextQueries.push(`${topic} ${phrase} photo`);
-	}
 
 	const queries = [
 		`${topic} press photo`,
@@ -1865,48 +1593,13 @@ async function fetchCseImages(topic, extraTokens = []) {
 		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
 	}
 
-	const searchQueries = contextQueries.length
-		? [...contextQueries, ...queries]
-		: queries;
-	let items = await fetchCseItems(searchQueries, {
+	let items = await fetchCseItems(queries, {
 		num: 8,
 		searchType: "image",
 		imgSize: CSE_PREFERRED_IMG_SIZE,
-		imgColorType: CSE_PREFERRED_IMG_COLOR,
 	});
 	if (!items.length) {
-		items = await fetchCseItems(searchQueries, {
-			num: 8,
-			searchType: "image",
-			imgSize: CSE_FALLBACK_IMG_SIZE,
-			imgColorType: CSE_PREFERRED_IMG_COLOR,
-		});
-	}
-	if (!items.length) {
-		items = await fetchCseItems(fallbackQueries, {
-			num: 8,
-			searchType: "image",
-			imgSize: CSE_PREFERRED_IMG_SIZE,
-			imgColorType: CSE_PREFERRED_IMG_COLOR,
-		});
-	}
-	if (!items.length) {
-		items = await fetchCseItems(fallbackQueries, {
-			num: 8,
-			searchType: "image",
-			imgSize: CSE_FALLBACK_IMG_SIZE,
-			imgColorType: CSE_PREFERRED_IMG_COLOR,
-		});
-	}
-	if (!items.length) {
-		items = await fetchCseItems(searchQueries, {
-			num: 8,
-			searchType: "image",
-			imgSize: CSE_PREFERRED_IMG_SIZE,
-		});
-	}
-	if (!items.length) {
-		items = await fetchCseItems(searchQueries, {
+		items = await fetchCseItems(queries, {
 			num: 8,
 			searchType: "image",
 			imgSize: CSE_FALLBACK_IMG_SIZE,
@@ -1926,47 +1619,30 @@ async function fetchCseImages(topic, extraTokens = []) {
 			imgSize: CSE_FALLBACK_IMG_SIZE,
 		});
 	}
+	const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
+	const minMatches = minTopicTokenMatches(matchTokens);
+
 	const candidates = [];
 	for (const it of items) {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) continue;
-		const contextLink = it.image?.contextLink || "";
-		if (isLikelyWatermarkedSource(url, contextLink)) continue;
-		const fields = [it.title, it.snippet, it.link, contextLink];
-		const info = topicMatchInfo(criteria.wordTokens, fields);
-		const phraseTokens = [];
-		if (criteria.phraseToken) {
-			phraseTokens.push(criteria.phraseToken);
-			const compact = criteria.phraseToken.replace(/\s+/g, "");
-			if (compact && compact !== criteria.phraseToken)
-				phraseTokens.push(compact);
-		}
-		const phraseInfo = phraseTokens.length
-			? topicMatchInfo(phraseTokens, fields)
-			: { count: 0 };
-		const hasPhrase = phraseInfo.count >= 1;
-		const hasWordMatch = info.count >= criteria.minWordMatches;
-		const requirePhrase = rawTokenCount <= 2 && Boolean(criteria.phraseToken);
-		if (requirePhrase) {
-			if (!hasPhrase) continue;
-		} else if (!hasPhrase && !hasWordMatch) {
-			continue;
-		}
-		if (requireContext) {
-			const ctx = topicMatchInfo(criteria.contextTokens, fields);
-			if (ctx.count < 1) continue;
-		}
+		const info = topicMatchInfo(matchTokens, [
+			it.title,
+			it.snippet,
+			it.link,
+			it.image?.contextLink || "",
+		]);
+		if (info.count < minMatches) continue;
 		const w = Number(it.image?.width || 0);
 		const h = Number(it.image?.height || 0);
 		if (w && h && Math.min(w, h) < CSE_MIN_IMAGE_SHORT_EDGE) continue;
 		const urlText = `${it.link || ""} ${
 			it.image?.contextLink || ""
 		}`.toLowerCase();
-		const urlMatches = criteria.wordTokens.filter((tok) =>
+		const urlMatches = matchTokens.filter((tok) =>
 			urlText.includes(tok)
 		).length;
-		const phraseBoost = phraseInfo.count ? 1.5 : 0;
-		const score = info.count + urlMatches * 0.75 + phraseBoost;
+		const score = info.count + urlMatches * 0.75;
 		candidates.push({ url, score, urlMatches, w, h });
 		if (candidates.length >= 14) break;
 	}
@@ -1978,7 +1654,7 @@ async function fetchCseImages(topic, extraTokens = []) {
 	});
 
 	let pool = candidates;
-	if (criteria.wordTokens.length >= 2) {
+	if (matchTokens.length >= 2) {
 		const strict = candidates.filter((c) => c.urlMatches >= 1);
 		if (strict.length) {
 			const relaxed = candidates.filter((c) => c.urlMatches < 1);
@@ -1993,11 +1669,7 @@ async function fetchCseImages(topic, extraTokens = []) {
 		seen.add(c.url);
 		if (!isProbablyDirectImageUrl(c.url)) continue;
 		const ct = await headContentType(c.url, 7000);
-		if (ct) {
-			if (!ct.startsWith("image/")) continue;
-		} else if (!isProbablyDirectImageUrl(c.url)) {
-			continue;
-		}
+		if (ct && !ct.startsWith("image/")) continue;
 		filtered.push(c.url);
 		if (filtered.length >= 6) break;
 	}
@@ -2038,33 +1710,15 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 	const q = sanitizeOverlayQuery(query);
 	if (!q) return [];
 	const target = clampNumber(Number(maxResults) || 4, 1, 12);
-	const criteria = buildImageMatchCriteriaForQuery(q, topicTokens);
-	const queryTokenCount = tokenizeLabel(q).length;
-	const requireContext =
-		STRICT_TOPIC_IMAGE_MATCH &&
-		criteria.contextTokens.length > 0 &&
-		queryTokenCount <= 3;
+	const tokens = expandTopicTokens(
+		filterSpecificTopicTokens([...tokenizeLabel(q), ...topicTokens])
+	);
+	const minMatches = minTopicTokenMatches(tokens);
 	let items = await fetchCseItems([q], {
 		num: Math.min(10, Math.max(8, target * 2)),
 		searchType: "image",
 		imgSize: CSE_PREFERRED_IMG_SIZE,
-		imgColorType: CSE_PREFERRED_IMG_COLOR,
 	});
-	if (!items.length) {
-		items = await fetchCseItems([q], {
-			num: Math.min(10, Math.max(8, target * 2)),
-			searchType: "image",
-			imgSize: CSE_FALLBACK_IMG_SIZE,
-			imgColorType: CSE_PREFERRED_IMG_COLOR,
-		});
-	}
-	if (!items.length) {
-		items = await fetchCseItems([q], {
-			num: Math.min(10, Math.max(8, target * 2)),
-			searchType: "image",
-			imgSize: CSE_PREFERRED_IMG_SIZE,
-		});
-	}
 	if (!items.length) {
 		items = await fetchCseItems([q], {
 			num: Math.min(10, Math.max(8, target * 2)),
@@ -2078,43 +1732,21 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 	for (const it of items) {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) continue;
-		const contextLink = it.image?.contextLink || "";
-		if (isLikelyWatermarkedSource(url, contextLink)) continue;
-		const fields = [it.title, it.snippet, it.link, contextLink];
-		const info = topicMatchInfo(criteria.wordTokens, fields);
-		const phraseTokens = [];
-		if (criteria.phraseToken) {
-			phraseTokens.push(criteria.phraseToken);
-			const compact = criteria.phraseToken.replace(/\s+/g, "");
-			if (compact && compact !== criteria.phraseToken)
-				phraseTokens.push(compact);
-		}
-		const phraseInfo = phraseTokens.length
-			? topicMatchInfo(phraseTokens, fields)
-			: { count: 0 };
-		const hasPhrase = phraseInfo.count >= 1;
-		const hasWordMatch = info.count >= criteria.minWordMatches;
-		const requirePhrase = queryTokenCount <= 2 && Boolean(criteria.phraseToken);
-		if (requirePhrase) {
-			if (!hasPhrase) continue;
-		} else if (!hasPhrase && !hasWordMatch) {
-			continue;
-		}
-		if (requireContext) {
-			const ctx = topicMatchInfo(criteria.contextTokens, fields);
-			if (ctx.count < 1) continue;
-		}
+		const info = topicMatchInfo(tokens, [
+			it.title,
+			it.snippet,
+			it.link,
+			it.image?.contextLink || "",
+		]);
+		if (info.count < minMatches) continue;
 		const w = Number(it.image?.width || 0);
 		const h = Number(it.image?.height || 0);
 		if (w && h && Math.min(w, h) < CSE_MIN_IMAGE_SHORT_EDGE) continue;
 		const urlText = `${it.link || ""} ${
 			it.image?.contextLink || ""
 		}`.toLowerCase();
-		const urlMatches = criteria.wordTokens.filter((tok) =>
-			urlText.includes(tok)
-		).length;
-		const phraseBoost = phraseInfo.count ? 1.5 : 0;
-		const score = info.count + urlMatches * 0.75 + phraseBoost;
+		const urlMatches = tokens.filter((tok) => urlText.includes(tok)).length;
+		const score = info.count + urlMatches * 0.75;
 		candidates.push({ url, score, urlMatches, w, h });
 		if (candidates.length >= maxCandidates) break;
 	}
@@ -2126,7 +1758,7 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 	});
 
 	let pool = candidates;
-	if (criteria.wordTokens.length >= 2) {
+	if (tokens.length >= 2) {
 		const strict = candidates.filter((c) => c.urlMatches >= 1);
 		if (strict.length) {
 			const relaxed = candidates.filter((c) => c.urlMatches < 1);
@@ -2141,11 +1773,7 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 		seen.add(c.url);
 		if (!isProbablyDirectImageUrl(c.url)) continue;
 		const ct = await headContentType(c.url, 7000);
-		if (ct) {
-			if (!ct.startsWith("image/")) continue;
-		} else if (!isProbablyDirectImageUrl(c.url)) {
-			continue;
-		}
+		if (ct && !ct.startsWith("image/")) continue;
 		filtered.push(c.url);
 		if (filtered.length >= target) break;
 	}
@@ -5685,7 +5313,7 @@ function escapeDrawtext(s = "") {
 		.replace(/%/g, "\\%")
 		.replace(/\[/g, "\\[")
 		.replace(/\]/g, "\\]")
-		.replace(new RegExp(placeholder, "g"), "\\\\n")
+		.replace(new RegExp(placeholder, "g"), "\\n")
 		.trim();
 }
 
@@ -5711,30 +5339,6 @@ const WATERMARK_FONT_FILE = resolveWatermarkFontFile();
 if (!WATERMARK_FONT_FILE) {
 	console.warn(
 		"[LongVideo] WARN - Watermark font not found. Falling back to default drawtext font."
-	);
-}
-
-function resolveThumbnailFontFile() {
-	const candidates = [
-		"C:/Windows/Fonts/impact.ttf",
-		"C:/Windows/Fonts/arialbd.ttf",
-		"C:/Windows/Fonts/arialblack.ttf",
-		"C:/Windows/Fonts/arial.ttf",
-		"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-		"/Library/Fonts/Arial Bold.ttf",
-	];
-	for (const p of candidates) {
-		try {
-			if (p && fs.existsSync(p)) return p;
-		} catch {}
-	}
-	return resolveFontFile();
-}
-
-const THUMBNAIL_FONT_FILE = resolveThumbnailFontFile();
-if (!THUMBNAIL_FONT_FILE) {
-	console.warn(
-		"[LongVideo] WARN - Thumbnail font not found. Falling back to default drawtext font."
 	);
 }
 
@@ -5849,489 +5453,6 @@ function fitIntroText(
 	}
 
 	return { text: wrap.text, fontScale, lines: wrap.lines, truncated };
-}
-
-function cleanThumbnailText(text = "") {
-	return String(text || "")
-		.replace(/([a-z])([A-Z])/g, "$1 $2")
-		.replace(/["'`]/g, "")
-		.replace(/[^a-z0-9\s]/gi, " ")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
-function titleCaseIfLower(text = "") {
-	const cleaned = String(text || "").trim();
-	if (!cleaned) return "";
-	if (/[A-Z]/.test(cleaned)) return cleaned;
-	return cleaned.replace(/\b[a-z]/g, (m) => m.toUpperCase());
-}
-
-function sanitizeThumbnailContext(text = "") {
-	const banned = [
-		"death",
-		"dead",
-		"died",
-		"dies",
-		"killed",
-		"shooting",
-		"murder",
-		"suicide",
-		"funeral",
-		"tragedy",
-		"tragic",
-		"memorial",
-		"accident",
-		"crash",
-		"assault",
-		"abuse",
-		"lawsuit",
-		"arrest",
-		"charged",
-		"trial",
-		"court",
-		"injury",
-		"hospital",
-	];
-	let cleaned = String(text || "");
-	for (const word of banned) {
-		cleaned = cleaned.replace(new RegExp(`\\b${word}\\b`, "gi"), "");
-	}
-	return cleaned.replace(/\s+/g, " ").trim();
-}
-
-function buildThumbnailText(title = "") {
-	const cleaned = cleanThumbnailText(title);
-	if (!cleaned) return { text: "", fontScale: 1 };
-	const pretty = titleCaseIfLower(cleaned);
-	const words = pretty.split(" ").filter(Boolean);
-	const trimmedWords = words.slice(0, THUMBNAIL_TEXT_MAX_WORDS);
-	const trimmed = trimmedWords.join(" ");
-	const baseChars = Math.max(THUMBNAIL_TEXT_BASE_MAX_CHARS, 14);
-	const fit = fitIntroText(trimmed, {
-		baseMaxChars: baseChars,
-		preferLines: 1,
-		maxLines: 1,
-	});
-	return {
-		text: fit.text || trimmed,
-		fontScale: fit.fontScale || 1,
-	};
-}
-
-async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
-	const { text, fontScale } = buildThumbnailText(title);
-	const safeText = escapeDrawtext(text);
-	const fontFile = THUMBNAIL_FONT_FILE
-		? `:fontfile='${escapeDrawtext(THUMBNAIL_FONT_FILE)}'`
-		: "";
-	const fontSize = Math.max(
-		42,
-		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
-	);
-	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
-	const textYOffset = Math.round(
-		THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_Y_OFFSET_PCT
-	);
-
-	const filters = [
-		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
-		"eq=contrast=1.08:saturation=1.12:brightness=0.02",
-		"unsharp=5:5:0.8",
-		`drawbox=x=0:y=0:w=iw*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:h=ih:color=black@${THUMBNAIL_TEXT_BOX_OPACITY}:t=fill`,
-	];
-	if (safeText) {
-		filters.push(
-			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.5:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2+${textYOffset}`
-		);
-	}
-
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-i",
-			inputPath,
-			"-vf",
-			filters.join(","),
-			"-frames:v",
-			"1",
-			"-q:v",
-			"2",
-			"-y",
-			outputPath,
-		],
-		"thumbnail_render",
-		{ timeoutMs: 180000 }
-	);
-
-	return outputPath;
-}
-
-async function extractThumbnailFrame({ videoPath, outPath }) {
-	if (!videoPath || !fs.existsSync(videoPath) || !ffmpegPath) return null;
-	const dur = await probeDurationSeconds(videoPath);
-	const safeDur = Number.isFinite(dur) && dur > 1 ? dur : 2.5;
-	const seek = Math.max(0.5, Math.min(safeDur * 0.25, safeDur - 0.5));
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-ss",
-			seek.toFixed(3),
-			"-i",
-			videoPath,
-			"-frames:v",
-			"1",
-			"-q:v",
-			"2",
-			"-y",
-			outPath,
-		],
-		"thumbnail_frame",
-		{ timeoutMs: 120000 }
-	);
-	const dt = detectFileType(outPath);
-	return dt?.kind === "image" ? outPath : null;
-}
-
-function decodeBase64ToFile(b64, outPath) {
-	if (!b64) throw new Error("missing image data");
-	const buf = Buffer.from(String(b64), "base64");
-	if (!buf || !buf.length) throw new Error("empty image buffer");
-	ensureDir(path.dirname(outPath));
-	fs.writeFileSync(outPath, buf);
-	return outPath;
-}
-
-function ensureThumbnailFile(filePath, minBytes = THUMBNAIL_MIN_BYTES) {
-	if (!filePath || !fs.existsSync(filePath))
-		throw new Error("thumbnail_missing");
-	const st = fs.statSync(filePath);
-	if (!st || st.size < minBytes) throw new Error("thumbnail_too_small");
-	const dt = detectFileType(filePath);
-	if (!dt || dt.kind !== "image") throw new Error("thumbnail_invalid");
-	return filePath;
-}
-
-async function extractBestThumbnailFrame({ videoPath, tmpDir, jobId }) {
-	if (!videoPath || !fs.existsSync(videoPath) || !ffmpegPath) return null;
-	const dur = await probeDurationSeconds(videoPath);
-	const safeDur = Number.isFinite(dur) && dur > 1 ? dur : 2.5;
-	const minSec = Math.max(
-		0.4,
-		Math.min(THUMBNAIL_FRAME_MIN_SEC, safeDur - 0.4)
-	);
-	const maxSec = Math.max(minSec, safeDur - 0.4);
-	const pcts =
-		Array.isArray(THUMBNAIL_FRAME_SAMPLE_PCTS) &&
-		THUMBNAIL_FRAME_SAMPLE_PCTS.length
-			? THUMBNAIL_FRAME_SAMPLE_PCTS
-			: [0.25, 0.5, 0.75];
-	const times = Array.from(
-		new Set(
-			pcts.map((pct) => {
-				const clamped = clampNumber(pct, 0, 1);
-				const t = minSec + (maxSec - minSec) * clamped;
-				return Number(t.toFixed(3));
-			})
-		)
-	);
-
-	const candidates = [];
-	for (let i = 0; i < times.length; i++) {
-		const t = times[i];
-		const outPath = path.join(tmpDir, `thumb_candidate_${jobId}_${i}.jpg`);
-		try {
-			await spawnBin(
-				ffmpegPath,
-				[
-					"-ss",
-					t.toFixed(3),
-					"-i",
-					videoPath,
-					"-frames:v",
-					"1",
-					"-q:v",
-					String(THUMBNAIL_FRAME_JPEG_Q),
-					"-y",
-					outPath,
-				],
-				"thumbnail_candidate",
-				{ timeoutMs: 120000 }
-			);
-			const dt = detectFileType(outPath);
-			if (dt?.kind === "image") {
-				const st = fs.statSync(outPath);
-				if (st?.size) candidates.push({ path: outPath, size: st.size });
-				else safeUnlink(outPath);
-			} else {
-				safeUnlink(outPath);
-			}
-		} catch {
-			safeUnlink(outPath);
-		}
-	}
-
-	if (!candidates.length) {
-		const framePath = path.join(tmpDir, `thumb_frame_${jobId}.jpg`);
-		try {
-			return await extractThumbnailFrame({
-				videoPath,
-				outPath: framePath,
-			});
-		} catch {
-			safeUnlink(framePath);
-			return null;
-		}
-	}
-
-	candidates.sort((a, b) => b.size - a.size);
-	const best = candidates[0];
-	for (let i = 1; i < candidates.length; i++) {
-		safeUnlink(candidates[i].path);
-	}
-	return best.path;
-}
-
-async function probeImageDimensions(filePath) {
-	const info = await probeMedia(filePath);
-	const stream = Array.isArray(info?.streams)
-		? info.streams.find((s) => s.codec_type === "video")
-		: null;
-	return {
-		width: Number(stream?.width || 0),
-		height: Number(stream?.height || 0),
-	};
-}
-
-async function collectThumbnailTopicImages({
-	topics = [],
-	tmpDir,
-	jobId,
-	maxImages = THUMBNAIL_TOPIC_MAX_IMAGES,
-	contextText = "",
-	contextItems = [],
-}) {
-	const target = Math.max(0, Math.floor(maxImages));
-	if (!target) return [];
-	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) {
-		logJob(jobId, "thumbnail topic images skipped (CSE missing)");
-		return [];
-	}
-	const topicList = Array.isArray(topics) ? topics : [];
-	if (!topicList.length) return [];
-
-	const contextQuery = sanitizeOverlayQuery(
-		sanitizeThumbnailContext(contextText)
-	);
-	const contextTokens =
-		contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
-	const contextBySignature = new Map();
-	for (const entry of Array.isArray(contextItems) ? contextItems : []) {
-		const sig = topicSignature(entry?.topic || "");
-		if (!sig) continue;
-		contextBySignature.set(
-			sig,
-			Array.isArray(entry.context) ? entry.context : []
-		);
-	}
-	const urls = [];
-	const seen = new Set();
-	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
-	for (const t of topicList) {
-		if (urls.length >= maxUrls) break;
-		const label = t?.displayTopic || t?.topic || "";
-		if (!label) continue;
-		const extraTokens = Array.isArray(t?.keywords) ? t.keywords : [];
-		const mergedTokens = contextTokens.length
-			? [...contextTokens, ...extraTokens]
-			: extraTokens;
-		let hits = await fetchCseImages(label, mergedTokens);
-		if (!hits.length) {
-			const sig = topicSignature(label);
-			const ctxItems = contextBySignature.get(sig) || [];
-			const articleUrls = uniqueStrings(
-				[
-					...(Array.isArray(t?.trendStory?.articles)
-						? t.trendStory.articles.map((a) => a?.url)
-						: []),
-					...ctxItems.map((c) => c?.link),
-				],
-				{ limit: 6 }
-			);
-			const ogHits = [];
-			for (const pageUrl of articleUrls) {
-				if (ogHits.length >= 3) break;
-				if (!pageUrl || ogHits.includes(pageUrl)) continue;
-				const og = await fetchOpenGraphImageUrl(pageUrl);
-				if (!og) continue;
-				if (isLikelyWatermarkedSource(og, pageUrl)) continue;
-				const ct = await headContentType(og, 7000);
-				if (ct && !ct.startsWith("image/")) continue;
-				ogHits.push(og);
-			}
-			if (ogHits.length) {
-				logJob(jobId, "thumbnail topic images fallback og", {
-					topic: label,
-					count: ogHits.length,
-				});
-				hits = ogHits;
-			}
-		}
-		for (const url of hits) {
-			if (urls.length >= maxUrls) break;
-			if (!url || seen.has(url)) continue;
-			seen.add(url);
-			urls.push(url);
-		}
-	}
-
-	if (!urls.length) {
-		logJob(jobId, "thumbnail topic images none", {
-			reason: "no_urls",
-			target,
-		});
-		return [];
-	}
-
-	const candidates = [];
-	const downloadCount = Math.min(urls.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
-	for (let i = 0; i < downloadCount; i++) {
-		const url = urls[i];
-		const extGuess = path
-			.extname(String(url).split("?")[0] || "")
-			.toLowerCase();
-		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".jpg";
-		const out = path.join(tmpDir, `thumb_topic_${jobId}_${i}${ext}`);
-		try {
-			await downloadToFile(url, out, 25000, 1);
-			const detected = detectFileType(out);
-			if (!detected || detected.kind !== "image") {
-				safeUnlink(out);
-				continue;
-			}
-			const st = fs.statSync(out);
-			if (!st?.size || st.size < 4096) {
-				safeUnlink(out);
-				continue;
-			}
-			const dims = await probeImageDimensions(out);
-			const minEdge = Math.min(dims.width || 0, dims.height || 0);
-			if (minEdge && minEdge < CSE_MIN_IMAGE_SHORT_EDGE) {
-				safeUnlink(out);
-				continue;
-			}
-			candidates.push({
-				path: out,
-				size: st.size,
-				width: dims.width || 0,
-				height: dims.height || 0,
-			});
-		} catch {
-			safeUnlink(out);
-		}
-	}
-
-	if (!candidates.length) {
-		logJob(jobId, "thumbnail topic images none", {
-			reason: "no_candidates",
-			target,
-		});
-		return [];
-	}
-
-	const preferred = candidates.filter((c) => {
-		const minEdge = Math.min(c.width || 0, c.height || 0);
-		if (minEdge && minEdge < THUMBNAIL_TOPIC_MIN_EDGE) return false;
-		return c.size >= THUMBNAIL_TOPIC_MIN_BYTES;
-	});
-
-	const pickPool = preferred.length ? preferred : candidates;
-	pickPool.sort((a, b) => b.size - a.size);
-	const selected = pickPool.slice(0, target).map((c) => c.path);
-
-	for (const c of candidates) {
-		if (!selected.includes(c.path)) safeUnlink(c.path);
-	}
-
-	logJob(jobId, "thumbnail topic images selected", {
-		count: selected.length,
-		target,
-	});
-
-	return selected;
-}
-
-function assertCloudinaryReady() {
-	if (
-		!process.env.CLOUDINARY_CLOUD_NAME ||
-		!process.env.CLOUDINARY_API_KEY ||
-		!process.env.CLOUDINARY_API_SECRET
-	) {
-		throw new Error(
-			"Cloudinary credentials missing (CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET)."
-		);
-	}
-}
-
-async function uploadThumbnailToCloudinary(filePath, jobId) {
-	assertCloudinaryReady();
-	ensureThumbnailFile(filePath);
-
-	const publicId = `${THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX}_${jobId}_${Date.now()}`;
-	const result = await cloudinary.uploader.upload(filePath, {
-		public_id: publicId,
-		folder: THUMBNAIL_CLOUDINARY_FOLDER,
-		resource_type: "image",
-		overwrite: true,
-	});
-	return {
-		public_id: result.public_id,
-		url: result.secure_url,
-		width: result.width,
-		height: result.height,
-	};
-}
-
-async function createThumbnailImage({
-	jobId,
-	tmpDir,
-	presenterLocalPath,
-	title,
-	topics,
-	topicImagePaths = [],
-}) {
-	const presenterDetected = presenterLocalPath
-		? detectFileType(presenterLocalPath)
-		: null;
-	const presenterImagePath =
-		presenterDetected?.kind === "image" ? presenterLocalPath : null;
-	if (!presenterImagePath)
-		throw new Error("thumbnail_presenter_missing_or_invalid");
-
-	const baseImage = await generateThumbnailCompositeBase({
-		jobId,
-		tmpDir,
-		presenterImagePath,
-		topicImagePaths,
-		title,
-		topics,
-		ratio: THUMBNAIL_RATIO,
-		width: THUMBNAIL_WIDTH,
-		height: THUMBNAIL_HEIGHT,
-		openai,
-		log: (msg, extra) => logJob(jobId, msg, extra),
-		useSora: true,
-	});
-	const dt = detectFileType(baseImage);
-	if (dt?.kind !== "image") throw new Error("thumbnail_base_invalid");
-
-	const finalPath = path.join(tmpDir, `thumb_${jobId}.jpg`);
-	await renderThumbnailOverlay({
-		inputPath: baseImage,
-		outputPath: finalPath,
-		title,
-	});
-	return finalPath;
 }
 
 async function createIntroClip({
@@ -6979,9 +6100,6 @@ function computeNextRun({ scheduleType, timeOfDay, startDate }) {
 async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 	const tmpDir = path.join(TMP_ROOT, `job_${jobId}`);
 	ensureDir(tmpDir);
-	let thumbnailPath = "";
-	let thumbnailUrl = "";
-	let thumbnailCloudinaryId = "";
 
 	try {
 		updateJob(jobId, { status: "running", progressPct: 1 });
@@ -7025,6 +6143,9 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		const hasYouTubeTokens = Boolean(
 			youtubeRefreshToken || youtubeAccessToken || user?.youtubeRefreshToken
 		);
+		let thumbnailPath = "";
+		let thumbnailUrl = "";
+		let thumbnailPublicId = "";
 
 		logJob(jobId, "job started", {
 			dryRun,
@@ -7069,14 +6190,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			);
 		if (!process.env.CHATGPT_API_TOKEN)
 			throw new Error("CHATGPT_API_TOKEN missing.");
-		if (
-			!process.env.CLOUDINARY_CLOUD_NAME ||
-			!process.env.CLOUDINARY_API_KEY ||
-			!process.env.CLOUDINARY_API_SECRET
-		)
-			throw new Error(
-				"Cloudinary credentials missing (CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET)."
-			);
 		if (!ELEVEN_API_KEY)
 			throw new Error(
 				"ELEVENLABS_API_KEY missing (required for intro/outro voice)."
@@ -7133,7 +6246,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			tmpDir,
 			jobId
 		);
-		const presenterBaseLocal = presenterLocal;
 		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
 		const candleLocalPath = await ensureLocalBrandCandleImage(tmpDir, jobId);
 		const detected = detectFileType(presenterLocal);
@@ -7165,6 +6277,57 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 
 		updateJob(jobId, { progressPct: 12 });
 
+		// 3.5) Thumbnail (isolated pipeline, fail-fast)
+		try {
+			const primaryTopic = topicTitles[0] || topicSummary;
+			const thumbTitle = String(primaryTopic || "Quick Update").trim();
+			const thumbShortTitle = shortTitleFromText(thumbTitle);
+			const thumbLog = (message, payload) => logJob(jobId, message, payload);
+			const thumbResult = await generateThumbnailPackage({
+				jobId,
+				tmpDir,
+				presenterLocalPath: presenterLocal,
+				title: thumbTitle,
+				shortTitle: thumbShortTitle,
+				seoTitle: "",
+				topics: topicPicks,
+				openai,
+				log: thumbLog,
+				requireTopicImages: true,
+			});
+			const thumbLocalPath = thumbResult?.localPath || "";
+			const thumbCloudUrl = thumbResult?.url || "";
+			const thumbPublicId = thumbResult?.publicId || "";
+			thumbnailUrl = thumbCloudUrl;
+			thumbnailPublicId = thumbPublicId;
+			if (thumbLocalPath && fs.existsSync(thumbLocalPath)) {
+				thumbnailPath = thumbLocalPath;
+				if (LONG_VIDEO_PERSIST_OUTPUT) {
+					const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
+					fs.copyFileSync(thumbLocalPath, finalThumb);
+					thumbnailPath = finalThumb;
+				}
+			}
+
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					thumbnailPath: LONG_VIDEO_PERSIST_OUTPUT ? thumbnailPath : "",
+					thumbnailUrl: thumbnailUrl || "",
+					thumbnailPublicId: thumbnailPublicId || "",
+				},
+			});
+			logJob(jobId, "thumbnail ready (early)", {
+				path: thumbnailPath ? path.basename(thumbnailPath) : null,
+				cloudinary: Boolean(thumbnailUrl),
+			});
+		} catch (e) {
+			logJob(jobId, "thumbnail generation failed (hard stop)", {
+				error: e.message,
+			});
+			throw e;
+		}
+
 		// 4) Context + images (optional)
 		const topicContexts = [];
 		let liveContext = [];
@@ -7174,6 +6337,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			topicContexts.push({ topic: t.topic, context: ctx });
 			liveContext = liveContext.concat(ctx || []);
 		}
+		const cseImages = [];
 		logJob(jobId, "cse context", {
 			count: liveContext.length,
 			byTopic: topicContexts.map((tc) => ({
@@ -7181,6 +6345,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				count: Array.isArray(tc.context) ? tc.context.length : 0,
 			})),
 		});
+		logJob(jobId, "cse images", { count: cseImages.length });
 		const tonePlan = inferTonePlan({
 			topics: topicPicks,
 			liveContext,
@@ -7231,48 +6396,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				youtubeCategory: youtubeCategoryFinal,
 			},
 		});
-
-		// 5.5) Thumbnail (early, topic-first) + Cloudinary upload
-		try {
-			const thumbResult = await generateThumbnailPackage({
-				jobId,
-				tmpDir,
-				presenterLocalPath: presenterBaseLocal,
-				title: script.title,
-				shortTitle: script.shortTitle,
-				seoTitle: seoMeta?.seoTitle,
-				topics: topicPicks,
-				openai,
-				log: (msg, extra) => logJob(jobId, msg, extra),
-			});
-			let thumbLocalPath = thumbResult.localPath;
-			if (LONG_VIDEO_PERSIST_OUTPUT) {
-				const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
-				fs.copyFileSync(thumbLocalPath, finalThumb);
-				thumbLocalPath = finalThumb;
-			}
-			thumbnailPath = thumbLocalPath;
-			thumbnailUrl = thumbResult.url;
-			thumbnailCloudinaryId = thumbResult.publicId;
-			updateJob(jobId, {
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					thumbnailPath: thumbnailPath || "",
-					thumbnailUrl: thumbnailUrl || "",
-					thumbnailCloudinaryId: thumbnailCloudinaryId || "",
-				},
-			});
-			logJob(jobId, "thumbnail ready (early)", {
-				path: path.basename(thumbnailPath),
-				cloudinary: Boolean(thumbnailUrl),
-			});
-			updateJob(jobId, { progressPct: 20 });
-		} catch (e) {
-			logJob(jobId, "thumbnail generation failed (early)", {
-				error: e.message,
-			});
-			throw e;
-		}
 
 		// 6) Orchestrator plan (intro/outro) + voice prep
 		const introOutroMood = "neutral";
@@ -8279,19 +7402,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			outCfg: output,
 		});
 
-		// 16.2) Thumbnail (already generated earlier)
-		try {
-			if (!thumbnailPath) throw new Error("thumbnail_missing");
-			logJob(jobId, "thumbnail ready", {
-				path: path.basename(thumbnailPath),
-			});
-		} catch (e) {
-			logJob(jobId, "thumbnail generation failed", {
-				error: e.message,
-			});
-			throw e;
-		}
-
 		// 16.5) YouTube upload (optional)
 		let youtubeLink = "";
 		let youtubeTokens = null;
@@ -8367,12 +7477,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					outputUrl: outputUrl || "",
 					localFilePath: localFilePath || "",
 					youtubeLink,
-					videoImage: thumbnailUrl
-						? {
-								public_id: thumbnailCloudinaryId || "",
-								url: thumbnailUrl,
-						  }
-						: undefined,
 					language: languageLabel,
 					country: LONG_VIDEO_TRENDS_GEO,
 					youtubeEmail: user?.youtubeEmail || "",
