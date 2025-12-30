@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const child_process = require("child_process");
+const crypto = require("crypto");
 const { OpenAI, toFile } = require("openai");
 const cloudinary = require("cloudinary").v2;
 
@@ -35,6 +36,58 @@ const CANDLE_BOTTOM_MARGIN_PX = parseNumber(
 	process.env.CANDLE_BOTTOM_MARGIN_PX,
 	6
 );
+const CANDLE_PREP_ENABLED =
+	String(process.env.CANDLE_PREP_ENABLED || "1") !== "0";
+const CANDLE_KEY_SIMILARITY = parseNumber(
+	process.env.CANDLE_KEY_SIMILARITY,
+	0.32
+);
+const CANDLE_KEY_BLEND = parseNumber(process.env.CANDLE_KEY_BLEND, 0.08);
+const CANDLE_KEY_MAX_CORNER_DIFF = parseNumber(
+	process.env.CANDLE_KEY_MAX_CORNER_DIFF,
+	40
+);
+const CANDLE_TRIM_TOP_PCT = parseNumber(process.env.CANDLE_TRIM_TOP_PCT, 0.12);
+const ENABLE_CANDLE_RESTYLE =
+	String(process.env.ENABLE_CANDLE_RESTYLE || "1") !== "0";
+const CANDLE_RESTYLE_MODEL =
+	process.env.CANDLE_RESTYLE_MODEL || DEFAULT_IMAGE_MODEL;
+const CANDLE_RESTYLE_SIZE = process.env.CANDLE_RESTYLE_SIZE || "1024x1024";
+const CANDLE_RESTYLE_QUALITY =
+	process.env.CANDLE_RESTYLE_QUALITY || DEFAULT_IMAGE_QUALITY;
+const CANDLE_RESTYLE_INPUT_FIDELITY =
+	process.env.CANDLE_RESTYLE_INPUT_FIDELITY || DEFAULT_IMAGE_INPUT_FIDELITY;
+const CANDLE_SHADOW_ENABLED =
+	String(process.env.CANDLE_SHADOW_ENABLED || "1") !== "0";
+const CANDLE_SHADOW_OPACITY = parseNumber(
+	process.env.CANDLE_SHADOW_OPACITY,
+	0.28
+);
+const CANDLE_SHADOW_BLUR = parseNumber(process.env.CANDLE_SHADOW_BLUR, 4);
+const CANDLE_SHADOW_X_PX = parseNumber(process.env.CANDLE_SHADOW_X_PX, 4);
+const CANDLE_SHADOW_Y_PX = parseNumber(process.env.CANDLE_SHADOW_Y_PX, 5);
+const DESK_EDGE_SEARCH_X_PCT = parseNumber(
+	process.env.DESK_EDGE_SEARCH_X_PCT,
+	0.62
+);
+const DESK_EDGE_SEARCH_Y_START_PCT = parseNumber(
+	process.env.DESK_EDGE_SEARCH_Y_START_PCT,
+	0.6
+);
+const DESK_EDGE_SEARCH_Y_END_PCT = parseNumber(
+	process.env.DESK_EDGE_SEARCH_Y_END_PCT,
+	0.96
+);
+const DESK_EDGE_EXPECTED_WIDE_PCT = parseNumber(
+	process.env.DESK_EDGE_EXPECTED_WIDE_PCT,
+	0.78
+);
+const DESK_EDGE_EXPECTED_TALL_PCT = parseNumber(
+	process.env.DESK_EDGE_EXPECTED_TALL_PCT,
+	0.89
+);
+const DESK_EDGE_BAND_PCT = parseNumber(process.env.DESK_EDGE_BAND_PCT, 0.16);
+const DESK_EDGE_MIN_PCT = parseNumber(process.env.DESK_EDGE_MIN_PCT, 0.68);
 const CANDLE_MIN_PX = parseNumber(process.env.CANDLE_MIN_PX, 90);
 const CANDLE_MAX_PX = parseNumber(process.env.CANDLE_MAX_PX, 280);
 const PRESENTER_MIN_BYTES = 12000;
@@ -187,6 +240,22 @@ function resolveFfprobePath() {
 	return ffprobePath;
 }
 
+function ffprobePixelFormat(filePath) {
+	try {
+		const ffprobePath = resolveFfprobePath();
+		const out = child_process
+			.execSync(
+				`"${ffprobePath}" -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nw=1:nk=1 "${filePath}"`,
+				{ stdio: ["ignore", "pipe", "ignore"] }
+			)
+			.toString()
+			.trim();
+		return out || "";
+	} catch {
+		return "";
+	}
+}
+
 function ffprobeDimensions(filePath) {
 	try {
 		const ffprobePath = resolveFfprobePath();
@@ -202,6 +271,77 @@ function ffprobeDimensions(filePath) {
 	} catch {
 		return { width: 0, height: 0 };
 	}
+}
+
+function imageHasAlpha(filePath) {
+	const fmt = ffprobePixelFormat(filePath);
+	return Boolean(fmt && fmt.includes("a"));
+}
+
+function sampleImageKeyColor(filePath) {
+	try {
+		const buf = runFfmpegBuffer(
+			[
+				"-hide_banner",
+				"-loglevel",
+				"error",
+				"-i",
+				filePath,
+				"-vf",
+				"scale=2:2:flags=area,format=rgb24",
+				"-frames:v",
+				"1",
+				"-f",
+				"rawvideo",
+				"pipe:1",
+			],
+			"candle_key_sample"
+		);
+		if (!buf || buf.length < 12) return null;
+		const corners = [
+			{ r: buf[0], g: buf[1], b: buf[2] },
+			{ r: buf[3], g: buf[4], b: buf[5] },
+			{ r: buf[6], g: buf[7], b: buf[8] },
+			{ r: buf[9], g: buf[10], b: buf[11] },
+		];
+
+		let best = null;
+		let bestDist = Infinity;
+		for (let i = 0; i < corners.length; i++) {
+			for (let j = i + 1; j < corners.length; j++) {
+				const dist = colorDistance(corners[i], corners[j]);
+				if (dist < bestDist) {
+					bestDist = dist;
+					best = {
+						r: Math.round((corners[i].r + corners[j].r) / 2),
+						g: Math.round((corners[i].g + corners[j].g) / 2),
+						b: Math.round((corners[i].b + corners[j].b) / 2),
+					};
+				}
+			}
+		}
+
+		if (!best || bestDist > CANDLE_KEY_MAX_CORNER_DIFF) return null;
+		return best;
+	} catch {
+		return null;
+	}
+}
+
+function rgbToHex({ r, g, b }) {
+	const toHex = (v) =>
+		clamp(Math.round(v || 0), 0, 255)
+			.toString(16)
+			.padStart(2, "0");
+	return `${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function colorDistance(a, b) {
+	return (
+		Math.abs((a?.r || 0) - (b?.r || 0)) +
+		Math.abs((a?.g || 0) - (b?.g || 0)) +
+		Math.abs((a?.b || 0) - (b?.b || 0))
+	);
 }
 
 function probeImageDimensions(filePath) {
@@ -357,7 +497,7 @@ function buildPresenterPrompt({ title, topics, categoryLabel }) {
 		`${title || ""} ${topicFocus || ""}`
 	);
 	const candleLine =
-		"Add one small branded candle on the desk to the presenter's left (viewer-right), toward the back-right corner. Keep it a realistic small tabletop size, fully on the desk with a safe margin from the edge, lit, open jar with no lid, label readable, not centered and not in the foreground.";
+		"Add one small branded candle on the desk to the presenter's left (viewer-right), toward the back-right corner. Keep it a realistic small tabletop size, fully on the desk with a safe margin from the edge, lit, open jar with no lid, label readable, not centered and not in the foreground. No square background, no sticker edges, no pedestal.";
 	const candleRefLine =
 		"If a candle reference is provided, match its label, glass, and color exactly (no redesign).";
 
@@ -467,9 +607,29 @@ function estimateDeskEdgeY(basePath, baseDims) {
 		const outH = Math.floor(buf.length / outW);
 		if (!outH || outH < 32) return null;
 
-		const xStart = Math.floor(outW * 0.55);
-		const yStart = Math.floor(outH * 0.45);
-		const yEnd = Math.floor(outH * 0.95);
+		const aspect = baseDims.height / baseDims.width;
+		const expectedPct =
+			aspect > 0.62 ? DESK_EDGE_EXPECTED_WIDE_PCT : DESK_EDGE_EXPECTED_TALL_PCT;
+		const expectedY = Math.floor(outH * expectedPct);
+		const band = Math.max(
+			2,
+			Math.floor(outH * clamp(DESK_EDGE_BAND_PCT, 0.08, 0.22))
+		);
+
+		const xStart = Math.floor(outW * clamp(DESK_EDGE_SEARCH_X_PCT, 0.4, 0.85));
+		const yStartRaw = Math.floor(
+			outH * clamp(DESK_EDGE_SEARCH_Y_START_PCT, 0.45, 0.85)
+		);
+		const yEndRaw = Math.floor(
+			outH * clamp(DESK_EDGE_SEARCH_Y_END_PCT, 0.75, 0.98)
+		);
+
+		let yStart = Math.max(yStartRaw, expectedY - band);
+		let yEnd = Math.min(yEndRaw, expectedY + band);
+		if (yEnd <= yStart + 2) {
+			yStart = yStartRaw;
+			yEnd = yEndRaw;
+		}
 
 		let bestY = Math.floor(outH * 0.82);
 		let bestScore = -1;
@@ -492,6 +652,159 @@ function estimateDeskEdgeY(basePath, baseDims) {
 	} catch {
 		return null;
 	}
+}
+
+async function generateOpenAiCandleImage({
+	candlePath,
+	tmpDir,
+	jobId,
+	openai,
+	log,
+}) {
+	if (!ENABLE_CANDLE_RESTYLE || !openai) return null;
+	if (!candlePath || !fs.existsSync(candlePath)) return null;
+
+	let imageInput = null;
+	try {
+		const buf = fs.readFileSync(candlePath);
+		const mime = inferImageMime(candlePath) || "image/png";
+		imageInput = await toFile(buf, path.basename(candlePath), { type: mime });
+	} catch (e) {
+		if (log)
+			log("candle restyle read failed", { error: e?.message || String(e) });
+		return null;
+	}
+
+	const prompt = `
+Keep the exact same candle label, glass, colors, proportions, and perspective.
+Remove the lid completely (no lid visible anywhere). Make the candle OPEN.
+Add a small, realistic lit flame and glowing wick.
+Transparent background only; no shadow, no pedestal, no extra objects.
+Do not change the brand text or logo.
+`.trim();
+
+	try {
+		const resp = await openai.images.edit({
+			model: CANDLE_RESTYLE_MODEL,
+			image: imageInput,
+			prompt,
+			quality: CANDLE_RESTYLE_QUALITY,
+			output_format: "png",
+			background: "transparent",
+			size: CANDLE_RESTYLE_SIZE,
+			input_fidelity: CANDLE_RESTYLE_INPUT_FIDELITY || undefined,
+		});
+		const image = resp?.data?.[0];
+		if (!image?.b64_json) throw new Error("candle_restyle_empty");
+		const buf = Buffer.from(String(image.b64_json), "base64");
+		const outPath = path.join(
+			tmpDir,
+			`candle_open_lit_${jobId || crypto.randomUUID()}.png`
+		);
+		fs.writeFileSync(outPath, buf);
+		const dt = detectFileType(outPath);
+		if (dt?.kind === "image") {
+			if (log) log("candle restyle ready", { path: path.basename(outPath) });
+			return outPath;
+		}
+		safeUnlink(outPath);
+	} catch (e) {
+		if (log)
+			log("candle restyle failed (using original)", {
+				error: e?.message || String(e),
+			});
+	}
+
+	return null;
+}
+
+async function prepareCandleOverlayAsset({
+	candlePath,
+	tmpDir,
+	jobId,
+	log,
+	openai,
+}) {
+	if (!CANDLE_PREP_ENABLED) return candlePath;
+	if (!candlePath || !fs.existsSync(candlePath)) return candlePath;
+
+	let workingPath = candlePath;
+	const restyledPath = await generateOpenAiCandleImage({
+		candlePath,
+		tmpDir,
+		jobId,
+		openai,
+		log,
+	});
+	if (restyledPath) workingPath = restyledPath;
+
+	const detected = detectFileType(workingPath);
+	if (!detected || detected.kind !== "image") return candlePath;
+
+	const hasAlpha = imageHasAlpha(workingPath);
+	const keyColor = hasAlpha ? null : sampleImageKeyColor(workingPath);
+	const trimTop = clamp(
+		restyledPath ? Math.min(CANDLE_TRIM_TOP_PCT, 0.02) : CANDLE_TRIM_TOP_PCT,
+		0,
+		0.3
+	);
+	const useKey =
+		!hasAlpha &&
+		keyColor &&
+		Number.isFinite(CANDLE_KEY_SIMILARITY) &&
+		Number.isFinite(CANDLE_KEY_BLEND);
+
+	if (!useKey && trimTop <= 0.001) return workingPath;
+
+	const suffix = jobId || crypto.randomUUID();
+	const outPath = path.join(tmpDir, `candle_prepped_${suffix}.png`);
+	const filters = ["format=rgba"];
+	if (useKey) {
+		const hex = rgbToHex(keyColor);
+		filters.push(
+			`colorkey=0x${hex}:${CANDLE_KEY_SIMILARITY.toFixed(
+				3
+			)}:${CANDLE_KEY_BLEND.toFixed(3)}`
+		);
+	}
+	if (trimTop > 0.001) {
+		const keepPct = (1 - trimTop).toFixed(4);
+		filters.push(`crop=iw:ih*${keepPct}:0:ih*${trimTop.toFixed(4)}`);
+	}
+
+	try {
+		await runFfmpeg(
+			[
+				"-i",
+				workingPath,
+				"-vf",
+				filters.join(","),
+				"-frames:v",
+				"1",
+				"-y",
+				outPath,
+			],
+			"candle_prep"
+		);
+		const dt = detectFileType(outPath);
+		if (dt?.kind === "image") {
+			if (log)
+				log("candle asset prepped", {
+					path: path.basename(outPath),
+					hasAlpha,
+					trimTopPct: Number(trimTop.toFixed(3)),
+				});
+			return outPath;
+		}
+	} catch (e) {
+		if (log)
+			log("candle prep failed (using original)", {
+				error: e?.message || String(e),
+			});
+	}
+
+	safeUnlink(outPath);
+	return workingPath;
 }
 
 function computeImageHash(filePath, regionPct = null) {
@@ -783,10 +1096,12 @@ async function overlayCandleOnPresenterSmart({
 	const scaleFactor = targetW / candleDims.width;
 
 	const aspect = baseDims.height / baseDims.width;
-	const fallbackDeskPct = aspect > 0.62 ? 0.78 : 0.89;
-	let deskEdgeY =
-		estimateDeskEdgeY(basePath, baseDims) ||
-		Math.round(baseDims.height * fallbackDeskPct);
+	const fallbackDeskPct =
+		aspect > 0.62 ? DESK_EDGE_EXPECTED_WIDE_PCT : DESK_EDGE_EXPECTED_TALL_PCT;
+	const minDeskY = Math.round(baseDims.height * DESK_EDGE_MIN_PCT);
+	let deskEdgeY = estimateDeskEdgeY(basePath, baseDims);
+	if (Number.isFinite(deskEdgeY) && deskEdgeY < minDeskY) deskEdgeY = null;
+	deskEdgeY = deskEdgeY || Math.round(baseDims.height * fallbackDeskPct);
 	deskEdgeY = clamp(deskEdgeY, 0, baseDims.height - 1);
 
 	const bottomY = clamp(
@@ -810,6 +1125,22 @@ async function overlayCandleOnPresenterSmart({
 
 	const outPath = path.join(tmpDir, `presenter_candle_${jobId}.png`);
 
+	const shadowOpacity = clamp(CANDLE_SHADOW_OPACITY, 0, 0.6);
+	const shadowBlur = Math.max(1, Math.round(CANDLE_SHADOW_BLUR));
+	const shadowX = Math.round(CANDLE_SHADOW_X_PX);
+	const shadowY = Math.round(CANDLE_SHADOW_Y_PX);
+	const addShadow = CANDLE_SHADOW_ENABLED && shadowOpacity > 0;
+	const filter = addShadow
+		? `[1:v]scale=iw*${scaleFactor}:ih*${scaleFactor}:flags=lanczos,format=rgba[candle];` +
+		  `[candle]split=2[candle_main][candle_shadow];` +
+		  `[candle_shadow]hue=s=0,eq=brightness=-0.4:contrast=1.0,boxblur=${shadowBlur}:${shadowBlur},format=rgba,colorchannelmixer=aa=${shadowOpacity.toFixed(
+				3
+		  )}[shadow];` +
+		  `[0:v][shadow]overlay=x=${xCenter}-w/2+${shadowX}:y=${bottomY}-h+${shadowY}:format=auto[bg];` +
+		  `[bg][candle_main]overlay=x=${xCenter}-w/2:y=${bottomY}-h:format=auto[outv]`
+		: `[1:v]scale=iw*${scaleFactor}:ih*${scaleFactor}:flags=lanczos,format=rgba[candle];` +
+		  `[0:v][candle]overlay=x=${xCenter}-w/2:y=${bottomY}-h:format=auto[outv]`;
+
 	await runFfmpeg(
 		[
 			"-i",
@@ -817,8 +1148,7 @@ async function overlayCandleOnPresenterSmart({
 			"-i",
 			candlePath,
 			"-filter_complex",
-			`[1:v]scale=iw*${scaleFactor}:ih*${scaleFactor}:flags=lanczos,format=rgba[candle];` +
-				`[0:v][candle]overlay=x=${xCenter}-w/2:y=${bottomY}-h:format=auto[outv]`,
+			filter,
 			"-map",
 			"[outv]",
 			"-frames:v",
@@ -1036,10 +1366,26 @@ async function generatePresenterAdjustedImage({
 	}
 
 	let withCandle = null;
+	let candleOverlayPath = candleLocalPath;
+	try {
+		candleOverlayPath = await prepareCandleOverlayAsset({
+			candlePath: candleLocalPath,
+			tmpDir,
+			jobId,
+			log,
+			openai,
+		});
+	} catch (e) {
+		if (log)
+			log("candle prep failed (using original)", {
+				error: e?.message || String(e),
+			});
+		candleOverlayPath = candleLocalPath;
+	}
 	try {
 		withCandle = await overlayCandleOnPresenterSmart({
 			basePath: outPath,
-			candlePath: candleLocalPath,
+			candlePath: candleOverlayPath,
 			tmpDir,
 			jobId,
 			log,
@@ -1051,7 +1397,7 @@ async function generatePresenterAdjustedImage({
 			});
 		withCandle = await overlayCandleOnPresenter({
 			basePath: outPath,
-			candlePath: candleLocalPath,
+			candlePath: candleOverlayPath,
 			tmpDir,
 			jobId,
 			log,

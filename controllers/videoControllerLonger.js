@@ -192,7 +192,10 @@ const DEFAULT_BRAND_CANDLE_IMAGE_PATH = path.resolve(
 	__dirname,
 	"../uploads/images/MyCandle.png"
 );
-const DEFAULT_BRAND_CANDLE_IMAGE_URL = "";
+const DEFAULT_BRAND_CANDLE_IMAGE_URL =
+	"https://res.cloudinary.com/infiniteapps/image/upload/v1767134899/aivideomatic/MyCandle_u9skio.png";
+const CANDLE_PREFER_REMOTE =
+	String(process.env.CANDLE_PREFER_REMOTE || "1") !== "0";
 
 const CANDLE_REF_SCALE = clampNumber(0.35, 0.1, 1);
 const CANDLE_WIDTH_PCT = clampNumber(0.12, 0.02, 0.2);
@@ -212,7 +215,7 @@ const CANDLE_POSITION_DESC = `centered around ${Math.round(
 
 const PRESENTER_CANDLE_PROMPT =
 	"small, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it a realistic small tabletop size (about a 4-6 oz jar, not oversized), " +
-	`${CANDLE_SIZE_DESC}; keep it fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge; position it consistently, ${CANDLE_POSITION_DESC}; clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; do not place the lid on the desk; show open wax surface; only one candle; do NOT place on the viewer-left side; keep the candle in the exact same spot across shots.`;
+	`${CANDLE_SIZE_DESC}; keep it fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge; position it consistently, ${CANDLE_POSITION_DESC}; clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; do not place the lid on the desk; show open wax surface; no square background, no sticker edges, no pedestal; only one candle; do NOT place on the viewer-left side; keep the candle in the exact same spot across shots.`;
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter.";
 const PRESENTER_MOTION_STYLE =
@@ -2252,25 +2255,7 @@ async function maybeScaleCandleReference(inputPath, tmpDir, jobId) {
 }
 
 async function ensureLocalBrandCandleImage(tmpDir, jobId) {
-	const localPath = DEFAULT_BRAND_CANDLE_IMAGE_PATH;
-	if (localPath && fs.existsSync(localPath)) {
-		const detected = detectFileType(localPath);
-		if (detected?.kind === "image")
-			return await maybeScaleCandleReference(localPath, tmpDir, jobId);
-		logJob(jobId, "brand candle local invalid", {
-			path: localPath,
-			detected: detected?.kind || "unknown",
-		});
-		throw new Error("Brand candle image is invalid");
-	}
-	if (localPath) {
-		logJob(jobId, "brand candle local missing", { path: localPath });
-		throw new Error("Brand candle image not found");
-	}
-
 	const url = DEFAULT_BRAND_CANDLE_IMAGE_URL;
-	if (!url) return null;
-
 	const downloadAndValidate = async (u) => {
 		const extGuess = path.extname(u.split("?")[0] || "").toLowerCase();
 		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".jpg";
@@ -2287,14 +2272,44 @@ async function ensureLocalBrandCandleImage(tmpDir, jobId) {
 		return await maybeScaleCandleReference(outPath, tmpDir, jobId);
 	};
 
-	try {
-		const p = await downloadAndValidate(url);
-		if (p) return p;
-	} catch (e) {
-		logJob(jobId, "brand candle download failed (ignored)", {
-			error: e.message,
-		});
+	if (CANDLE_PREFER_REMOTE && url) {
+		try {
+			const p = await downloadAndValidate(url);
+			if (p) return p;
+		} catch (e) {
+			logJob(jobId, "brand candle download failed (ignored)", {
+				error: e.message,
+			});
+		}
 	}
+
+	const localPath = DEFAULT_BRAND_CANDLE_IMAGE_PATH;
+	if (localPath && fs.existsSync(localPath)) {
+		const detected = detectFileType(localPath);
+		if (detected?.kind === "image")
+			return await maybeScaleCandleReference(localPath, tmpDir, jobId);
+		logJob(jobId, "brand candle local invalid", {
+			path: localPath,
+			detected: detected?.kind || "unknown",
+		});
+		throw new Error("Brand candle image is invalid");
+	}
+	if (localPath) {
+		logJob(jobId, "brand candle local missing", { path: localPath });
+		if (!url) throw new Error("Brand candle image not found");
+	}
+
+	if (!CANDLE_PREFER_REMOTE && url) {
+		try {
+			const p = await downloadAndValidate(url);
+			if (p) return p;
+		} catch (e) {
+			logJob(jobId, "brand candle download failed (ignored)", {
+				error: e.message,
+			});
+		}
+	}
+
 	return null;
 }
 
