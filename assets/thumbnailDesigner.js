@@ -30,7 +30,7 @@ const PRESENTER_OVERLAP_PCT = 0.06;
 const THUMBNAIL_RATIO = "1280:720";
 const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
-const THUMBNAIL_TEXT_MAX_WORDS = 3;
+const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
 const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.38;
 const THUMBNAIL_TEXT_BOX_OPACITY = 0.28;
@@ -613,7 +613,13 @@ async function fetchOpenGraphImageUrl(pageUrl, timeoutMs = 9000) {
 	}
 }
 
-async function downloadToFile(url, outPath, timeoutMs = 20000, retries = 1) {
+async function downloadToFile(
+	url,
+	outPath,
+	timeoutMs = 20000,
+	retries = 1,
+	maxBytes = 8 * 1024 * 1024
+) {
 	let lastErr = null;
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -625,9 +631,28 @@ async function downloadToFile(url, outPath, timeoutMs = 20000, retries = 1) {
 			});
 			await new Promise((resolve, reject) => {
 				const ws = fs.createWriteStream(outPath);
+				let bytes = 0;
+				let settled = false;
+				const done = (err) => {
+					if (settled) return;
+					settled = true;
+					if (err) {
+						ws.destroy();
+						reject(err);
+						return;
+					}
+					resolve();
+				};
+				res.data.on("data", (chunk) => {
+					bytes += chunk.length;
+					if (bytes > maxBytes) {
+						res.data.destroy(new Error("download exceeded maxBytes"));
+					}
+				});
+				res.data.on("error", done);
+				ws.on("error", done);
+				ws.on("finish", () => done());
 				res.data.pipe(ws);
-				ws.on("finish", resolve);
-				ws.on("error", reject);
 			});
 			const st = fs.statSync(outPath);
 			if (!st || st.size < 256) throw new Error("downloaded file too small");
@@ -851,6 +876,28 @@ function probeImageDimensions(filePath) {
 		}
 		return { width: 0, height: 0 };
 	} catch {
+		return probeImageDimensions(filePath);
+	}
+}
+
+function ffprobeDimensions(filePath) {
+	try {
+		let ffprobePath = "ffprobe";
+		if (ffmpegPath) {
+			const candidate = ffmpegPath.replace(/ffmpeg(\.exe)?$/i, "ffprobe$1");
+			ffprobePath =
+				candidate && candidate !== ffmpegPath ? candidate : "ffprobe";
+		}
+		const out = child_process
+			.execSync(
+				`"${ffprobePath}" -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "${filePath}"`,
+				{ stdio: ["ignore", "pipe", "ignore"] }
+			)
+			.toString()
+			.trim();
+		const [w, h] = out.split("x").map((n) => Number(n) || 0);
+		return { width: w || 0, height: h || 0 };
+	} catch {
 		return { width: 0, height: 0 };
 	}
 }
@@ -1069,6 +1116,7 @@ async function generateOpenAiThumbnailBase({
 	const apiKey = process.env.CHATGPT_API_TOKEN;
 	if (!apiKey) throw new Error("CHATGPT_API_TOKEN missing");
 	const client = openai || new OpenAI({ apiKey });
+	const supportsInputFidelity = String(model || "").startsWith("gpt-image-1");
 
 	const outPath = path.join(tmpDir, `thumb_openai_${jobId}.png`);
 
@@ -1084,7 +1132,7 @@ async function generateOpenAiThumbnailBase({
 				} catch {}
 			}
 			if (inputs.length) {
-				return await client.images.edit({
+				const editOptions = {
 					model,
 					image: inputs.length === 1 ? inputs[0] : inputs,
 					prompt: cleanPrompt,
@@ -1092,8 +1140,10 @@ async function generateOpenAiThumbnailBase({
 					quality,
 					output_format: "png",
 					background: "auto",
-					input_fidelity: inputFidelity,
-				});
+				};
+				if (supportsInputFidelity && inputFidelity)
+					editOptions.input_fidelity = inputFidelity;
+				return await client.images.edit(editOptions);
 			}
 		}
 		return await client.images.generate({
@@ -1162,7 +1212,11 @@ async function composeThumbnailBase({
 		`[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}[base]`
 	);
 	filters.push(
-		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)/2[presenter]`
+		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)/2,format=rgba[presenter]`
+	);
+	filters.push("[presenter]split=2[p][ps]");
+	filters.push(
+		"[ps]colorchannelmixer=rr=0:gg=0:bb=0:aa=0.55,boxblur=18:1[shadow]"
 	);
 
 	let current = "[base]";
@@ -1198,7 +1252,8 @@ async function composeThumbnailBase({
 		current = "[tmp2]";
 	}
 
-	filters.push(`${current}[presenter]overlay=${presenterX}:0[outv]`);
+	filters.push(`${current}[shadow]overlay=${presenterX + 10}:12[tmpS]`);
+	filters.push(`[tmpS][p]overlay=${presenterX}:0[outv]`);
 
 	const outExt = path.extname(outPath).toLowerCase();
 	const useJpegQ = outExt === ".jpg" || outExt === ".jpeg";
@@ -1398,8 +1453,8 @@ function buildThumbnailText(title = "") {
 	const baseChars = Math.max(THUMBNAIL_TEXT_BASE_MAX_CHARS, 14);
 	const fit = fitHeadlineText(trimmed, {
 		baseMaxChars: baseChars,
-		preferLines: 1,
-		maxLines: 1,
+		preferLines: 2,
+		maxLines: 2,
 	});
 	return {
 		text: fit.text || trimmed,
@@ -1417,6 +1472,7 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 		42,
 		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
 	);
+	const boxBorder = Math.round(fontSize * 0.55);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
 	const textYOffset = Math.round(
 		THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_Y_OFFSET_PCT
@@ -1426,11 +1482,10 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
 		"eq=contrast=1.08:saturation=1.12:brightness=0.02",
 		"unsharp=5:5:0.8",
-		`drawbox=x=0:y=0:w=iw*${THUMBNAIL_TEXT_BOX_WIDTH_PCT}:h=ih:color=black@${THUMBNAIL_TEXT_BOX_OPACITY}:t=fill`,
 	];
 	if (safeText) {
 		filters.push(
-			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.5:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2+${textYOffset}`
+			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:box=1:boxcolor=black@0.35:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2+${textYOffset}`
 		);
 	}
 
@@ -1605,14 +1660,6 @@ async function fetchCseImages(topic, extraTokens = []) {
 		if (!c?.url || seen.has(c.url)) continue;
 		seen.add(c.url);
 		if (!isProbablyDirectImageUrl(c.url) && !c.mime) continue;
-		const ct = await headContentType(c.url, 7000);
-		if (ct) {
-			if (!ct.startsWith("image/")) continue;
-		} else if (c.mime && c.mime.startsWith("image/")) {
-			// accept CSE-reported image mime when HEAD is blocked
-		} else if (!isProbablyDirectImageUrl(c.url)) {
-			continue;
-		}
 		filtered.push(c.url);
 		if (filtered.length >= 6) break;
 	}
@@ -1630,11 +1677,9 @@ async function collectThumbnailTopicImages({
 }) {
 	const target = Math.max(0, Math.floor(maxImages));
 	if (!target) return [];
-	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) {
-		if (requireTopicImages) throw new Error("thumbnail_cse_missing");
-		if (log) log("thumbnail topic images skipped (CSE missing)");
-		return [];
-	}
+	const hasCSE = !!(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
+	if (!hasCSE && log)
+		log("thumbnail topic images: CSE missing, using wiki/commons only");
 	const topicList = Array.isArray(topics) ? topics : [];
 	if (!topicList.length) return [];
 
@@ -1655,8 +1700,8 @@ async function collectThumbnailTopicImages({
 		const mergedTokens = contextTokens.length
 			? [...contextTokens, ...extraTokens]
 			: extraTokens;
-		let hits = await fetchCseImages(label, mergedTokens);
-		if (!hits.length) {
+		let hits = hasCSE ? await fetchCseImages(label, mergedTokens) : [];
+		if (!hits.length && hasCSE) {
 			const ctxItems = await fetchCseContext(label, mergedTokens);
 			const articleUrls = uniqueStrings(
 				[
@@ -1754,6 +1799,7 @@ async function collectThumbnailTopicImages({
 	}
 
 	const candidates = [];
+	const smallCandidates = [];
 	const downloadCount = Math.min(urls.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
 	for (let i = 0; i < downloadCount; i++) {
 		const url = urls[i];
@@ -1774,7 +1820,7 @@ async function collectThumbnailTopicImages({
 				safeUnlink(out);
 				continue;
 			}
-			const dims = probeImageDimensions(out);
+			const dims = ffprobeDimensions(out);
 			const minEdge = Math.min(dims.width || 0, dims.height || 0);
 			if (minEdge && minEdge < CSE_MIN_IMAGE_SHORT_EDGE) {
 				smallCandidates.push({
@@ -1817,6 +1863,7 @@ async function collectThumbnailTopicImages({
 
 	const preferred = usableCandidates.filter((c) => {
 		const minEdge = Math.min(c.width || 0, c.height || 0);
+		if (!minEdge) return false;
 		if (minEdge && minEdge < THUMBNAIL_TOPIC_MIN_EDGE) return false;
 		return c.size >= THUMBNAIL_TOPIC_MIN_BYTES;
 	});
@@ -1906,6 +1953,8 @@ async function generateThumbnailPackage({
 	const presenterDetected = detectFileType(presenterLocalPath);
 	if (presenterDetected?.kind !== "image")
 		throw new Error("thumbnail_presenter_missing_or_invalid");
+	if (presenterDetected.ext !== "png")
+		throw new Error("presenter_must_be_png_cutout_with_alpha");
 
 	const thumbTitle = selectThumbnailTitle({
 		title,
@@ -1946,6 +1995,27 @@ async function generateThumbnailPackage({
 		title: thumbTitle,
 	});
 	ensureThumbnailFile(finalPath);
+	const maxBytes = 2 * 1024 * 1024;
+	if (fs.statSync(finalPath).size > maxBytes) {
+		const qualitySteps = [3, 4, 5, 6];
+		for (const q of qualitySteps) {
+			const smaller = path.join(tmpDir, `thumb_${jobId}_q${q}.jpg`);
+			await runFfmpeg(
+				["-i", finalPath, "-q:v", String(q), "-frames:v", "1", "-y", smaller],
+				"thumbnail_reencode_smaller"
+			);
+			safeUnlink(finalPath);
+			fs.renameSync(smaller, finalPath);
+			ensureThumbnailFile(finalPath);
+			if (fs.statSync(finalPath).size <= maxBytes) break;
+		}
+		if (fs.statSync(finalPath).size > maxBytes && log) {
+			log("thumbnail size still above max", {
+				size: fs.statSync(finalPath).size,
+				maxBytes,
+			});
+		}
+	}
 	const uploaded = await uploadThumbnailToCloudinary(finalPath, jobId);
 	return {
 		localPath: finalPath,
