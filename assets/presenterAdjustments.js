@@ -65,6 +65,13 @@ const CANDLE_SHADOW_OPACITY = parseNumber(
 const CANDLE_SHADOW_BLUR = parseNumber(process.env.CANDLE_SHADOW_BLUR, 4);
 const CANDLE_SHADOW_X_PX = parseNumber(process.env.CANDLE_SHADOW_X_PX, 4);
 const CANDLE_SHADOW_Y_PX = parseNumber(process.env.CANDLE_SHADOW_Y_PX, 5);
+const CANDLE_CROP_ALPHA_ENABLED =
+	String(process.env.CANDLE_CROP_ALPHA_ENABLED || "1") !== "0";
+const CANDLE_CROP_ALPHA_THRESHOLD = parseNumber(
+	process.env.CANDLE_CROP_ALPHA_THRESHOLD,
+	10
+);
+const CANDLE_CROP_PAD_PCT = parseNumber(process.env.CANDLE_CROP_PAD_PCT, 0.02);
 const DESK_EDGE_SEARCH_X_PCT = parseNumber(
 	process.env.DESK_EDGE_SEARCH_X_PCT,
 	0.62
@@ -341,6 +348,79 @@ function colorDistance(a, b) {
 		Math.abs((a?.g || 0) - (b?.g || 0)) +
 		Math.abs((a?.b || 0) - (b?.b || 0))
 	);
+}
+
+function computeAlphaBounds(filePath, { alphaThreshold = 10 } = {}) {
+	try {
+		const dims = probeImageDimensions(filePath);
+		if (!dims.width || !dims.height) return null;
+
+		const maxW = 256;
+		const outW = Math.min(dims.width, maxW);
+		const buf = runFfmpegBuffer(
+			[
+				"-hide_banner",
+				"-loglevel",
+				"error",
+				"-i",
+				filePath,
+				"-vf",
+				`scale=${outW}:-1:flags=area,format=rgba`,
+				"-frames:v",
+				"1",
+				"-f",
+				"rawvideo",
+				"pipe:1",
+			],
+			"alpha_bounds"
+		);
+		if (!buf || buf.length < outW * 4) return null;
+
+		const outH = Math.floor(buf.length / (outW * 4));
+		if (!outH || outH < 2) return null;
+
+		let minX = outW;
+		let minY = outH;
+		let maxX = -1;
+		let maxY = -1;
+		const threshold = clamp(alphaThreshold, 1, 250);
+
+		for (let y = 0; y < outH; y++) {
+			const row = y * outW * 4;
+			for (let x = 0; x < outW; x++) {
+				const a = buf[row + x * 4 + 3];
+				if (a > threshold) {
+					if (x < minX) minX = x;
+					if (x > maxX) maxX = x;
+					if (y < minY) minY = y;
+					if (y > maxY) maxY = y;
+				}
+			}
+		}
+
+		if (maxX < minX || maxY < minY) return null;
+
+		const scaleX = dims.width / outW;
+		const scaleY = dims.height / outH;
+		const pad = Math.max(
+			1,
+			Math.round(
+				Math.min(dims.width, dims.height) * clamp(CANDLE_CROP_PAD_PCT, 0, 0.08)
+			)
+		);
+
+		let x = Math.max(0, Math.floor(minX * scaleX) - pad);
+		let y = Math.max(0, Math.floor(minY * scaleY) - pad);
+		let w = Math.min(dims.width - x, Math.ceil((maxX + 1) * scaleX) - x + pad);
+		let h = Math.min(dims.height - y, Math.ceil((maxY + 1) * scaleY) - y + pad);
+
+		w = Math.max(2, Math.min(w, dims.width - x));
+		h = Math.max(2, Math.min(h, dims.height - y));
+
+		return { x, y, w, h, outW, outH };
+	} catch {
+		return null;
+	}
 }
 
 function probeImageDimensions(filePath) {
@@ -682,6 +762,7 @@ Keep the exact same candle label, glass, colors, proportions, and perspective.
 Remove the lid completely (no lid visible anywhere). Make the candle OPEN.
 Add a small, realistic lit flame and glowing wick.
 Transparent background only; no shadow, no pedestal, no extra objects.
+Tight crop around the candle (no extra padding or empty margins).
 Do not change the brand text or logo.
 `.trim();
 
@@ -759,7 +840,7 @@ async function prepareCandleOverlayAsset({
 	if (!useKey && trimTop <= 0.001) return workingPath;
 
 	const suffix = jobId || crypto.randomUUID();
-	const outPath = path.join(tmpDir, `candle_prepped_${suffix}.png`);
+	const prePath = path.join(tmpDir, `candle_prepped_${suffix}.png`);
 	const filters = ["format=rgba"];
 	if (useKey) {
 		const hex = rgbToHex(keyColor);
@@ -784,19 +865,54 @@ async function prepareCandleOverlayAsset({
 				"-frames:v",
 				"1",
 				"-y",
-				outPath,
+				prePath,
 			],
 			"candle_prep"
 		);
-		const dt = detectFileType(outPath);
+		const dt = detectFileType(prePath);
 		if (dt?.kind === "image") {
+			let finalPath = prePath;
+			let cropped = false;
+			let cropBounds = null;
+			if (CANDLE_CROP_ALPHA_ENABLED) {
+				const bounds = computeAlphaBounds(prePath, {
+					alphaThreshold: CANDLE_CROP_ALPHA_THRESHOLD,
+				});
+				if (bounds) {
+					const cropPath = path.join(tmpDir, `candle_crop_${suffix}.png`);
+					await runFfmpeg(
+						[
+							"-i",
+							prePath,
+							"-vf",
+							`crop=${bounds.w}:${bounds.h}:${bounds.x}:${bounds.y}`,
+							"-frames:v",
+							"1",
+							"-y",
+							cropPath,
+						],
+						"candle_crop"
+					);
+					const cropDetected = detectFileType(cropPath);
+					if (cropDetected?.kind === "image") {
+						finalPath = cropPath;
+						cropped = true;
+						cropBounds = { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h };
+						safeUnlink(prePath);
+					} else {
+						safeUnlink(cropPath);
+					}
+				}
+			}
 			if (log)
 				log("candle asset prepped", {
-					path: path.basename(outPath),
+					path: path.basename(finalPath),
 					hasAlpha,
 					trimTopPct: Number(trimTop.toFixed(3)),
+					cropped,
+					cropBounds,
 				});
-			return outPath;
+			return finalPath;
 		}
 	} catch (e) {
 		if (log)
@@ -805,7 +921,7 @@ async function prepareCandleOverlayAsset({
 			});
 	}
 
-	safeUnlink(outPath);
+	safeUnlink(prePath);
 	return workingPath;
 }
 
