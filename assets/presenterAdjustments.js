@@ -28,9 +28,15 @@ const PRESENTER_LIKENESS_MIN = 0.82;
 const PRESENTER_FACE_REGION = { x: 0.3, y: 0.05, w: 0.4, h: 0.55 };
 const PRESENTER_EYES_REGION = { x: 0.32, y: 0.08, w: 0.36, h: 0.22 };
 const PRESENTER_WARDROBE_REGION = { x: 0.22, y: 0.36, w: 0.56, h: 0.58 };
-const CANDLE_WIDTH_PCT = 0.03;
-const CANDLE_X_PCT = 0.74;
-const CANDLE_Y_PCT = 0.76;
+const CANDLE_WIDTH_PCT = parseNumber(process.env.CANDLE_WIDTH_PCT, 0.12);
+const CANDLE_X_PCT = parseNumber(process.env.CANDLE_X_PCT, 0.86);
+const CANDLE_Y_PCT = parseNumber(process.env.CANDLE_Y_PCT, 0.8);
+const CANDLE_BOTTOM_MARGIN_PX = parseNumber(
+	process.env.CANDLE_BOTTOM_MARGIN_PX,
+	6
+);
+const CANDLE_MIN_PX = parseNumber(process.env.CANDLE_MIN_PX, 90);
+const CANDLE_MAX_PX = parseNumber(process.env.CANDLE_MAX_PX, 280);
 const PRESENTER_MIN_BYTES = 12000;
 const PRESENTER_CLOUDINARY_FOLDER = "aivideomatic/long_presenters";
 const PRESENTER_CLOUDINARY_PUBLIC_PREFIX = "presenter_master";
@@ -48,6 +54,17 @@ function safeUnlink(p) {
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
+}
+
+function parseNumber(value, fallback) {
+	const n = Number(value);
+	return Number.isFinite(n) ? n : fallback;
+}
+
+function clamp(n, lo, hi) {
+	const x = Number(n);
+	if (!Number.isFinite(x)) return lo;
+	return Math.min(hi, Math.max(lo, x));
 }
 
 function readFileHeader(filePath, bytes = 12) {
@@ -422,6 +439,61 @@ function runFfmpegBuffer(args, label = "ffmpeg_buffer") {
 	throw new Error(`${label} failed (code ${res.status}): ${err}`);
 }
 
+function estimateDeskEdgeY(basePath, baseDims) {
+	try {
+		if (!ffmpegPath) return null;
+		if (!baseDims?.width || !baseDims?.height) return null;
+
+		const outW = 256;
+		const buf = runFfmpegBuffer(
+			[
+				"-hide_banner",
+				"-loglevel",
+				"error",
+				"-i",
+				basePath,
+				"-vf",
+				`scale=${outW}:-1:flags=area,format=gray`,
+				"-frames:v",
+				"1",
+				"-f",
+				"rawvideo",
+				"pipe:1",
+			],
+			"desk_edge_gray"
+		);
+
+		if (!buf || buf.length < outW * 32) return null;
+		const outH = Math.floor(buf.length / outW);
+		if (!outH || outH < 32) return null;
+
+		const xStart = Math.floor(outW * 0.55);
+		const yStart = Math.floor(outH * 0.45);
+		const yEnd = Math.floor(outH * 0.95);
+
+		let bestY = Math.floor(outH * 0.82);
+		let bestScore = -1;
+
+		for (let y = yStart; y < yEnd - 1; y++) {
+			let sum = 0;
+			const row = y * outW;
+			const row2 = (y + 1) * outW;
+			for (let x = xStart; x < outW; x++) {
+				sum += Math.abs(buf[row + x] - buf[row2 + x]);
+			}
+			const score = sum / Math.max(1, outW - xStart);
+			if (score > bestScore) {
+				bestScore = score;
+				bestY = y;
+			}
+		}
+
+		return Math.round((bestY / outH) * baseDims.height);
+	} catch {
+		return null;
+	}
+}
+
 function computeImageHash(filePath, regionPct = null) {
 	if (!ffmpegPath) return null;
 	const dims = ffprobeDimensions(filePath);
@@ -680,6 +752,94 @@ async function generateOpenAiPresenterImage({
 	return outPath;
 }
 
+async function overlayCandleOnPresenterSmart({
+	basePath,
+	candlePath,
+	tmpDir,
+	jobId,
+	log,
+}) {
+	if (!basePath || !fs.existsSync(basePath)) return basePath;
+	if (!candlePath || !fs.existsSync(candlePath)) return basePath;
+
+	const baseDims = probeImageDimensions(basePath);
+	const candleDims = probeImageDimensions(candlePath);
+	if (
+		!baseDims.width ||
+		!baseDims.height ||
+		!candleDims.width ||
+		!candleDims.height
+	)
+		return basePath;
+
+	let targetW = Math.round(baseDims.width * CANDLE_WIDTH_PCT);
+	const maxW = Math.min(
+		Math.max(CANDLE_MAX_PX, 1),
+		Math.max(1, baseDims.width - 20)
+	);
+	const minW = Math.min(Math.max(CANDLE_MIN_PX, 1), maxW);
+	targetW = clamp(targetW, minW, maxW);
+
+	const scaleFactor = targetW / candleDims.width;
+
+	const aspect = baseDims.height / baseDims.width;
+	const fallbackDeskPct = aspect > 0.62 ? 0.78 : 0.89;
+	let deskEdgeY =
+		estimateDeskEdgeY(basePath, baseDims) ||
+		Math.round(baseDims.height * fallbackDeskPct);
+	deskEdgeY = clamp(deskEdgeY, 0, baseDims.height - 1);
+
+	const bottomY = clamp(
+		deskEdgeY - CANDLE_BOTTOM_MARGIN_PX,
+		1,
+		baseDims.height - 1
+	);
+
+	const wardrobeRight = Math.round(
+		baseDims.width * (PRESENTER_WARDROBE_REGION.x + PRESENTER_WARDROBE_REGION.w)
+	);
+	const margin = 12;
+	const desiredXCenter = Math.round(baseDims.width * CANDLE_X_PCT);
+	let minXCenter = wardrobeRight + Math.round(targetW / 2) + margin;
+	let maxXCenter = baseDims.width - Math.round(targetW / 2) - margin;
+	if (minXCenter > maxXCenter) {
+		minXCenter = Math.round(targetW / 2) + margin;
+		maxXCenter = baseDims.width - Math.round(targetW / 2) - margin;
+	}
+	const xCenter = clamp(desiredXCenter, minXCenter, maxXCenter);
+
+	const outPath = path.join(tmpDir, `presenter_candle_${jobId}.png`);
+
+	await runFfmpeg(
+		[
+			"-i",
+			basePath,
+			"-i",
+			candlePath,
+			"-filter_complex",
+			`[1:v]scale=iw*${scaleFactor}:ih*${scaleFactor}:flags=lanczos,format=rgba[candle];` +
+				`[0:v][candle]overlay=x=${xCenter}-w/2:y=${bottomY}-h:format=auto[outv]`,
+			"-map",
+			"[outv]",
+			"-frames:v",
+			"1",
+			"-y",
+			outPath,
+		],
+		"presenter_candle_overlay_smart"
+	);
+
+	if (log)
+		log("presenter candle overlay (smart) ready", {
+			path: path.basename(outPath),
+			targetW,
+			xCenter,
+			deskEdgeY,
+		});
+
+	return outPath;
+}
+
 async function overlayCandleOnPresenter({
 	basePath,
 	candlePath,
@@ -875,13 +1035,28 @@ async function generatePresenterAdjustedImage({
 		ensurePresenterFile(outPath);
 	}
 
-	const withCandle = await overlayCandleOnPresenter({
-		basePath: outPath,
-		candlePath: candleLocalPath,
-		tmpDir,
-		jobId,
-		log,
-	});
+	let withCandle = null;
+	try {
+		withCandle = await overlayCandleOnPresenterSmart({
+			basePath: outPath,
+			candlePath: candleLocalPath,
+			tmpDir,
+			jobId,
+			log,
+		});
+	} catch (e) {
+		if (log)
+			log("smart candle overlay failed; falling back", {
+				error: e?.message || String(e),
+			});
+		withCandle = await overlayCandleOnPresenter({
+			basePath: outPath,
+			candlePath: candleLocalPath,
+			tmpDir,
+			jobId,
+			log,
+		});
+	}
 	if (withCandle && withCandle !== outPath && outPath !== presenterLocalPath) {
 		safeUnlink(outPath);
 	}
