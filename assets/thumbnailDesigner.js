@@ -35,6 +35,10 @@ const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
 const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.38;
 const THUMBNAIL_TEXT_BOX_OPACITY = 0.28;
+const QA_PREVIEW_WIDTH = 320;
+const QA_PREVIEW_HEIGHT = 180;
+const QA_LUMA_MIN = 0.36;
+const QA_LUMA_LEFT_MIN = 0.33;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
@@ -96,7 +100,7 @@ const WATERMARK_URL_TOKENS = [
 	"watermark",
 ];
 
-const SORA_MODEL = process.env.SORA_MODEL || "sora-2";
+const SORA_MODEL = process.env.SORA_MODEL || "sora-2-pro";
 const SORA_THUMBNAIL_ENABLED = true;
 const SORA_THUMBNAIL_SECONDS = "4";
 const SORA_POLL_INTERVAL_MS = 2000;
@@ -513,12 +517,15 @@ async function fetchWikipediaPageImageUrl(topic = "") {
 	return null;
 }
 
-async function fetchWikimediaImageUrls(topic = "", limit = 3) {
+async function fetchWikimediaImageCandidates(
+	query = "",
+	{ limit = 3, tokens = [] } = {}
+) {
 	if (!WIKIMEDIA_FALLBACK_ENABLED) return [];
-	const query = sanitizeOverlayQuery(topic);
-	if (!query) return [];
-	const tokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
-	const minMatches = Math.max(1, Math.min(2, tokens.length));
+	const q = sanitizeOverlayQuery(query);
+	if (!q) return [];
+	const matchTokens = filterSpecificTopicTokens(tokens);
+	const minMatches = Math.max(1, Math.min(2, matchTokens.length));
 	const target = clampNumber(Number(limit) || 3, 1, 8);
 
 	try {
@@ -527,7 +534,7 @@ async function fetchWikimediaImageUrls(topic = "", limit = 3) {
 				action: "query",
 				format: "json",
 				generator: "search",
-				gsrsearch: query,
+				gsrsearch: q,
 				gsrnamespace: 6,
 				gsrlimit: Math.max(5, target * 2),
 				prop: "imageinfo",
@@ -540,10 +547,13 @@ async function fetchWikimediaImageUrls(topic = "", limit = 3) {
 		});
 
 		const pages = data?.query?.pages || {};
-		const urls = [];
+		const items = [];
 		for (const page of Object.values(pages)) {
 			const title = String(page.title || "");
-			if (tokens.length && topicMatchInfo(tokens, [title]).count < minMatches)
+			if (
+				matchTokens.length &&
+				topicMatchInfo(matchTokens, [title]).count < minMatches
+			)
 				continue;
 			const info = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
 			const url = String(info?.url || info?.thumburl || "").trim();
@@ -551,13 +561,91 @@ async function fetchWikimediaImageUrls(topic = "", limit = 3) {
 			const mime = String(info?.mime || "").toLowerCase();
 			if (mime && !mime.startsWith("image/")) continue;
 			if (isLikelyWatermarkedSource(url, "")) continue;
-			urls.push(url);
-			if (urls.length >= target) break;
+			items.push({
+				url,
+				title,
+				width: Number(info?.width || 0),
+				height: Number(info?.height || 0),
+				mime,
+			});
+			if (items.length >= target * 2) break;
 		}
-		return uniqueStrings(urls, { limit: target });
+		return items;
 	} catch {
 		return [];
 	}
+}
+
+function scoreWikimediaCandidate(candidate) {
+	const title = String(candidate?.title || "").toLowerCase();
+	let score = 0;
+	if (/(logo|title card|title|poster)\b/.test(title)) score += 2;
+	if (/(cast|promo|promotional|publicity)\b/.test(title)) score += 1.5;
+	if (/(still|screencap|scene|episode)\b/.test(title)) score += 0.5;
+	const minEdge = Math.min(
+		Number(candidate?.width || 0),
+		Number(candidate?.height || 0)
+	);
+	if (minEdge >= 1200) score += 1;
+	else if (minEdge >= 900) score += 0.5;
+	return score;
+}
+
+async function fetchWikimediaImageUrlsSmart(topic = "", limit = 3) {
+	const baseTokens = topicTokensFromTitle(topic);
+	const queries = [
+		`${topic} logo`,
+		`${topic} cast`,
+		`${topic} promotional photo`,
+		`${topic} title card`,
+		`${topic} poster`,
+		topic,
+	];
+	const seen = new Set();
+	const scored = [];
+	const target = clampNumber(Number(limit) || 3, 1, 8);
+	for (const q of queries) {
+		const candidates = await fetchWikimediaImageCandidates(q, {
+			limit: Math.max(5, target * 2),
+			tokens: baseTokens,
+		});
+		for (const c of candidates) {
+			const key = String(c.url || "").toLowerCase();
+			if (!key || seen.has(key)) continue;
+			seen.add(key);
+			scored.push({
+				url: c.url,
+				score: scoreWikimediaCandidate(c),
+				width: c.width,
+				height: c.height,
+			});
+		}
+		if (scored.length >= target * 4) break;
+	}
+	scored.sort((a, b) => {
+		if (b.score !== a.score) return b.score - a.score;
+		const aSize = (a.width || 0) * (a.height || 0);
+		const bSize = (b.width || 0) * (b.height || 0);
+		return bSize - aSize;
+	});
+	return scored.slice(0, target).map((c) => c.url);
+}
+
+async function fetchWikimediaImageUrls(topic = "", limit = 3) {
+	if (!WIKIMEDIA_FALLBACK_ENABLED) return [];
+	const category = inferEntertainmentCategory(topicTokensFromTitle(topic));
+	if (category === "tv" || category === "film") {
+		const smart = await fetchWikimediaImageUrlsSmart(topic, limit);
+		if (smart.length) return smart;
+	}
+	const candidates = await fetchWikimediaImageCandidates(topic, {
+		limit,
+		tokens: topicTokensFromTitle(topic),
+	});
+	return uniqueStrings(
+		candidates.map((c) => c.url).filter(Boolean),
+		{ limit: clampNumber(Number(limit) || 3, 1, 8) }
+	);
 }
 
 function parseMetaAttributes(tag = "") {
@@ -881,18 +969,13 @@ function probeImageDimensions(filePath) {
 		}
 		return { width: 0, height: 0 };
 	} catch {
-		return probeImageDimensions(filePath);
+		return { width: 0, height: 0 };
 	}
 }
 
 function ffprobeDimensions(filePath) {
 	try {
-		let ffprobePath = "ffprobe";
-		if (ffmpegPath) {
-			const candidate = ffmpegPath.replace(/ffmpeg(\.exe)?$/i, "ffprobe$1");
-			ffprobePath =
-				candidate && candidate !== ffmpegPath ? candidate : "ffprobe";
-		}
+		const ffprobePath = resolveFfprobePath();
 		const out = child_process
 			.execSync(
 				`"${ffprobePath}" -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "${filePath}"`,
@@ -904,6 +987,33 @@ function ffprobeDimensions(filePath) {
 		return { width: w || 0, height: h || 0 };
 	} catch {
 		return { width: 0, height: 0 };
+	}
+}
+
+function resolveFfprobePath() {
+	let ffprobePath = "ffprobe";
+	if (ffmpegPath) {
+		const candidate = ffmpegPath.replace(/ffmpeg(\.exe)?$/i, "ffprobe$1");
+		if (candidate && candidate !== ffmpegPath) ffprobePath = candidate;
+	}
+	return ffprobePath;
+}
+
+function hasAlphaChannel(filePath) {
+	try {
+		const ffprobePath = resolveFfprobePath();
+		const fmt = child_process
+			.execSync(
+				`"${ffprobePath}" -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nw=1:nk=1 "${filePath}"`,
+				{ stdio: ["ignore", "pipe", "ignore"] }
+			)
+			.toString()
+			.trim()
+			.toLowerCase();
+		if (!fmt) return false;
+		return fmt.includes("a");
+	} catch {
+		return false;
 	}
 }
 
@@ -954,12 +1064,20 @@ function fileHash(p) {
 
 function poseFromExpression(expression = "", text = "") {
 	const expr = String(expression || "").toLowerCase();
-	if (expr === "excited") return "surprised";
-	if (expr === "warm") return "smile";
-	if (expr === "serious" || expr === "thoughtful") return "neutral";
-	const hasShock =
-		/(shocking|crazy|unexpected|revealed|secret|leak|exposed)/i.test(text);
-	if (hasShock) return "surprised";
+	if (expr === "thoughtful") return "thoughtful";
+	if (expr === "serious" || expr === "neutral") return "neutral";
+	if (expr === "warm" || expr === "excited") return "smile";
+	const lower = String(text || "").toLowerCase();
+	const hasNegative =
+		/(death|died|dead|killed|suicide|murder|arrest|charged|trial|lawsuit|injury|accident|crash|sad|tragic|funeral|hospital|scandal)/.test(
+			lower
+		);
+	const hasPositive =
+		/(returns|revival|win|wins|won|success|smile|happy|laugh|funny|hilarious|amazing|great|best|top|comeback|surprise)/.test(
+			lower
+		);
+	if (hasNegative) return "neutral";
+	if (hasPositive) return "smile";
 	return "smile";
 }
 
@@ -1002,8 +1120,18 @@ function presenterPosePrompt({ pose }) {
 		return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: mild surprised (raised eyebrows, slightly open mouth), NOT exaggerated, not screaming.
+Expression: mild surprised with a soft smile, NOT exaggerated, not screaming.
+Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 No distortions, no extra people, sharp and clean.
+`.trim();
+	}
+	if (pose === "thoughtful") {
+		return `
+Isolate the same person from the reference photo as a clean cutout (transparent background).
+Same identity, glasses, beard, suit and shirt.
+Expression: thoughtful and calm, natural focus, closed mouth, not exaggerated.
+Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
+Sharp, clean edges, no distortions.
 `.trim();
 	}
 	if (pose === "neutral") {
@@ -1011,13 +1139,15 @@ No distortions, no extra people, sharp and clean.
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
 Expression: neutral but engaged (calm, confident).
+Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 Sharp, clean edges, no distortions.
 `.trim();
 	}
 	return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: warm natural smile (subtle).
+Expression: warm natural smile (subtle, friendly, not exaggerated).
+Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 Sharp, clean edges, no distortions.
 `.trim();
 }
@@ -1137,6 +1267,96 @@ function runFfmpeg(args, label = "ffmpeg") {
 			reject(new Error(`${label} failed (code ${code}): ${head}`));
 		});
 	});
+}
+
+function runFfmpegBuffer(args, label = "ffmpeg_buffer") {
+	if (!ffmpegPath) throw new Error("ffmpeg not available");
+	const res = child_process.spawnSync(ffmpegPath, args, {
+		encoding: null,
+		windowsHide: true,
+	});
+	if (res.status === 0) return res.stdout || Buffer.alloc(0);
+	const err = (res.stderr || Buffer.alloc(0)).toString().slice(0, 4000);
+	throw new Error(`${label} failed (code ${res.status}): ${err}`);
+}
+
+function samplePreviewLuma(filePath, region = null) {
+	const w = QA_PREVIEW_WIDTH;
+	const h = QA_PREVIEW_HEIGHT;
+	let crop = "";
+	if (region) {
+		const rx = Math.max(0, Math.round(region.x || 0));
+		const ry = Math.max(0, Math.round(region.y || 0));
+		const rw = Math.max(1, Math.round(region.w || 1));
+		const rh = Math.max(1, Math.round(region.h || 1));
+		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
+	}
+	const filter = `scale=${w}:${h}:flags=area,${crop}scale=1:1:flags=area,format=rgb24`;
+	const args = [
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-i",
+		filePath,
+		"-vf",
+		filter,
+		"-frames:v",
+		"1",
+		"-f",
+		"rawvideo",
+		"pipe:1",
+	];
+	try {
+		const buf = runFfmpegBuffer(args, "thumbnail_luma");
+		if (!buf || buf.length < 3) return null;
+		const r = buf[0];
+		const g = buf[1];
+		const b = buf[2];
+		return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+	} catch {
+		return null;
+	}
+}
+
+async function applyThumbnailQaAdjustments(filePath, { log } = {}) {
+	if (!ffmpegPath) return { applied: false };
+	const overall = samplePreviewLuma(filePath);
+	const left = samplePreviewLuma(filePath, {
+		x: 0,
+		y: 0,
+		w: Math.round(QA_PREVIEW_WIDTH * 0.45),
+		h: Math.round(QA_PREVIEW_HEIGHT * 0.35),
+	});
+	if (overall == null || left == null) return { applied: false };
+	if (overall >= QA_LUMA_MIN && left >= QA_LUMA_LEFT_MIN)
+		return { applied: false, overall, left };
+	const tmp = path.join(
+		path.dirname(filePath),
+		`thumb_qalift_${path.basename(filePath)}`
+	);
+	await runFfmpeg(
+		[
+			"-i",
+			filePath,
+			"-vf",
+			"eq=contrast=1.02:saturation=1.06:brightness=0.04:gamma=1.06",
+			"-frames:v",
+			"1",
+			"-q:v",
+			"2",
+			"-y",
+			tmp,
+		],
+		"thumbnail_qa_lift"
+	);
+	safeUnlink(filePath);
+	fs.renameSync(tmp, filePath);
+	if (log)
+		log("thumbnail qa lift applied", {
+			overall: Number(overall.toFixed(3)),
+			left: Number(left.toFixed(3)),
+		});
+	return { applied: true, overall, left };
 }
 
 async function downloadUrlToFile(url, outPath) {
@@ -1335,6 +1555,63 @@ async function generateOpenAiThumbnailBase({
 	throw new Error("thumbnail_openai_empty");
 }
 
+async function generateFallbackBackground({
+	sourcePath,
+	outPath,
+	width = DEFAULT_CANVAS_WIDTH,
+	height = DEFAULT_CANVAS_HEIGHT,
+	log,
+}) {
+	const W = makeEven(Math.max(2, Math.round(width)));
+	const H = makeEven(Math.max(2, Math.round(height)));
+	const baseColor = "0x1b1b1b";
+	const baseArgs = [
+		"-f",
+		"lavfi",
+		"-i",
+		`color=c=${baseColor}:s=${W}x${H}`,
+		"-frames:v",
+		"1",
+		"-q:v",
+		"2",
+		"-y",
+		outPath,
+	];
+
+	if (sourcePath && fs.existsSync(sourcePath)) {
+		try {
+			const args = [
+				"-f",
+				"lavfi",
+				"-i",
+				`color=c=${baseColor}:s=${W}x${H}`,
+				"-i",
+				sourcePath,
+				"-filter_complex",
+				`[1:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},format=rgba,boxblur=24:1,eq=brightness=0.02:saturation=1.05[blur];[0:v][blur]overlay=0:0[outv]`,
+				"-map",
+				"[outv]",
+				"-frames:v",
+				"1",
+				"-q:v",
+				"2",
+				"-y",
+				outPath,
+			];
+			await runFfmpeg(args, "thumbnail_fallback_bg");
+			return outPath;
+		} catch (e) {
+			if (log)
+				log("thumbnail fallback bg failed; using solid color", {
+					error: e?.message || String(e),
+				});
+		}
+	}
+
+	await runFfmpeg(baseArgs, "thumbnail_fallback_solid");
+	return outPath;
+}
+
 async function composeThumbnailBase({
 	baseImagePath,
 	presenterImagePath,
@@ -1358,13 +1635,15 @@ async function composeThumbnailBase({
 		: [];
 	const panelCount = topics.length;
 	const panelW = makeEven(Math.max(2, leftW - margin * 2));
+	const topPad = panelCount === 1 ? Math.round(H * 0.22) : 0;
 	const panelH =
 		panelCount > 1
 			? makeEven(Math.max(2, Math.round((H - margin * 3) / 2)))
-			: makeEven(Math.max(2, H - margin * 2));
+			: makeEven(Math.max(2, H - margin * 2 - topPad));
 	const panelBorder = Math.max(4, Math.round(W * 0.004));
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
+	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
 
 	const inputs = [baseImagePath, presenterImagePath, ...topics];
 	const filters = [];
@@ -1374,17 +1653,23 @@ async function composeThumbnailBase({
 	filters.push(
 		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)/2,format=rgba[presenter]`
 	);
-	filters.push("[presenter]split=2[p][ps]");
-	filters.push(
-		"[ps]colorchannelmixer=rr=0:gg=0:bb=0:aa=0.55,boxblur=18:1[shadow]"
-	);
+	if (presenterHasAlpha) {
+		filters.push("[presenter]split=2[p][ps]");
+		filters.push(
+			"[ps]colorchannelmixer=rr=0:gg=0:bb=0:aa=0.55,boxblur=18:1[shadow]"
+		);
+	} else {
+		filters.push("[presenter]null[p]");
+	}
 
 	let current = "[base]";
 
 	if (panelCount >= 1) {
 		const panel1Idx = 2;
 		const panelY =
-			panelCount > 1 ? margin : Math.max(0, Math.round((H - panelH) / 2));
+			panelCount > 1
+				? margin
+				: Math.max(0, Math.round(margin + topPad));
 		const panelCropX = "(iw-ow)/2";
 		const panelCropY = "(ih-oh)/2";
 		filters.push(
@@ -1412,8 +1697,12 @@ async function composeThumbnailBase({
 		current = "[tmp2]";
 	}
 
-	filters.push(`${current}[shadow]overlay=${presenterX + 10}:12[tmpS]`);
-	filters.push(`[tmpS][p]overlay=${presenterX}:0[outv]`);
+	if (presenterHasAlpha) {
+		filters.push(`${current}[shadow]overlay=${presenterX + 10}:12[tmpS]`);
+		filters.push(`[tmpS][p]overlay=${presenterX}:0[outv]`);
+	} else {
+		filters.push(`${current}[p]overlay=${presenterX}:0[outv]`);
+	}
 
 	const outExt = path.extname(outPath).toLowerCase();
 	const useJpegQ = outExt === ".jpg" || outExt === ".jpeg";
@@ -1455,6 +1744,7 @@ async function generateThumbnailCompositeBase({
 		throw new Error("thumbnail_presenter_missing_or_invalid");
 
 	let baseImagePath = presenterImagePath;
+	let usedSora = false;
 	if (useSora && SORA_THUMBNAIL_ENABLED) {
 		const prompt = buildSoraThumbnailPrompt({ title, topics });
 		try {
@@ -1466,13 +1756,36 @@ async function generateThumbnailCompositeBase({
 				openai,
 				log,
 			});
-			if (soraFrame) baseImagePath = soraFrame;
+			if (soraFrame) {
+				baseImagePath = soraFrame;
+				usedSora = true;
+			}
 		} catch (e) {
 			if (log)
-				log("thumbnail sora failed; using presenter base", {
+				log("thumbnail sora failed; using fallback background", {
 					error: e.message,
 				});
 		}
+	}
+	if (!usedSora) {
+		const topicSource =
+			Array.isArray(topicImagePaths) && topicImagePaths.length
+				? topicImagePaths[0]
+				: null;
+		const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
+		const fallbackSource = topicSource || (presenterHasAlpha ? null : presenterImagePath);
+		const fallbackPath = path.join(tmpDir, `thumb_bg_${jobId}.jpg`);
+		baseImagePath = await generateFallbackBackground({
+			sourcePath: fallbackSource,
+			outPath: fallbackPath,
+			width,
+			height,
+			log,
+		});
+		if (log)
+			log("thumbnail fallback background ready", {
+				path: path.basename(baseImagePath),
+			});
 	}
 
 	const outPath = path.join(tmpDir, `thumb_composite_${jobId}.png`);
@@ -1682,11 +1995,11 @@ async function renderThumbnailOverlay({
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
-		"eq=contrast=1.08:saturation=1.12:brightness=0.02",
-		"unsharp=5:5:0.8",
+		"eq=contrast=1.05:saturation=1.10:brightness=0.05:gamma=1.08",
+		"unsharp=5:5:0.7",
 		`drawbox=x=0:y=0:w=iw*0.018:h=ih:color=${accentColor}@0.85:t=fill`,
-		`drawbox=x=0:y=0:w=iw:h=ih:color=${accentColor}@0.45:t=6`,
-		"vignette=0.22",
+		`drawbox=x=0:y=0:w=iw:h=ih:color=${accentColor}@0.35:t=4`,
+		"vignette=0.14",
 	];
 	if (hasText) {
 		filters.push(
@@ -2242,6 +2555,8 @@ async function generateThumbnailPackage({
 		title: thumbTitle,
 		accentColor: stylePlan.accent,
 	});
+	ensureThumbnailFile(finalPath);
+	await applyThumbnailQaAdjustments(finalPath, { log });
 	ensureThumbnailFile(finalPath);
 	const maxBytes = 2 * 1024 * 1024;
 	if (fs.statSync(finalPath).size > maxBytes) {
