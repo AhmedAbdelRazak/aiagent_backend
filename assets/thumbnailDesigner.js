@@ -35,6 +35,21 @@ const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
 const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.38;
 const THUMBNAIL_TEXT_BOX_OPACITY = 0.28;
+const THUMBNAIL_LOCK_PRESENTER_IDENTITY = true;
+const THUMBNAIL_PRESENTER_CUTOUT_DIR = path.resolve(
+	__dirname,
+	"../uploads/presenter_cutouts"
+);
+const THUMBNAIL_PRESENTER_SMILE_PATH = "";
+const THUMBNAIL_PRESENTER_NEUTRAL_PATH = "";
+const THUMBNAIL_PRESENTER_SURPRISED_PATH = "";
+const THUMBNAIL_PRESENTER_LIKENESS_MIN = clampNumber(0.82, 0.5, 0.98);
+const THUMBNAIL_PRESENTER_FACE_REGION = {
+	x: 0.3,
+	y: 0.05,
+	w: 0.4,
+	h: 0.55,
+};
 const QA_PREVIEW_WIDTH = 320;
 const QA_PREVIEW_HEIGHT = 180;
 const QA_LUMA_MIN = 0.36;
@@ -100,7 +115,7 @@ const WATERMARK_URL_TOKENS = [
 	"watermark",
 ];
 
-const SORA_MODEL = process.env.SORA_MODEL || "sora-2-pro";
+const SORA_MODEL = process.env.SORA_MODEL || "sora-2";
 const SORA_THUMBNAIL_ENABLED = true;
 const SORA_THUMBNAIL_SECONDS = "4";
 const SORA_POLL_INTERVAL_MS = 2000;
@@ -642,10 +657,9 @@ async function fetchWikimediaImageUrls(topic = "", limit = 3) {
 		limit,
 		tokens: topicTokensFromTitle(topic),
 	});
-	return uniqueStrings(
-		candidates.map((c) => c.url).filter(Boolean),
-		{ limit: clampNumber(Number(limit) || 3, 1, 8) }
-	);
+	return uniqueStrings(candidates.map((c) => c.url).filter(Boolean), {
+		limit: clampNumber(Number(limit) || 3, 1, 8),
+	});
 }
 
 function parseMetaAttributes(tag = "") {
@@ -1152,6 +1166,50 @@ Sharp, clean edges, no distortions.
 `.trim();
 }
 
+function presenterCutoutKey(pose = "") {
+	const norm = String(pose || "").toLowerCase();
+	if (norm === "surprised") return "surprised";
+	if (norm === "neutral" || norm === "thoughtful") return "neutral";
+	return "smile";
+}
+
+function resolvePresenterCutoutPath(pose = "", fallbackDir = "") {
+	const key = presenterCutoutKey(pose);
+	const direct =
+		key === "smile"
+			? THUMBNAIL_PRESENTER_SMILE_PATH
+			: key === "surprised"
+			? THUMBNAIL_PRESENTER_SURPRISED_PATH
+			: THUMBNAIL_PRESENTER_NEUTRAL_PATH;
+	if (direct && fs.existsSync(direct)) {
+		const dt = detectFileType(direct);
+		if (dt?.kind === "image") return direct;
+	}
+	const searchDirs = [];
+	if (THUMBNAIL_PRESENTER_CUTOUT_DIR)
+		searchDirs.push(THUMBNAIL_PRESENTER_CUTOUT_DIR);
+	if (fallbackDir) searchDirs.push(fallbackDir);
+	if (!searchDirs.length) return "";
+
+	const names = [
+		`presenter_${key}.png`,
+		`presenter_${key}.webp`,
+		`presenter_${key}.jpg`,
+		`${key}.png`,
+		`${key}.webp`,
+		`${key}.jpg`,
+	];
+	for (const dir of searchDirs) {
+		for (const name of names) {
+			const candidate = path.join(dir, name);
+			if (!fs.existsSync(candidate)) continue;
+			const dt = detectFileType(candidate);
+			if (dt?.kind === "image") return candidate;
+		}
+	}
+	return "";
+}
+
 async function generatePresenterVariant({
 	openai,
 	tmpDir,
@@ -1192,19 +1250,65 @@ async function generatePresenterVariant({
 		{ retries: 1, baseDelayMs: 900, log }
 	);
 
-	let bestBuf = null;
-	let bestSize = 0;
+	const candidates = [];
+	let idx = 0;
 	for (const item of resp?.data || []) {
 		if (!item?.b64_json) continue;
 		const b = Buffer.from(item.b64_json, "base64");
-		if (b.length > bestSize) {
-			bestSize = b.length;
-			bestBuf = b;
+		const candPath = path.join(tmpDir, `presenter_${cacheKey}_cand${idx}.png`);
+		idx += 1;
+		fs.writeFileSync(candPath, b);
+		const dt = detectFileType(candPath);
+		if (!dt || dt.kind !== "image" || dt.ext !== "png") {
+			safeUnlink(candPath);
+			continue;
 		}
+		const similarity =
+			Number.isFinite(THUMBNAIL_PRESENTER_LIKENESS_MIN) &&
+			THUMBNAIL_PRESENTER_LIKENESS_MIN > 0
+				? comparePresenterSimilarity(presenterPath, candPath)
+				: null;
+		candidates.push({
+			path: candPath,
+			size: b.length,
+			similarity,
+		});
 	}
-	if (!bestBuf) throw new Error("presenter_variant_empty");
+	if (!candidates.length) throw new Error("presenter_variant_empty");
 
-	fs.writeFileSync(outPath, bestBuf);
+	let best = null;
+	const hasSimilarity = candidates.some(
+		(c) => typeof c.similarity === "number"
+	);
+	if (hasSimilarity) {
+		candidates.sort((a, b) => {
+			const as = Number.isFinite(a.similarity) ? a.similarity : -1;
+			const bs = Number.isFinite(b.similarity) ? b.similarity : -1;
+			if (bs !== as) return bs - as;
+			return b.size - a.size;
+		});
+		best = candidates[0];
+		if (
+			Number.isFinite(best.similarity) &&
+			best.similarity < THUMBNAIL_PRESENTER_LIKENESS_MIN
+		) {
+			for (const c of candidates) safeUnlink(c.path);
+			throw new Error("presenter_variant_low_similarity");
+		}
+	} else {
+		candidates.sort((a, b) => b.size - a.size);
+		best = candidates[0];
+	}
+
+	if (fs.existsSync(outPath)) safeUnlink(outPath);
+	if (best.path !== outPath) {
+		fs.copyFileSync(best.path, outPath);
+	}
+	for (const c of candidates) {
+		if (c.path !== best.path) safeUnlink(c.path);
+	}
+	if (best.path !== outPath) safeUnlink(best.path);
+
 	const dt = detectFileType(outPath);
 	if (!dt || dt.kind !== "image" || dt.ext !== "png")
 		throw new Error("presenter_variant_invalid");
@@ -1212,7 +1316,10 @@ async function generatePresenterVariant({
 		log("presenter variant generated", {
 			pose,
 			path: path.basename(outPath),
-			bytes: bestSize,
+			similarity: Number.isFinite(best.similarity)
+				? Number(best.similarity.toFixed(3))
+				: null,
+			bytes: best.size,
 		});
 	return outPath;
 }
@@ -1278,6 +1385,61 @@ function runFfmpegBuffer(args, label = "ffmpeg_buffer") {
 	if (res.status === 0) return res.stdout || Buffer.alloc(0);
 	const err = (res.stderr || Buffer.alloc(0)).toString().slice(0, 4000);
 	throw new Error(`${label} failed (code ${res.status}): ${err}`);
+}
+
+function computeImageHash(filePath, regionPct = null) {
+	if (!ffmpegPath) return null;
+	const dims = ffprobeDimensions(filePath);
+	let crop = "";
+	if (regionPct && dims.width && dims.height) {
+		const rx = Math.max(0, Math.round(dims.width * (regionPct.x || 0)));
+		const ry = Math.max(0, Math.round(dims.height * (regionPct.y || 0)));
+		const rw = Math.max(1, Math.round(dims.width * (regionPct.w || 1)));
+		const rh = Math.max(1, Math.round(dims.height * (regionPct.h || 1)));
+		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
+	}
+	const filter = `${crop}scale=8:8:flags=area,format=gray`;
+	const args = [
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-i",
+		filePath,
+		"-vf",
+		filter,
+		"-frames:v",
+		"1",
+		"-f",
+		"rawvideo",
+		"pipe:1",
+	];
+	try {
+		const buf = runFfmpegBuffer(args, "thumbnail_hash");
+		if (!buf || buf.length < 64) return null;
+		let sum = 0;
+		for (let i = 0; i < 64; i++) sum += buf[i];
+		const avg = sum / 64;
+		const bits = new Array(64);
+		for (let i = 0; i < 64; i++) bits[i] = buf[i] >= avg ? 1 : 0;
+		return bits;
+	} catch {
+		return null;
+	}
+}
+
+function hashSimilarity(a, b) {
+	if (!a || !b || a.length !== b.length) return null;
+	let diff = 0;
+	for (let i = 0; i < a.length; i++) {
+		if (a[i] !== b[i]) diff += 1;
+	}
+	return 1 - diff / a.length;
+}
+
+function comparePresenterSimilarity(originalPath, candidatePath) {
+	const a = computeImageHash(originalPath, THUMBNAIL_PRESENTER_FACE_REGION);
+	const b = computeImageHash(candidatePath, THUMBNAIL_PRESENTER_FACE_REGION);
+	return hashSimilarity(a, b);
 }
 
 function samplePreviewLuma(filePath, region = null) {
@@ -1667,9 +1829,7 @@ async function composeThumbnailBase({
 	if (panelCount >= 1) {
 		const panel1Idx = 2;
 		const panelY =
-			panelCount > 1
-				? margin
-				: Math.max(0, Math.round(margin + topPad));
+			panelCount > 1 ? margin : Math.max(0, Math.round(margin + topPad));
 		const panelCropX = "(iw-ow)/2";
 		const panelCropY = "(ih-oh)/2";
 		filters.push(
@@ -1773,7 +1933,8 @@ async function generateThumbnailCompositeBase({
 				? topicImagePaths[0]
 				: null;
 		const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
-		const fallbackSource = topicSource || (presenterHasAlpha ? null : presenterImagePath);
+		const fallbackSource =
+			topicSource || (presenterHasAlpha ? null : presenterImagePath);
 		const fallbackPath = path.join(tmpDir, `thumb_bg_${jobId}.jpg`);
 		baseImagePath = await generateFallbackBackground({
 			sourcePath: fallbackSource,
@@ -1998,8 +2159,8 @@ async function renderThumbnailOverlay({
 		"eq=contrast=1.05:saturation=1.10:brightness=0.05:gamma=1.08",
 		"unsharp=5:5:0.7",
 		`drawbox=x=0:y=0:w=iw*0.018:h=ih:color=${accentColor}@0.85:t=fill`,
-		`drawbox=x=0:y=0:w=iw:h=ih:color=${accentColor}@0.35:t=4`,
-		"vignette=0.14",
+		`drawbox=x=0:y=0:w=iw:h=ih:color=${accentColor}@0.25:t=4`,
+		"vignette=0.08",
 	];
 	if (hasText) {
 		filters.push(
@@ -2486,25 +2647,44 @@ async function generateThumbnailPackage({
 		expression,
 	});
 	let presenterForCompose = presenterLocalPath;
-	const canGenerateVariant = Boolean(openai || getOpenAiKey());
-	if (canGenerateVariant) {
-		try {
-			presenterForCompose = await generatePresenterVariant({
-				openai,
-				tmpDir,
-				presenterPath: presenterLocalPath,
+	const cutoutPath = resolvePresenterCutoutPath(
+		stylePlan.pose,
+		path.dirname(presenterLocalPath || "")
+	);
+	if (cutoutPath) {
+		presenterForCompose = cutoutPath;
+		if (log)
+			log("presenter cutout selected", {
 				pose: stylePlan.pose,
-				log,
+				path: path.basename(cutoutPath),
 			});
-		} catch (e) {
-			if (log)
-				log("presenter variant failed; fallback to original", {
+	} else if (THUMBNAIL_LOCK_PRESENTER_IDENTITY) {
+		if (log)
+			log("presenter cutout missing; identity lock on", {
+				pose: stylePlan.pose,
+				cutoutDir: THUMBNAIL_PRESENTER_CUTOUT_DIR,
+			});
+	} else {
+		const canGenerateVariant = Boolean(openai || getOpenAiKey());
+		if (canGenerateVariant) {
+			try {
+				presenterForCompose = await generatePresenterVariant({
+					openai,
+					tmpDir,
+					presenterPath: presenterLocalPath,
 					pose: stylePlan.pose,
-					error: e?.message || String(e),
+					log,
 				});
+			} catch (e) {
+				if (log)
+					log("presenter variant failed; fallback to original", {
+						pose: stylePlan.pose,
+						error: e?.message || String(e),
+					});
+			}
+		} else if (log) {
+			log("presenter variant skipped (missing OpenAI key)");
 		}
-	} else if (log) {
-		log("presenter variant skipped (missing OpenAI key)");
 	}
 	const chosenDetected = detectFileType(presenterForCompose);
 	if (!chosenDetected || chosenDetected.kind !== "image")
@@ -2556,7 +2736,8 @@ async function generateThumbnailPackage({
 		accentColor: stylePlan.accent,
 	});
 	ensureThumbnailFile(finalPath);
-	await applyThumbnailQaAdjustments(finalPath, { log });
+	const qa = await applyThumbnailQaAdjustments(finalPath, { log });
+	if (log) log("thumbnail qa result", qa);
 	ensureThumbnailFile(finalPath);
 	const maxBytes = 2 * 1024 * 1024;
 	if (fs.statSync(finalPath).size > maxBytes) {

@@ -13,10 +13,9 @@
  *    - Reuse/loop baseline for all segments (no per-segment Runway randomness)
  *    - Cap gestures; avoid hands; stabilize prompt
  *
- * 3) Wardrobe/orchestrator step (classy outfit):
- *    - Optional Runway image-to-image (text_to_image) to apply a classy suit
- *    - Uses a wardrobe reference image (DEFAULT_PRESENTER_ASSET_URL)
- *    - Strong "keep identity/background" constraints + deterministic seed
+ * 3) Presenter wardrobe adjustment (classy outfit):
+ *    - Optional Sora-based presenter edit after script + thumbnail
+ *    - Keeps identity/studio and enforces candle placement
  *
  * 4) Camera is slightly farther away:
  *    - After lipsync, apply a subtle zoom-out with blurred background padding
@@ -55,6 +54,9 @@ const dayjs = require("dayjs");
 const { google } = require("googleapis");
 const { OpenAI } = require("openai");
 const { generateThumbnailPackage } = require("../assets/thumbnailDesigner");
+const {
+	generatePresenterAdjustedImage,
+} = require("../assets/presenterAdjustments");
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
 const {
@@ -118,7 +120,6 @@ const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
 const RUNWAY_VERSION = "2024-11-06";
 const RUNWAY_VIDEO_MODEL = "gen4_turbo";
 const RUNWAY_VIDEO_MODEL_FALLBACK = "gen4_turbo";
-const RUNWAY_IMAGE_MODEL = "gen4_image";
 
 const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
 const SYNC_SO_BASE = "https://api.sync.so";
@@ -184,7 +185,7 @@ const LONG_VIDEO_PERSIST_OUTPUT = false;
 
 // Your classy suit reference (also default presenter)
 const DEFAULT_PRESENTER_ASSET_URL =
-	"https://res.cloudinary.com/infiniteapps/image/upload/v1766432471/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyPhotoWithASuit_cnsnlk.png";
+	"https://res.cloudinary.com/infiniteapps/image/upload/v1767062842/aivideomatic/long_thumbnails/MyPhotoWithASuit_s1xay4.png";
 const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 	"https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
 const DEFAULT_BRAND_CANDLE_IMAGE_PATH = path.resolve(
@@ -193,7 +194,6 @@ const DEFAULT_BRAND_CANDLE_IMAGE_PATH = path.resolve(
 );
 const DEFAULT_BRAND_CANDLE_IMAGE_URL = "";
 
-const PRESENTER_MASTER_SEED = 428911;
 const CANDLE_REF_SCALE = clampNumber(0.35, 0.1, 1);
 const CANDLE_WIDTH_PCT = clampNumber(0.03, 0.02, 0.1);
 const CANDLE_HEAD_HEIGHT_PCT = clampNumber(0.05, 0.04, 0.16);
@@ -215,8 +215,6 @@ const PRESENTER_CANDLE_PROMPT =
 	`${CANDLE_SIZE_DESC}; keep it fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge; position it consistently, ${CANDLE_POSITION_DESC}; clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; do not place the lid on the desk; show open wax surface; only one candle; do NOT place on the viewer-left side; keep the candle in the exact same spot across shots.`;
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter.";
-const PRESENTER_WARDROBE_PROMPT =
-	"classy tailored suit or blazer with a neat shirt; clean, camera-ready outfit";
 const PRESENTER_MOTION_STYLE =
 	"natural head and neck movement, human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; no exaggerated grin";
 
@@ -2081,7 +2079,7 @@ async function prepareImageSegments({
 }
 
 /* ---------------------------------------------------------------
- * Presenter handling + wardrobe edit (Runway text_to_image)
+ * Presenter handling
  * ------------------------------------------------------------- */
 
 async function ensureLocalPresenterAsset(assetUrl, tmpDir, jobId) {
@@ -2390,49 +2388,6 @@ function pickIntroExpression(jobId) {
 	return "calm, neutral expression with relaxed eyes";
 }
 
-async function runwayTextToImage({
-	referenceUris,
-	referenceImages,
-	promptText,
-	ratio,
-	seed,
-}) {
-	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
-	const refs =
-		Array.isArray(referenceImages) && referenceImages.length
-			? referenceImages
-			: (referenceUris || []).map((uri, idx) => ({
-					uri,
-					tag: idx === 0 ? "person" : idx === 1 ? "wardrobe" : `ref${idx}`,
-			  }));
-	const payload = {
-		model: RUNWAY_IMAGE_MODEL,
-		promptText: String(promptText || "").slice(0, 900),
-		ratio: runwayRatio(ratio),
-		seed: Number.isFinite(seed) ? seed : undefined,
-		referenceImages: refs,
-	};
-
-	const res = await axios.post(
-		"https://api.dev.runwayml.com/v1/text_to_image",
-		payload,
-		{
-			headers: runwayHeadersJson(),
-			timeout: 30000,
-			validateStatus: (s) => s < 500,
-		}
-	);
-	if (res.status >= 300) {
-		const msg =
-			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
-		throw new Error(
-			`Runway text_to_image failed (${res.status}): ${msg.slice(0, 700)}`
-		);
-	}
-	if (!res.data?.id) throw new Error("Runway text_to_image returned no id");
-	return await pollRunwayTask(res.data.id, "runway_text_to_image");
-}
-
 async function runwayImageToVideo({
 	runwayImageUri,
 	promptText,
@@ -2606,85 +2561,6 @@ Hands: subtle, small gestures near the desk; do NOT cover the face.
 No extra people, no text overlays, no screens, no charts, no logos except the candle brand logo, no camera shake, no mouth warping.
 Do NOT try to lip-sync.
 `.trim();
-}
-
-async function createPresenterMasterImage({
-	jobId,
-	presenterLocalPath,
-	outputRatio,
-	candleLocalPath,
-}) {
-	if (!RUNWAY_API_KEY)
-		throw new Error("RUNWAY_API_KEY missing (required for presenter image)");
-
-	const detected = detectFileType(presenterLocalPath);
-	if (detected?.kind !== "image") {
-		throw new Error("Presenter base must be an image for Runway image edit");
-	}
-
-	try {
-		const personUri = await runwayCreateEphemeralUpload({
-			filePath: presenterLocalPath,
-			filename: "person.png",
-		});
-		const refs = [{ uri: personUri, tag: "person" }];
-		if (candleLocalPath && fs.existsSync(candleLocalPath)) {
-			const candleUri = await runwayCreateEphemeralUpload({
-				filePath: candleLocalPath,
-				filename: "candle.jpg",
-			});
-			refs.push({ uri: candleUri, tag: "candle" });
-		}
-
-		const candleLine = candleLocalPath
-			? 'Use the exact branded candle from reference tag "candle" (do not redesign), scale it down to a realistic small tabletop size (about one-third the reference size), and remove any lid or cap so the candle is open; do not show the lid anywhere in frame.'
-			: "Add a small, elegant lit candle with a subtle brand logo (no lid or cap anywhere in frame).";
-
-		const prompt = `
-Edit the PERSON in reference tag "person".
-Keep the SAME identity (face, beard, glasses), SAME studio background, SAME lighting, SAME camera angle. ${STUDIO_EMPTY_PROMPT}
-${candleLine}
-Keep the candle logo readable and undistorted.
-Add ${PRESENTER_CANDLE_PROMPT}. Keep the candle small, classy, and clearly on the desk to the presenter's left (viewer-right), not centered.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
-Remove any lid or cap from the candle; do not show the lid anywhere in frame or on the desk. If the reference candle includes a lid, remove it completely.
-Outfit: ${PRESENTER_WARDROBE_PROMPT}. Make the outfit different than the reference while staying classy.
-Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
-Expression: calm and friendly with a brief, subtle light smile only (not constant). Mouth relaxed at rest.
-Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
-Eyes: natural, comfortable, realistic catchlights and blink cadence; no glassy or robotic eyes.
-Do NOT change age, skin tone, hairline, or facial features. No extra people, no text overlays, no screens, no charts, no logos elsewhere (only the candle brand logo is OK).
-No distortion, no warped face, no extra hands.
-`.trim();
-
-		logJob(jobId, "presenter image generation start");
-		const outUrl = await withRetries(
-			() =>
-				runwayTextToImage({
-					referenceImages: refs,
-					promptText: prompt,
-					ratio: outputRatio,
-					seed: PRESENTER_MASTER_SEED,
-				}),
-			{ retries: 2, baseDelayMs: 900, label: "runway_text_to_image" }
-		);
-
-		const outPath = path.join(
-			path.dirname(presenterLocalPath),
-			`presenter_master_${jobId}.png`
-		);
-		await downloadToFile(outUrl, outPath, 90000, 2);
-		const dt = detectFileType(outPath);
-		if (dt?.kind !== "image") throw new Error("presenter output is not image");
-
-		logJob(jobId, "presenter image ready", { path: path.basename(outPath) });
-		return outPath;
-	} catch (e) {
-		logJob(jobId, "presenter image generation failed", {
-			error: e.message,
-		});
-		throw e;
-	}
 }
 
 /* ---------------------------------------------------------------
@@ -6251,8 +6127,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		const detected = detectFileType(presenterLocal);
 		let presenterIsVideo = detected?.kind === "video";
 		let presenterIsImage = detected?.kind === "image";
-		if (!presenterIsVideo && !presenterIsImage)
-			throw new Error("Presenter asset must be a valid image or video");
+		if (!presenterIsImage)
+			throw new Error("Presenter asset must be a valid image");
 
 		logJob(jobId, "presenter asset ready", {
 			path: path.basename(presenterLocal),
@@ -6261,19 +6137,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			hasBrandCandle: Boolean(candleLocalPath),
 			brandCandlePath: candleLocalPath ? path.basename(candleLocalPath) : null,
 		});
-
-		// 3) Recreate presenter with candle + wardrobe (mandatory)
-		presenterLocal = await createPresenterMasterImage({
-			jobId,
-			presenterLocalPath: presenterLocal,
-			outputRatio: output.ratio,
-			candleLocalPath,
-		});
-		const masterDetected = detectFileType(presenterLocal);
-		presenterIsVideo = masterDetected?.kind === "video";
-		presenterIsImage = masterDetected?.kind === "image";
-		if (!presenterIsImage)
-			throw new Error("Presenter master image is invalid or not an image");
 
 		updateJob(jobId, { progressPct: 12 });
 
@@ -6384,6 +6247,61 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				error: e.message,
 			});
 			throw e;
+		}
+
+		// 5.6) Presenter wardrobe + candle adjustment (post-script/thumbnail)
+		if (enableWardrobeEdit && presenterIsImage) {
+			try {
+				const presenterTitle = String(
+					script.title || topicSummary || topicTitles[0] || ""
+				).trim();
+				const presenterResult = await generatePresenterAdjustedImage({
+					jobId,
+					tmpDir,
+					presenterLocalPath: presenterLocal,
+					candleLocalPath,
+					ratio: output.ratio,
+					title: presenterTitle,
+					topics: topicPicks,
+					categoryLabel,
+					openai,
+					log: (message, payload) => logJob(jobId, message, payload),
+				});
+				if (
+					presenterResult?.localPath &&
+					fs.existsSync(presenterResult.localPath)
+				) {
+					const adjustedDetected = detectFileType(presenterResult.localPath);
+					if (adjustedDetected?.kind === "image") {
+						presenterLocal = presenterResult.localPath;
+						presenterIsVideo = false;
+						presenterIsImage = true;
+						logJob(jobId, "presenter adjustments ready", {
+							path: path.basename(presenterLocal),
+							method: presenterResult.method || "sora",
+							cloudinary: Boolean(presenterResult.url),
+						});
+						updateJob(jobId, {
+							meta: {
+								...JOBS.get(jobId)?.meta,
+								presenterImageUrl: presenterResult.url || "",
+							},
+						});
+					} else {
+						logJob(jobId, "presenter adjustments invalid; using original", {
+							detected: adjustedDetected?.kind || "unknown",
+						});
+					}
+				}
+			} catch (e) {
+				logJob(jobId, "presenter adjustments failed; using original", {
+					error: e.message,
+				});
+			}
+		} else if (enableWardrobeEdit && !presenterIsImage) {
+			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
+				detected: presenterIsVideo ? "video" : "unknown",
+			});
 		}
 
 		const seoMeta = await buildSeoMetadata({
