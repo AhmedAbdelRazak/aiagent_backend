@@ -58,6 +58,15 @@ const CSE_MIN_IMAGE_SHORT_EDGE = 720;
 const REQUIRE_THUMBNAIL_TOPIC_IMAGES =
 	String(process.env.REQUIRE_THUMBNAIL_TOPIC_IMAGES ?? "true").toLowerCase() !==
 	"false";
+const WIKIPEDIA_FALLBACK_ENABLED =
+	String(process.env.WIKIPEDIA_THUMBNAIL_FALLBACK ?? "true").toLowerCase() !==
+	"false";
+const WIKIMEDIA_FALLBACK_ENABLED =
+	String(process.env.WIKIMEDIA_THUMBNAIL_FALLBACK ?? "true").toLowerCase() !==
+	"false";
+const WIKIPEDIA_LANG = String(process.env.WIKIPEDIA_LANG || "en").trim() || "en";
+const WIKIPEDIA_API_BASE = `https://${WIKIPEDIA_LANG}.wikipedia.org/w/api.php`;
+const WIKIMEDIA_API_BASE = "https://commons.wikimedia.org/w/api.php";
 
 const WATERMARK_URL_TOKENS = [
 	"gettyimages",
@@ -399,6 +408,108 @@ async function headContentType(url, timeoutMs = 8000) {
 		return ct || null;
 	} catch {
 		return null;
+	}
+}
+
+function buildWikiTitleCandidates(topic = "") {
+	const raw = String(topic || "").trim();
+	const cleaned = cleanThumbnailText(raw);
+	return uniqueStrings([raw, cleaned].filter(Boolean), { limit: 2 });
+}
+
+async function fetchWikipediaPageImageUrl(topic = "") {
+	if (!WIKIPEDIA_FALLBACK_ENABLED) return null;
+	const candidates = buildWikiTitleCandidates(topic);
+	if (!candidates.length) return null;
+	const tokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+	const minMatches = Math.max(1, Math.min(2, tokens.length));
+
+	for (const title of candidates) {
+		try {
+			const { data } = await axios.get(WIKIPEDIA_API_BASE, {
+				params: {
+					action: "query",
+					format: "json",
+					prop: "pageimages|info",
+					inprop: "url",
+					piprop: "original|thumbnail",
+					pithumbsize: 1200,
+					redirects: 1,
+					titles: title,
+				},
+				timeout: 8000,
+				validateStatus: (s) => s < 500,
+				headers: { "User-Agent": "agentai-thumbnail/1.0" },
+			});
+
+			const pages = data?.query?.pages || {};
+			const page = Object.values(pages)[0];
+			if (!page || page.missing) continue;
+			const pageTitle = String(page.title || "");
+			if (
+				tokens.length &&
+				topicMatchInfo(tokens, [pageTitle]).count < minMatches
+			)
+				continue;
+			const imageUrl = page.original?.source || page.thumbnail?.source || "";
+			if (!imageUrl) continue;
+			if (isLikelyWatermarkedSource(imageUrl, page.fullurl || "")) continue;
+			return imageUrl;
+		} catch {
+			// ignore and try next
+		}
+	}
+
+	return null;
+}
+
+async function fetchWikimediaImageUrls(topic = "", limit = 3) {
+	if (!WIKIMEDIA_FALLBACK_ENABLED) return [];
+	const query = sanitizeOverlayQuery(topic);
+	if (!query) return [];
+	const tokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+	const minMatches = Math.max(1, Math.min(2, tokens.length));
+	const target = clampNumber(Number(limit) || 3, 1, 8);
+
+	try {
+		const { data } = await axios.get(WIKIMEDIA_API_BASE, {
+			params: {
+				action: "query",
+				format: "json",
+				generator: "search",
+				gsrsearch: query,
+				gsrnamespace: 6,
+				gsrlimit: Math.max(5, target * 2),
+				prop: "imageinfo",
+				iiprop: "url|size|mime",
+				iiurlwidth: 1600,
+			},
+			timeout: 8000,
+			validateStatus: (s) => s < 500,
+			headers: { "User-Agent": "agentai-thumbnail/1.0" },
+		});
+
+		const pages = data?.query?.pages || {};
+		const urls = [];
+		for (const page of Object.values(pages)) {
+			const title = String(page.title || "");
+			if (
+				tokens.length &&
+				topicMatchInfo(tokens, [title]).count < minMatches
+			)
+				continue;
+			const info = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
+			const url = String(info?.url || info?.thumburl || "").trim();
+			if (!url) continue;
+			const mime = String(info?.mime || "").toLowerCase();
+			if (mime && !mime.startsWith("image/")) continue;
+			if (isLikelyWatermarkedSource(url, "")) continue;
+			urls.push(url);
+			if (urls.length >= target) break;
+		}
+		return uniqueStrings(urls, { limit: target });
+	} catch {
+		return [];
 	}
 }
 
@@ -1434,7 +1545,8 @@ async function fetchCseImages(topic, extraTokens = []) {
 		).length;
 		const phraseBoost = phraseInfo.count ? 1.5 : 0;
 		const score = info.count + urlMatches * 0.75 + phraseBoost;
-		candidates.push({ url, score });
+		const mime = String(it.image?.mime || "").toLowerCase();
+		candidates.push({ url, score, mime });
 		if (candidates.length >= 14) break;
 	}
 
@@ -1448,6 +1560,8 @@ async function fetchCseImages(topic, extraTokens = []) {
 		const ct = await headContentType(c.url, 7000);
 		if (ct) {
 			if (!ct.startsWith("image/")) continue;
+		} else if (c.mime && c.mime.startsWith("image/")) {
+			// accept CSE-reported image mime when HEAD is blocked
 		} else if (!isProbablyDirectImageUrl(c.url)) {
 			continue;
 		}
@@ -1523,6 +1637,27 @@ async function collectThumbnailTopicImages({
 						count: ogHits.length,
 					});
 				hits = ogHits;
+			}
+		}
+		if (!hits.length) {
+			const wikiUrl = await fetchWikipediaPageImageUrl(label);
+			if (wikiUrl) {
+				if (log)
+					log("thumbnail topic images fallback wiki", {
+						topic: label,
+					});
+				hits = [wikiUrl];
+			}
+		}
+		if (!hits.length) {
+			const commons = await fetchWikimediaImageUrls(label, 3);
+			if (commons.length) {
+				if (log)
+					log("thumbnail topic images fallback commons", {
+						topic: label,
+						count: commons.length,
+					});
+				hits = commons;
 			}
 		}
 		for (const url of hits) {
