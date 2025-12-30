@@ -8,14 +8,12 @@ const { OpenAI, toFile } = require("openai");
 const cloudinary = require("cloudinary").v2;
 const { TOPIC_STOP_WORDS, GENERIC_TOPIC_TOKENS } = require("./utils");
 
-let ffmpegPath = process.env.FFMPEG_PATH || "";
-if (!ffmpegPath) {
-	try {
-		// eslint-disable-next-line import/no-extraneous-dependencies
-		ffmpegPath = require("ffmpeg-static");
-	} catch {
-		ffmpegPath = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
-	}
+let ffmpegPath = "";
+try {
+	// eslint-disable-next-line import/no-extraneous-dependencies
+	ffmpegPath = require("ffmpeg-static");
+} catch {
+	ffmpegPath = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
 }
 
 const DEFAULT_IMAGE_MODEL = "gpt-image-1";
@@ -55,16 +53,10 @@ const CSE_PREFERRED_IMG_SIZE = "xlarge";
 const CSE_FALLBACK_IMG_SIZE = "large";
 const CSE_PREFERRED_IMG_COLOR = "color";
 const CSE_MIN_IMAGE_SHORT_EDGE = 720;
-const REQUIRE_THUMBNAIL_TOPIC_IMAGES =
-	String(process.env.REQUIRE_THUMBNAIL_TOPIC_IMAGES ?? "true").toLowerCase() !==
-	"false";
-const WIKIPEDIA_FALLBACK_ENABLED =
-	String(process.env.WIKIPEDIA_THUMBNAIL_FALLBACK ?? "true").toLowerCase() !==
-	"false";
-const WIKIMEDIA_FALLBACK_ENABLED =
-	String(process.env.WIKIMEDIA_THUMBNAIL_FALLBACK ?? "true").toLowerCase() !==
-	"false";
-const WIKIPEDIA_LANG = String(process.env.WIKIPEDIA_LANG || "en").trim() || "en";
+const REQUIRE_THUMBNAIL_TOPIC_IMAGES = true;
+const WIKIPEDIA_FALLBACK_ENABLED = true;
+const WIKIMEDIA_FALLBACK_ENABLED = true;
+const WIKIPEDIA_LANG = "en";
 const WIKIPEDIA_API_BASE = `https://${WIKIPEDIA_LANG}.wikipedia.org/w/api.php`;
 const WIKIMEDIA_API_BASE = "https://commons.wikimedia.org/w/api.php";
 
@@ -101,9 +93,7 @@ const SORA_MODEL = process.env.SORA_MODEL || "sora-2";
 const SORA_THUMBNAIL_ENABLED =
 	String(process.env.SORA_THUMBNAIL_ENABLED ?? "true").toLowerCase() !==
 	"false";
-const SORA_THUMBNAIL_SECONDS = String(
-	process.env.SORA_THUMBNAIL_SECONDS || "4"
-);
+const SORA_THUMBNAIL_SECONDS = 4;
 const SORA_POLL_INTERVAL_MS = 2000;
 const SORA_MAX_POLL_ATTEMPTS = 120;
 const SORA_PROMPT_CHAR_LIMIT = 320;
@@ -204,6 +194,28 @@ function filterSpecificTopicTokens(tokens = []) {
 	return filtered.length ? filtered : norm;
 }
 
+const TOPIC_TOKEN_ALIASES = Object.freeze({
+	oscar: ["oscars", "academy awards", "academy award"],
+	oscars: ["oscar", "academy awards", "academy award"],
+	grammy: ["grammys", "grammy awards"],
+	grammys: ["grammy", "grammy awards"],
+	emmy: ["emmys", "emmy awards"],
+	emmys: ["emmy", "emmy awards"],
+	"golden globe": ["golden globes"],
+	"golden globes": ["golden globe"],
+});
+
+function expandTopicTokens(tokens = []) {
+	const base = normalizeTopicTokens(tokens);
+	const out = new Set(base);
+	for (const tok of base) {
+		if (TOPIC_TOKEN_ALIASES[tok]) {
+			for (const alias of TOPIC_TOKEN_ALIASES[tok]) out.add(alias);
+		}
+	}
+	return Array.from(out);
+}
+
 const CONTEXT_STOP_TOKENS = new Set([
 	...TOPIC_STOP_WORDS,
 	"what",
@@ -264,19 +276,52 @@ function filterContextTokens(tokens = []) {
 function minImageTokenMatches(tokens = []) {
 	const norm = normalizeTopicTokens(tokens);
 	if (!norm.length) return 0;
-	if (norm.length >= 4) return 3;
-	if (norm.length >= 2) return 2;
+	if (norm.length >= 3) return 2;
 	return 1;
 }
 
 function topicMatchInfo(tokens = [], fields = []) {
-	const norm = normalizeTopicTokens(tokens);
-	if (!norm.length) return { count: 0, matchedTokens: [] };
+	const norm = expandTopicTokens(tokens);
+	if (!norm.length) return { count: 0, matchedTokens: [], normTokens: [] };
 	const hay = (fields || [])
-		.map((f) => String(f || "").toLowerCase())
+		.flatMap((f) => {
+			const str = String(f || "");
+			const lowers = [str.toLowerCase()];
+			try {
+				lowers.push(decodeURIComponent(str).toLowerCase());
+			} catch {}
+			return lowers;
+		})
 		.join(" ");
 	const matchedTokens = norm.filter((tok) => hay.includes(tok));
-	return { count: matchedTokens.length, matchedTokens };
+	return { count: matchedTokens.length, matchedTokens, normTokens: norm };
+}
+
+function inferEntertainmentCategory(tokens = []) {
+	const set = new Set(tokens.map((t) => t.toLowerCase()));
+	if (
+		["movie", "film", "trailer", "cast", "director", "box", "office"].some(
+			(t) => set.has(t)
+		)
+	)
+		return "film";
+	if (
+		["tv", "series", "season", "episode", "streaming"].some((t) => set.has(t))
+	)
+		return "tv";
+	if (
+		["song", "album", "music", "tour", "concert", "singer", "rapper"].some(
+			(t) => set.has(t)
+		)
+	)
+		return "music";
+	if (
+		["celebrity", "actor", "actress", "influencer", "tiktok"].some((t) =>
+			set.has(t)
+		)
+	)
+		return "celebrity";
+	return "general";
 }
 
 function buildImageMatchCriteria(topic = "", extraTokens = []) {
@@ -493,10 +538,7 @@ async function fetchWikimediaImageUrls(topic = "", limit = 3) {
 		const urls = [];
 		for (const page of Object.values(pages)) {
 			const title = String(page.title || "");
-			if (
-				tokens.length &&
-				topicMatchInfo(tokens, [title]).count < minMatches
-			)
+			if (tokens.length && topicMatchInfo(tokens, [title]).count < minMatches)
 				continue;
 			const info = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
 			const url = String(info?.url || info?.thumburl || "").trim();
@@ -1452,111 +1494,118 @@ async function fetchCseImages(topic, extraTokens = []) {
 	const extra = Array.isArray(extraTokens)
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
 		: [];
-	const criteria = buildImageMatchCriteria(topic, extraTokens);
-	const requireContext =
-		criteria.contextTokens.length > 0 && criteria.rawTokenCount <= 3;
+	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
+	const category = inferEntertainmentCategory(baseTokens);
 
 	const queries = [
 		`${topic} press photo`,
 		`${topic} news photo`,
 		`${topic} photo`,
-		`${topic} cast photo`,
-		`${topic} still`,
 	];
-	const keyPhrase = filterSpecificTopicTokens(
-		topicTokensFromTitle(topic)
-	).slice(0, 2);
-	if (keyPhrase.length) {
-		queries.unshift(`${keyPhrase.join(" ")} photo`);
+	if (category === "film") {
+		queries.unshift(
+			`${topic} official still`,
+			`${topic} movie still`,
+			`${topic} premiere`
+		);
+	} else if (category === "tv") {
+		queries.unshift(`${topic} episode still`, `${topic} cast photo`);
+	} else if (category === "music") {
+		queries.unshift(`${topic} live performance`, `${topic} stage photo`);
+	} else if (category === "celebrity") {
+		queries.unshift(`${topic} red carpet`, `${topic} interview photo`);
 	}
-	const contextHint = criteria.contextTokens.slice(0, 2).join(" ");
-	const contextQueries = contextHint
-		? [`${topic} ${contextHint} photo`, `${topic} ${contextHint} press photo`]
-		: [];
-	const searchQueries = contextQueries.length
-		? [...contextQueries, ...queries]
-		: queries;
 
-	let items = await fetchCseItems(searchQueries, {
+	const fallbackQueries = [
+		`${topic} photo`,
+		`${topic} press`,
+		`${topic} red carpet`,
+		`${topic} still`,
+		`${topic} interview`,
+	];
+	const keyPhrase = filterSpecificTopicTokens(baseTokens).slice(0, 2).join(" ");
+	if (keyPhrase) {
+		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
+	}
+
+	let items = await fetchCseItems(queries, {
 		num: 8,
 		searchType: "image",
 		imgSize: CSE_PREFERRED_IMG_SIZE,
-		imgColorType: CSE_PREFERRED_IMG_COLOR,
 	});
 	if (!items.length) {
-		items = await fetchCseItems(searchQueries, {
+		items = await fetchCseItems(queries, {
 			num: 8,
 			searchType: "image",
 			imgSize: CSE_FALLBACK_IMG_SIZE,
-			imgColorType: CSE_PREFERRED_IMG_COLOR,
 		});
 	}
 	if (!items.length) {
-		items = await fetchCseItems(queries, {
+		items = await fetchCseItems(fallbackQueries, {
 			num: 8,
 			searchType: "image",
 			imgSize: CSE_PREFERRED_IMG_SIZE,
 		});
 	}
 	if (!items.length) {
-		items = await fetchCseItems(queries, {
+		items = await fetchCseItems(fallbackQueries, {
 			num: 8,
 			searchType: "image",
 			imgSize: CSE_FALLBACK_IMG_SIZE,
 		});
 	}
 
+	const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
+	const minMatches = minImageTokenMatches(matchTokens);
+
 	const candidates = [];
+	const smallCandidates = [];
 	for (const it of items) {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) continue;
-		const contextLink = it.image?.contextLink || "";
-		if (isLikelyWatermarkedSource(url, contextLink)) continue;
-		const fields = [it.title, it.snippet, it.link, contextLink];
-		const info = topicMatchInfo(criteria.wordTokens, fields);
-		const phraseTokens = [];
-		if (criteria.phraseToken) {
-			phraseTokens.push(criteria.phraseToken);
-			const compact = criteria.phraseToken.replace(/\s+/g, "");
-			if (compact && compact !== criteria.phraseToken)
-				phraseTokens.push(compact);
-		}
-		const phraseInfo = phraseTokens.length
-			? topicMatchInfo(phraseTokens, fields)
-			: { count: 0 };
-		const hasPhrase = phraseInfo.count >= 1;
-		const hasWordMatch = info.count >= criteria.minWordMatches;
-		const requirePhrase =
-			criteria.rawTokenCount <= 2 && Boolean(criteria.phraseToken);
-		if (requirePhrase) {
-			if (!hasPhrase) continue;
-		} else if (!hasPhrase && !hasWordMatch) {
-			continue;
-		}
-		if (requireContext) {
-			const ctx = topicMatchInfo(criteria.contextTokens, fields);
-			if (ctx.count < 1) continue;
-		}
+		const info = topicMatchInfo(matchTokens, [
+			it.title,
+			it.snippet,
+			it.link,
+			it.image?.contextLink || "",
+		]);
+		if (info.count < minMatches) continue;
+		const w = Number(it.image?.width || 0);
+		const h = Number(it.image?.height || 0);
+		if (w && h && Math.min(w, h) < CSE_MIN_IMAGE_SHORT_EDGE) continue;
 		const urlText = `${it.link || ""} ${
 			it.image?.contextLink || ""
 		}`.toLowerCase();
-		const urlMatches = criteria.wordTokens.filter((tok) =>
+		const urlMatches = matchTokens.filter((tok) =>
 			urlText.includes(tok)
 		).length;
-		const phraseBoost = phraseInfo.count ? 1.5 : 0;
-		const score = info.count + urlMatches * 0.75 + phraseBoost;
+		const score = info.count + urlMatches * 0.75;
 		const mime = String(it.image?.mime || "").toLowerCase();
-		candidates.push({ url, score, mime });
+		candidates.push({ url, score, urlMatches, w, h, mime });
 		if (candidates.length >= 14) break;
 	}
 
-	candidates.sort((a, b) => b.score - a.score);
+	candidates.sort((a, b) => {
+		if (b.score !== a.score) return b.score - a.score;
+		if (b.w !== a.w) return b.w - a.w;
+		return b.h - a.h;
+	});
+
+	let pool = candidates;
+	if (matchTokens.length >= 2) {
+		const strict = candidates.filter((c) => c.urlMatches >= 1);
+		if (strict.length) {
+			const relaxed = candidates.filter((c) => c.urlMatches < 1);
+			pool = [...strict, ...relaxed];
+		}
+	}
 
 	const filtered = [];
 	const seen = new Set();
-	for (const c of candidates) {
+	for (const c of pool) {
 		if (!c?.url || seen.has(c.url)) continue;
 		seen.add(c.url);
+		if (!isProbablyDirectImageUrl(c.url) && !c.mime) continue;
 		const ct = await headContentType(c.url, 7000);
 		if (ct) {
 			if (!ct.startsWith("image/")) continue;
@@ -1666,6 +1715,33 @@ async function collectThumbnailTopicImages({
 			seen.add(url);
 			urls.push(url);
 		}
+		if (urls.length < maxUrls) {
+			const wikiUrl = await fetchWikipediaPageImageUrl(label);
+			if (wikiUrl && !seen.has(wikiUrl)) {
+				if (log)
+					log("thumbnail topic images fallback wiki", {
+						topic: label,
+					});
+				seen.add(wikiUrl);
+				urls.push(wikiUrl);
+			}
+		}
+		if (urls.length < maxUrls) {
+			const commons = await fetchWikimediaImageUrls(label, 3);
+			if (commons.length) {
+				if (log)
+					log("thumbnail topic images fallback commons", {
+						topic: label,
+						count: commons.length,
+					});
+				for (const url of commons) {
+					if (urls.length >= maxUrls) break;
+					if (!url || seen.has(url)) continue;
+					seen.add(url);
+					urls.push(url);
+				}
+			}
+		}
 	}
 
 	if (!urls.length) {
@@ -1702,7 +1778,12 @@ async function collectThumbnailTopicImages({
 			const dims = probeImageDimensions(out);
 			const minEdge = Math.min(dims.width || 0, dims.height || 0);
 			if (minEdge && minEdge < CSE_MIN_IMAGE_SHORT_EDGE) {
-				safeUnlink(out);
+				smallCandidates.push({
+					path: out,
+					size: st.size,
+					width: dims.width || 0,
+					height: dims.height || 0,
+				});
 				continue;
 			}
 			candidates.push({
@@ -1716,7 +1797,16 @@ async function collectThumbnailTopicImages({
 		}
 	}
 
-	if (!candidates.length) {
+	let usableCandidates = candidates;
+	if (!usableCandidates.length && smallCandidates.length) {
+		usableCandidates = smallCandidates;
+		if (log)
+			log("thumbnail topic images fallback small", {
+				count: usableCandidates.length,
+			});
+	}
+
+	if (!usableCandidates.length) {
 		if (requireTopicImages) throw new Error("thumbnail_topic_images_missing");
 		if (log)
 			log("thumbnail topic images none", {
@@ -1726,17 +1816,17 @@ async function collectThumbnailTopicImages({
 		return [];
 	}
 
-	const preferred = candidates.filter((c) => {
+	const preferred = usableCandidates.filter((c) => {
 		const minEdge = Math.min(c.width || 0, c.height || 0);
 		if (minEdge && minEdge < THUMBNAIL_TOPIC_MIN_EDGE) return false;
 		return c.size >= THUMBNAIL_TOPIC_MIN_BYTES;
 	});
 
-	const pickPool = preferred.length ? preferred : candidates;
+	const pickPool = preferred.length ? preferred : usableCandidates;
 	pickPool.sort((a, b) => b.size - a.size);
 	const selected = pickPool.slice(0, target).map((c) => c.path);
 
-	for (const c of candidates) {
+	for (const c of [...candidates, ...smallCandidates]) {
 		if (!selected.includes(c.path)) safeUnlink(c.path);
 	}
 
