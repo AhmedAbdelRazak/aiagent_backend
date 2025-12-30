@@ -33,9 +33,6 @@ const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
 const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
-const THUMBNAIL_TEXT_BOX_WIDTH_PCT = 0.38;
-const THUMBNAIL_TEXT_BOX_OPACITY = 0.28;
-const THUMBNAIL_LOCK_PRESENTER_IDENTITY = true;
 const THUMBNAIL_PRESENTER_CUTOUT_DIR = path.resolve(
 	__dirname,
 	"../uploads/presenter_cutouts"
@@ -44,7 +41,6 @@ const THUMBNAIL_PRESENTER_SMILE_PATH = "";
 const THUMBNAIL_PRESENTER_NEUTRAL_PATH = "";
 const THUMBNAIL_PRESENTER_SURPRISED_PATH = "";
 const THUMBNAIL_PRESENTER_LIKENESS_MIN = clampNumber(0.82, 0.5, 0.98);
-const THUMBNAIL_ALLOW_AI_PRESENTER_WHEN_CUTOUT_MISSING = true;
 const THUMBNAIL_PRESENTER_FACE_REGION = {
 	x: 0.3,
 	y: 0.05,
@@ -2672,73 +2668,11 @@ async function generateThumbnailPackage({
 		topics,
 		expression,
 	});
-	let presenterForCompose = presenterLocalPath;
-	const cutoutPath = resolvePresenterCutoutPath(
-		stylePlan.pose,
-		path.dirname(presenterLocalPath || "")
-	);
-	if (cutoutPath) {
-		presenterForCompose = cutoutPath;
-		if (log)
-			log("presenter cutout selected", {
-				pose: stylePlan.pose,
-				path: path.basename(cutoutPath),
-			});
-	} else if (THUMBNAIL_LOCK_PRESENTER_IDENTITY) {
-		const hasAlpha = hasAlphaChannel(presenterLocalPath);
-		if (log)
-			log("presenter cutout missing; identity lock on", {
-				pose: stylePlan.pose,
-				cutoutDir: THUMBNAIL_PRESENTER_CUTOUT_DIR,
-				hasAlpha,
-			});
-		if (!THUMBNAIL_ALLOW_AI_PRESENTER_WHEN_CUTOUT_MISSING && !hasAlpha) {
-			throw new Error("presenter_cutout_required_when_identity_lock_on");
-		}
-		if (THUMBNAIL_ALLOW_AI_PRESENTER_WHEN_CUTOUT_MISSING) {
-			const canGenerateVariant = Boolean(openai || getOpenAiKey());
-			if (canGenerateVariant) {
-				try {
-					presenterForCompose = await generatePresenterVariant({
-						openai,
-						tmpDir,
-						presenterPath: presenterLocalPath,
-						pose: stylePlan.pose,
-						log,
-					});
-				} catch (e) {
-					if (log)
-						log("presenter variant failed; fallback to original", {
-							pose: stylePlan.pose,
-							error: e?.message || String(e),
-						});
-				}
-			} else if (log) {
-				log("presenter variant skipped (missing OpenAI key)");
-			}
-		}
-	} else {
-		const canGenerateVariant = Boolean(openai || getOpenAiKey());
-		if (canGenerateVariant) {
-			try {
-				presenterForCompose = await generatePresenterVariant({
-					openai,
-					tmpDir,
-					presenterPath: presenterLocalPath,
-					pose: stylePlan.pose,
-					log,
-				});
-			} catch (e) {
-				if (log)
-					log("presenter variant failed; fallback to original", {
-						pose: stylePlan.pose,
-						error: e?.message || String(e),
-					});
-			}
-		} else if (log) {
-			log("presenter variant skipped (missing OpenAI key)");
-		}
-	}
+	const presenterForCompose = presenterLocalPath;
+	if (log)
+		log("presenter fixed (no emotion variants)", {
+			path: path.basename(presenterForCompose),
+		});
 	const chosenDetected = detectFileType(presenterForCompose);
 	if (!chosenDetected || chosenDetected.kind !== "image")
 		throw new Error("thumbnail_presenter_missing_or_invalid");

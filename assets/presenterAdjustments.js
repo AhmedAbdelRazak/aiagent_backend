@@ -271,27 +271,27 @@ function inferWardrobeStyle({ categoryLabel = "", text = "" }) {
 		/(finance|business|money|stock|market|economy)/.test(lower) ||
 		/(finance|business)/.test(cat)
 	) {
-		return "classic navy or charcoal suit with a crisp white shirt and a subtle tie";
+		return "premium button-up shirt (open collar), smart-casual, youthful and lively";
 	}
 	if (
 		/(politic|election|policy|government)/.test(lower) ||
 		cat === "politics"
 	) {
-		return "conservative dark suit with a neutral tie and clean white shirt";
+		return "clean button-up shirt with a modern, smart-casual look (open collar)";
 	}
 	if (
 		/(tech|ai|software|developer|programming|startup)/.test(lower) ||
 		cat === "technology"
 	) {
-		return "modern smart-casual blazer with an open collar shirt, no tie";
+		return "stylish patterned or textured button-up shirt, open collar, smart-casual";
 	}
 	if (
 		/(movie|tv|series|show|celebrity|music|album|tour|concert)/.test(lower) ||
 		cat === "entertainment"
 	) {
-		return "sleek dark suit with a subtle accent tie or pocket square";
+		return "fashion-forward button-up shirt, modern smart-casual, open collar";
 	}
-	return "classy tailored suit or blazer with a neat shirt, clean and camera-ready";
+	return "fancy button-up shirt, youthful smart-casual, open collar";
 }
 
 function inferExpressionLine(text = "") {
@@ -322,6 +322,7 @@ function buildWardrobeEditPrompt({ title, topics, categoryLabel }) {
 	return `
 Keep everything identical to the reference image, including face, glasses, beard, hairline, skin texture, studio background, desk, and lighting.
 Only change the clothing on the torso area to: ${wardrobe}.
+No tie. No formal suit jacket. Keep it youthful, lively, and fancy-casual.
 Do NOT change facial features or body proportions. Do NOT change the studio or desk.
 ${expressionLine}
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
@@ -348,6 +349,7 @@ Photorealistic studio portrait of the SAME person as the reference image.
 Keep identity (face, beard, glasses), age, skin tone, and hairline the same.
 Keep the SAME studio background, desk, lighting, and camera angle. Do not change the room.
 Wardrobe: ${wardrobe}. Make it different from the reference while staying classy and topic-appropriate: ${topicFocus}.
+No tie. No formal suit jacket. Keep it youthful, lively, and fancy-casual.
 ${candleLine}
 ${candleRefLine}
 ${expressionLine}
