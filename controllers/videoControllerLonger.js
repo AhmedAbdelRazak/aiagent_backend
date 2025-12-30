@@ -6277,57 +6277,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 
 		updateJob(jobId, { progressPct: 12 });
 
-		// 3.5) Thumbnail (isolated pipeline, fail-fast)
-		try {
-			const primaryTopic = topicTitles[0] || topicSummary;
-			const thumbTitle = String(primaryTopic || "Quick Update").trim();
-			const thumbShortTitle = shortTitleFromText(thumbTitle);
-			const thumbLog = (message, payload) => logJob(jobId, message, payload);
-			const thumbResult = await generateThumbnailPackage({
-				jobId,
-				tmpDir,
-				presenterLocalPath: presenterLocal,
-				title: thumbTitle,
-				shortTitle: thumbShortTitle,
-				seoTitle: "",
-				topics: topicPicks,
-				openai,
-				log: thumbLog,
-				requireTopicImages: true,
-			});
-			const thumbLocalPath = thumbResult?.localPath || "";
-			const thumbCloudUrl = thumbResult?.url || "";
-			const thumbPublicId = thumbResult?.publicId || "";
-			thumbnailUrl = thumbCloudUrl;
-			thumbnailPublicId = thumbPublicId;
-			if (thumbLocalPath && fs.existsSync(thumbLocalPath)) {
-				thumbnailPath = thumbLocalPath;
-				if (LONG_VIDEO_PERSIST_OUTPUT) {
-					const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
-					fs.copyFileSync(thumbLocalPath, finalThumb);
-					thumbnailPath = finalThumb;
-				}
-			}
-
-			updateJob(jobId, {
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					thumbnailPath: LONG_VIDEO_PERSIST_OUTPUT ? thumbnailPath : "",
-					thumbnailUrl: thumbnailUrl || "",
-					thumbnailPublicId: thumbnailPublicId || "",
-				},
-			});
-			logJob(jobId, "thumbnail ready (early)", {
-				path: thumbnailPath ? path.basename(thumbnailPath) : null,
-				cloudinary: Boolean(thumbnailUrl),
-			});
-		} catch (e) {
-			logJob(jobId, "thumbnail generation failed (hard stop)", {
-				error: e.message,
-			});
-			throw e;
-		}
-
 		// 4) Context + images (optional)
 		const topicContexts = [];
 		let liveContext = [];
@@ -6378,6 +6327,64 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				script: { title: script.title, segments: script.segments },
 			},
 		});
+
+		// 5.5) Thumbnail (script-aligned, fail-fast)
+		try {
+			const fallbackTitle = topicTitles[0] || topicSummary || "Quick Update";
+			const thumbTitle = String(script.title || fallbackTitle).trim();
+			const thumbShortTitle = String(
+				script.shortTitle || shortTitleFromText(thumbTitle)
+			).trim();
+			const thumbExpression =
+				script?.segments?.[0]?.expression || tonePlan?.mood || "warm";
+			const thumbLog = (message, payload) => logJob(jobId, message, payload);
+			const thumbResult = await generateThumbnailPackage({
+				jobId,
+				tmpDir,
+				presenterLocalPath: presenterLocal,
+				title: thumbTitle,
+				shortTitle: thumbShortTitle,
+				seoTitle: "",
+				topics: topicPicks,
+				expression: thumbExpression,
+				openai,
+				log: thumbLog,
+				requireTopicImages: true,
+			});
+			const thumbLocalPath = thumbResult?.localPath || "";
+			const thumbCloudUrl = thumbResult?.url || "";
+			const thumbPublicId = thumbResult?.publicId || "";
+			thumbnailUrl = thumbCloudUrl;
+			thumbnailPublicId = thumbPublicId;
+			if (thumbLocalPath && fs.existsSync(thumbLocalPath)) {
+				thumbnailPath = thumbLocalPath;
+				if (LONG_VIDEO_PERSIST_OUTPUT) {
+					const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
+					fs.copyFileSync(thumbLocalPath, finalThumb);
+					thumbnailPath = finalThumb;
+				}
+			}
+
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					thumbnailPath: LONG_VIDEO_PERSIST_OUTPUT ? thumbnailPath : "",
+					thumbnailUrl: thumbnailUrl || "",
+					thumbnailPublicId: thumbnailPublicId || "",
+				},
+			});
+			logJob(jobId, "thumbnail ready", {
+				path: thumbnailPath ? path.basename(thumbnailPath) : null,
+				cloudinary: Boolean(thumbnailUrl),
+				pose: thumbResult?.pose || null,
+				accent: thumbResult?.accent || null,
+			});
+		} catch (e) {
+			logJob(jobId, "thumbnail generation failed (hard stop)", {
+				error: e.message,
+			});
+			throw e;
+		}
 
 		const seoMeta = await buildSeoMetadata({
 			topics: topicPicks,

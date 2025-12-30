@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const child_process = require("child_process");
+const crypto = require("crypto");
 const axios = require("axios");
 const { OpenAI, toFile } = require("openai");
 const cloudinary = require("cloudinary").v2;
@@ -45,6 +46,12 @@ const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 6;
 const THUMBNAIL_MIN_BYTES = 12000;
 const THUMBNAIL_CLOUDINARY_FOLDER = "aivideomatic/long_thumbnails";
 const THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX = "long_thumb";
+const ACCENT_PALETTE = {
+	default: "0xFFC700",
+	tech: "0x00D1FF",
+	business: "0x00E676",
+	entertainment: "0xFF2E63",
+};
 
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
 const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY || null;
@@ -90,9 +97,7 @@ const WATERMARK_URL_TOKENS = [
 ];
 
 const SORA_MODEL = process.env.SORA_MODEL || "sora-2";
-const SORA_THUMBNAIL_ENABLED =
-	String(process.env.SORA_THUMBNAIL_ENABLED ?? "true").toLowerCase() !==
-	"false";
+const SORA_THUMBNAIL_ENABLED = true;
 const SORA_THUMBNAIL_SECONDS = "4";
 const SORA_POLL_INTERVAL_MS = 2000;
 const SORA_MAX_POLL_ATTEMPTS = 120;
@@ -934,6 +939,154 @@ function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
 }
 
+function getOpenAiKey() {
+	return process.env.OPENAI_API_KEY || process.env.CHATGPT_API_TOKEN || "";
+}
+
+function sha1(s) {
+	return crypto.createHash("sha1").update(String(s)).digest("hex").slice(0, 12);
+}
+
+function fileHash(p) {
+	const buf = fs.readFileSync(p);
+	return crypto.createHash("sha1").update(buf).digest("hex").slice(0, 12);
+}
+
+function poseFromExpression(expression = "", text = "") {
+	const expr = String(expression || "").toLowerCase();
+	if (expr === "excited") return "surprised";
+	if (expr === "warm") return "smile";
+	if (expr === "serious" || expr === "thoughtful") return "neutral";
+	const hasShock =
+		/(shocking|crazy|unexpected|revealed|secret|leak|exposed)/i.test(text);
+	if (hasShock) return "surprised";
+	return "smile";
+}
+
+function planThumbnailStyle({
+	title,
+	shortTitle,
+	seoTitle,
+	topics,
+	expression,
+}) {
+	const topicText = Array.isArray(topics)
+		? topics
+				.map((t) => t.displayTopic || t.topic || "")
+				.filter(Boolean)
+				.join(" ")
+		: "";
+	const text = `${title || ""} ${shortTitle || ""} ${
+		seoTitle || ""
+	} ${topicText}`
+		.trim()
+		.toLowerCase();
+	const tokens = tokenizeLabel(text);
+	const cat = inferEntertainmentCategory(tokens);
+	let accent = ACCENT_PALETTE.default;
+	if (cat === "film" || cat === "tv" || cat === "celebrity")
+		accent = ACCENT_PALETTE.entertainment;
+	else if (/(ai|software|code|developer|programming|tech)/i.test(text))
+		accent = ACCENT_PALETTE.tech;
+	else if (/(money|finance|business|startup)/i.test(text))
+		accent = ACCENT_PALETTE.business;
+
+	return {
+		pose: poseFromExpression(expression, text),
+		accent,
+	};
+}
+
+function presenterPosePrompt({ pose }) {
+	if (pose === "surprised") {
+		return `
+Isolate the same person from the reference photo as a clean cutout (transparent background).
+Same identity, glasses, beard, suit and shirt.
+Expression: mild surprised (raised eyebrows, slightly open mouth), NOT exaggerated, not screaming.
+No distortions, no extra people, sharp and clean.
+`.trim();
+	}
+	if (pose === "neutral") {
+		return `
+Isolate the same person from the reference photo as a clean cutout (transparent background).
+Same identity, glasses, beard, suit and shirt.
+Expression: neutral but engaged (calm, confident).
+Sharp, clean edges, no distortions.
+`.trim();
+	}
+	return `
+Isolate the same person from the reference photo as a clean cutout (transparent background).
+Same identity, glasses, beard, suit and shirt.
+Expression: warm natural smile (subtle).
+Sharp, clean edges, no distortions.
+`.trim();
+}
+
+async function generatePresenterVariant({
+	openai,
+	tmpDir,
+	presenterPath,
+	pose = "smile",
+	size = "1536x1024",
+	n = 3,
+	log,
+}) {
+	const apiKey = getOpenAiKey();
+	if (!apiKey && !openai)
+		throw new Error(
+			"OpenAI API key missing (OPENAI_API_KEY or CHATGPT_API_TOKEN)."
+		);
+	const client = openai || new OpenAI({ apiKey });
+
+	const cacheKey = `${fileHash(presenterPath)}_${pose}_${sha1(size)}`;
+	const outPath = path.join(tmpDir, `presenter_${cacheKey}.png`);
+	if (fs.existsSync(outPath)) return outPath;
+
+	const buf = fs.readFileSync(presenterPath);
+	const mime = inferImageMime(presenterPath) || "image/png";
+	const input = await toFile(buf, path.basename(presenterPath), { type: mime });
+
+	const resp = await withRetries(
+		() =>
+			client.images.edit({
+				model: "gpt-image-1",
+				image: input,
+				prompt: presenterPosePrompt({ pose }),
+				n: Math.max(1, Math.min(6, Number(n) || 1)),
+				size,
+				quality: "high",
+				output_format: "png",
+				background: "transparent",
+				input_fidelity: "high",
+			}),
+		{ retries: 1, baseDelayMs: 900, log }
+	);
+
+	let bestBuf = null;
+	let bestSize = 0;
+	for (const item of resp?.data || []) {
+		if (!item?.b64_json) continue;
+		const b = Buffer.from(item.b64_json, "base64");
+		if (b.length > bestSize) {
+			bestSize = b.length;
+			bestBuf = b;
+		}
+	}
+	if (!bestBuf) throw new Error("presenter_variant_empty");
+
+	fs.writeFileSync(outPath, bestBuf);
+	const dt = detectFileType(outPath);
+	if (!dt || dt.kind !== "image" || dt.ext !== "png")
+		throw new Error("presenter_variant_invalid");
+	if (log)
+		log("presenter variant generated", {
+			pose,
+			path: path.basename(outPath),
+			bytes: bestSize,
+		});
+	return outPath;
+}
+
 function makeEven(n) {
 	const x = Math.round(Number(n) || 0);
 	if (!Number.isFinite(x) || x <= 0) return 2;
@@ -1018,8 +1171,11 @@ async function generateSoraThumbnailFrame({
 	log,
 }) {
 	if (!SORA_THUMBNAIL_ENABLED) return null;
-	const apiKey = process.env.CHATGPT_API_TOKEN;
-	if (!apiKey) throw new Error("CHATGPT_API_TOKEN missing");
+	const apiKey = getOpenAiKey();
+	if (!apiKey && !openai)
+		throw new Error(
+			"OpenAI API key missing (OPENAI_API_KEY or CHATGPT_API_TOKEN)."
+		);
 	const client = openai || new OpenAI({ apiKey });
 	const size = soraSizeForRatio(ratio);
 
@@ -1113,8 +1269,11 @@ async function generateOpenAiThumbnailBase({
 }) {
 	const cleanPrompt = String(prompt || "").trim();
 	if (!cleanPrompt) throw new Error("thumbnail_prompt_missing");
-	const apiKey = process.env.CHATGPT_API_TOKEN;
-	if (!apiKey) throw new Error("CHATGPT_API_TOKEN missing");
+	const apiKey = getOpenAiKey();
+	if (!apiKey && !openai)
+		throw new Error(
+			"OpenAI API key missing (OPENAI_API_KEY or CHATGPT_API_TOKEN)."
+		);
 	const client = openai || new OpenAI({ apiKey });
 	const supportsInputFidelity = String(model || "").startsWith("gpt-image-1");
 
@@ -1183,6 +1342,7 @@ async function composeThumbnailBase({
 	outPath,
 	width = DEFAULT_CANVAS_WIDTH,
 	height = DEFAULT_CANVAS_HEIGHT,
+	accentColor = ACCENT_PALETTE.default,
 }) {
 	const W = makeEven(Math.max(2, Math.round(width)));
 	const H = makeEven(Math.max(2, Math.round(height)));
@@ -1231,7 +1391,7 @@ async function composeThumbnailBase({
 			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel1i]`
 		);
 		filters.push(
-			`[panel1i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=black@0.35[panel1]`
+			`[panel1i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel1]`
 		);
 		filters.push(`${current}[panel1]overlay=${margin}:${panelY}[tmp1]`);
 		current = "[tmp1]";
@@ -1246,7 +1406,7 @@ async function composeThumbnailBase({
 			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel2i]`
 		);
 		filters.push(
-			`[panel2i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=black@0.35[panel2]`
+			`[panel2i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel2]`
 		);
 		filters.push(`${current}[panel2]overlay=${margin}:${panel2Y}[tmp2]`);
 		current = "[tmp2]";
@@ -1286,6 +1446,7 @@ async function generateThumbnailCompositeBase({
 	ratio = "1280:720",
 	width = DEFAULT_CANVAS_WIDTH,
 	height = DEFAULT_CANVAS_HEIGHT,
+	accentColor = ACCENT_PALETTE.default,
 	openai,
 	log,
 	useSora = true,
@@ -1322,6 +1483,7 @@ async function generateThumbnailCompositeBase({
 		outPath,
 		width,
 		height,
+		accentColor,
 	});
 }
 
@@ -1333,9 +1495,10 @@ function escapeDrawtext(s = "") {
 		.replace(/:/g, "\\:")
 		.replace(/'/g, "\\'")
 		.replace(/%/g, "\\%")
+		.replace(/,/g, "\\,")
 		.replace(/\[/g, "\\[")
 		.replace(/\]/g, "\\]")
-		.replace(new RegExp(placeholder, "g"), "\\n")
+		.replace(new RegExp(placeholder, "g"), "\\\\n")
 		.trim();
 }
 
@@ -1480,7 +1643,7 @@ function buildThumbnailText(title = "") {
 	const words = pretty.split(" ").filter(Boolean);
 	const trimmedWords = words.slice(0, THUMBNAIL_TEXT_MAX_WORDS);
 	const trimmed = trimmedWords.join(" ");
-	const baseChars = Math.max(THUMBNAIL_TEXT_BASE_MAX_CHARS, 14);
+	const baseChars = THUMBNAIL_TEXT_BASE_MAX_CHARS;
 	const fit = fitHeadlineText(trimmed, {
 		baseMaxChars: baseChars,
 		preferLines: 2,
@@ -1492,9 +1655,14 @@ function buildThumbnailText(title = "") {
 	};
 }
 
-async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
+async function renderThumbnailOverlay({
+	inputPath,
+	outputPath,
+	title,
+	accentColor = ACCENT_PALETTE.default,
+}) {
 	const { text, fontScale } = buildThumbnailText(title);
-	const safeText = escapeDrawtext(text);
+	const hasText = Boolean(text);
 	const fontFile = THUMBNAIL_FONT_FILE
 		? `:fontfile='${escapeDrawtext(THUMBNAIL_FONT_FILE)}'`
 		: "";
@@ -1504,36 +1672,49 @@ async function renderThumbnailOverlay({ inputPath, outputPath, title }) {
 	);
 	const boxBorder = Math.round(fontSize * 0.55);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
-	const textYOffset = Math.round(
-		THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_Y_OFFSET_PCT
-	);
+	const textFilePath = hasText
+		? path.join(
+				path.dirname(outputPath),
+				`thumb_text_${path.basename(outputPath, path.extname(outputPath))}.txt`
+		  )
+		: "";
+	if (hasText) fs.writeFileSync(textFilePath, text, "utf8");
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
 		"eq=contrast=1.08:saturation=1.12:brightness=0.02",
 		"unsharp=5:5:0.8",
+		`drawbox=x=0:y=0:w=iw*0.018:h=ih:color=${accentColor}@0.85:t=fill`,
+		`drawbox=x=0:y=0:w=iw:h=ih:color=${accentColor}@0.45:t=6`,
+		"vignette=0.22",
 	];
-	if (safeText) {
+	if (hasText) {
 		filters.push(
-			`drawtext=text='${safeText}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:box=1:boxcolor=black@0.35:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=(h-text_h)/2+${textYOffset}`
+			`drawtext=textfile='${escapeDrawtext(
+				textFilePath
+			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:box=1:boxcolor=black@0.35:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*0.12`
 		);
 	}
 
-	await runFfmpeg(
-		[
-			"-i",
-			inputPath,
-			"-vf",
-			filters.join(","),
-			"-frames:v",
-			"1",
-			"-q:v",
-			"2",
-			"-y",
-			outputPath,
-		],
-		"thumbnail_render"
-	);
+	try {
+		await runFfmpeg(
+			[
+				"-i",
+				inputPath,
+				"-vf",
+				filters.join(","),
+				"-frames:v",
+				"1",
+				"-q:v",
+				"2",
+				"-y",
+				outputPath,
+			],
+			"thumbnail_render"
+		);
+	} finally {
+		if (textFilePath) safeUnlink(textFilePath);
+	}
 
 	return outputPath;
 }
@@ -1972,6 +2153,7 @@ async function generateThumbnailPackage({
 	shortTitle,
 	seoTitle,
 	topics = [],
+	expression,
 	openai,
 	log,
 	requireTopicImages = REQUIRE_THUMBNAIL_TOPIC_IMAGES,
@@ -1983,8 +2165,42 @@ async function generateThumbnailPackage({
 	const presenterDetected = detectFileType(presenterLocalPath);
 	if (presenterDetected?.kind !== "image")
 		throw new Error("thumbnail_presenter_missing_or_invalid");
-	if (presenterDetected.ext !== "png")
-		throw new Error("presenter_must_be_png_cutout_with_alpha");
+	const stylePlan = planThumbnailStyle({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+		expression,
+	});
+	let presenterForCompose = presenterLocalPath;
+	const canGenerateVariant = Boolean(openai || getOpenAiKey());
+	if (canGenerateVariant) {
+		try {
+			presenterForCompose = await generatePresenterVariant({
+				openai,
+				tmpDir,
+				presenterPath: presenterLocalPath,
+				pose: stylePlan.pose,
+				log,
+			});
+		} catch (e) {
+			if (log)
+				log("presenter variant failed; fallback to original", {
+					pose: stylePlan.pose,
+					error: e?.message || String(e),
+				});
+		}
+	} else if (log) {
+		log("presenter variant skipped (missing OpenAI key)");
+	}
+	const chosenDetected = detectFileType(presenterForCompose);
+	if (!chosenDetected || chosenDetected.kind !== "image")
+		throw new Error("thumbnail_presenter_missing_or_invalid");
+	if (chosenDetected.ext !== "png" && log) {
+		log("thumbnail presenter not png", {
+			ext: chosenDetected.ext || null,
+		});
+	}
 
 	const thumbTitle = selectThumbnailTitle({
 		title,
@@ -2006,13 +2222,14 @@ async function generateThumbnailPackage({
 	const baseImage = await generateThumbnailCompositeBase({
 		jobId,
 		tmpDir,
-		presenterImagePath: presenterLocalPath,
+		presenterImagePath: presenterForCompose,
 		topicImagePaths,
 		title: thumbTitle,
 		topics,
 		ratio: THUMBNAIL_RATIO,
 		width: THUMBNAIL_WIDTH,
 		height: THUMBNAIL_HEIGHT,
+		accentColor: stylePlan.accent,
 		openai,
 		log,
 		useSora,
@@ -2023,6 +2240,7 @@ async function generateThumbnailPackage({
 		inputPath: baseImage,
 		outputPath: finalPath,
 		title: thumbTitle,
+		accentColor: stylePlan.accent,
 	});
 	ensureThumbnailFile(finalPath);
 	const maxBytes = 2 * 1024 * 1024;
@@ -2054,6 +2272,8 @@ async function generateThumbnailPackage({
 		width: uploaded.width,
 		height: uploaded.height,
 		title: thumbTitle,
+		pose: stylePlan.pose,
+		accent: stylePlan.accent,
 	};
 }
 
