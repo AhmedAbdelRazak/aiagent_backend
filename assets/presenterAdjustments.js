@@ -27,6 +27,14 @@ const DEFAULT_IMAGE_INPUT_FIDELITY = "high";
 const PRESENTER_LOCK_IDENTITY = true;
 const PRESENTER_LIKENESS_MIN = 0.82;
 const PRESENTER_FACE_REGION = { x: 0.3, y: 0.05, w: 0.4, h: 0.55 };
+const LOCK_IDENTITY_ENABLED =
+	String(process.env.LOCK_IDENTITY_ENABLED || "1") !== "0";
+const PRESENTER_IDENTITY_REGION = {
+	x: parseNumber(process.env.PRESENTER_IDENTITY_X_PCT, 0.25),
+	y: parseNumber(process.env.PRESENTER_IDENTITY_Y_PCT, 0.02),
+	w: parseNumber(process.env.PRESENTER_IDENTITY_W_PCT, 0.5),
+	h: parseNumber(process.env.PRESENTER_IDENTITY_H_PCT, 0.52),
+};
 const PRESENTER_EYES_REGION = { x: 0.32, y: 0.08, w: 0.36, h: 0.22 };
 const PRESENTER_WARDROBE_REGION = { x: 0.22, y: 0.36, w: 0.56, h: 0.58 };
 const CANDLE_WIDTH_PCT = parseNumber(process.env.CANDLE_WIDTH_PCT, 0.12);
@@ -40,7 +48,7 @@ const CANDLE_PREP_ENABLED =
 	String(process.env.CANDLE_PREP_ENABLED || "1") !== "0";
 const CANDLE_KEY_SIMILARITY = parseNumber(
 	process.env.CANDLE_KEY_SIMILARITY,
-	0.32
+	0.22
 );
 const CANDLE_KEY_BLEND = parseNumber(process.env.CANDLE_KEY_BLEND, 0.08);
 const CANDLE_KEY_MAX_CORNER_DIFF = parseNumber(
@@ -65,6 +73,8 @@ const CANDLE_SHADOW_OPACITY = parseNumber(
 const CANDLE_SHADOW_BLUR = parseNumber(process.env.CANDLE_SHADOW_BLUR, 4);
 const CANDLE_SHADOW_X_PX = parseNumber(process.env.CANDLE_SHADOW_X_PX, 4);
 const CANDLE_SHADOW_Y_PX = parseNumber(process.env.CANDLE_SHADOW_Y_PX, 5);
+const CANDLE_ALPHA_BOOST = parseNumber(process.env.CANDLE_ALPHA_BOOST, 1.35);
+const CANDLE_ALPHA_CUTOFF = parseNumber(process.env.CANDLE_ALPHA_CUTOFF, 14);
 const CANDLE_CROP_ALPHA_ENABLED =
 	String(process.env.CANDLE_CROP_ALPHA_ENABLED || "1") !== "0";
 const CANDLE_CROP_ALPHA_THRESHOLD = parseNumber(
@@ -280,6 +290,29 @@ function ffprobeDimensions(filePath) {
 }
 
 function imageHasAlpha(filePath) {
+	try {
+		const buf = runFfmpegBuffer(
+			[
+				"-hide_banner",
+				"-loglevel",
+				"error",
+				"-i",
+				filePath,
+				"-vf",
+				"scale=4:4:flags=area,format=rgba",
+				"-frames:v",
+				"1",
+				"-f",
+				"rawvideo",
+				"pipe:1",
+			],
+			"alpha_probe"
+		);
+		if (!buf || buf.length < 64) return false;
+		for (let i = 3; i < buf.length; i += 4) {
+			if (buf[i] < 250) return true;
+		}
+	} catch {}
 	const fmt = ffprobePixelFormat(filePath);
 	return Boolean(fmt && fmt.includes("a"));
 }
@@ -421,6 +454,163 @@ function computeAlphaBounds(filePath, { alphaThreshold = 10 } = {}) {
 	} catch {
 		return null;
 	}
+}
+
+async function lockIdentityRegion({
+	basePath,
+	sourcePath,
+	regionPct,
+	tmpDir,
+	jobId,
+	log,
+}) {
+	if (!LOCK_IDENTITY_ENABLED) return basePath;
+	if (!basePath || !fs.existsSync(basePath)) return basePath;
+	if (!sourcePath || !fs.existsSync(sourcePath)) return basePath;
+
+	const baseDims = probeImageDimensions(basePath);
+	const srcDims = probeImageDimensions(sourcePath);
+	if (!baseDims.width || !baseDims.height) return basePath;
+
+	const rp = regionPct || PRESENTER_IDENTITY_REGION;
+	const rx = Math.max(0, Math.round(baseDims.width * rp.x));
+	const ry = Math.max(0, Math.round(baseDims.height * rp.y));
+	const rw = Math.max(2, Math.round(baseDims.width * rp.w));
+	const rh = Math.max(2, Math.round(baseDims.height * rp.h));
+	const w = Math.min(rw, baseDims.width - rx);
+	const h = Math.min(rh, baseDims.height - ry);
+	if (!w || !h) return basePath;
+
+	const outPath = path.join(tmpDir, `presenter_lock_${jobId}.png`);
+	const needsScale =
+		srcDims.width !== baseDims.width || srcDims.height !== baseDims.height;
+	const filter = needsScale
+		? `[1:v]scale=${baseDims.width}:${baseDims.height}[src];` +
+		  `[src]crop=${w}:${h}:${rx}:${ry}[id];` +
+		  `[0:v][id]overlay=${rx}:${ry}:format=auto[outv]`
+		: `[1:v]crop=${w}:${h}:${rx}:${ry}[id];` +
+		  `[0:v][id]overlay=${rx}:${ry}:format=auto[outv]`;
+
+	try {
+		await runFfmpeg(
+			[
+				"-i",
+				basePath,
+				"-i",
+				sourcePath,
+				"-filter_complex",
+				filter,
+				"-map",
+				"[outv]",
+				"-frames:v",
+				"1",
+				"-y",
+				outPath,
+			],
+			"presenter_identity_lock"
+		);
+		const dt = detectFileType(outPath);
+		if (dt?.kind === "image") {
+			if (log)
+				log("presenter identity locked", {
+					path: path.basename(outPath),
+					region: { x: rx, y: ry, w, h },
+				});
+			return outPath;
+		}
+	} catch (e) {
+		if (log)
+			log("presenter identity lock failed (using edited)", {
+				error: e?.message || String(e),
+			});
+	}
+
+	safeUnlink(outPath);
+	return basePath;
+}
+
+async function compositeWardrobeRegion({
+	basePath,
+	sourcePath,
+	regionPct,
+	tmpDir,
+	jobId,
+	log,
+}) {
+	if (!basePath || !fs.existsSync(basePath)) return basePath;
+	if (!sourcePath || !fs.existsSync(sourcePath)) return basePath;
+
+	const baseDims = probeImageDimensions(basePath);
+	const srcDims = probeImageDimensions(sourcePath);
+	if (!baseDims.width || !baseDims.height) return basePath;
+
+	const rp = regionPct || PRESENTER_WARDROBE_REGION;
+	let rx = Math.max(0, Math.round(baseDims.width * rp.x));
+	let ry = Math.max(0, Math.round(baseDims.height * rp.y));
+	let rw = Math.max(2, Math.round(baseDims.width * rp.w));
+	let rh = Math.max(2, Math.round(baseDims.height * rp.h));
+
+	const useSourceForDesk =
+		srcDims.width === baseDims.width && srcDims.height === baseDims.height;
+	const deskEdgeY = estimateDeskEdgeY(
+		useSourceForDesk ? sourcePath : basePath,
+		baseDims
+	);
+	if (Number.isFinite(deskEdgeY)) {
+		const maxBottom = Math.max(ry + 2, deskEdgeY - 4);
+		rh = Math.max(2, Math.min(rh, maxBottom - ry));
+	}
+
+	rw = Math.min(rw, baseDims.width - rx);
+	rh = Math.min(rh, baseDims.height - ry);
+	if (!rw || !rh) return basePath;
+
+	const outPath = path.join(tmpDir, `presenter_wardrobe_${jobId}.png`);
+	const needsScale =
+		srcDims.width !== baseDims.width || srcDims.height !== baseDims.height;
+	const filter = needsScale
+		? `[1:v]scale=${baseDims.width}:${baseDims.height}[src];` +
+		  `[src]crop=${rw}:${rh}:${rx}:${ry}[ward];` +
+		  `[0:v][ward]overlay=${rx}:${ry}:format=auto[outv]`
+		: `[1:v]crop=${rw}:${rh}:${rx}:${ry}[ward];` +
+		  `[0:v][ward]overlay=${rx}:${ry}:format=auto[outv]`;
+
+	try {
+		await runFfmpeg(
+			[
+				"-i",
+				sourcePath,
+				"-i",
+				basePath,
+				"-filter_complex",
+				filter,
+				"-map",
+				"[outv]",
+				"-frames:v",
+				"1",
+				"-y",
+				outPath,
+			],
+			"presenter_wardrobe_composite"
+		);
+		const dt = detectFileType(outPath);
+		if (dt?.kind === "image") {
+			if (log)
+				log("presenter wardrobe composited", {
+					path: path.basename(outPath),
+					region: { x: rx, y: ry, w: rw, h: rh },
+				});
+			return outPath;
+		}
+	} catch (e) {
+		if (log)
+			log("presenter wardrobe composite failed (using edited)", {
+				error: e?.message || String(e),
+			});
+	}
+
+	safeUnlink(outPath);
+	return basePath;
 }
 
 function probeImageDimensions(filePath) {
@@ -837,7 +1027,15 @@ async function prepareCandleOverlayAsset({
 		Number.isFinite(CANDLE_KEY_SIMILARITY) &&
 		Number.isFinite(CANDLE_KEY_BLEND);
 
-	if (!useKey && trimTop <= 0.001) return workingPath;
+	const alphaBoost = clamp(CANDLE_ALPHA_BOOST, 0.8, 2.5);
+	const alphaCut = clamp(CANDLE_ALPHA_CUTOFF, 0, 80);
+	const needsPrep =
+		useKey ||
+		trimTop > 0.001 ||
+		CANDLE_CROP_ALPHA_ENABLED ||
+		alphaBoost > 1.01 ||
+		alphaCut > 0;
+	if (!needsPrep) return workingPath;
 
 	const suffix = jobId || crypto.randomUUID();
 	const prePath = path.join(tmpDir, `candle_prepped_${suffix}.png`);
@@ -853,6 +1051,14 @@ async function prepareCandleOverlayAsset({
 	if (trimTop > 0.001) {
 		const keepPct = (1 - trimTop).toFixed(4);
 		filters.push(`crop=iw:ih*${keepPct}:0:ih*${trimTop.toFixed(4)}`);
+	}
+
+	if (alphaBoost > 1.01 || alphaCut > 0) {
+		const boostExpr =
+			alphaBoost > 1.01 ? `min(255,val*${alphaBoost.toFixed(2)})` : "val";
+		const cutExpr =
+			alphaCut > 0 ? `if(gte(val,${alphaCut}),${boostExpr},0)` : boostExpr;
+		filters.push(`lut=a='${cutExpr}'`);
 	}
 
 	try {
@@ -1479,8 +1685,54 @@ async function generatePresenterAdjustedImage({
 		}
 	}
 
-	if (outPath !== presenterLocalPath) {
+	if (LOCK_IDENTITY_ENABLED && outPath !== presenterLocalPath) {
 		ensurePresenterFile(outPath);
+	}
+
+	if (outPath !== presenterLocalPath) {
+		let compositeApplied = false;
+		try {
+			const composited = await compositeWardrobeRegion({
+				basePath: outPath,
+				sourcePath: presenterLocalPath,
+				regionPct: PRESENTER_WARDROBE_REGION,
+				tmpDir,
+				jobId,
+				log,
+			});
+			if (composited && composited !== outPath) {
+				safeUnlink(outPath);
+				outPath = composited;
+				compositeApplied = true;
+			}
+		} catch (e) {
+			if (log)
+				log("wardrobe composite failed (using edited)", {
+					error: e?.message || String(e),
+				});
+		}
+
+		try {
+			if (!compositeApplied) {
+				const locked = await lockIdentityRegion({
+					basePath: outPath,
+					sourcePath: presenterLocalPath,
+					regionPct: PRESENTER_IDENTITY_REGION,
+					tmpDir,
+					jobId,
+					log,
+				});
+				if (locked && locked !== outPath) {
+					safeUnlink(outPath);
+					outPath = locked;
+				}
+			}
+		} catch (e) {
+			if (log)
+				log("identity lock failed (using edited)", {
+					error: e?.message || String(e),
+				});
+		}
 	}
 
 	let withCandle = null;
