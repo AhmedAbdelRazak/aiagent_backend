@@ -26,7 +26,8 @@ const DEFAULT_IMAGE_INPUT_FIDELITY = "high";
 const PRESENTER_LOCK_IDENTITY = true;
 const PRESENTER_LIKENESS_MIN = 0.82;
 const PRESENTER_FACE_REGION = { x: 0.3, y: 0.05, w: 0.4, h: 0.55 };
-const PRESENTER_WARDROBE_REGION = { x: 0.32, y: 0.42, w: 0.44, h: 0.5 };
+const PRESENTER_EYES_REGION = { x: 0.32, y: 0.08, w: 0.36, h: 0.22 };
+const PRESENTER_WARDROBE_REGION = { x: 0.22, y: 0.36, w: 0.56, h: 0.58 };
 const CANDLE_WIDTH_PCT = 0.03;
 const CANDLE_X_PCT = 0.74;
 const CANDLE_Y_PCT = 0.76;
@@ -124,6 +125,42 @@ function inferImageMime(filePath) {
 	return null;
 }
 
+function parsePngSize(buf) {
+	if (!buf || buf.length < 24) return null;
+	return {
+		width: buf.readUInt32BE(16),
+		height: buf.readUInt32BE(20),
+	};
+}
+
+function parseJpegSize(buf) {
+	if (!buf || buf.length < 4) return null;
+	let offset = 2;
+	while (offset < buf.length) {
+		if (buf[offset] !== 0xff) {
+			offset += 1;
+			continue;
+		}
+		const marker = buf[offset + 1];
+		if (
+			(marker >= 0xc0 && marker <= 0xc3) ||
+			(marker >= 0xc5 && marker <= 0xc7) ||
+			(marker >= 0xc9 && marker <= 0xcb) ||
+			(marker >= 0xcd && marker <= 0xcf)
+		) {
+			if (offset + 8 >= buf.length) return null;
+			const height = buf.readUInt16BE(offset + 5);
+			const width = buf.readUInt16BE(offset + 7);
+			return { width, height };
+		}
+		if (offset + 4 >= buf.length) break;
+		const length = buf.readUInt16BE(offset + 2);
+		if (!length) break;
+		offset += 2 + length;
+	}
+	return null;
+}
+
 function resolveFfprobePath() {
 	let ffprobePath = "ffprobe";
 	if (ffmpegPath) {
@@ -145,6 +182,26 @@ function ffprobeDimensions(filePath) {
 			.trim();
 		const [w, h] = out.split("x").map((n) => Number(n) || 0);
 		return { width: w || 0, height: h || 0 };
+	} catch {
+		return { width: 0, height: 0 };
+	}
+}
+
+function probeImageDimensions(filePath) {
+	try {
+		const dt = detectFileType(filePath);
+		if (!dt || dt.kind !== "image") return { width: 0, height: 0 };
+		const head = readFileHeader(filePath, 256 * 1024);
+		if (!head) return { width: 0, height: 0 };
+		if (dt.ext === "png") {
+			const size = parsePngSize(head);
+			return size || { width: 0, height: 0 };
+		}
+		if (dt.ext === "jpg") {
+			const size = parseJpegSize(head);
+			return size || { width: 0, height: 0 };
+		}
+		return ffprobeDimensions(filePath);
 	} catch {
 		return { width: 0, height: 0 };
 	}
@@ -300,7 +357,7 @@ No extra people, no text, no logos (except the candle brand), no distortions or 
 }
 
 async function createWardrobeMask(inputPath, tmpDir, jobId) {
-	const dims = ffprobeDimensions(inputPath);
+	const dims = probeImageDimensions(inputPath);
 	if (!dims.width || !dims.height)
 		throw new Error("wardrobe_mask_dims_missing");
 	const rx = Math.max(0, Math.round(dims.width * PRESENTER_WARDROBE_REGION.x));
@@ -366,6 +423,7 @@ function runFfmpegBuffer(args, label = "ffmpeg_buffer") {
 function computeImageHash(filePath, regionPct = null) {
 	if (!ffmpegPath) return null;
 	const dims = ffprobeDimensions(filePath);
+	if (!dims.width || !dims.height) return null;
 	let crop = "";
 	if (regionPct && dims.width && dims.height) {
 		const rx = Math.max(0, Math.round(dims.width * (regionPct.x || 0)));
@@ -374,7 +432,7 @@ function computeImageHash(filePath, regionPct = null) {
 		const rh = Math.max(1, Math.round(dims.height * (regionPct.h || 1)));
 		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
 	}
-	const filter = `${crop}scale=8:8:flags=area,format=gray`;
+	const filter = `${crop}scale=9:8:flags=area,format=gray`;
 	const args = [
 		"-hide_banner",
 		"-loglevel",
@@ -391,12 +449,17 @@ function computeImageHash(filePath, regionPct = null) {
 	];
 	try {
 		const buf = runFfmpegBuffer(args, "presenter_hash");
-		if (!buf || buf.length < 64) return null;
-		let sum = 0;
-		for (let i = 0; i < 64; i++) sum += buf[i];
-		const avg = sum / 64;
+		if (!buf || buf.length < 72) return null;
 		const bits = new Array(64);
-		for (let i = 0; i < 64; i++) bits[i] = buf[i] >= avg ? 1 : 0;
+		let idx = 0;
+		for (let y = 0; y < 8; y++) {
+			for (let x = 0; x < 8; x++) {
+				const left = buf[y * 9 + x];
+				const right = buf[y * 9 + x + 1];
+				bits[idx] = left > right ? 1 : 0;
+				idx += 1;
+			}
+		}
 		return bits;
 	} catch {
 		return null;
@@ -413,9 +476,17 @@ function hashSimilarity(a, b) {
 }
 
 function comparePresenterSimilarity(originalPath, candidatePath) {
-	const a = computeImageHash(originalPath, PRESENTER_FACE_REGION);
-	const b = computeImageHash(candidatePath, PRESENTER_FACE_REGION);
-	return hashSimilarity(a, b);
+	const regions = [PRESENTER_EYES_REGION, PRESENTER_FACE_REGION];
+	const scores = [];
+	for (const region of regions) {
+		const a = computeImageHash(originalPath, region);
+		const b = computeImageHash(candidatePath, region);
+		const score = hashSimilarity(a, b);
+		if (Number.isFinite(score)) scores.push(score);
+	}
+	if (!scores.length) return null;
+	const sum = scores.reduce((acc, v) => acc + v, 0);
+	return sum / scores.length;
 }
 
 async function extractFrameFromVideo({ videoPath, outPath }) {
@@ -616,8 +687,8 @@ async function overlayCandleOnPresenter({
 }) {
 	if (!basePath || !fs.existsSync(basePath)) return basePath;
 	if (!candlePath || !fs.existsSync(candlePath)) return basePath;
-	const baseDims = ffprobeDimensions(basePath);
-	const candleDims = ffprobeDimensions(candlePath);
+	const baseDims = probeImageDimensions(basePath);
+	const candleDims = probeImageDimensions(candlePath);
 	if (
 		!baseDims.width ||
 		!baseDims.height ||

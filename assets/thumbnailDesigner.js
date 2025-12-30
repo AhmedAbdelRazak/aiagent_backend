@@ -50,6 +50,12 @@ const THUMBNAIL_PRESENTER_FACE_REGION = {
 	w: 0.4,
 	h: 0.55,
 };
+const THUMBNAIL_PRESENTER_EYES_REGION = {
+	x: 0.32,
+	y: 0.08,
+	w: 0.36,
+	h: 0.22,
+};
 const QA_PREVIEW_WIDTH = 320;
 const QA_PREVIEW_HEIGHT = 180;
 const QA_LUMA_MIN = 0.36;
@@ -168,6 +174,8 @@ function ensureDir(dirPath) {
 	if (!dirPath) return;
 	if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
+
+ensureDir(THUMBNAIL_PRESENTER_CUTOUT_DIR);
 
 function safeUnlink(p) {
 	try {
@@ -1390,6 +1398,7 @@ function runFfmpegBuffer(args, label = "ffmpeg_buffer") {
 function computeImageHash(filePath, regionPct = null) {
 	if (!ffmpegPath) return null;
 	const dims = ffprobeDimensions(filePath);
+	if (!dims.width || !dims.height) return null;
 	let crop = "";
 	if (regionPct && dims.width && dims.height) {
 		const rx = Math.max(0, Math.round(dims.width * (regionPct.x || 0)));
@@ -1398,7 +1407,7 @@ function computeImageHash(filePath, regionPct = null) {
 		const rh = Math.max(1, Math.round(dims.height * (regionPct.h || 1)));
 		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
 	}
-	const filter = `${crop}scale=8:8:flags=area,format=gray`;
+	const filter = `${crop}scale=9:8:flags=area,format=gray`;
 	const args = [
 		"-hide_banner",
 		"-loglevel",
@@ -1415,12 +1424,17 @@ function computeImageHash(filePath, regionPct = null) {
 	];
 	try {
 		const buf = runFfmpegBuffer(args, "thumbnail_hash");
-		if (!buf || buf.length < 64) return null;
-		let sum = 0;
-		for (let i = 0; i < 64; i++) sum += buf[i];
-		const avg = sum / 64;
+		if (!buf || buf.length < 72) return null;
 		const bits = new Array(64);
-		for (let i = 0; i < 64; i++) bits[i] = buf[i] >= avg ? 1 : 0;
+		let idx = 0;
+		for (let y = 0; y < 8; y++) {
+			for (let x = 0; x < 8; x++) {
+				const left = buf[y * 9 + x];
+				const right = buf[y * 9 + x + 1];
+				bits[idx] = left > right ? 1 : 0;
+				idx += 1;
+			}
+		}
 		return bits;
 	} catch {
 		return null;
@@ -1437,9 +1451,20 @@ function hashSimilarity(a, b) {
 }
 
 function comparePresenterSimilarity(originalPath, candidatePath) {
-	const a = computeImageHash(originalPath, THUMBNAIL_PRESENTER_FACE_REGION);
-	const b = computeImageHash(candidatePath, THUMBNAIL_PRESENTER_FACE_REGION);
-	return hashSimilarity(a, b);
+	const regions = [
+		THUMBNAIL_PRESENTER_EYES_REGION,
+		THUMBNAIL_PRESENTER_FACE_REGION,
+	];
+	const scores = [];
+	for (const region of regions) {
+		const a = computeImageHash(originalPath, region);
+		const b = computeImageHash(candidatePath, region);
+		const score = hashSimilarity(a, b);
+		if (Number.isFinite(score)) scores.push(score);
+	}
+	if (!scores.length) return null;
+	const sum = scores.reduce((acc, v) => acc + v, 0);
+	return sum / scores.length;
 }
 
 function samplePreviewLuma(filePath, region = null) {
@@ -1501,7 +1526,7 @@ async function applyThumbnailQaAdjustments(filePath, { log } = {}) {
 			"-i",
 			filePath,
 			"-vf",
-			"eq=contrast=1.02:saturation=1.06:brightness=0.04:gamma=1.06",
+			"eq=contrast=1.02:saturation=1.06:brightness=0.05:gamma=0.96",
 			"-frames:v",
 			"1",
 			"-q:v",
@@ -2156,7 +2181,7 @@ async function renderThumbnailOverlay({
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
-		"eq=contrast=1.05:saturation=1.10:brightness=0.05:gamma=1.08",
+		"eq=contrast=1.05:saturation=1.10:brightness=0.06:gamma=0.96",
 		"unsharp=5:5:0.7",
 		`drawbox=x=0:y=0:w=iw*0.018:h=ih:color=${accentColor}@0.85:t=fill`,
 		`drawbox=x=0:y=0:w=iw:h=ih:color=${accentColor}@0.25:t=4`,
@@ -2659,6 +2684,10 @@ async function generateThumbnailPackage({
 				path: path.basename(cutoutPath),
 			});
 	} else if (THUMBNAIL_LOCK_PRESENTER_IDENTITY) {
+		const hasAlpha = hasAlphaChannel(presenterLocalPath);
+		if (!hasAlpha) {
+			throw new Error("presenter_cutout_required_when_identity_lock_on");
+		}
 		if (log)
 			log("presenter cutout missing; identity lock on", {
 				pose: stylePlan.pose,
