@@ -2686,14 +2686,37 @@ async function generateThumbnailPackage({
 			});
 	} else if (THUMBNAIL_LOCK_PRESENTER_IDENTITY) {
 		const hasAlpha = hasAlphaChannel(presenterLocalPath);
-		if (!hasAlpha) {
-			throw new Error("presenter_cutout_required_when_identity_lock_on");
-		}
 		if (log)
 			log("presenter cutout missing; identity lock on", {
 				pose: stylePlan.pose,
 				cutoutDir: THUMBNAIL_PRESENTER_CUTOUT_DIR,
+				hasAlpha,
 			});
+		if (!THUMBNAIL_ALLOW_AI_PRESENTER_WHEN_CUTOUT_MISSING && !hasAlpha) {
+			throw new Error("presenter_cutout_required_when_identity_lock_on");
+		}
+		if (THUMBNAIL_ALLOW_AI_PRESENTER_WHEN_CUTOUT_MISSING) {
+			const canGenerateVariant = Boolean(openai || getOpenAiKey());
+			if (canGenerateVariant) {
+				try {
+					presenterForCompose = await generatePresenterVariant({
+						openai,
+						tmpDir,
+						presenterPath: presenterLocalPath,
+						pose: stylePlan.pose,
+						log,
+					});
+				} catch (e) {
+					if (log)
+						log("presenter variant failed; fallback to original", {
+							pose: stylePlan.pose,
+							error: e?.message || String(e),
+						});
+				}
+			} else if (log) {
+				log("presenter variant skipped (missing OpenAI key)");
+			}
+		}
 	} else {
 		const canGenerateVariant = Boolean(openai || getOpenAiKey());
 		if (canGenerateVariant) {
