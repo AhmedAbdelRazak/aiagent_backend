@@ -34,6 +34,13 @@ const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
 const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
+const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.42;
+const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.1;
+const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.18;
+const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.5;
+const THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS = 3;
+const THUMBNAIL_VARIANT_B_CONTRAST = 1.12;
+const THUMBNAIL_VARIANT_B_BASE_CHARS = 10;
 const THUMBNAIL_PRESENTER_CUTOUT_DIR = path.resolve(
 	__dirname,
 	"../uploads/presenter_cutouts"
@@ -1611,12 +1618,22 @@ async function composeThumbnailBase({
 	width = DEFAULT_CANVAS_WIDTH,
 	height = DEFAULT_CANVAS_HEIGHT,
 	accentColor = ACCENT_PALETTE.default,
+	layout = {},
 }) {
 	const W = makeEven(Math.max(2, Math.round(width)));
 	const H = makeEven(Math.max(2, Math.round(height)));
-	const leftW = Math.max(1, Math.round(W * LEFT_PANEL_PCT));
-	const margin = Math.max(4, Math.round(W * PANEL_MARGIN_PCT));
-	const overlap = Math.max(0, Math.round(W * PRESENTER_OVERLAP_PCT));
+	const leftPct = Number.isFinite(Number(layout.leftPanelPct))
+		? Number(layout.leftPanelPct)
+		: LEFT_PANEL_PCT;
+	const marginPct = Number.isFinite(Number(layout.panelMarginPct))
+		? Number(layout.panelMarginPct)
+		: PANEL_MARGIN_PCT;
+	const overlapPct = Number.isFinite(Number(layout.presenterOverlapPct))
+		? Number(layout.presenterOverlapPct)
+		: PRESENTER_OVERLAP_PCT;
+	const leftW = Math.max(1, Math.round(W * leftPct));
+	const margin = Math.max(4, Math.round(W * marginPct));
+	const overlap = Math.max(0, Math.round(W * overlapPct));
 	let presenterW = Math.max(2, W - leftW + overlap);
 	presenterW = makeEven(Math.min(W, presenterW));
 	const presenterX = Math.max(0, Math.min(W - presenterW, leftW - overlap));
@@ -1786,6 +1803,62 @@ async function generateThumbnailCompositeBase({
 	});
 }
 
+async function resolveThumbnailBackground({
+	jobId,
+	tmpDir,
+	title,
+	topics,
+	ratio,
+	width,
+	height,
+	presenterImagePath,
+	topicImagePaths = [],
+	log,
+}) {
+	let baseImagePath = "";
+	const prompt = buildRunwayThumbnailPrompt({ title, topics });
+	try {
+		baseImagePath = await generateRunwayThumbnailBase({
+			jobId,
+			tmpDir,
+			prompt,
+			ratio,
+			log,
+		});
+		if (log)
+			log("thumbnail runway background ready", {
+				path: path.basename(baseImagePath),
+			});
+		return { path: baseImagePath, usedRunway: true };
+	} catch (e) {
+		if (log)
+			log("thumbnail runway failed; using fallback background", {
+				error: e.message,
+			});
+	}
+
+	const topicSource =
+		Array.isArray(topicImagePaths) && topicImagePaths.length
+			? topicImagePaths[0]
+			: null;
+	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
+	const fallbackSource =
+		topicSource || (presenterHasAlpha ? null : presenterImagePath);
+	const fallbackPath = path.join(tmpDir, `thumb_bg_${jobId}.jpg`);
+	baseImagePath = await generateFallbackBackground({
+		sourcePath: fallbackSource,
+		outPath: fallbackPath,
+		width,
+		height,
+		log,
+	});
+	if (log)
+		log("thumbnail fallback background ready", {
+			path: path.basename(baseImagePath),
+		});
+	return { path: baseImagePath, usedRunway: false };
+}
+
 function escapeDrawtext(s = "") {
 	const placeholder = "__NL__";
 	return String(s || "")
@@ -1935,14 +2008,19 @@ function titleCaseIfLower(text = "") {
 	return cleaned.replace(/\b[a-z]/g, (m) => m.toUpperCase());
 }
 
-function buildThumbnailText(title = "") {
+function buildThumbnailText(
+	title = "",
+	{
+		maxWords = THUMBNAIL_TEXT_MAX_WORDS,
+		baseChars = THUMBNAIL_TEXT_BASE_MAX_CHARS,
+	} = {}
+) {
 	const cleaned = cleanThumbnailText(title);
 	if (!cleaned) return { text: "", fontScale: 1 };
 	const pretty = titleCaseIfLower(cleaned);
 	const words = pretty.split(" ").filter(Boolean);
-	const trimmedWords = words.slice(0, THUMBNAIL_TEXT_MAX_WORDS);
+	const trimmedWords = words.slice(0, Math.max(1, maxWords));
 	const trimmed = trimmedWords.join(" ");
-	const baseChars = THUMBNAIL_TEXT_BASE_MAX_CHARS;
 	const fit = fitHeadlineText(trimmed, {
 		baseMaxChars: baseChars,
 		preferLines: 2,
@@ -1959,8 +2037,30 @@ async function renderThumbnailOverlay({
 	outputPath,
 	title,
 	accentColor = ACCENT_PALETTE.default,
+	overlayOptions = {},
 }) {
-	const { text, fontScale } = buildThumbnailText(title);
+	const maxWords = Number.isFinite(Number(overlayOptions.maxWords))
+		? Number(overlayOptions.maxWords)
+		: THUMBNAIL_TEXT_MAX_WORDS;
+	const baseChars = Number.isFinite(Number(overlayOptions.baseChars))
+		? Number(overlayOptions.baseChars)
+		: THUMBNAIL_TEXT_BASE_MAX_CHARS;
+	const contrast = Number.isFinite(Number(overlayOptions.contrast))
+		? Number(overlayOptions.contrast)
+		: 1.05;
+	const panelOpacity = Number.isFinite(Number(overlayOptions.panelOpacity))
+		? Number(overlayOptions.panelOpacity)
+		: 0;
+	const textBoxOpacity = Number.isFinite(Number(overlayOptions.textBoxOpacity))
+		? Number(overlayOptions.textBoxOpacity)
+		: 0.35;
+	const vignetteStrength = Number.isFinite(Number(overlayOptions.vignette))
+		? Number(overlayOptions.vignette)
+		: 0.08;
+	const { text, fontScale } = buildThumbnailText(title, {
+		maxWords,
+		baseChars,
+	});
 	const hasText = Boolean(text);
 	const fontFile = THUMBNAIL_FONT_FILE
 		? `:fontfile='${escapeDrawtext(THUMBNAIL_FONT_FILE)}'`
@@ -1981,8 +2081,19 @@ async function renderThumbnailOverlay({
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
-		"eq=contrast=1.05:saturation=1.10:brightness=0.06:gamma=0.96",
+		`eq=contrast=${contrast.toFixed(
+			2
+		)}:saturation=1.10:brightness=0.06:gamma=0.96`,
 		"unsharp=5:5:0.7",
+	];
+	if (panelOpacity > 0) {
+		filters.push(
+			`drawbox=x=0:y=0:w=iw*0.48:h=ih:color=black@${panelOpacity.toFixed(
+				3
+			)}:t=fill`
+		);
+	}
+	filters.push(
 		`drawbox=x=0:y=0:w=iw*0.2:h=ih:color=${accentColor}@0.012:t=fill`,
 		`drawbox=x=iw*0.2:y=0:w=iw*0.2:h=ih:color=${accentColor}@0.01:t=fill`,
 		`drawbox=x=iw*0.4:y=0:w=iw*0.2:h=ih:color=${accentColor}@0.007:t=fill`,
@@ -1990,13 +2101,15 @@ async function renderThumbnailOverlay({
 		`drawbox=x=iw*0.8:y=0:w=iw*0.2:h=ih:color=${accentColor}@0.002:t=fill`,
 		`drawbox=x=0:y=0:w=iw*0.018:h=ih:color=${accentColor}@0.25:t=fill`,
 		`drawbox=x=0:y=0:w=iw:h=ih:color=${accentColor}@0.08:t=4`,
-		"vignette=0.08",
-	];
+		`vignette=${vignetteStrength.toFixed(2)}`
+	);
 	if (hasText) {
 		filters.push(
 			`drawtext=textfile='${escapeDrawtext(
 				textFilePath
-			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:box=1:boxcolor=black@0.35:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*0.12`
+			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:box=1:boxcolor=black@${textBoxOpacity.toFixed(
+				2
+			)}:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*0.12`
 		);
 	}
 
@@ -2414,6 +2527,24 @@ function selectThumbnailTitle({ title, shortTitle, seoTitle, topics }) {
 	return shortTitle || seoTitle || title || topicLabel;
 }
 
+function buildShortHookTitle({ title, shortTitle, seoTitle, topics }) {
+	const topicLabel =
+		Array.isArray(topics) && topics.length
+			? topics[0]?.displayTopic || topics[0]?.topic || ""
+			: "";
+	const candidates = [shortTitle, seoTitle, title, topicLabel];
+	for (const candidate of candidates) {
+		const words = cleanThumbnailText(candidate || "")
+			.split(" ")
+			.filter(Boolean);
+		if (words.length >= 2) return words.slice(0, 3).join(" ");
+	}
+	const fallbackWords = cleanThumbnailText(topicLabel || title || "")
+		.split(" ")
+		.filter(Boolean);
+	return fallbackWords.slice(0, 3).join(" ") || "Quick Update";
+}
+
 function assertCloudinaryReady() {
 	if (
 		!process.env.CLOUDINARY_CLOUD_NAME ||
@@ -2494,6 +2625,12 @@ async function generateThumbnailPackage({
 		seoTitle,
 		topics,
 	});
+	const punchyTitle = buildShortHookTitle({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+	});
 
 	const topicImagePaths = await collectThumbnailTopicImages({
 		topics,
@@ -2504,63 +2641,141 @@ async function generateThumbnailPackage({
 		requireTopicImages,
 		log,
 	});
-
-	const baseImage = await generateThumbnailCompositeBase({
+	const bg = await resolveThumbnailBackground({
 		jobId,
 		tmpDir,
-		presenterImagePath: presenterForCompose,
-		topicImagePaths,
 		title: thumbTitle,
 		topics,
 		ratio: THUMBNAIL_RATIO,
 		width: THUMBNAIL_WIDTH,
 		height: THUMBNAIL_HEIGHT,
-		accentColor: stylePlan.accent,
+		presenterImagePath: presenterForCompose,
+		topicImagePaths,
 		log,
 	});
 
-	const finalPath = path.join(tmpDir, `thumb_${jobId}.jpg`);
-	await renderThumbnailOverlay({
-		inputPath: baseImage,
-		outputPath: finalPath,
-		title: thumbTitle,
-		accentColor: stylePlan.accent,
-	});
-	ensureThumbnailFile(finalPath);
-	const qa = await applyThumbnailQaAdjustments(finalPath, { log });
-	if (log) log("thumbnail qa result", qa);
-	ensureThumbnailFile(finalPath);
-	const maxBytes = 2 * 1024 * 1024;
-	if (fs.statSync(finalPath).size > maxBytes) {
-		const qualitySteps = [3, 4, 5, 6];
-		for (const q of qualitySteps) {
-			const smaller = path.join(tmpDir, `thumb_${jobId}_q${q}.jpg`);
-			await runFfmpeg(
-				["-i", finalPath, "-q:v", String(q), "-frames:v", "1", "-y", smaller],
-				"thumbnail_reencode_smaller"
+	const variantPlans = [
+		{
+			key: "a",
+			title: thumbTitle,
+			layout: {},
+			overlayOptions: {},
+		},
+		{
+			key: "b",
+			title: punchyTitle,
+			layout: {
+				leftPanelPct: THUMBNAIL_VARIANT_B_LEFT_PCT,
+				presenterOverlapPct: THUMBNAIL_VARIANT_B_OVERLAP_PCT,
+			},
+			overlayOptions: {
+				maxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
+				baseChars: THUMBNAIL_VARIANT_B_BASE_CHARS,
+				contrast: THUMBNAIL_VARIANT_B_CONTRAST,
+				panelOpacity: THUMBNAIL_VARIANT_B_PANEL_PCT,
+				textBoxOpacity: THUMBNAIL_VARIANT_B_TEXT_BOX_PCT,
+			},
+		},
+	];
+
+	const variantResults = [];
+	for (const variant of variantPlans) {
+		try {
+			const baseImage = path.join(
+				tmpDir,
+				`thumb_comp_${jobId}_${variant.key}.png`
 			);
-			safeUnlink(finalPath);
-			fs.renameSync(smaller, finalPath);
-			ensureThumbnailFile(finalPath);
-			if (fs.statSync(finalPath).size <= maxBytes) break;
-		}
-		if (fs.statSync(finalPath).size > maxBytes && log) {
-			log("thumbnail size still above max", {
-				size: fs.statSync(finalPath).size,
-				maxBytes,
+			await composeThumbnailBase({
+				baseImagePath: bg.path,
+				presenterImagePath: presenterForCompose,
+				topicImagePaths,
+				outPath: baseImage,
+				width: THUMBNAIL_WIDTH,
+				height: THUMBNAIL_HEIGHT,
+				accentColor: stylePlan.accent,
+				layout: variant.layout,
 			});
+
+			const finalPath = path.join(tmpDir, `thumb_${jobId}_${variant.key}.jpg`);
+			await renderThumbnailOverlay({
+				inputPath: baseImage,
+				outputPath: finalPath,
+				title: variant.title,
+				accentColor: stylePlan.accent,
+				overlayOptions: variant.overlayOptions,
+			});
+			ensureThumbnailFile(finalPath);
+			const qa = await applyThumbnailQaAdjustments(finalPath, { log });
+			if (log) log("thumbnail qa result", { variant: variant.key, ...qa });
+			ensureThumbnailFile(finalPath);
+
+			const maxBytes = 2 * 1024 * 1024;
+			if (fs.statSync(finalPath).size > maxBytes) {
+				const qualitySteps = [3, 4, 5, 6];
+				for (const q of qualitySteps) {
+					const smaller = path.join(
+						tmpDir,
+						`thumb_${jobId}_${variant.key}_q${q}.jpg`
+					);
+					await runFfmpeg(
+						[
+							"-i",
+							finalPath,
+							"-q:v",
+							String(q),
+							"-frames:v",
+							"1",
+							"-y",
+							smaller,
+						],
+						"thumbnail_reencode_smaller"
+					);
+					safeUnlink(finalPath);
+					fs.renameSync(smaller, finalPath);
+					ensureThumbnailFile(finalPath);
+					if (fs.statSync(finalPath).size <= maxBytes) break;
+				}
+				if (fs.statSync(finalPath).size > maxBytes && log) {
+					log("thumbnail size still above max", {
+						variant: variant.key,
+						size: fs.statSync(finalPath).size,
+						maxBytes,
+					});
+				}
+			}
+
+			const uploaded = await uploadThumbnailToCloudinary(finalPath, jobId);
+			variantResults.push({
+				variant: variant.key,
+				localPath: finalPath,
+				url: uploaded.url,
+				publicId: uploaded.public_id,
+				width: uploaded.width,
+				height: uploaded.height,
+				title: variant.title,
+			});
+		} catch (e) {
+			if (log)
+				log("thumbnail variant failed", {
+					variant: variant.key,
+					error: e?.message || String(e),
+				});
 		}
 	}
-	const uploaded = await uploadThumbnailToCloudinary(finalPath, jobId);
+
+	if (!variantResults.length) throw new Error("thumbnail_generation_failed");
+	const preferred =
+		variantResults.find((v) => v.variant === "b") || variantResults[0];
 	return {
-		localPath: finalPath,
-		url: uploaded.url,
-		publicId: uploaded.public_id,
-		width: uploaded.width,
-		height: uploaded.height,
-		title: thumbTitle,
+		localPath: preferred.localPath,
+		url: preferred.url,
+		publicId: preferred.publicId,
+		width: preferred.width,
+		height: preferred.height,
+		title: preferred.title,
 		pose: stylePlan.pose,
 		accent: stylePlan.accent,
+		variants: variantResults,
 	};
 }
 

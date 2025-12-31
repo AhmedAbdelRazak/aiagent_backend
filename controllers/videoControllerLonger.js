@@ -191,9 +191,9 @@ const DEFAULT_PRESENTER_ASSET_URL =
 const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 	"https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
 const STUDIO_EMPTY_PROMPT =
-	"Studio is empty; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter.";
+	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter; background must be static with no moving elements, screens, or window activity.";
 const PRESENTER_MOTION_STYLE =
-	"natural head and neck movement, human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; mouth neutral; avoid smiles unless explicitly requested; no exaggerated expressions";
+	"natural head and neck movement with occasional small nods, slow and controlled; no fast turns or jerky motion; human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; mouth neutral or very light smile when appropriate; no exaggerated expressions";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -246,6 +246,11 @@ const SEGMENT_TARGET_SEC = 8;
 const MAX_SEGMENTS = 45;
 const SCRIPT_TOLERANCE_SEC = clampNumber(4.5, 2, 5);
 const MAX_SCRIPT_REWRITES = clampNumber(4, 0, 5);
+const REWRITE_RATIO_DAMPING = clampNumber(0.6, 0.4, 0.85);
+const REWRITE_CLOSE_RATIO_DELTA = clampNumber(0.05, 0.03, 0.1);
+const REWRITE_CLOSE_DRIFT_MULT = clampNumber(1.2, 1.0, 1.6);
+const REWRITE_ADJUST_MIN = clampNumber(6, 2, 12);
+const REWRITE_ADJUST_MAX = clampNumber(22, 10, 35);
 const MAX_FILLER_WORDS_PER_VIDEO = clampNumber(0, 0, 2);
 const MAX_FILLER_WORDS_PER_SEGMENT = clampNumber(0, 0, 2);
 const MAX_MICRO_EMOTES_PER_VIDEO = clampNumber(0, 0, 1);
@@ -254,8 +259,8 @@ const ENABLE_MICRO_EMOTES = true;
 // Audio processing
 const AUDIO_SR = 48000;
 const AUDIO_CHANNELS = 1; // mono voice for stability + smaller sync payload
-const GLOBAL_ATEMPO_MIN = 0.97;
-const GLOBAL_ATEMPO_MAX = 1.05;
+const GLOBAL_ATEMPO_MIN = 0.95;
+const GLOBAL_ATEMPO_MAX = 1.07;
 const INTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
 const INTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const OUTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
@@ -263,6 +268,7 @@ const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
 const VOICE_SPEED_BOOST = clampNumber(1.0, 0.98, 1.08);
 const FORCE_NEUTRAL_VOICEOVER = true;
+const ALIGN_INTRO_OUTRO_ATEMPO = true;
 const MAX_SUBTLE_VISUAL_EXPRESSIONS = clampNumber(2, 0, 2);
 const SUBTLE_VISUAL_EDGE_BUFFER = clampNumber(1, 0, 3);
 
@@ -283,7 +289,7 @@ const REQUIRE_LIPSYNC = true;
 // Presenter stability
 const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
-const USE_MOTION_REF_BASELINE = true;
+const USE_MOTION_REF_BASELINE = false;
 const BASELINE_DUR_SEC = clampNumber(12, 6, 15);
 const BASELINE_VARIANTS = clampNumber(1, 1, 3);
 const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
@@ -2338,6 +2344,7 @@ async function ensureLocalPresenterAsset(assetUrl, tmpDir, jobId) {
 }
 
 async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
+	if (!USE_MOTION_REF_BASELINE) return null;
 	const url = DEFAULT_PRESENTER_MOTION_VIDEO_URL;
 	if (!url) return null;
 
@@ -2655,17 +2662,19 @@ function buildBaselinePrompt(
 			? "Use a slightly different blink cadence and a soft head turn or two."
 			: "";
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance: gentle head nods, human blink rate with slight variation, small hand movements."
+		? "Match the natural motion style from the reference performance: gentle head movement with occasional small nods; slow and controlled; no fast turns or jerky motion; no hand gestures."
 		: PRESENTER_MOTION_STYLE;
 
 	return `
 Photorealistic talking-head video of the SAME person as the reference image.
 Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT}
+Background must remain locked and static; no movement or people behind the presenter.
 Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; no extra candles.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 ${expressionLine}
 Motion: ${motionHint} ${variantHint}
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
+Smiles/laughter: tiny, brief smiles only; no laughs or exaggerated emotion.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
 Eyes: relaxed, comfortable, natural reflections and blink cadence; avoid glassy or robotic eyes.
 Avoid exaggerated eye expressions or wide-eyed looks.
@@ -3856,7 +3865,7 @@ async function synthesizeTtsWav({
 	await mp3ToCleanWav(mp3, wav);
 	safeUnlink(mp3);
 	const durationSec = await probeDurationSeconds(wav);
-	return { wavPath: wav, durationSec, modelId: usedModelId };
+	return { wavPath: wav, durationSec, modelId: usedModelId, text: cleanText };
 }
 
 async function fitWavToTargetDuration({
@@ -6536,6 +6545,9 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const thumbLocalPath = thumbResult?.localPath || "";
 			const thumbCloudUrl = thumbResult?.url || "";
 			const thumbPublicId = thumbResult?.publicId || "";
+			const thumbVariants = Array.isArray(thumbResult?.variants)
+				? thumbResult.variants
+				: [];
 			thumbnailUrl = thumbCloudUrl;
 			thumbnailPublicId = thumbPublicId;
 			if (thumbLocalPath && fs.existsSync(thumbLocalPath)) {
@@ -6553,6 +6565,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					thumbnailPath: LONG_VIDEO_PERSIST_OUTPUT ? thumbnailPath : "",
 					thumbnailUrl: thumbnailUrl || "",
 					thumbnailPublicId: thumbnailPublicId || "",
+					thumbnailVariants: thumbVariants,
 				},
 			});
 			logJob(jobId, "thumbnail ready", {
@@ -6560,6 +6573,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				cloudinary: Boolean(thumbnailUrl),
 				pose: thumbResult?.pose || null,
 				accent: thumbResult?.accent || null,
+				variants: thumbVariants.map((v) => v.variant).filter(Boolean),
 			});
 		} catch (e) {
 			logJob(jobId, "thumbnail generation failed (hard stop)", {
@@ -6599,6 +6613,12 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			shortTitle: script.shortTitle || script.title,
 			mood: introOutroMood,
 		});
+		const introText =
+			sanitizeIntroOutroLine(introLine) || String(introLine || "").trim();
+		const outroText =
+			sanitizeIntroOutroLine(outroLine) || String(outroLine || "").trim();
+		let introTextFinal = introText;
+		let outroTextFinal = outroText;
 		const introExpression = "neutral";
 		const outroExpression = "neutral";
 
@@ -6606,12 +6626,12 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			mood: introOutroMood,
 			contentTargetSec,
 			intro: {
-				text: introLine,
+				text: introText,
 				targetSec: introDurationSec,
 				expression: introExpression,
 			},
 			outro: {
-				text: outroLine,
+				text: outroText,
 				targetSec: outroDurationSec,
 				expression: outroExpression,
 			},
@@ -6620,8 +6640,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		updateJob(jobId, {
 			meta: {
 				...JOBS.get(jobId)?.meta,
-				intro: { text: introLine, targetSec: introDurationSec },
-				outro: { text: outroLine, targetSec: outroDurationSec },
+				intro: { text: introText, targetSec: introDurationSec },
+				outro: { text: outroText, targetSec: outroDurationSec },
 			},
 		});
 
@@ -6643,9 +6663,18 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		].filter(Boolean);
 		let ttsModelId = "";
 
-		const introVoiceSettings = resolveVoiceSettings(introExpression, introLine);
+		const introVoiceSettings = resolveVoiceSettings(introExpression, introText);
+		logJob(jobId, "intro tts request", {
+			text: introText,
+			words: countWords(introText),
+			expression: introExpression,
+			mood: introOutroMood,
+			voiceId: effectiveVoiceId,
+			voiceSettings: introVoiceSettings,
+			modelOrder: ttsModelOrder,
+		});
 		const introTts = await synthesizeTtsWav({
-			text: introLine,
+			text: introText,
 			tmpDir,
 			jobId,
 			label: "intro",
@@ -6655,19 +6684,30 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			modelOrder: ttsModelOrder,
 		});
 		if (introTts?.modelId) ttsModelId = introTts.modelId;
-		const introFit = await fitWavToTargetDuration({
-			wavPath: introTts.wavPath,
-			targetSec: introDurationSec,
-			minAtempo: INTRO_ATEMPO_MIN,
-			maxAtempo: INTRO_ATEMPO_MAX,
-			tmpDir,
-			jobId,
-			label: "intro",
-		});
-		if (!introFit.durationSec)
+		introTextFinal = introTts?.text || introText;
+		if (!introTts.durationSec)
 			throw new Error("Intro voice generation failed (empty duration)");
-		const introAudioPath = introFit.wavPath;
-		introDurationSec = introFit.durationSec || introDurationSec;
+		let introAudioPath = introTts.wavPath;
+		introDurationSec = introTts.durationSec || introDurationSec;
+		let introAtempo = 1;
+		let introRawAtempo = 1;
+		if (introDurationSec < INTRO_MIN_SEC || introDurationSec > INTRO_MAX_SEC) {
+			const introFit = await fitWavToTargetDuration({
+				wavPath: introAudioPath,
+				targetSec: introDurationSec,
+				minAtempo: INTRO_ATEMPO_MIN,
+				maxAtempo: INTRO_ATEMPO_MAX,
+				tmpDir,
+				jobId,
+				label: "intro",
+			});
+			if (introFit.durationSec) {
+				introAudioPath = introFit.wavPath;
+				introDurationSec = introFit.durationSec || introDurationSec;
+				introAtempo = introFit.atempo || 1;
+				introRawAtempo = introFit.rawAtempo || 1;
+			}
+		}
 		if (introDurationSec < INTRO_MIN_SEC || introDurationSec > INTRO_MAX_SEC) {
 			logJob(jobId, "intro duration outside target range", {
 				introDurationSec: Number(introDurationSec.toFixed(3)),
@@ -6676,14 +6716,27 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			});
 		}
 		logJob(jobId, "intro voice ready", {
-			durationSec: Number((introFit.durationSec || 0).toFixed(3)),
-			atempo: Number(introFit.atempo.toFixed(3)),
-			rawAtempo: Number(introFit.rawAtempo.toFixed(3)),
+			durationSec: Number((introDurationSec || 0).toFixed(3)),
+			atempo: Number(introAtempo.toFixed(3)),
+			rawAtempo: Number(introRawAtempo.toFixed(3)),
+			text: introTextFinal,
+			words: countWords(introTextFinal),
+			voiceSettings: introVoiceSettings,
+			modelId: ttsModelId || "auto",
 		});
 
-		const outroVoiceSettings = resolveVoiceSettings(outroExpression, outroLine);
+		const outroVoiceSettings = resolveVoiceSettings(outroExpression, outroText);
+		logJob(jobId, "outro tts request", {
+			text: outroText,
+			words: countWords(outroText),
+			expression: outroExpression,
+			mood: introOutroMood,
+			voiceId: effectiveVoiceId,
+			voiceSettings: outroVoiceSettings,
+			modelOrder: ttsModelOrder,
+		});
 		const outroTts = await synthesizeTtsWav({
-			text: outroLine,
+			text: outroText,
 			tmpDir,
 			jobId,
 			label: "outro",
@@ -6693,19 +6746,30 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			modelOrder: ttsModelOrder,
 		});
 		if (outroTts?.modelId) ttsModelId = outroTts.modelId;
-		const outroFit = await fitWavToTargetDuration({
-			wavPath: outroTts.wavPath,
-			targetSec: outroDurationSec,
-			minAtempo: OUTRO_ATEMPO_MIN,
-			maxAtempo: OUTRO_ATEMPO_MAX,
-			tmpDir,
-			jobId,
-			label: "outro",
-		});
-		if (!outroFit.durationSec)
+		outroTextFinal = outroTts?.text || outroText;
+		if (!outroTts.durationSec)
 			throw new Error("Outro voice generation failed (empty duration)");
-		const outroAudioPath = outroFit.wavPath;
-		outroDurationSec = outroFit.durationSec || outroDurationSec;
+		let outroAudioPath = outroTts.wavPath;
+		outroDurationSec = outroTts.durationSec || outroDurationSec;
+		let outroAtempo = 1;
+		let outroRawAtempo = 1;
+		if (outroDurationSec < OUTRO_MIN_SEC || outroDurationSec > OUTRO_MAX_SEC) {
+			const outroFit = await fitWavToTargetDuration({
+				wavPath: outroAudioPath,
+				targetSec: outroDurationSec,
+				minAtempo: OUTRO_ATEMPO_MIN,
+				maxAtempo: OUTRO_ATEMPO_MAX,
+				tmpDir,
+				jobId,
+				label: "outro",
+			});
+			if (outroFit.durationSec) {
+				outroAudioPath = outroFit.wavPath;
+				outroDurationSec = outroFit.durationSec || outroDurationSec;
+				outroAtempo = outroFit.atempo || 1;
+				outroRawAtempo = outroFit.rawAtempo || 1;
+			}
+		}
 		if (outroDurationSec < OUTRO_MIN_SEC || outroDurationSec > OUTRO_MAX_SEC) {
 			logJob(jobId, "outro duration outside target range", {
 				outroDurationSec: Number(outroDurationSec.toFixed(3)),
@@ -6714,9 +6778,21 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			});
 		}
 		logJob(jobId, "outro voice ready", {
-			durationSec: Number((outroFit.durationSec || 0).toFixed(3)),
-			atempo: Number(outroFit.atempo.toFixed(3)),
-			rawAtempo: Number(outroFit.rawAtempo.toFixed(3)),
+			durationSec: Number((outroDurationSec || 0).toFixed(3)),
+			atempo: Number(outroAtempo.toFixed(3)),
+			rawAtempo: Number(outroRawAtempo.toFixed(3)),
+			text: outroTextFinal,
+			words: countWords(outroTextFinal),
+			voiceSettings: outroVoiceSettings,
+			modelId: ttsModelId || "auto",
+		});
+
+		updateJob(jobId, {
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				intro: { text: introTextFinal, targetSec: introDurationSec },
+				outro: { text: outroTextFinal, targetSec: outroDurationSec },
+			},
 		});
 
 		updateJob(jobId, { progressPct: 22 });
@@ -6858,19 +6934,28 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				});
 
 				for (const seg of segments) {
-					logJob(jobId, "tts segment start", {
-						segment: seg.index,
-						words: countWords(seg.text),
-					});
-
 					const mp3 = path.join(tmpDir, `tts_${jobId}_${seg.index}.mp3`);
 					const cleanWav = path.join(
 						tmpDir,
 						`tts_clean_${jobId}_${seg.index}.wav`
 					);
 
-					const cleanText = sanitizeSegmentText(seg.text);
+					const rawText = seg.text;
+					const cleanText = sanitizeSegmentText(rawText);
+					const textChanged = String(rawText || "").trim() !== cleanText;
+					seg.text = cleanText;
 					const voiceSettings = resolveVoiceSettings(seg.expression, cleanText);
+					logJob(jobId, "tts segment start", {
+						segment: seg.index,
+						attempt,
+						words: countWords(cleanText),
+						text: cleanText,
+						expression: seg.expression,
+						voiceSettings,
+						voiceId: effectiveVoiceId,
+						modelId: ttsModelId || "auto",
+						textChanged,
+					});
 					const usedModelId = await elevenLabsTTS({
 						text: cleanText,
 						outMp3Path: mp3,
@@ -6884,6 +6969,12 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					safeUnlink(mp3);
 
 					const d = await probeDurationSeconds(cleanWav);
+					logJob(jobId, "tts segment ready", {
+						segment: seg.index,
+						attempt,
+						cleanDur: Number(d.toFixed(3)),
+						modelId: usedModelId || ttsModelId || "auto",
+					});
 					cleanedWavs.push({ index: seg.index, wav: cleanWav, cleanDur: d });
 					sumCleanDur += d;
 				}
@@ -6900,6 +6991,9 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			);
 			const ratioDelta = Math.abs(1 - rawAtempo);
 			const withinTolerance = driftSec <= toleranceSec;
+			const closeEnough =
+				ratioDelta <= REWRITE_CLOSE_RATIO_DELTA ||
+				driftSec <= toleranceSec * REWRITE_CLOSE_DRIFT_MULT;
 			const shouldTimeStretch =
 				!voiceoverUrl && (ratioDelta >= 0.04 || driftSec > toleranceSec);
 			globalAtempo = shouldTimeStretch
@@ -6921,12 +7015,15 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				withinTolerance,
 				toleranceSec: Number(toleranceSec.toFixed(3)),
 				ratioDelta: Number(ratioDelta.toFixed(3)),
+				closeEnough,
+				shouldTimeStretch,
 				attempt,
 				voiceSpeedBoost: VOICE_SPEED_BOOST,
 			});
 
 			const needsRewrite =
 				!voiceoverUrl &&
+				!closeEnough &&
 				(!withinTolerance ||
 					rawAtempo < GLOBAL_ATEMPO_MIN ||
 					rawAtempo > GLOBAL_ATEMPO_MAX);
@@ -6936,14 +7033,15 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			for (const a of cleanedWavs) safeUnlink(a.wav);
 
 			const ratio = narrationTargetSec / sumCleanDur;
+			const dampedRatio = 1 + (ratio - 1) * REWRITE_RATIO_DAMPING;
 			const adjustPct = clampNumber(
-				Math.round(Math.abs(1 - ratio) * 100 + 4),
-				8,
-				24
+				Math.round(Math.abs(1 - dampedRatio) * 100 + 3),
+				REWRITE_ADJUST_MIN,
+				REWRITE_ADJUST_MAX
 			);
 			const direction = ratio > 1 ? "LONGER" : "SHORTER";
 			const adjustedCaps = wordCaps.map((c) =>
-				Math.max(12, Math.round(c * ratio))
+				Math.max(12, Math.round(c * dampedRatio))
 			);
 			const capsLine2 = adjustedCaps
 				.map((c, i) => `#${i}: <= ${c} words`)
@@ -7040,12 +7138,65 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			}));
 		}
 
+		if (
+			ALIGN_INTRO_OUTRO_ATEMPO &&
+			Number.isFinite(globalAtempo) &&
+			Math.abs(globalAtempo - 1) >= 0.005
+		) {
+			const introAligned = path.join(tmpDir, `intro_aligned_${jobId}.wav`);
+			await applyGlobalAtempoToWav(introAudioPath, introAligned, globalAtempo);
+			safeUnlink(introAudioPath);
+			introAudioPath = introAligned;
+			introDurationSec = await probeDurationSeconds(introAudioPath);
+
+			const outroAligned = path.join(tmpDir, `outro_aligned_${jobId}.wav`);
+			await applyGlobalAtempoToWav(outroAudioPath, outroAligned, globalAtempo);
+			safeUnlink(outroAudioPath);
+			outroAudioPath = outroAligned;
+			outroDurationSec = await probeDurationSeconds(outroAudioPath);
+
+			logJob(jobId, "intro/outro atempo aligned", {
+				atempo: Number(globalAtempo.toFixed(4)),
+				introDurationSec: Number(introDurationSec.toFixed(3)),
+				outroDurationSec: Number(outroDurationSec.toFixed(3)),
+			});
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					intro: { text: introTextFinal, targetSec: introDurationSec },
+					outro: { text: outroTextFinal, targetSec: outroDurationSec },
+				},
+			});
+		}
+
+		const finalScriptSegments = segments.map((s) => ({
+			index: s.index,
+			topicIndex: s.topicIndex,
+			topicLabel: s.topicLabel,
+			text: s.text,
+			expression: s.expression,
+			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
+		}));
+		script.segments = finalScriptSegments;
+		updateJob(jobId, {
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				script: { title: script.title, segments: finalScriptSegments },
+			},
+		});
+
 		// Apply global atempo to each segment (may be 1.0 within tolerance)
 		const segmentAudio = [];
 		for (const a of cleanedWavs.sort((x, y) => x.index - y.index)) {
 			const out = path.join(tmpDir, `seg_audio_${jobId}_${a.index}.wav`);
 			await applyGlobalAtempoToWav(a.wav, out, globalAtempo);
 			const d2 = await probeDurationSeconds(out);
+			logJob(jobId, "tts segment atempo applied", {
+				segment: a.index,
+				atempo: Number(globalAtempo.toFixed(4)),
+				cleanDur: Number((a.cleanDur || 0).toFixed(3)),
+				finalDur: Number((d2 || 0).toFixed(3)),
+			});
 			segmentAudio.push({ index: a.index, wav: out, dur: d2 });
 			safeUnlink(a.wav);
 		}
@@ -7668,9 +7819,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		try {
 			if (user?._id) {
 				const scriptText = [
-					introLine,
+					introTextFinal,
 					...script.segments.map((s) => s.text),
-					outroLine,
+					outroTextFinal,
 				]
 					.filter(Boolean)
 					.join("\n");
