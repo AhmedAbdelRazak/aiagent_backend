@@ -109,7 +109,7 @@ function fallbackWardrobePrompt({ topicLine }) {
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment.
 Change ONLY the outfit on the torso/upper body area to a dark, classy button-up shirt (open collar), optional open blazer.
 Outfit colors must be dark only (charcoal, black, deep navy). No bright or light colors.
-Face, glasses, beard, hairline, skin texture, and all facial features must remain EXACTLY the same. Do NOT touch or alter the face in any way. Single face only, no ghosting.
+Do NOT alter the face or head at all. Keep glasses, beard, hairline, skin texture, and facial features exactly as in @presenter_ref. Single face only, no ghosting.
 Studio background, desk, lighting, camera angle, and all props must remain EXACTLY the same.
 No candles, no extra objects, no text, no logos. Topic context: ${topicLine}.
 `.trim();
@@ -120,7 +120,7 @@ function fallbackCandlePrompt({ topicLine }) {
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment. Keep the outfit exactly the same as @presenter_ref.
 Add @candle_ref candle on the desk to the right side behind the presenter, near the right edge, fully visible and grounded on the tabletop.
 The candle jar is OPEN with NO lid visible. The candle is LIT with a tiny calm flame; no exaggerated glow.
-Keep face identity EXACTLY the same; do NOT touch or alter the face in any way; single face only, no double exposure or ghosting.
+Do NOT alter the face or head at all; keep it exactly as in @presenter_ref. Single face only, no double exposure or ghosting.
 No transparency on the candle; label and glass must be solid and crisp, with a soft natural shadow on the desk.
 No other changes, no extra objects, no text, no logos. Topic context: ${topicLine}.
 `.trim();
@@ -158,11 +158,12 @@ Return JSON only with keys: wardrobePrompt, candlePrompt.
 Rules:
 - Use @presenter_ref as the only person reference.
 - Study the provided reference images to match the studio framing and candle placement.
-- Face is strictly locked: do NOT alter the face or any facial features in any way; no double face, no ghosting, no artifacts.
+- Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts.
 - Keep studio/desk/background/camera/lighting unchanged.
 - Wardrobe: dark classy button-up (open collar), optional open blazer, dark colors only.
 - Candle: add @candle_ref on the right side of the desk near the edge, fully visible, lid removed, lit with a tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating).
 - Candle must match the product reference (label, jar shape, proportions) while being normal size in scene.
+- Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
 - No extra objects, no text, no logos, no watermarks.
 `.trim();
 
@@ -199,7 +200,7 @@ Output JSON only.
 				},
 			],
 			temperature: 0.4,
-			max_tokens: 500,
+			max_completion_tokens: 500,
 		});
 		const content = String(resp?.choices?.[0]?.message?.content || "").trim();
 		const parsed = parseJsonObject(content);
@@ -554,11 +555,10 @@ async function generatePresenterAdjustedImage({
 		);
 	} catch (e) {
 		if (log)
-			log("runway candle stage failed; using wardrobe image", {
+			log("runway candle stage failed", {
 				error: e?.message || String(e),
 			});
-		finalPath = outfitPath;
-		finalUpload = outfitUpload;
+		throw e;
 	}
 
 	return {

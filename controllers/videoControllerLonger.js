@@ -7097,35 +7097,38 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					log: (message, payload) => logJob(jobId, message, payload),
 				});
 				if (
-					presenterResult?.localPath &&
-					fs.existsSync(presenterResult.localPath)
+					!presenterResult?.localPath ||
+					!fs.existsSync(presenterResult.localPath)
 				) {
-					const adjustedDetected = detectFileType(presenterResult.localPath);
-					if (adjustedDetected?.kind === "image") {
-						presenterLocal = presenterResult.localPath;
-						presenterIsVideo = false;
-						presenterIsImage = true;
-						logJob(jobId, "presenter adjustments ready", {
-							path: path.basename(presenterLocal),
-							method: presenterResult.method || "runway",
-							cloudinary: Boolean(presenterResult.url),
-						});
-						updateJob(jobId, {
-							meta: {
-								...JOBS.get(jobId)?.meta,
-								presenterImageUrl: presenterResult.url || "",
-							},
-						});
-					} else {
-						logJob(jobId, "presenter adjustments invalid; using original", {
-							detected: adjustedDetected?.kind || "unknown",
-						});
-					}
+					throw new Error("presenter adjustments missing output");
 				}
+				const adjustedDetected = detectFileType(presenterResult.localPath);
+				if (adjustedDetected?.kind !== "image") {
+					throw new Error(
+						`presenter adjustments invalid output (${
+							adjustedDetected?.kind || "unknown"
+						})`
+					);
+				}
+				presenterLocal = presenterResult.localPath;
+				presenterIsVideo = false;
+				presenterIsImage = true;
+				logJob(jobId, "presenter adjustments ready", {
+					path: path.basename(presenterLocal),
+					method: presenterResult.method || "runway",
+					cloudinary: Boolean(presenterResult.url),
+				});
+				updateJob(jobId, {
+					meta: {
+						...JOBS.get(jobId)?.meta,
+						presenterImageUrl: presenterResult.url || "",
+					},
+				});
 			} catch (e) {
-				logJob(jobId, "presenter adjustments failed; using original", {
+				logJob(jobId, "presenter adjustments failed (hard stop)", {
 					error: e.message,
 				});
+				throw e;
 			}
 		} else if (enableWardrobeEdit && !presenterIsImage) {
 			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
