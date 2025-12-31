@@ -31,8 +31,8 @@ const RUNWAY_IMAGE_MAX_POLL_ATTEMPTS = 120;
 const PRESENTER_LIKENESS_MIN = 0.82;
 const PRESENTER_FACE_REGION = { x: 0.3, y: 0.05, w: 0.4, h: 0.55 };
 const PRESENTER_EYES_REGION = { x: 0.32, y: 0.08, w: 0.36, h: 0.22 };
-const PRESENTER_WARDROBE_REGION = { x: 0.22, y: 0.36, w: 0.56, h: 0.58 };
-const CANDLE_WIDTH_PCT = parseNumber(process.env.CANDLE_WIDTH_PCT, 0.14);
+const PRESENTER_WARDROBE_REGION = { x: 0.19, y: 0.32, w: 0.62, h: 0.64 };
+const CANDLE_WIDTH_PCT = parseNumber(process.env.CANDLE_WIDTH_PCT, 0.11);
 const CANDLE_X_PCT = parseNumber(process.env.CANDLE_X_PCT, 0.835);
 const CANDLE_Y_PCT = parseNumber(process.env.CANDLE_Y_PCT, 0.724);
 const CANDLE_BOTTOM_MARGIN_PX = parseNumber(
@@ -51,9 +51,9 @@ const CANDLE_PREP_ENABLED =
 	String(process.env.CANDLE_PREP_ENABLED || "1") !== "0";
 const CANDLE_KEY_SIMILARITY = parseNumber(
 	process.env.CANDLE_KEY_SIMILARITY,
-	0.32
+	0.22
 );
-const CANDLE_KEY_BLEND = parseNumber(process.env.CANDLE_KEY_BLEND, 0.08);
+const CANDLE_KEY_BLEND = parseNumber(process.env.CANDLE_KEY_BLEND, 0.03);
 const CANDLE_KEY_MAX_CORNER_DIFF = parseNumber(
 	process.env.CANDLE_KEY_MAX_CORNER_DIFF,
 	40
@@ -98,8 +98,8 @@ const DESK_EDGE_EXPECTED_TALL_PCT = parseNumber(
 );
 const DESK_EDGE_BAND_PCT = parseNumber(process.env.DESK_EDGE_BAND_PCT, 0.16);
 const DESK_EDGE_MIN_PCT = parseNumber(process.env.DESK_EDGE_MIN_PCT, 0.68);
-const CANDLE_MIN_PX = parseNumber(process.env.CANDLE_MIN_PX, 90);
-const CANDLE_MAX_PX = parseNumber(process.env.CANDLE_MAX_PX, 280);
+const CANDLE_MIN_PX = parseNumber(process.env.CANDLE_MIN_PX, 80);
+const CANDLE_MAX_PX = parseNumber(process.env.CANDLE_MAX_PX, 240);
 const PRESENTER_MIN_BYTES = 12000;
 const PRESENTER_CLOUDINARY_FOLDER = "aivideomatic/long_presenters";
 const PRESENTER_CLOUDINARY_PUBLIC_PREFIX = "presenter_master";
@@ -740,27 +740,27 @@ function inferWardrobeStyle({ categoryLabel = "", text = "" }) {
 		/(finance|business|money|stock|market|economy)/.test(lower) ||
 		/(finance|business)/.test(cat)
 	) {
-		return "premium button-up shirt (open collar), smart-casual, youthful and lively";
+		return "dark charcoal or deep navy premium button-up shirt (open collar), optional unstructured open blazer, smart-casual and upscale";
 	}
 	if (
 		/(politic|election|policy|government)/.test(lower) ||
 		cat === "politics"
 	) {
-		return "clean button-up shirt with a modern, smart-casual look (open collar)";
+		return "dark charcoal or black button-up shirt (open collar), optional open blazer, modern smart-casual";
 	}
 	if (
 		/(tech|ai|software|developer|programming|startup)/.test(lower) ||
 		cat === "technology"
 	) {
-		return "stylish patterned or textured button-up shirt, open collar, smart-casual";
+		return "dark textured button-up shirt (deep navy/charcoal), open collar, optional open blazer, smart-casual";
 	}
 	if (
 		/(movie|tv|series|show|celebrity|music|album|tour|concert)/.test(lower) ||
 		cat === "entertainment"
 	) {
-		return "fashion-forward button-up shirt, modern smart-casual, open collar";
+		return "dark fashion-forward button-up shirt, open collar, optional open blazer, modern smart-casual";
 	}
-	return "fancy button-up shirt, youthful smart-casual, open collar";
+	return "dark classy button-up shirt (open collar), optional open blazer, premium smart-casual";
 }
 
 function inferExpressionLine(text = "") {
@@ -795,7 +795,9 @@ Change ONLY the outfit on the torso/upper body area to: ${wardrobe}.
 Keep skin tone, arms, hands, body proportions, and posture identical to @presenter_ref.
 Face, glasses, beard, hairline, skin texture, eye shape, eye color, eyebrows, ears, and head shape must remain EXACTLY the same.
 Studio background, desk, lighting, color grading, camera angle, framing, and all background objects must remain EXACTLY the same.
-No tie. No formal suit jacket. Keep it youthful, lively, and fancy-casual.
+Outfit colors must be dark only (charcoal, black, deep navy). No bright or light colors.
+No tie. Optional open blazer or just a button-up shirt; if blazer, keep it open and unstructured.
+Replace all visible shirt/jacket fabric within the torso region; do NOT keep any original clothing details.
 Do NOT alter facial features, hair, or body proportions. Do NOT alter the studio, desk, or props.
 If any non-wardrobe area would change, leave it unchanged.
 ${expressionLine}
@@ -921,9 +923,11 @@ async function generateRunwayCandleImage({ candlePath, tmpDir, jobId, log }) {
 Use @candle_ref as the exact reference for the brand label, logo, glass, and proportions.
 Create a photorealistic product cutout of the same candle.
 The jar is OPEN with NO lid or cap visible anywhere in frame.
-The candle is LIT with a small clean flame and glowing wick; wax surface visible.
+The candle is LIT with a tiny, calm flame; minimal glow (no exaggerated flare or halo); wax surface visible.
 Keep label text/logo EXACTLY the same, sharp, readable, and undistorted.
 Single candle only, upright, centered, fully visible (no cropping).
+Glass and label edges must be solid and crisp (no ghosting, no translucency, no see-through artifacts).
+No green spill or color cast on the product.
 Isolate on a flat pure green (#00FF00) background; no shadows, reflections, or extra objects.
 `.trim();
 
@@ -1008,6 +1012,7 @@ async function prepareCandleOverlayAsset({ candlePath, tmpDir, jobId, log }) {
 				3
 			)}:${CANDLE_KEY_BLEND.toFixed(3)}`
 		);
+		filters.push("colorchannelmixer=aa=1.12");
 	}
 	if (trimTop > 0.001) {
 		const keepPct = (1 - trimTop).toFixed(4);
