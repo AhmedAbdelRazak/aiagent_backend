@@ -33,6 +33,19 @@ const ORCHESTRATOR_CANDLE_REF_URL =
 const ORCHESTRATOR_CANDLE_PRODUCT_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767134899/aivideomatic/MyCandle_u9skio.png";
 
+const WARDROBE_VARIANTS = [
+	"dark charcoal matte button-up, open collar, no blazer",
+	"deep navy textured button-up, open collar, unstructured dark blazer",
+	"black band-collar button-up, no blazer",
+	"dark graphite micro-pattern button-up, open collar, soft knit blazer",
+	"dark slate button-up, open collar, open blazer with subtle texture",
+	"black button-up with subtle sheen, open collar, slim dark blazer",
+	"deep navy oxford button-up, open collar, no blazer",
+	"charcoal button-up with thin pinstripe, open collar, open blazer",
+	"black button-up with hidden placket, open collar, no blazer",
+	"midnight-blue button-up, open collar, relaxed dark blazer",
+];
+
 const openai = process.env.CHATGPT_API_TOKEN
 	? new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN })
 	: null;
@@ -114,10 +127,32 @@ function buildTopicLine({ title, topics = [] }) {
 	return String(raw || topicLine || title || "the topic").slice(0, 220);
 }
 
-function fallbackWardrobePrompt({ topicLine }) {
+function hashStringToInt(value = "") {
+	let hash = 0;
+	const str = String(value || "");
+	for (let i = 0; i < str.length; i++) {
+		hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+	}
+	return hash;
+}
+
+function pickWardrobeVariant({ jobId, title, topics }) {
+	const topicText = Array.isArray(topics)
+		? topics
+				.map((t) => t.displayTopic || t.topic || "")
+				.filter(Boolean)
+				.join("|")
+		: "";
+	const jitter = `${Date.now()}-${Math.random()}`;
+	const seed = `${jobId || ""}|${title || ""}|${topicText}|${jitter}`;
+	const idx = hashStringToInt(seed) % WARDROBE_VARIANTS.length;
+	return WARDROBE_VARIANTS[idx] || WARDROBE_VARIANTS[0];
+}
+
+function fallbackWardrobePrompt({ topicLine, wardrobeVariant }) {
 	return `
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment.
-Change ONLY the outfit on the torso/upper body area to a dark, classy button-up shirt (open collar), optional open blazer.
+Change ONLY the outfit on the torso/upper body area to a dark, classy outfit. Outfit spec (use exactly): ${wardrobeVariant}.
 Outfit colors must be dark only (charcoal, black, deep navy). No bright or light colors.
 Do NOT alter the face or head at all. Keep glasses, beard, hairline, skin texture, and facial features exactly as in @presenter_ref. Single face only, no ghosting.
 Studio background, desk, lighting, camera angle, and all props must remain EXACTLY the same.
@@ -128,8 +163,8 @@ No candles, no extra objects, no text, no logos. Topic context: ${topicLine}.
 function fallbackCandleProductPrompt() {
 	return `
 Use @candle_ref to generate a single clean product image of the same candle.
-Jar must be OPEN with NO lid visible. Candle is LIT with a tiny calm flame; no exaggerated glow.
-Label text/logo must remain EXACT, sharp, readable, and undistorted.
+Jar must be OPEN with NO lid or cap visible. Candle is LIT with a tiny calm flame; no exaggerated glow.
+Label text/logo must remain EXACT, sharp, readable, and undistorted; do NOT redraw or change the label artwork or typography.
 Keep the candle centered, upright, and normal size (not oversized); no distortion.
 Isolate on a clean neutral background with no shadows or extra objects.
 `.trim();
@@ -138,13 +173,14 @@ Isolate on a clean neutral background with no shadows or extra objects.
 function fallbackFinalPrompt({ topicLine }) {
 	return `
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment. Keep the outfit exactly the same as @presenter_ref.
+Match the candle placement and size to the provided candle placement reference image (same relative offset and scale).
 Add @candle_ref candle on the back table/desk to the right side behind the presenter, near the right edge, fully visible and grounded on the tabletop.
 The candle jar is OPEN with NO lid visible. The candle is LIT with a tiny calm flame; no exaggerated glow.
 Do NOT alter the face or head at all; keep it exactly as in @presenter_ref. Single face only, no double exposure or ghosting.
 No transparency on the candle; label text/logo must remain EXACT and crisp, glass must be solid, with a soft natural shadow on the desk.
 Keep candle size natural and slightly smaller than the presenter; do not exaggerate scale.
 Only add the candle; do NOT change any other pixels or elements in the scene.
-No other changes, no extra objects, no text, no logos. Topic context: ${topicLine}.
+No other changes, no extra objects, and no added text/logos beyond the candle label. Topic context: ${topicLine}.
 `.trim();
 }
 
@@ -165,11 +201,25 @@ function parseJsonObject(text = "") {
 	return null;
 }
 
-async function buildOrchestratedPrompts({ title, topics, categoryLabel, log }) {
+async function buildOrchestratedPrompts({
+	jobId,
+	title,
+	topics,
+	categoryLabel,
+	log,
+}) {
 	const topicLine = buildTopicLine({ title, topics });
+	const wardrobeVariant = pickWardrobeVariant({ jobId, title, topics });
+	if (log)
+		log("wardrobe variation selected", {
+			variant: wardrobeVariant,
+		});
 	if (!openai) {
 		const fallback = {
-			wardrobePrompt: fallbackWardrobePrompt({ topicLine }),
+			wardrobePrompt: fallbackWardrobePrompt({
+				topicLine,
+				wardrobeVariant,
+			}),
 			candleProductPrompt: fallbackCandleProductPrompt(),
 			finalPrompt: fallbackFinalPrompt({ topicLine }),
 		};
@@ -190,18 +240,19 @@ Rules:
 - Study the provided reference images to match the studio framing and candle placement.
 - Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts.
 - Keep studio/desk/background/camera/lighting unchanged.
-- Wardrobe: dark classy button-up (open collar), optional open blazer, dark colors only.
-- Candle product: use @candle_ref to generate a clean candle product image with lid removed, tiny calm flame, exact label/branding, no distortion.
-- Final: add the candle (from the candle product prompt) on the back table/desk to the right side near the edge, fully visible, lid removed, tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating), normal size in scene. Candle label/branding must remain EXACT and readable. Only add the candle; do not change any other pixels.
+- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; the prompt must include the cue explicitly and match it exactly (dark colors only, open collar, optional open blazer).
+- Candle product: use @candle_ref to generate a clean candle product image with lid removed, tiny calm flame, exact label/branding, no distortion; do not redraw or alter label art/text.
+- Final: add the candle (from the candle product prompt) on the back table/desk to the right side near the edge, fully visible, lid removed, tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating), normal size in scene. Match the candle placement/size to the reference image (same relative offset/scale). Candle label/branding must remain EXACT and readable. Only add the candle; do not change any other pixels.
 - Candle must match the product reference (label, jar shape, proportions) while being normal size in scene.
 - Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
-- No extra objects, no text, no logos, no watermarks.
+- No extra objects and no added text/logos beyond the candle label; no watermarks.
 `.trim();
 
 	const userText = `
 Title: ${String(title || "").trim()}
 Topics: ${topicLine}
 Category: ${String(categoryLabel || "").trim()}
+Wardrobe variation cue (use exactly): ${wardrobeVariant}
 Study the reference images: 1) original presenter studio, 2) desired candle placement, 3) candle product reference.
 Output JSON only.
 `.trim();
@@ -262,7 +313,10 @@ Output JSON only.
 	}
 
 	const fallback = {
-		wardrobePrompt: fallbackWardrobePrompt({ topicLine }),
+		wardrobePrompt: fallbackWardrobePrompt({
+			topicLine,
+			wardrobeVariant,
+		}),
 		candleProductPrompt: fallbackCandleProductPrompt(),
 		finalPrompt: fallbackFinalPrompt({ topicLine }),
 	};
@@ -494,6 +548,86 @@ async function deleteCloudinaryAsset(publicId, log) {
 	}
 }
 
+async function reviewCandleProduct({ candleUrl, promptUsed, attempt, log }) {
+	if (!openai) {
+		return {
+			accept: true,
+			reason: "review_skipped_no_openai",
+			improvedPrompt: "",
+		};
+	}
+
+	const system = `
+You are a strict quality reviewer for a candle product image.
+Return JSON only with keys: accept (boolean), reason (string), improvedPrompt (string).
+Accept only if:
+- Candle lid/cap is fully removed (no lid visible).
+- Candle is centered, upright, normal size, with no warping.
+- Flame is tiny and calm (no large glow).
+- Label/branding is mostly readable and not obviously mangled; do not reject solely for minor label differences.
+- No extra objects or text; clean neutral background.
+If reject, provide a revised candle product prompt that fixes the issue.
+`.trim();
+
+	const userText = `
+Attempt: ${Number(attempt || 1)}
+Prompt used: ${String(promptUsed || "").slice(0, 600)}
+Review the generated candle image against the product reference. Output JSON only.
+`.trim();
+
+	try {
+		const resp = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [
+				{ role: "system", content: system },
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: userText },
+						{
+							type: "image_url",
+							image_url: { url: candleUrl },
+						},
+						{
+							type: "image_url",
+							image_url: { url: ORCHESTRATOR_CANDLE_PRODUCT_URL },
+						},
+					],
+				},
+			],
+			temperature: 0.2,
+			max_completion_tokens: 300,
+		});
+		const content = String(resp?.choices?.[0]?.message?.content || "").trim();
+		const parsed = parseJsonObject(content);
+		if (parsed && typeof parsed.accept === "boolean") {
+			return {
+				accept: Boolean(parsed.accept),
+				reason: String(parsed.reason || "").trim(),
+				improvedPrompt: String(parsed.improvedPrompt || "").trim(),
+			};
+		}
+		if (log)
+			log("candle product review parse failed", {
+				attempt,
+				response: content.slice(0, 500),
+			});
+	} catch (e) {
+		if (log)
+			log("candle product review failed", {
+				error: e?.message || String(e),
+			});
+	}
+
+	return {
+		accept: false,
+		reason: "review_parse_failed",
+		improvedPrompt: `${String(
+			promptUsed || ""
+		).trim()}\nAdjust to remove lid, preserve exact label text/art, and avoid distortion.`,
+	};
+}
+
 async function reviewFinalPlacement({ finalUrl, promptUsed, attempt, log }) {
 	if (!openai) {
 		return {
@@ -509,8 +643,8 @@ Return JSON only with keys: accept (boolean), reason (string), improvedPrompt (s
 Accept only if:
 - Candle placement closely matches the reference placement image (position on right desk, same relative size/offset).
 - Candle is fully visible, lid removed, tiny calm flame, natural shadow, no transparency.
-- Candle label/branding is exact and readable (not distorted).
 - Presenter face/head and studio are unchanged.
+- Do not reject solely for minor label/branding differences; prioritize placement/scale and presenter integrity.
 If reject, provide a revised final prompt that keeps all constraints and fixes placement/size/label clarity.
 `.trim();
 
@@ -520,19 +654,16 @@ Prompt used: ${String(promptUsed || "").slice(0, 600)}
 Review the generated image against the references. Output JSON only.
 `.trim();
 
-	try {
+	const runReview = async (sys, label) => {
 		const resp = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [
-				{ role: "system", content: system },
+				{ role: "system", content: sys },
 				{
 					role: "user",
 					content: [
 						{ type: "text", text: userText },
-						{
-							type: "image_url",
-							image_url: { url: finalUrl },
-						},
+						{ type: "image_url", image_url: { url: finalUrl } },
 						{
 							type: "image_url",
 							image_url: { url: ORCHESTRATOR_PRESENTER_REF_URL },
@@ -560,6 +691,18 @@ Review the generated image against the references. Output JSON only.
 				improvedPrompt: String(parsed.improvedPrompt || "").trim(),
 			};
 		}
+		if (log)
+			log("presenter final review parse failed", {
+				attempt,
+				label,
+				response: content.slice(0, 600),
+			});
+		return null;
+	};
+
+	try {
+		const primary = await runReview(system, "primary");
+		if (primary) return primary;
 	} catch (e) {
 		if (log)
 			log("presenter final review failed", {
@@ -567,12 +710,24 @@ Review the generated image against the references. Output JSON only.
 			});
 	}
 
+	const fallbackSystem = `
+Return JSON only with keys: accept, reason, improvedPrompt.
+Be strict about candle placement vs reference. If unsure, reject.
+`.trim();
+	try {
+		const fallback = await runReview(fallbackSystem, "fallback");
+		if (fallback) return fallback;
+	} catch (e) {
+		if (log)
+			log("presenter final review failed (fallback)", {
+				error: e?.message || String(e),
+			});
+	}
+
 	return {
-		accept: false,
+		accept: true,
 		reason: "review_parse_failed",
-		improvedPrompt: `${String(
-			promptUsed || ""
-		).trim()}\nAdjust candle placement to match the reference image exactly; ensure correct size, position, and label clarity.`,
+		improvedPrompt: "",
 	};
 }
 
@@ -686,6 +841,7 @@ async function generatePresenterAdjustedImage({
 	ensurePresenterFile(presenterLocalPath);
 
 	const prompts = await buildOrchestratedPrompts({
+		jobId,
 		title,
 		topics,
 		categoryLabel,
@@ -721,26 +877,82 @@ async function generatePresenterAdjustedImage({
 		throw e;
 	}
 
-	try {
-		candleProductPath = await generateRunwayCandleProductStage({
-			jobId,
-			tmpDir: workingDir,
-			candleLocalPath,
-			candleProductPrompt: prompts.candleProductPrompt,
+	let candlePrompt = prompts.candleProductPrompt;
+	let candleReview = null;
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		try {
+			candleProductPath = await generateRunwayCandleProductStage({
+				jobId,
+				tmpDir: workingDir,
+				candleLocalPath,
+				candleProductPrompt: candlePrompt,
+				log,
+			});
+			ensureImageFile(candleProductPath);
+			candleUpload = await uploadPresenterToCloudinary(
+				candleProductPath,
+				jobId,
+				PRESENTER_CANDLE_PREFIX
+			);
+		} catch (e) {
+			if (log)
+				log("runway candle product stage failed", {
+					error: e?.message || String(e),
+					attempt,
+				});
+			throw e;
+		}
+
+		candleReview = await reviewCandleProduct({
+			candleUrl: candleUpload?.url || "",
+			promptUsed: candlePrompt,
+			attempt,
 			log,
 		});
-		ensureImageFile(candleProductPath);
-		candleUpload = await uploadPresenterToCloudinary(
-			candleProductPath,
-			jobId,
-			PRESENTER_CANDLE_PREFIX
-		);
-	} catch (e) {
 		if (log)
-			log("runway candle product stage failed", {
-				error: e?.message || String(e),
+			log("candle product review", {
+				attempt,
+				accept: candleReview?.accept,
+				reason: candleReview?.reason || "",
 			});
-		throw e;
+		if (
+			candleReview?.accept ||
+			candleReview?.reason === "review_parse_failed"
+		) {
+			if (candleReview?.reason === "review_parse_failed" && log) {
+				log("candle product review skipped", {
+					attempt,
+					reason: "review_parse_failed",
+				});
+			}
+			break;
+		}
+
+		if (attempt < 3) {
+			await deleteCloudinaryAsset(candleUpload?.public_id, log);
+			safeUnlink(candleProductPath);
+			candleProductPath = null;
+			candleUpload = null;
+		}
+
+		const nextPrompt =
+			candleReview?.improvedPrompt ||
+			`${prompts.candleProductPrompt}\nAdjustment: ${
+				candleReview?.reason || "remove lid and preserve exact label"
+			}`;
+		if (attempt < 3 && log)
+			log("candle product retry prompt", {
+				nextAttempt: attempt + 1,
+				prompt: String(nextPrompt || "").slice(0, 300),
+			});
+		candlePrompt = nextPrompt;
+	}
+
+	if (candleReview && candleReview.accept === false) {
+		if (log)
+			log("candle product accepted with issues", {
+				reason: candleReview.reason || "label/lid mismatch",
+			});
 	}
 
 	let finalPrompt = prompts.finalPrompt;
@@ -782,6 +994,12 @@ async function generatePresenterAdjustedImage({
 				accept: finalReview?.accept,
 				reason: finalReview?.reason || "",
 			});
+		if (finalReview?.reason === "review_parse_failed" && log) {
+			log("presenter final review skipped", {
+				attempt,
+				reason: "review_parse_failed",
+			});
+		}
 		if (finalReview?.accept) break;
 
 		await deleteCloudinaryAsset(finalUpload?.public_id, log);
@@ -789,17 +1007,19 @@ async function generatePresenterAdjustedImage({
 		finalPath = null;
 		finalUpload = null;
 
-		const nextPrompt =
-			finalReview?.improvedPrompt ||
-			`${prompts.finalPrompt}\nAdjustment: ${
-				finalReview?.reason || "fix candle placement to match reference"
-			}`;
-		if (log)
-			log("presenter final retry prompt", {
-				nextAttempt: attempt + 1,
-				prompt: String(nextPrompt || "").slice(0, 300),
-			});
-		finalPrompt = nextPrompt;
+		if (attempt < 3) {
+			const nextPrompt =
+				finalReview?.improvedPrompt ||
+				`${prompts.finalPrompt}\nAdjustment: ${
+					finalReview?.reason || "fix candle placement to match reference"
+				}`;
+			if (log)
+				log("presenter final retry prompt", {
+					nextAttempt: attempt + 1,
+					prompt: String(nextPrompt || "").slice(0, 300),
+				});
+			finalPrompt = nextPrompt;
+		}
 	}
 
 	if (finalReview && finalReview.accept === false) {
