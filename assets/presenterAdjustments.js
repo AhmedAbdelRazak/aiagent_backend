@@ -24,6 +24,7 @@ const PRESENTER_MIN_BYTES = 12000;
 const PRESENTER_CLOUDINARY_FOLDER = "aivideomatic/long_presenters";
 const PRESENTER_CLOUDINARY_PUBLIC_PREFIX = "presenter_master";
 const PRESENTER_OUTFIT_PREFIX = "presenter_outfit";
+const PRESENTER_CANDLE_PREFIX = "presenter_candle";
 const CHAT_MODEL = "gpt-5.2";
 const ORCHESTRATOR_PRESENTER_REF_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767066355/aivideomatic/long_presenters/presenter_master_4b76c718-6a2a-4749-895e-e05bd2b2ecfc_1767066355424.png";
@@ -93,6 +94,15 @@ function ensurePresenterFile(filePath) {
 	return filePath;
 }
 
+function ensureImageFile(filePath, minBytes = 2000) {
+	if (!filePath || !fs.existsSync(filePath)) throw new Error("image_missing");
+	const st = fs.statSync(filePath);
+	if (!st || st.size < minBytes) throw new Error("image_too_small");
+	const kind = detectImageType(filePath);
+	if (!kind) throw new Error("image_invalid");
+	return filePath;
+}
+
 function buildTopicLine({ title, topics = [] }) {
 	const topicLine = Array.isArray(topics)
 		? topics
@@ -115,13 +125,24 @@ No candles, no extra objects, no text, no logos. Topic context: ${topicLine}.
 `.trim();
 }
 
-function fallbackCandlePrompt({ topicLine }) {
+function fallbackCandleProductPrompt() {
+	return `
+Use @candle_ref to generate a single clean product image of the same candle.
+Jar must be OPEN with NO lid visible. Candle is LIT with a tiny calm flame; no exaggerated glow.
+Label text/logo must remain EXACT, sharp, readable, and undistorted.
+Keep the candle centered, upright, and normal size (not oversized); no distortion.
+Isolate on a clean neutral background with no shadows or extra objects.
+`.trim();
+}
+
+function fallbackFinalPrompt({ topicLine }) {
 	return `
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment. Keep the outfit exactly the same as @presenter_ref.
 Add @candle_ref candle on the desk to the right side behind the presenter, near the right edge, fully visible and grounded on the tabletop.
 The candle jar is OPEN with NO lid visible. The candle is LIT with a tiny calm flame; no exaggerated glow.
 Do NOT alter the face or head at all; keep it exactly as in @presenter_ref. Single face only, no double exposure or ghosting.
-No transparency on the candle; label and glass must be solid and crisp, with a soft natural shadow on the desk.
+No transparency on the candle; label text/logo must remain EXACT and crisp, glass must be solid, with a soft natural shadow on the desk.
+Keep candle size natural and slightly smaller than the presenter; do not exaggerate scale.
 No other changes, no extra objects, no text, no logos. Topic context: ${topicLine}.
 `.trim();
 }
@@ -148,20 +169,22 @@ async function buildOrchestratedPrompts({ title, topics, categoryLabel, log }) {
 	if (!openai) {
 		return {
 			wardrobePrompt: fallbackWardrobePrompt({ topicLine }),
-			candlePrompt: fallbackCandlePrompt({ topicLine }),
+			candleProductPrompt: fallbackCandleProductPrompt(),
+			finalPrompt: fallbackFinalPrompt({ topicLine }),
 		};
 	}
 
 	const system = `
 You write precise, regular descriptive prompts for Runway gen4_image.
-Return JSON only with keys: wardrobePrompt, candlePrompt.
+Return JSON only with keys: wardrobePrompt, candleProductPrompt, finalPrompt.
 Rules:
 - Use @presenter_ref as the only person reference.
 - Study the provided reference images to match the studio framing and candle placement.
 - Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts.
 - Keep studio/desk/background/camera/lighting unchanged.
 - Wardrobe: dark classy button-up (open collar), optional open blazer, dark colors only.
-- Candle: add @candle_ref on the right side of the desk near the edge, fully visible, lid removed, lit with a tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating).
+- Candle product: use @candle_ref to generate a clean candle product image with lid removed, tiny calm flame, exact label/branding, no distortion.
+- Final: add the candle (from the candle product prompt) on the right side of the desk near the edge, fully visible, lid removed, tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating), normal size in scene. Candle label/branding must remain EXACT and readable.
 - Candle must match the product reference (label, jar shape, proportions) while being normal size in scene.
 - Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
 - No extra objects, no text, no logos, no watermarks.
@@ -204,10 +227,16 @@ Output JSON only.
 		});
 		const content = String(resp?.choices?.[0]?.message?.content || "").trim();
 		const parsed = parseJsonObject(content);
-		if (parsed && parsed.wardrobePrompt && parsed.candlePrompt) {
+		if (
+			parsed &&
+			parsed.wardrobePrompt &&
+			parsed.candleProductPrompt &&
+			parsed.finalPrompt
+		) {
 			return {
 				wardrobePrompt: String(parsed.wardrobePrompt).trim(),
-				candlePrompt: String(parsed.candlePrompt).trim(),
+				candleProductPrompt: String(parsed.candleProductPrompt).trim(),
+				finalPrompt: String(parsed.finalPrompt).trim(),
 			};
 		}
 	} catch (e) {
@@ -219,7 +248,8 @@ Output JSON only.
 
 	return {
 		wardrobePrompt: fallbackWardrobePrompt({ topicLine }),
-		candlePrompt: fallbackCandlePrompt({ topicLine }),
+		candleProductPrompt: fallbackCandleProductPrompt(),
+		finalPrompt: fallbackFinalPrompt({ topicLine }),
 	};
 }
 
@@ -327,12 +357,12 @@ async function pollRunwayTask(taskId, label) {
 	throw new Error(`${label} timed out`);
 }
 
-async function runwayTextToImage({ promptText, referenceImages }) {
+async function runwayTextToImage({ promptText, referenceImages, ratio }) {
 	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
 	const payload = {
 		model: RUNWAY_IMAGE_MODEL,
 		promptText: String(promptText || "").slice(0, 1000),
-		ratio: "1920:1080",
+		ratio: String(ratio || "1920:1080"),
 		...(Array.isArray(referenceImages) && referenceImages.length
 			? { referenceImages }
 			: {}),
@@ -448,31 +478,59 @@ async function generateRunwayOutfitStage({
 	return outPath;
 }
 
-async function generateRunwayCandleStage({
+async function generateRunwayCandleProductStage({
 	jobId,
 	tmpDir,
-	presenterCloudUrl,
 	candleLocalPath,
-	candlePrompt,
+	candleProductPrompt,
 	log,
 }) {
-	const presenterPath = path.join(tmpDir, `presenter_cloud_${jobId}.png`);
-	await downloadUrlToFile(presenterCloudUrl, presenterPath);
-	const presenterUri = await runwayCreateEphemeralUpload({
-		filePath: presenterPath,
-		filename: path.basename(presenterPath),
-	});
 	const candleUri = await runwayCreateEphemeralUpload({
 		filePath: candleLocalPath,
 		filename: path.basename(candleLocalPath),
 	});
 
 	if (log)
-		log("runway candle prompt", {
-			prompt: String(candlePrompt || "").slice(0, 200),
+		log("runway candle product prompt", {
+			prompt: String(candleProductPrompt || "").slice(0, 200),
 		});
 	const outputUri = await runwayTextToImage({
-		promptText: candlePrompt,
+		promptText: candleProductPrompt,
+		referenceImages: [{ uri: candleUri, tag: "candle_ref" }],
+		ratio: "1024:1024",
+	});
+	const outPath = path.join(tmpDir, `candle_product_${jobId}.png`);
+	await downloadRunwayImageToPath({ uri: outputUri, outPath });
+	return outPath;
+}
+
+async function generateRunwayFinalStage({
+	jobId,
+	tmpDir,
+	presenterCloudUrl,
+	candleCloudUrl,
+	finalPrompt,
+	log,
+}) {
+	const presenterPath = path.join(tmpDir, `presenter_cloud_${jobId}.png`);
+	await downloadUrlToFile(presenterCloudUrl, presenterPath);
+	const candlePath = path.join(tmpDir, `candle_cloud_${jobId}.png`);
+	await downloadUrlToFile(candleCloudUrl, candlePath);
+	const presenterUri = await runwayCreateEphemeralUpload({
+		filePath: presenterPath,
+		filename: path.basename(presenterPath),
+	});
+	const candleUri = await runwayCreateEphemeralUpload({
+		filePath: candlePath,
+		filename: path.basename(candlePath),
+	});
+
+	if (log)
+		log("runway final prompt", {
+			prompt: String(finalPrompt || "").slice(0, 200),
+		});
+	const outputUri = await runwayTextToImage({
+		promptText: finalPrompt,
 		referenceImages: [
 			{ uri: presenterUri, tag: "presenter_ref" },
 			{ uri: candleUri, tag: "candle_ref" },
@@ -481,6 +539,7 @@ async function generateRunwayCandleStage({
 	const outPath = path.join(tmpDir, `presenter_final_${jobId}.png`);
 	await downloadRunwayImageToPath({ uri: outputUri, outPath });
 	safeUnlink(presenterPath);
+	safeUnlink(candlePath);
 	return outPath;
 }
 
@@ -513,6 +572,8 @@ async function generatePresenterAdjustedImage({
 
 	let outfitPath = null;
 	let outfitUpload = null;
+	let candleProductPath = null;
+	let candleUpload = null;
 	let finalPath = null;
 	let finalUpload = null;
 
@@ -539,12 +600,34 @@ async function generatePresenterAdjustedImage({
 	}
 
 	try {
-		finalPath = await generateRunwayCandleStage({
+		candleProductPath = await generateRunwayCandleProductStage({
+			jobId,
+			tmpDir: workingDir,
+			candleLocalPath,
+			candleProductPrompt: prompts.candleProductPrompt,
+			log,
+		});
+		ensureImageFile(candleProductPath);
+		candleUpload = await uploadPresenterToCloudinary(
+			candleProductPath,
+			jobId,
+			PRESENTER_CANDLE_PREFIX
+		);
+	} catch (e) {
+		if (log)
+			log("runway candle product stage failed", {
+				error: e?.message || String(e),
+			});
+		throw e;
+	}
+
+	try {
+		finalPath = await generateRunwayFinalStage({
 			jobId,
 			tmpDir: workingDir,
 			presenterCloudUrl: outfitUpload.url,
-			candleLocalPath,
-			candlePrompt: prompts.candlePrompt,
+			candleCloudUrl: candleUpload.url,
+			finalPrompt: prompts.finalPrompt,
 			log,
 		});
 		ensurePresenterFile(finalPath);
@@ -555,7 +638,7 @@ async function generatePresenterAdjustedImage({
 		);
 	} catch (e) {
 		if (log)
-			log("runway candle stage failed", {
+			log("runway final stage failed", {
 				error: e?.message || String(e),
 			});
 		throw e;
@@ -567,7 +650,7 @@ async function generatePresenterAdjustedImage({
 		publicId: finalUpload?.public_id || "",
 		width: finalUpload?.width || 0,
 		height: finalUpload?.height || 0,
-		method: "runway_two_stage",
+		method: "runway_three_stage",
 	};
 }
 
