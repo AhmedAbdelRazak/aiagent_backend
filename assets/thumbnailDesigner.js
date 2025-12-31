@@ -5,7 +5,6 @@ const path = require("path");
 const child_process = require("child_process");
 const crypto = require("crypto");
 const axios = require("axios");
-const { OpenAI, toFile } = require("openai");
 const cloudinary = require("cloudinary").v2;
 const { TOPIC_STOP_WORDS, GENERIC_TOPIC_TOKENS } = require("./utils");
 
@@ -17,10 +16,12 @@ try {
 	ffmpegPath = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
 }
 
-const DEFAULT_IMAGE_MODEL = "gpt-image-1";
-const DEFAULT_IMAGE_SIZE = "1536x1024";
-const DEFAULT_IMAGE_QUALITY = "high";
-const DEFAULT_IMAGE_INPUT_FIDELITY = "high";
+const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
+const RUNWAY_VERSION = "2024-11-06";
+const RUNWAY_IMAGE_MODEL = "gen4_image";
+const RUNWAY_IMAGE_POLL_INTERVAL_MS = 2000;
+const RUNWAY_IMAGE_MAX_POLL_ATTEMPTS = 120;
+const RUNWAY_THUMBNAIL_RATIO = "1920:1080";
 const MAX_INPUT_IMAGES = 4;
 const DEFAULT_CANVAS_WIDTH = 1280;
 const DEFAULT_CANVAS_HEIGHT = 720;
@@ -118,12 +119,7 @@ const WATERMARK_URL_TOKENS = [
 	"watermark",
 ];
 
-const SORA_MODEL = process.env.SORA_MODEL || "sora-2-pro";
-const SORA_THUMBNAIL_ENABLED = true;
-const SORA_THUMBNAIL_SECONDS = "4";
-const SORA_POLL_INTERVAL_MS = 2000;
-const SORA_MAX_POLL_ATTEMPTS = 120;
-const SORA_PROMPT_CHAR_LIMIT = 320;
+const RUNWAY_PROMPT_CHAR_LIMIT = 520;
 
 function cleanThumbnailText(text = "") {
 	return String(text || "")
@@ -826,7 +822,7 @@ No candles, no logos, no watermarks, no extra people, no extra hands, no distort
 `.trim();
 }
 
-function buildSoraThumbnailPrompt({ title, topics }) {
+function buildRunwayThumbnailPrompt({ title, topics }) {
 	const topicLine = Array.isArray(topics)
 		? topics
 				.map((t) => t.displayTopic || t.topic)
@@ -854,16 +850,62 @@ function buildSoraThumbnailPrompt({ title, topics }) {
 		topicFocusRaw || cleanThumbnailText(title || "") || "the topic";
 
 	const prompt = `
-Cinematic studio background plate for a YouTube thumbnail.
-No people, no faces, no text, no logos, no watermarks.
-Left ~40% is clean, brighter, and ready for headline text + one hero image; no furniture or props on the left; smooth gradient backdrop.
-Subtle topic-related props or atmosphere inspired by: ${topicFocus}.
-High contrast, crisp detail, premium lighting, shallow depth of field, soft vignette, rich but tasteful color.
+Premium cinematic studio background plate for a YouTube thumbnail.
+No people, no faces, no text, no logos, no watermarks, no candles.
+Left ~40% is clean and brighter for headline text and panels; keep it uncluttered with a smooth gradient backdrop.
+Subtle, tasteful topic atmosphere inspired by: ${topicFocus}.
+Classy, upscale editorial lighting, crisp detail, balanced contrast, shallow depth of field, soft vignette, rich but elegant color palette.
 `.trim();
 
-	return prompt.length > SORA_PROMPT_CHAR_LIMIT
-		? prompt.slice(0, SORA_PROMPT_CHAR_LIMIT)
+	return prompt.length > RUNWAY_PROMPT_CHAR_LIMIT
+		? prompt.slice(0, RUNWAY_PROMPT_CHAR_LIMIT)
 		: prompt;
+}
+
+function upscaleRunwayRatio(ratio) {
+	const norm = String(ratio || "").trim();
+	if (!norm) return RUNWAY_THUMBNAIL_RATIO;
+	if (norm === "1280:720") return RUNWAY_THUMBNAIL_RATIO;
+	if (norm === "720:1280") return "1080:1920";
+	if (norm === "720:720") return "1080:1080";
+	return norm;
+}
+
+async function generateRunwayThumbnailBase({
+	jobId,
+	tmpDir,
+	prompt,
+	ratio,
+	log,
+}) {
+	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
+	const cleanPrompt = String(prompt || "").trim();
+	if (!cleanPrompt) throw new Error("thumbnail_prompt_missing");
+	ensureDir(tmpDir);
+
+	const runwayRatio = upscaleRunwayRatio(ratio);
+	const seed = seedFromText(`${jobId || "thumb"}_${cleanPrompt}`);
+	if (log)
+		log("thumbnail runway prompt", {
+			prompt: cleanPrompt.slice(0, 200),
+			ratio: runwayRatio,
+		});
+	const outputUri = await runwayTextToImage({
+		promptText: cleanPrompt,
+		ratio: runwayRatio,
+		seed,
+	});
+	const outPath = path.join(
+		tmpDir,
+		`thumb_runway_${jobId || crypto.randomUUID()}.png`
+	);
+	await downloadRunwayImageToPath({ uri: outputUri, outPath });
+	const dt = detectFileType(outPath);
+	if (dt?.kind !== "image") {
+		safeUnlink(outPath);
+		throw new Error("thumbnail_runway_invalid_output");
+	}
+	return outPath;
 }
 
 function collectThumbnailInputImages({
@@ -1068,8 +1110,111 @@ function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
 }
 
-function getOpenAiKey() {
-	return process.env.OPENAI_API_KEY || process.env.CHATGPT_API_TOKEN || "";
+function seedFromText(value) {
+	const h = crypto
+		.createHash("sha256")
+		.update(String(value || ""))
+		.digest();
+	return h.readUInt32BE(0);
+}
+
+function runwayHeadersJson() {
+	return {
+		Authorization: `Bearer ${RUNWAY_API_KEY}`,
+		"X-Runway-Version": RUNWAY_VERSION,
+		"Content-Type": "application/json",
+	};
+}
+
+async function pollRunwayTask(taskId, label) {
+	const url = `https://api.dev.runwayml.com/v1/tasks/${taskId}`;
+	for (let i = 0; i < RUNWAY_IMAGE_MAX_POLL_ATTEMPTS; i++) {
+		await sleep(RUNWAY_IMAGE_POLL_INTERVAL_MS);
+		const res = await axios.get(url, {
+			headers: {
+				Authorization: `Bearer ${RUNWAY_API_KEY}`,
+				"X-Runway-Version": RUNWAY_VERSION,
+			},
+			timeout: 20000,
+			validateStatus: (s) => s < 500,
+		});
+		if (res.status >= 300) {
+			const msg =
+				typeof res.data === "string"
+					? res.data
+					: JSON.stringify(res.data || {});
+			throw new Error(
+				`${label} polling failed (${res.status}): ${msg.slice(0, 500)}`
+			);
+		}
+		const data = res.data || {};
+		const status = String(data.status || "").toUpperCase();
+		if (status === "SUCCEEDED") {
+			if (Array.isArray(data.output) && data.output[0]) return data.output[0];
+			if (typeof data.output === "string") return data.output;
+			throw new Error(`${label} succeeded but returned no output`);
+		}
+		if (status === "FAILED") {
+			throw new Error(
+				`${label} failed: ${data.failureCode || data.error || "FAILED"}`
+			);
+		}
+	}
+	throw new Error(`${label} timed out`);
+}
+
+async function runwayTextToImage({ promptText, ratio, referenceImages, seed }) {
+	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
+	const payload = {
+		model: RUNWAY_IMAGE_MODEL,
+		promptText: String(promptText || "").slice(0, 1000),
+		ratio: String(ratio || RUNWAY_THUMBNAIL_RATIO),
+		...(Array.isArray(referenceImages) && referenceImages.length
+			? { referenceImages }
+			: {}),
+		...(Number.isFinite(seed) ? { seed } : {}),
+	};
+
+	const res = await axios.post(
+		"https://api.dev.runwayml.com/v1/text_to_image",
+		payload,
+		{
+			headers: runwayHeadersJson(),
+			timeout: 30000,
+			validateStatus: (s) => s < 500,
+		}
+	);
+
+	if (res.status >= 300 || !res.data?.id) {
+		const msg =
+			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
+		throw new Error(
+			`Runway text_to_image failed (${res.status}): ${msg.slice(0, 700)}`
+		);
+	}
+	return await pollRunwayTask(res.data.id, "runway_text_to_image");
+}
+
+async function downloadRunwayImageToPath({ uri, outPath }) {
+	if (!uri) throw new Error("runway output missing");
+	const target = String(uri);
+	if (target.startsWith("data:image/")) {
+		const base64 = target.split(",")[1] || "";
+		const buf = Buffer.from(base64, "base64");
+		fs.writeFileSync(outPath, buf);
+		return outPath;
+	}
+	if (!/^https?:\/\//i.test(target))
+		throw new Error(`unsupported runway output uri: ${target.slice(0, 50)}`);
+	const res = await axios.get(target, {
+		responseType: "arraybuffer",
+		timeout: 30000,
+		validateStatus: (s) => s < 500,
+	});
+	if (res.status >= 300)
+		throw new Error(`runway output download failed (${res.status})`);
+	fs.writeFileSync(outPath, Buffer.from(res.data));
+	return outPath;
 }
 
 function sha1(s) {
@@ -1215,152 +1360,10 @@ function resolvePresenterCutoutPath(pose = "", fallbackDir = "") {
 	return "";
 }
 
-async function generatePresenterVariant({
-	openai,
-	tmpDir,
-	presenterPath,
-	pose = "smile",
-	size = "1536x1024",
-	n = 3,
-	log,
-}) {
-	const apiKey = getOpenAiKey();
-	if (!apiKey && !openai)
-		throw new Error(
-			"OpenAI API key missing (OPENAI_API_KEY or CHATGPT_API_TOKEN)."
-		);
-	const client = openai || new OpenAI({ apiKey });
-
-	const cacheKey = `${fileHash(presenterPath)}_${pose}_${sha1(size)}`;
-	const outPath = path.join(tmpDir, `presenter_${cacheKey}.png`);
-	if (fs.existsSync(outPath)) return outPath;
-
-	const buf = fs.readFileSync(presenterPath);
-	const mime = inferImageMime(presenterPath) || "image/png";
-	const input = await toFile(buf, path.basename(presenterPath), { type: mime });
-
-	const resp = await withRetries(
-		() =>
-			client.images.edit({
-				model: "gpt-image-1",
-				image: input,
-				prompt: presenterPosePrompt({ pose }),
-				n: Math.max(1, Math.min(6, Number(n) || 1)),
-				size,
-				quality: "high",
-				output_format: "png",
-				background: "transparent",
-				input_fidelity: "high",
-			}),
-		{ retries: 1, baseDelayMs: 900, log }
-	);
-
-	const candidates = [];
-	let idx = 0;
-	for (const item of resp?.data || []) {
-		if (!item?.b64_json) continue;
-		const b = Buffer.from(item.b64_json, "base64");
-		const candPath = path.join(tmpDir, `presenter_${cacheKey}_cand${idx}.png`);
-		idx += 1;
-		fs.writeFileSync(candPath, b);
-		const dt = detectFileType(candPath);
-		if (!dt || dt.kind !== "image" || dt.ext !== "png") {
-			safeUnlink(candPath);
-			continue;
-		}
-		const similarity =
-			Number.isFinite(THUMBNAIL_PRESENTER_LIKENESS_MIN) &&
-			THUMBNAIL_PRESENTER_LIKENESS_MIN > 0
-				? comparePresenterSimilarity(presenterPath, candPath)
-				: null;
-		candidates.push({
-			path: candPath,
-			size: b.length,
-			similarity,
-		});
-	}
-	if (!candidates.length) throw new Error("presenter_variant_empty");
-
-	let best = null;
-	const hasSimilarity = candidates.some(
-		(c) => typeof c.similarity === "number"
-	);
-	if (hasSimilarity) {
-		candidates.sort((a, b) => {
-			const as = Number.isFinite(a.similarity) ? a.similarity : -1;
-			const bs = Number.isFinite(b.similarity) ? b.similarity : -1;
-			if (bs !== as) return bs - as;
-			return b.size - a.size;
-		});
-		best = candidates[0];
-		if (
-			Number.isFinite(best.similarity) &&
-			best.similarity < THUMBNAIL_PRESENTER_LIKENESS_MIN
-		) {
-			for (const c of candidates) safeUnlink(c.path);
-			throw new Error("presenter_variant_low_similarity");
-		}
-	} else {
-		candidates.sort((a, b) => b.size - a.size);
-		best = candidates[0];
-	}
-
-	if (fs.existsSync(outPath)) safeUnlink(outPath);
-	if (best.path !== outPath) {
-		fs.copyFileSync(best.path, outPath);
-	}
-	for (const c of candidates) {
-		if (c.path !== best.path) safeUnlink(c.path);
-	}
-	if (best.path !== outPath) safeUnlink(best.path);
-
-	const dt = detectFileType(outPath);
-	if (!dt || dt.kind !== "image" || dt.ext !== "png")
-		throw new Error("presenter_variant_invalid");
-	if (log)
-		log("presenter variant generated", {
-			pose,
-			path: path.basename(outPath),
-			similarity: Number.isFinite(best.similarity)
-				? Number(best.similarity.toFixed(3))
-				: null,
-			bytes: best.size,
-		});
-	return outPath;
-}
-
 function makeEven(n) {
 	const x = Math.round(Number(n) || 0);
 	if (!Number.isFinite(x) || x <= 0) return 2;
 	return x % 2 === 0 ? x : x + 1;
-}
-
-function soraSizeForRatio(ratio) {
-	switch (ratio) {
-		case "720:1280":
-		case "832:1104":
-			return "720x1280";
-		default:
-			return "1280x720";
-	}
-}
-
-async function withRetries(fn, { retries = 1, baseDelayMs = 900, log } = {}) {
-	let lastErr = null;
-	for (let attempt = 0; attempt <= retries; attempt++) {
-		try {
-			return await fn(attempt);
-		} catch (e) {
-			lastErr = e;
-			if (attempt >= retries) throw e;
-			const delay = Math.round(
-				baseDelayMs * Math.pow(2, attempt) + Math.random() * 150
-			);
-			if (log) log("thumbnail openai retry", { attempt: attempt + 1, delay });
-			await sleep(delay);
-		}
-	}
-	throw lastErr || new Error("thumbnail openai retry failed");
 }
 
 function runFfmpeg(args, label = "ffmpeg") {
@@ -1543,202 +1546,6 @@ async function applyThumbnailQaAdjustments(filePath, { log } = {}) {
 	return { applied: true, overall, left };
 }
 
-async function downloadUrlToFile(url, outPath) {
-	const res = await axios.get(url, {
-		responseType: "arraybuffer",
-		timeout: 60000,
-	});
-	if (!res?.data) throw new Error("thumbnail download empty");
-	fs.writeFileSync(outPath, res.data);
-	return outPath;
-}
-
-async function extractFrameFromVideo({ videoPath, outPath }) {
-	const ext = path.extname(outPath).toLowerCase();
-	const useJpegQ = ext === ".jpg" || ext === ".jpeg";
-	const args = ["-ss", "0.4", "-i", videoPath, "-frames:v", "1"];
-	if (useJpegQ) {
-		args.push("-q:v", "2");
-	}
-	args.push("-y", outPath);
-	await runFfmpeg(args, "sora_thumbnail_frame");
-	return outPath;
-}
-
-async function generateSoraThumbnailFrame({
-	jobId,
-	tmpDir,
-	prompt,
-	ratio = "1280:720",
-	openai,
-	model = SORA_MODEL,
-	log,
-}) {
-	if (!SORA_THUMBNAIL_ENABLED) return null;
-	const apiKey = getOpenAiKey();
-	if (!apiKey && !openai)
-		throw new Error(
-			"OpenAI API key missing (OPENAI_API_KEY or CHATGPT_API_TOKEN)."
-		);
-	const client = openai || new OpenAI({ apiKey });
-	const size = soraSizeForRatio(ratio);
-
-	if (log) log("thumbnail sora prompt", { prompt: prompt.slice(0, 200), size });
-
-	let job = null;
-	try {
-		job = await client.videos.create({
-			model,
-			prompt,
-			seconds: SORA_THUMBNAIL_SECONDS,
-			size,
-		});
-	} catch (err) {
-		if (log)
-			log("thumbnail sora create failed", {
-				message: err?.message,
-				code: err?.code || err?.response?.data?.error?.code || null,
-				status: err?.response?.status || null,
-			});
-		throw err;
-	}
-
-	const running = new Set(["queued", "in_progress", "processing"]);
-	let attempts = 0;
-	while (
-		running.has(String(job?.status || "")) &&
-		attempts < SORA_MAX_POLL_ATTEMPTS
-	) {
-		await sleep(SORA_POLL_INTERVAL_MS);
-		try {
-			const updated = await client.videos.retrieve(job.id);
-			if (updated) job = updated;
-		} catch (pollErr) {
-			if (log)
-				log("thumbnail sora poll failed", {
-					attempt: attempts + 1,
-					message: pollErr?.message,
-					code: pollErr?.code || pollErr?.response?.data?.error?.code || null,
-					status: pollErr?.response?.status || null,
-				});
-		}
-		attempts++;
-	}
-
-	if (String(job?.status) !== "completed") {
-		const jobErr = job?.error || job?.last_error || job?.failure || null;
-		const code = jobErr?.code || jobErr?.type || null;
-		const message =
-			jobErr?.message || jobErr?.error?.message || job?.failure_reason || null;
-		const err = new Error(
-			message ||
-				`Sora job ${job?.id} failed (status=${job?.status || "unknown"})`
-		);
-		err.code = code;
-		err.jobId = job?.id;
-		err.status = job?.status;
-		throw err;
-	}
-
-	let response = null;
-	try {
-		response = await client.videos.downloadContent(job.id, {
-			variant: "video",
-		});
-	} catch {
-		response = await client.videos.downloadContent(job.id, {
-			variant: "mp4",
-		});
-	}
-
-	const buf = Buffer.from(await response.arrayBuffer());
-	const videoPath = path.join(tmpDir, `thumb_sora_${jobId}.mp4`);
-	fs.writeFileSync(videoPath, buf);
-	const framePath = path.join(tmpDir, `thumb_sora_${jobId}.png`);
-	await extractFrameFromVideo({ videoPath, outPath: framePath });
-	return framePath;
-}
-
-async function generateOpenAiThumbnailBase({
-	jobId,
-	tmpDir,
-	prompt,
-	imagePaths = [],
-	openai,
-	model = DEFAULT_IMAGE_MODEL,
-	size = DEFAULT_IMAGE_SIZE,
-	quality = DEFAULT_IMAGE_QUALITY,
-	inputFidelity = DEFAULT_IMAGE_INPUT_FIDELITY,
-	log,
-}) {
-	const cleanPrompt = String(prompt || "").trim();
-	if (!cleanPrompt) throw new Error("thumbnail_prompt_missing");
-	const apiKey = getOpenAiKey();
-	if (!apiKey && !openai)
-		throw new Error(
-			"OpenAI API key missing (OPENAI_API_KEY or CHATGPT_API_TOKEN)."
-		);
-	const client = openai || new OpenAI({ apiKey });
-	const supportsInputFidelity = String(model || "").startsWith("gpt-image-1");
-
-	const outPath = path.join(tmpDir, `thumb_openai_${jobId}.png`);
-
-	const doRequest = async () => {
-		if (imagePaths.length) {
-			const inputs = [];
-			for (const p of imagePaths) {
-				try {
-					const buf = fs.readFileSync(p);
-					const mime = inferImageMime(p);
-					if (!mime) continue;
-					inputs.push(await toFile(buf, path.basename(p), { type: mime }));
-				} catch {}
-			}
-			if (inputs.length) {
-				const editOptions = {
-					model,
-					image: inputs.length === 1 ? inputs[0] : inputs,
-					prompt: cleanPrompt,
-					size,
-					quality,
-					output_format: "png",
-					background: "auto",
-				};
-				if (supportsInputFidelity && inputFidelity)
-					editOptions.input_fidelity = inputFidelity;
-				return await client.images.edit(editOptions);
-			}
-		}
-		return await client.images.generate({
-			model,
-			prompt: cleanPrompt,
-			size,
-			quality,
-			output_format: "png",
-			background: "auto",
-		});
-	};
-
-	const resp = await withRetries(doRequest, {
-		retries: 1,
-		baseDelayMs: 900,
-		log,
-	});
-
-	const image = resp?.data?.[0];
-	if (image?.b64_json) {
-		const buf = Buffer.from(String(image.b64_json), "base64");
-		fs.writeFileSync(outPath, buf);
-		return outPath;
-	}
-	if (image?.url) {
-		await downloadUrlToFile(image.url, outPath);
-		return outPath;
-	}
-
-	throw new Error("thumbnail_openai_empty");
-}
-
 async function generateFallbackBackground({
 	sourcePath,
 	outPath,
@@ -1914,42 +1721,38 @@ async function generateThumbnailCompositeBase({
 	topicImagePaths = [],
 	title,
 	topics,
-	ratio = "1280:720",
+	ratio = THUMBNAIL_RATIO,
 	width = DEFAULT_CANVAS_WIDTH,
 	height = DEFAULT_CANVAS_HEIGHT,
 	accentColor = ACCENT_PALETTE.default,
-	openai,
 	log,
-	useSora = true,
 }) {
 	if (!presenterImagePath)
 		throw new Error("thumbnail_presenter_missing_or_invalid");
 
 	let baseImagePath = presenterImagePath;
-	let usedSora = false;
-	if (useSora && SORA_THUMBNAIL_ENABLED) {
-		const prompt = buildSoraThumbnailPrompt({ title, topics });
-		try {
-			const soraFrame = await generateSoraThumbnailFrame({
-				jobId,
-				tmpDir,
-				prompt,
-				ratio,
-				openai,
-				log,
+	let usedRunway = false;
+	const prompt = buildRunwayThumbnailPrompt({ title, topics });
+	try {
+		baseImagePath = await generateRunwayThumbnailBase({
+			jobId,
+			tmpDir,
+			prompt,
+			ratio,
+			log,
+		});
+		usedRunway = true;
+		if (log)
+			log("thumbnail runway background ready", {
+				path: path.basename(baseImagePath),
 			});
-			if (soraFrame) {
-				baseImagePath = soraFrame;
-				usedSora = true;
-			}
-		} catch (e) {
-			if (log)
-				log("thumbnail sora failed; using fallback background", {
-					error: e.message,
-				});
-		}
+	} catch (e) {
+		if (log)
+			log("thumbnail runway failed; using fallback background", {
+				error: e.message,
+			});
 	}
-	if (!usedSora) {
+	if (!usedRunway) {
 		const topicSource =
 			Array.isArray(topicImagePaths) && topicImagePaths.length
 				? topicImagePaths[0]
@@ -2650,10 +2453,8 @@ async function generateThumbnailPackage({
 	seoTitle,
 	topics = [],
 	expression,
-	openai,
 	log,
 	requireTopicImages = REQUIRE_THUMBNAIL_TOPIC_IMAGES,
-	useSora = true,
 }) {
 	if (!presenterLocalPath)
 		throw new Error("thumbnail_presenter_missing_or_invalid");
@@ -2710,9 +2511,7 @@ async function generateThumbnailPackage({
 		width: THUMBNAIL_WIDTH,
 		height: THUMBNAIL_HEIGHT,
 		accentColor: stylePlan.accent,
-		openai,
 		log,
-		useSora,
 	});
 
 	const finalPath = path.join(tmpDir, `thumb_${jobId}.jpg`);
@@ -2762,7 +2561,7 @@ async function generateThumbnailPackage({
 
 module.exports = {
 	buildThumbnailPrompt,
-	buildSoraThumbnailPrompt,
+	buildRunwayThumbnailPrompt,
 	generateThumbnailCompositeBase,
 	generateThumbnailPackage,
 };

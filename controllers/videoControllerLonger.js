@@ -14,7 +14,7 @@
  *    - Cap gestures; avoid hands; stabilize prompt
  *
  * 3) Presenter wardrobe adjustment (classy outfit):
- *    - Optional Sora-based presenter edit after script + thumbnail
+ *    - Optional Runway-based presenter edit after script + before thumbnail
  *    - Keeps identity/studio and enforces candle placement
  *
  * 4) Camera is slightly farther away:
@@ -7080,7 +7080,60 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			},
 		});
 
-		// 5.5) Thumbnail (script-aligned, fail-fast)
+		// 5.5) Presenter wardrobe + candle adjustment (post-script, pre-thumbnail)
+		if (enableWardrobeEdit && presenterIsImage) {
+			try {
+				const presenterTitle = String(
+					script.title || topicSummary || topicTitles[0] || ""
+				).trim();
+				const presenterResult = await generatePresenterAdjustedImage({
+					jobId,
+					tmpDir,
+					presenterLocalPath: presenterLocal,
+					candleLocalPath,
+					title: presenterTitle,
+					topics: topicPicks,
+					categoryLabel,
+					log: (message, payload) => logJob(jobId, message, payload),
+				});
+				if (
+					presenterResult?.localPath &&
+					fs.existsSync(presenterResult.localPath)
+				) {
+					const adjustedDetected = detectFileType(presenterResult.localPath);
+					if (adjustedDetected?.kind === "image") {
+						presenterLocal = presenterResult.localPath;
+						presenterIsVideo = false;
+						presenterIsImage = true;
+						logJob(jobId, "presenter adjustments ready", {
+							path: path.basename(presenterLocal),
+							method: presenterResult.method || "runway",
+							cloudinary: Boolean(presenterResult.url),
+						});
+						updateJob(jobId, {
+							meta: {
+								...JOBS.get(jobId)?.meta,
+								presenterImageUrl: presenterResult.url || "",
+							},
+						});
+					} else {
+						logJob(jobId, "presenter adjustments invalid; using original", {
+							detected: adjustedDetected?.kind || "unknown",
+						});
+					}
+				}
+			} catch (e) {
+				logJob(jobId, "presenter adjustments failed; using original", {
+					error: e.message,
+				});
+			}
+		} else if (enableWardrobeEdit && !presenterIsImage) {
+			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
+				detected: presenterIsVideo ? "video" : "unknown",
+			});
+		}
+
+		// 5.6) Thumbnail (script-aligned, fail-fast)
 		try {
 			const fallbackTitle = topicTitles[0] || topicSummary || "Quick Update";
 			const thumbTitle = String(script.title || fallbackTitle).trim();
@@ -7099,7 +7152,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				seoTitle: "",
 				topics: topicPicks,
 				expression: thumbExpression,
-				openai,
 				log: thumbLog,
 				requireTopicImages: true,
 			});
@@ -7136,61 +7188,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				error: e.message,
 			});
 			throw e;
-		}
-
-		// 5.6) Presenter wardrobe + candle adjustment (post-script/thumbnail)
-		if (enableWardrobeEdit && presenterIsImage) {
-			try {
-				const presenterTitle = String(
-					script.title || topicSummary || topicTitles[0] || ""
-				).trim();
-				const presenterResult = await generatePresenterAdjustedImage({
-					jobId,
-					tmpDir,
-					presenterLocalPath: presenterLocal,
-					candleLocalPath,
-					ratio: output.ratio,
-					title: presenterTitle,
-					topics: topicPicks,
-					categoryLabel,
-					openai,
-					log: (message, payload) => logJob(jobId, message, payload),
-				});
-				if (
-					presenterResult?.localPath &&
-					fs.existsSync(presenterResult.localPath)
-				) {
-					const adjustedDetected = detectFileType(presenterResult.localPath);
-					if (adjustedDetected?.kind === "image") {
-						presenterLocal = presenterResult.localPath;
-						presenterIsVideo = false;
-						presenterIsImage = true;
-						logJob(jobId, "presenter adjustments ready", {
-							path: path.basename(presenterLocal),
-							method: presenterResult.method || "sora",
-							cloudinary: Boolean(presenterResult.url),
-						});
-						updateJob(jobId, {
-							meta: {
-								...JOBS.get(jobId)?.meta,
-								presenterImageUrl: presenterResult.url || "",
-							},
-						});
-					} else {
-						logJob(jobId, "presenter adjustments invalid; using original", {
-							detected: adjustedDetected?.kind || "unknown",
-						});
-					}
-				}
-			} catch (e) {
-				logJob(jobId, "presenter adjustments failed; using original", {
-					error: e.message,
-				});
-			}
-		} else if (enableWardrobeEdit && !presenterIsImage) {
-			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
-				detected: presenterIsVideo ? "video" : "unknown",
-			});
 		}
 
 		const seoMeta = await buildSeoMetadata({

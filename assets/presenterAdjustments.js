@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const child_process = require("child_process");
 const crypto = require("crypto");
-const { OpenAI, toFile } = require("openai");
+const axios = require("axios");
 const cloudinary = require("cloudinary").v2;
 
 let ffmpegPath = "";
@@ -15,40 +15,43 @@ try {
 	ffmpegPath = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
 }
 
-const SORA_MODEL = process.env.SORA_MODEL || "sora-2-pro";
-const SORA_SECONDS = "4";
-const SORA_POLL_INTERVAL_MS = 2000;
-const SORA_MAX_POLL_ATTEMPTS = 120;
-const DEFAULT_RATIO = "1280:720";
-const DEFAULT_IMAGE_MODEL = "gpt-image-1";
-const DEFAULT_IMAGE_SIZE = "1536x1024";
-const DEFAULT_IMAGE_QUALITY = "high";
-const DEFAULT_IMAGE_INPUT_FIDELITY = "high";
-const PRESENTER_LOCK_IDENTITY = true;
+let FormDataNode = null;
+try {
+	// eslint-disable-next-line import/no-extraneous-dependencies
+	FormDataNode = require("form-data");
+} catch {
+	FormDataNode = null;
+}
+
+const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
+const RUNWAY_VERSION = "2024-11-06";
+const RUNWAY_IMAGE_MODEL = "gen4_image";
+const RUNWAY_IMAGE_POLL_INTERVAL_MS = 2000;
+const RUNWAY_IMAGE_MAX_POLL_ATTEMPTS = 120;
 const PRESENTER_LIKENESS_MIN = 0.82;
 const PRESENTER_FACE_REGION = { x: 0.3, y: 0.05, w: 0.4, h: 0.55 };
-const LOCK_IDENTITY_ENABLED =
-	String(process.env.LOCK_IDENTITY_ENABLED || "1") !== "0";
-const PRESENTER_IDENTITY_REGION = {
-	x: parseNumber(process.env.PRESENTER_IDENTITY_X_PCT, 0.25),
-	y: parseNumber(process.env.PRESENTER_IDENTITY_Y_PCT, 0.02),
-	w: parseNumber(process.env.PRESENTER_IDENTITY_W_PCT, 0.5),
-	h: parseNumber(process.env.PRESENTER_IDENTITY_H_PCT, 0.52),
-};
 const PRESENTER_EYES_REGION = { x: 0.32, y: 0.08, w: 0.36, h: 0.22 };
 const PRESENTER_WARDROBE_REGION = { x: 0.22, y: 0.36, w: 0.56, h: 0.58 };
-const CANDLE_WIDTH_PCT = parseNumber(process.env.CANDLE_WIDTH_PCT, 0.12);
-const CANDLE_X_PCT = parseNumber(process.env.CANDLE_X_PCT, 0.86);
-const CANDLE_Y_PCT = parseNumber(process.env.CANDLE_Y_PCT, 0.8);
+const CANDLE_WIDTH_PCT = parseNumber(process.env.CANDLE_WIDTH_PCT, 0.14);
+const CANDLE_X_PCT = parseNumber(process.env.CANDLE_X_PCT, 0.835);
+const CANDLE_Y_PCT = parseNumber(process.env.CANDLE_Y_PCT, 0.724);
 const CANDLE_BOTTOM_MARGIN_PX = parseNumber(
 	process.env.CANDLE_BOTTOM_MARGIN_PX,
 	6
+);
+const CANDLE_BOTTOM_MARGIN_PCT = parseNumber(
+	process.env.CANDLE_BOTTOM_MARGIN_PCT,
+	0.08
+);
+const CANDLE_CLEARANCE_PCT = parseNumber(
+	process.env.CANDLE_CLEARANCE_PCT,
+	0.06
 );
 const CANDLE_PREP_ENABLED =
 	String(process.env.CANDLE_PREP_ENABLED || "1") !== "0";
 const CANDLE_KEY_SIMILARITY = parseNumber(
 	process.env.CANDLE_KEY_SIMILARITY,
-	0.22
+	0.32
 );
 const CANDLE_KEY_BLEND = parseNumber(process.env.CANDLE_KEY_BLEND, 0.08);
 const CANDLE_KEY_MAX_CORNER_DIFF = parseNumber(
@@ -57,13 +60,6 @@ const CANDLE_KEY_MAX_CORNER_DIFF = parseNumber(
 );
 const CANDLE_TRIM_TOP_PCT = parseNumber(process.env.CANDLE_TRIM_TOP_PCT, 0.12);
 const ENABLE_CANDLE_RESTYLE = 1;
-const CANDLE_RESTYLE_MODEL =
-	process.env.CANDLE_RESTYLE_MODEL || DEFAULT_IMAGE_MODEL;
-const CANDLE_RESTYLE_SIZE = process.env.CANDLE_RESTYLE_SIZE || "1024x1024";
-const CANDLE_RESTYLE_QUALITY =
-	process.env.CANDLE_RESTYLE_QUALITY || DEFAULT_IMAGE_QUALITY;
-const CANDLE_RESTYLE_INPUT_FIDELITY =
-	process.env.CANDLE_RESTYLE_INPUT_FIDELITY || DEFAULT_IMAGE_INPUT_FIDELITY;
 const CANDLE_SHADOW_ENABLED =
 	String(process.env.CANDLE_SHADOW_ENABLED || "1") !== "0";
 const CANDLE_SHADOW_OPACITY = parseNumber(
@@ -73,8 +69,6 @@ const CANDLE_SHADOW_OPACITY = parseNumber(
 const CANDLE_SHADOW_BLUR = parseNumber(process.env.CANDLE_SHADOW_BLUR, 4);
 const CANDLE_SHADOW_X_PX = parseNumber(process.env.CANDLE_SHADOW_X_PX, 4);
 const CANDLE_SHADOW_Y_PX = parseNumber(process.env.CANDLE_SHADOW_Y_PX, 5);
-const CANDLE_ALPHA_BOOST = parseNumber(process.env.CANDLE_ALPHA_BOOST, 1.35);
-const CANDLE_ALPHA_CUTOFF = parseNumber(process.env.CANDLE_ALPHA_CUTOFF, 14);
 const CANDLE_CROP_ALPHA_ENABLED =
 	String(process.env.CANDLE_CROP_ALPHA_ENABLED || "1") !== "0";
 const CANDLE_CROP_ALPHA_THRESHOLD = parseNumber(
@@ -290,29 +284,6 @@ function ffprobeDimensions(filePath) {
 }
 
 function imageHasAlpha(filePath) {
-	try {
-		const buf = runFfmpegBuffer(
-			[
-				"-hide_banner",
-				"-loglevel",
-				"error",
-				"-i",
-				filePath,
-				"-vf",
-				"scale=4:4:flags=area,format=rgba",
-				"-frames:v",
-				"1",
-				"-f",
-				"rawvideo",
-				"pipe:1",
-			],
-			"alpha_probe"
-		);
-		if (!buf || buf.length < 64) return false;
-		for (let i = 3; i < buf.length; i += 4) {
-			if (buf[i] < 250) return true;
-		}
-	} catch {}
 	const fmt = ffprobePixelFormat(filePath);
 	return Boolean(fmt && fmt.includes("a"));
 }
@@ -384,233 +355,72 @@ function colorDistance(a, b) {
 }
 
 function computeAlphaBounds(filePath, { alphaThreshold = 10 } = {}) {
-	try {
-		const dims = probeImageDimensions(filePath);
-		if (!dims.width || !dims.height) return null;
+	const dims = probeImageDimensions(filePath);
+	if (!dims.width || !dims.height) return null;
 
-		const maxW = 256;
-		const outW = Math.min(dims.width, maxW);
-		const buf = runFfmpegBuffer(
-			[
-				"-hide_banner",
-				"-loglevel",
-				"error",
-				"-i",
-				filePath,
-				"-vf",
-				`scale=${outW}:-1:flags=area,format=rgba`,
-				"-frames:v",
-				"1",
-				"-f",
-				"rawvideo",
-				"pipe:1",
-			],
-			"alpha_bounds"
-		);
-		if (!buf || buf.length < outW * 4) return null;
+	const maxW = 256;
+	const outW = Math.min(dims.width, maxW);
+	const buf = runFfmpegBuffer(
+		[
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-i",
+			filePath,
+			"-vf",
+			`scale=${outW}:-1:flags=area,format=rgba`,
+			"-frames:v",
+			"1",
+			"-f",
+			"rawvideo",
+			"pipe:1",
+		],
+		"alpha_bounds"
+	);
+	if (!buf || buf.length < outW * 4) return null;
 
-		const outH = Math.floor(buf.length / (outW * 4));
-		if (!outH || outH < 2) return null;
+	const outH = Math.floor(buf.length / (outW * 4));
+	if (!outH || outH < 2) return null;
 
-		let minX = outW;
-		let minY = outH;
-		let maxX = -1;
-		let maxY = -1;
-		const threshold = clamp(alphaThreshold, 1, 250);
+	let minX = outW;
+	let minY = outH;
+	let maxX = -1;
+	let maxY = -1;
+	const threshold = clamp(alphaThreshold, 1, 250);
 
-		for (let y = 0; y < outH; y++) {
-			const row = y * outW * 4;
-			for (let x = 0; x < outW; x++) {
-				const a = buf[row + x * 4 + 3];
-				if (a > threshold) {
-					if (x < minX) minX = x;
-					if (x > maxX) maxX = x;
-					if (y < minY) minY = y;
-					if (y > maxY) maxY = y;
-				}
+	for (let y = 0; y < outH; y++) {
+		const row = y * outW * 4;
+		for (let x = 0; x < outW; x++) {
+			const a = buf[row + x * 4 + 3];
+			if (a > threshold) {
+				if (x < minX) minX = x;
+				if (x > maxX) maxX = x;
+				if (y < minY) minY = y;
+				if (y > maxY) maxY = y;
 			}
 		}
-
-		if (maxX < minX || maxY < minY) return null;
-
-		const scaleX = dims.width / outW;
-		const scaleY = dims.height / outH;
-		const pad = Math.max(
-			1,
-			Math.round(
-				Math.min(dims.width, dims.height) * clamp(CANDLE_CROP_PAD_PCT, 0, 0.08)
-			)
-		);
-
-		let x = Math.max(0, Math.floor(minX * scaleX) - pad);
-		let y = Math.max(0, Math.floor(minY * scaleY) - pad);
-		let w = Math.min(dims.width - x, Math.ceil((maxX + 1) * scaleX) - x + pad);
-		let h = Math.min(dims.height - y, Math.ceil((maxY + 1) * scaleY) - y + pad);
-
-		w = Math.max(2, Math.min(w, dims.width - x));
-		h = Math.max(2, Math.min(h, dims.height - y));
-
-		return { x, y, w, h, outW, outH };
-	} catch {
-		return null;
-	}
-}
-
-async function lockIdentityRegion({
-	basePath,
-	sourcePath,
-	regionPct,
-	tmpDir,
-	jobId,
-	log,
-}) {
-	if (!LOCK_IDENTITY_ENABLED) return basePath;
-	if (!basePath || !fs.existsSync(basePath)) return basePath;
-	if (!sourcePath || !fs.existsSync(sourcePath)) return basePath;
-
-	const baseDims = probeImageDimensions(basePath);
-	const srcDims = probeImageDimensions(sourcePath);
-	if (!baseDims.width || !baseDims.height) return basePath;
-
-	const rp = regionPct || PRESENTER_IDENTITY_REGION;
-	const rx = Math.max(0, Math.round(baseDims.width * rp.x));
-	const ry = Math.max(0, Math.round(baseDims.height * rp.y));
-	const rw = Math.max(2, Math.round(baseDims.width * rp.w));
-	const rh = Math.max(2, Math.round(baseDims.height * rp.h));
-	const w = Math.min(rw, baseDims.width - rx);
-	const h = Math.min(rh, baseDims.height - ry);
-	if (!w || !h) return basePath;
-
-	const outPath = path.join(tmpDir, `presenter_lock_${jobId}.png`);
-	const needsScale =
-		srcDims.width !== baseDims.width || srcDims.height !== baseDims.height;
-	const filter = needsScale
-		? `[1:v]scale=${baseDims.width}:${baseDims.height}[src];` +
-		  `[src]crop=${w}:${h}:${rx}:${ry}[id];` +
-		  `[0:v][id]overlay=${rx}:${ry}:format=auto[outv]`
-		: `[1:v]crop=${w}:${h}:${rx}:${ry}[id];` +
-		  `[0:v][id]overlay=${rx}:${ry}:format=auto[outv]`;
-
-	try {
-		await runFfmpeg(
-			[
-				"-i",
-				basePath,
-				"-i",
-				sourcePath,
-				"-filter_complex",
-				filter,
-				"-map",
-				"[outv]",
-				"-frames:v",
-				"1",
-				"-y",
-				outPath,
-			],
-			"presenter_identity_lock"
-		);
-		const dt = detectFileType(outPath);
-		if (dt?.kind === "image") {
-			if (log)
-				log("presenter identity locked", {
-					path: path.basename(outPath),
-					region: { x: rx, y: ry, w, h },
-				});
-			return outPath;
-		}
-	} catch (e) {
-		if (log)
-			log("presenter identity lock failed (using edited)", {
-				error: e?.message || String(e),
-			});
 	}
 
-	safeUnlink(outPath);
-	return basePath;
-}
+	if (maxX < minX || maxY < minY) return null;
 
-async function compositeWardrobeRegion({
-	basePath,
-	sourcePath,
-	regionPct,
-	tmpDir,
-	jobId,
-	log,
-}) {
-	if (!basePath || !fs.existsSync(basePath)) return basePath;
-	if (!sourcePath || !fs.existsSync(sourcePath)) return basePath;
-
-	const baseDims = probeImageDimensions(basePath);
-	const srcDims = probeImageDimensions(sourcePath);
-	if (!baseDims.width || !baseDims.height) return basePath;
-
-	const rp = regionPct || PRESENTER_WARDROBE_REGION;
-	let rx = Math.max(0, Math.round(baseDims.width * rp.x));
-	let ry = Math.max(0, Math.round(baseDims.height * rp.y));
-	let rw = Math.max(2, Math.round(baseDims.width * rp.w));
-	let rh = Math.max(2, Math.round(baseDims.height * rp.h));
-
-	const useSourceForDesk =
-		srcDims.width === baseDims.width && srcDims.height === baseDims.height;
-	const deskEdgeY = estimateDeskEdgeY(
-		useSourceForDesk ? sourcePath : basePath,
-		baseDims
+	const scaleX = dims.width / outW;
+	const scaleY = dims.height / outH;
+	const pad = Math.max(
+		1,
+		Math.round(
+			Math.min(dims.width, dims.height) * clamp(CANDLE_CROP_PAD_PCT, 0, 0.08)
+		)
 	);
-	if (Number.isFinite(deskEdgeY)) {
-		const maxBottom = Math.max(ry + 2, deskEdgeY - 4);
-		rh = Math.max(2, Math.min(rh, maxBottom - ry));
-	}
 
-	rw = Math.min(rw, baseDims.width - rx);
-	rh = Math.min(rh, baseDims.height - ry);
-	if (!rw || !rh) return basePath;
+	let x = Math.max(0, Math.floor(minX * scaleX) - pad);
+	let y = Math.max(0, Math.floor(minY * scaleY) - pad);
+	let w = Math.min(dims.width - x, Math.ceil((maxX + 1) * scaleX) - x + pad);
+	let h = Math.min(dims.height - y, Math.ceil((maxY + 1) * scaleY) - y + pad);
 
-	const outPath = path.join(tmpDir, `presenter_wardrobe_${jobId}.png`);
-	const needsScale =
-		srcDims.width !== baseDims.width || srcDims.height !== baseDims.height;
-	const filter = needsScale
-		? `[1:v]scale=${baseDims.width}:${baseDims.height}[src];` +
-		  `[src]crop=${rw}:${rh}:${rx}:${ry}[ward];` +
-		  `[0:v][ward]overlay=${rx}:${ry}:format=auto[outv]`
-		: `[1:v]crop=${rw}:${rh}:${rx}:${ry}[ward];` +
-		  `[0:v][ward]overlay=${rx}:${ry}:format=auto[outv]`;
+	w = Math.max(2, Math.min(w, dims.width - x));
+	h = Math.max(2, Math.min(h, dims.height - y));
 
-	try {
-		await runFfmpeg(
-			[
-				"-i",
-				sourcePath,
-				"-i",
-				basePath,
-				"-filter_complex",
-				filter,
-				"-map",
-				"[outv]",
-				"-frames:v",
-				"1",
-				"-y",
-				outPath,
-			],
-			"presenter_wardrobe_composite"
-		);
-		const dt = detectFileType(outPath);
-		if (dt?.kind === "image") {
-			if (log)
-				log("presenter wardrobe composited", {
-					path: path.basename(outPath),
-					region: { x: rx, y: ry, w: rw, h: rh },
-				});
-			return outPath;
-		}
-	} catch (e) {
-		if (log)
-			log("presenter wardrobe composite failed (using edited)", {
-				error: e?.message || String(e),
-			});
-	}
-
-	safeUnlink(outPath);
-	return basePath;
+	return { x, y, w, h, outW, outH };
 }
 
 function probeImageDimensions(filePath) {
@@ -633,8 +443,241 @@ function probeImageDimensions(filePath) {
 	}
 }
 
-function getOpenAiKey() {
-	return process.env.OPENAI_API_KEY || process.env.CHATGPT_API_TOKEN || "";
+const RUNWAY_IMAGE_RATIOS = [
+	"1920:1080",
+	"2112:912",
+	"1808:768",
+	"1680:720",
+	"1360:768",
+	"1280:720",
+	"960:720",
+	"720:960",
+	"720:720",
+	"1080:1080",
+	"1024:1024",
+	"1080:1920",
+	"720:1280",
+	"1440:1080",
+	"1080:1440",
+	"1168:880",
+];
+
+function runwayImageRatioForDims(dims) {
+	const base =
+		dims && dims.width && dims.height ? dims.width / dims.height : 16 / 9;
+	let best = RUNWAY_IMAGE_RATIOS[0];
+	let bestDiff = Infinity;
+	let bestArea = 0;
+	for (const candidate of RUNWAY_IMAGE_RATIOS) {
+		const [w, h] = String(candidate)
+			.split(":")
+			.map((v) => Number(v) || 0);
+		if (!w || !h) continue;
+		const ratio = w / h;
+		const diff = Math.abs(ratio - base);
+		const area = w * h;
+		if (
+			diff < bestDiff - 1e-6 ||
+			(diff <= bestDiff + 1e-6 && area > bestArea)
+		) {
+			best = candidate;
+			bestDiff = diff;
+			bestArea = area;
+		}
+	}
+	return best || "1920:1080";
+}
+
+function seedFromText(value) {
+	const h = crypto
+		.createHash("sha256")
+		.update(String(value || ""))
+		.digest();
+	return h.readUInt32BE(0);
+}
+
+function runwayHeadersJson() {
+	return {
+		Authorization: `Bearer ${RUNWAY_API_KEY}`,
+		"X-Runway-Version": RUNWAY_VERSION,
+		"Content-Type": "application/json",
+	};
+}
+
+async function runwayCreateEphemeralUpload({ filePath, filename }) {
+	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
+	if (!fs.existsSync(filePath))
+		throw new Error("file missing for runway upload");
+
+	const baseName = filename || path.basename(filePath || "asset.bin");
+
+	const init = await axios.post(
+		"https://api.dev.runwayml.com/v1/uploads",
+		{ filename: baseName, type: "ephemeral" },
+		{
+			headers: runwayHeadersJson(),
+			timeout: 20000,
+			validateStatus: (s) => s < 500,
+		}
+	);
+
+	if (init.status >= 300) {
+		const msg =
+			typeof init.data === "string"
+				? init.data
+				: JSON.stringify(init.data || {});
+		throw new Error(
+			`Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`
+		);
+	}
+
+	const { uploadUrl, fields, runwayUri } = init.data || {};
+	if (!uploadUrl || !fields || !runwayUri)
+		throw new Error("Runway upload init returned incomplete response");
+
+	if (FormDataNode) {
+		const form = new FormDataNode();
+		Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
+		form.append("file", fs.createReadStream(filePath));
+		const r = await axios.post(uploadUrl, form, {
+			headers: form.getHeaders(),
+			maxBodyLength: Infinity,
+			maxContentLength: Infinity,
+			timeout: 30000,
+			validateStatus: (s) => s < 500,
+		});
+		if (r.status >= 300) throw new Error(`Runway upload failed (${r.status})`);
+		return runwayUri;
+	}
+
+	if (typeof fetch === "function" && typeof FormData !== "undefined") {
+		const form = new FormData();
+		Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
+		const buf = fs.readFileSync(filePath);
+		const blob = new Blob([buf]);
+		form.append("file", blob, baseName);
+		const resp = await fetch(uploadUrl, { method: "POST", body: form });
+		if (!resp.ok) throw new Error(`Runway upload failed (${resp.status})`);
+		return runwayUri;
+	}
+
+	throw new Error(
+		"Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'"
+	);
+}
+
+async function pollRunwayTask(taskId, label) {
+	const url = `https://api.dev.runwayml.com/v1/tasks/${taskId}`;
+	for (let i = 0; i < RUNWAY_IMAGE_MAX_POLL_ATTEMPTS; i++) {
+		await sleep(RUNWAY_IMAGE_POLL_INTERVAL_MS);
+		const res = await axios.get(url, {
+			headers: {
+				Authorization: `Bearer ${RUNWAY_API_KEY}`,
+				"X-Runway-Version": RUNWAY_VERSION,
+			},
+			timeout: 20000,
+			validateStatus: (s) => s < 500,
+		});
+		if (res.status >= 300) {
+			const msg =
+				typeof res.data === "string"
+					? res.data
+					: JSON.stringify(res.data || {});
+			throw new Error(
+				`${label} polling failed (${res.status}): ${msg.slice(0, 500)}`
+			);
+		}
+		const data = res.data || {};
+		const status = String(data.status || "").toUpperCase();
+		if (status === "SUCCEEDED") {
+			if (Array.isArray(data.output) && data.output[0]) return data.output[0];
+			if (typeof data.output === "string") return data.output;
+			throw new Error(`${label} succeeded but returned no output`);
+		}
+		if (status === "FAILED") {
+			throw new Error(
+				`${label} failed: ${data.failureCode || data.error || "FAILED"}`
+			);
+		}
+	}
+	throw new Error(`${label} timed out`);
+}
+
+async function runwayTextToImage({ promptText, ratio, referenceImages, seed }) {
+	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
+	const payload = {
+		model: RUNWAY_IMAGE_MODEL,
+		promptText: String(promptText || "").slice(0, 1000),
+		ratio: String(ratio || "1920:1080"),
+		...(Array.isArray(referenceImages) && referenceImages.length
+			? { referenceImages }
+			: {}),
+		...(Number.isFinite(seed) ? { seed } : {}),
+	};
+
+	const res = await axios.post(
+		"https://api.dev.runwayml.com/v1/text_to_image",
+		payload,
+		{
+			headers: runwayHeadersJson(),
+			timeout: 30000,
+			validateStatus: (s) => s < 500,
+		}
+	);
+
+	if (res.status >= 300 || !res.data?.id) {
+		const msg =
+			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
+		throw new Error(
+			`Runway text_to_image failed (${res.status}): ${msg.slice(0, 700)}`
+		);
+	}
+	return await pollRunwayTask(res.data.id, "runway_text_to_image");
+}
+
+async function downloadRunwayImageToPath({ uri, outPath }) {
+	if (!uri) throw new Error("runway output missing");
+	const target = String(uri);
+	if (target.startsWith("data:image/")) {
+		const base64 = target.split(",")[1] || "";
+		const buf = Buffer.from(base64, "base64");
+		fs.writeFileSync(outPath, buf);
+		return outPath;
+	}
+	if (!/^https?:\/\//i.test(target))
+		throw new Error(`unsupported runway output uri: ${target.slice(0, 50)}`);
+	const res = await axios.get(target, {
+		responseType: "arraybuffer",
+		timeout: 30000,
+		validateStatus: (s) => s < 500,
+	});
+	if (res.status >= 300)
+		throw new Error(`runway output download failed (${res.status})`);
+	fs.writeFileSync(outPath, Buffer.from(res.data));
+	return outPath;
+}
+
+async function createCropFromRegion({ inputPath, regionPct, outPath, label }) {
+	const dims = probeImageDimensions(inputPath);
+	if (!dims.width || !dims.height) throw new Error("crop_dims_missing");
+	const rx = Math.max(0, Math.round(dims.width * (regionPct.x || 0)));
+	const ry = Math.max(0, Math.round(dims.height * (regionPct.y || 0)));
+	const rw = Math.max(1, Math.round(dims.width * (regionPct.w || 1)));
+	const rh = Math.max(1, Math.round(dims.height * (regionPct.h || 1)));
+	await runFfmpeg(
+		[
+			"-i",
+			inputPath,
+			"-vf",
+			`crop=${rw}:${rh}:${rx}:${ry}`,
+			"-frames:v",
+			"1",
+			"-y",
+			outPath,
+		],
+		label || "crop_ref"
+	);
+	return outPath;
 }
 
 function assertCloudinaryReady() {
@@ -746,80 +789,19 @@ function buildWardrobeEditPrompt({ title, topics, categoryLabel }) {
 		`${title || ""} ${topicFocus || ""}`
 	);
 	return `
-Keep EVERYTHING identical to the reference image (pixel-level match) except the outfit in the masked torso region.
+Use @presenter_ref for exact framing, lighting, pose, desk, and studio environment.
+Use @face_ref for the exact facial identity and features.
+Change ONLY the outfit on the torso/upper body area to: ${wardrobe}.
+Keep skin tone, arms, hands, body proportions, and posture identical to @presenter_ref.
 Face, glasses, beard, hairline, skin texture, eye shape, eye color, eyebrows, ears, and head shape must remain EXACTLY the same.
 Studio background, desk, lighting, color grading, camera angle, framing, and all background objects must remain EXACTLY the same.
-Only change the clothing on the torso area to: ${wardrobe}.
 No tie. No formal suit jacket. Keep it youthful, lively, and fancy-casual.
 Do NOT alter facial features, hair, or body proportions. Do NOT alter the studio, desk, or props.
 If any non-wardrobe area would change, leave it unchanged.
 ${expressionLine}
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
-No extra people, no text, no logos.
+No extra people, no text, no logos, no new props.
 `.trim();
-}
-
-function buildPresenterPrompt({ title, topics, categoryLabel }) {
-	const topicFocus = buildTopicFocus({ title, topics });
-	const wardrobe = inferWardrobeStyle({
-		categoryLabel,
-		text: `${title || ""} ${topicFocus || ""}`,
-	});
-	const expressionLine = inferExpressionLine(
-		`${title || ""} ${topicFocus || ""}`
-	);
-	const candleLine =
-		"Add one small branded candle on the desk to the presenter's left (viewer-right), toward the back-right corner. Keep it a realistic small tabletop size, fully on the desk with a safe margin from the edge, lit, open jar with no lid, label readable, not centered and not in the foreground. No square background, no sticker edges, no pedestal.";
-	const candleRefLine =
-		"If a candle reference is provided, match its label, glass, and color exactly (no redesign).";
-
-	return `
-Photorealistic studio portrait of the SAME person as the reference image.
-Keep identity (face, beard, glasses), age, skin tone, and hairline the same.
-Keep the SAME studio background, desk, lighting, and camera angle. Do not change the room.
-Wardrobe: ${wardrobe}. Make it different from the reference while staying classy and topic-appropriate: ${topicFocus}.
-No tie. No formal suit jacket. Keep it youthful, lively, and fancy-casual.
-${candleLine}
-${candleRefLine}
-${expressionLine}
-Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
-No extra people, no text, no logos (except the candle brand), no distortions or warped face.
-`.trim();
-}
-
-async function createWardrobeMask(inputPath, tmpDir, jobId) {
-	const dims = probeImageDimensions(inputPath);
-	if (!dims.width || !dims.height)
-		throw new Error("wardrobe_mask_dims_missing");
-	const rx = Math.max(0, Math.round(dims.width * PRESENTER_WARDROBE_REGION.x));
-	const ry = Math.max(0, Math.round(dims.height * PRESENTER_WARDROBE_REGION.y));
-	const rw = Math.max(1, Math.round(dims.width * PRESENTER_WARDROBE_REGION.w));
-	const rh = Math.max(1, Math.round(dims.height * PRESENTER_WARDROBE_REGION.h));
-	const outPath = path.join(tmpDir, `presenter_mask_${jobId}.png`);
-	await runFfmpeg(
-		[
-			"-f",
-			"lavfi",
-			"-i",
-			`color=c=white@1.0:s=${dims.width}x${dims.height}`,
-			"-vf",
-			`format=rgba,drawbox=x=${rx}:y=${ry}:w=${rw}:h=${rh}:color=black@0.0:t=fill`,
-			"-frames:v",
-			"1",
-			"-y",
-			outPath,
-		],
-		"presenter_mask"
-	);
-	return outPath;
-}
-
-function soraSizeForRatio(ratio) {
-	const raw = String(ratio || "").trim() || DEFAULT_RATIO;
-	if (raw === "720:1280") return "720x1280";
-	if (raw === "832:1104") return "832x1104";
-	if (raw === "1104:832") return "1104x832";
-	return "1280x720";
 }
 
 function runFfmpeg(args, label = "ffmpeg") {
@@ -926,55 +908,49 @@ function estimateDeskEdgeY(basePath, baseDims) {
 	}
 }
 
-async function generateOpenAiCandleImage({
-	candlePath,
-	tmpDir,
-	jobId,
-	openai,
-	log,
-}) {
-	if (!ENABLE_CANDLE_RESTYLE || !openai) return null;
+async function generateRunwayCandleImage({ candlePath, tmpDir, jobId, log }) {
+	if (!ENABLE_CANDLE_RESTYLE || !RUNWAY_API_KEY) return null;
 	if (!candlePath || !fs.existsSync(candlePath)) return null;
+	ensureDir(tmpDir);
 
-	let imageInput = null;
+	const dims = probeImageDimensions(candlePath);
+	const ratio = runwayImageRatioForDims(dims);
+	const seed = seedFromText(`${jobId || "candle"}_candle`);
+
+	const prompt = `
+Use @candle_ref as the exact reference for the brand label, logo, glass, and proportions.
+Create a photorealistic product cutout of the same candle.
+The jar is OPEN with NO lid or cap visible anywhere in frame.
+The candle is LIT with a small clean flame and glowing wick; wax surface visible.
+Keep label text/logo EXACTLY the same, sharp, readable, and undistorted.
+Single candle only, upright, centered, fully visible (no cropping).
+Isolate on a flat pure green (#00FF00) background; no shadows, reflections, or extra objects.
+`.trim();
+
+	let refUri = null;
 	try {
-		const buf = fs.readFileSync(candlePath);
-		const mime = inferImageMime(candlePath) || "image/png";
-		imageInput = await toFile(buf, path.basename(candlePath), { type: mime });
+		refUri = await runwayCreateEphemeralUpload({
+			filePath: candlePath,
+			filename: path.basename(candlePath),
+		});
 	} catch (e) {
 		if (log)
-			log("candle restyle read failed", { error: e?.message || String(e) });
+			log("candle restyle upload failed", { error: e?.message || String(e) });
 		return null;
 	}
 
-	const prompt = `
-Keep the exact same candle label, glass, colors, proportions, and perspective.
-Remove the lid completely (no lid visible anywhere). Make the candle OPEN.
-Add a small, realistic lit flame and glowing wick.
-Transparent background only; no shadow, no pedestal, no extra objects.
-Tight crop around the candle (no extra padding or empty margins).
-Do not change the brand text or logo.
-`.trim();
-
 	try {
-		const resp = await openai.images.edit({
-			model: CANDLE_RESTYLE_MODEL,
-			image: imageInput,
-			prompt,
-			quality: CANDLE_RESTYLE_QUALITY,
-			output_format: "png",
-			background: "transparent",
-			size: CANDLE_RESTYLE_SIZE,
-			input_fidelity: CANDLE_RESTYLE_INPUT_FIDELITY || undefined,
+		const outputUri = await runwayTextToImage({
+			promptText: prompt,
+			ratio,
+			referenceImages: [{ uri: refUri, tag: "candle_ref" }],
+			seed,
 		});
-		const image = resp?.data?.[0];
-		if (!image?.b64_json) throw new Error("candle_restyle_empty");
-		const buf = Buffer.from(String(image.b64_json), "base64");
 		const outPath = path.join(
 			tmpDir,
 			`candle_open_lit_${jobId || crypto.randomUUID()}.png`
 		);
-		fs.writeFileSync(outPath, buf);
+		await downloadRunwayImageToPath({ uri: outputUri, outPath });
 		const dt = detectFileType(outPath);
 		if (dt?.kind === "image") {
 			if (log) log("candle restyle ready", { path: path.basename(outPath) });
@@ -991,22 +967,15 @@ Do not change the brand text or logo.
 	return null;
 }
 
-async function prepareCandleOverlayAsset({
-	candlePath,
-	tmpDir,
-	jobId,
-	log,
-	openai,
-}) {
+async function prepareCandleOverlayAsset({ candlePath, tmpDir, jobId, log }) {
 	if (!CANDLE_PREP_ENABLED) return candlePath;
 	if (!candlePath || !fs.existsSync(candlePath)) return candlePath;
 
 	let workingPath = candlePath;
-	const restyledPath = await generateOpenAiCandleImage({
+	const restyledPath = await generateRunwayCandleImage({
 		candlePath,
 		tmpDir,
 		jobId,
-		openai,
 		log,
 	});
 	if (restyledPath) workingPath = restyledPath;
@@ -1027,18 +996,10 @@ async function prepareCandleOverlayAsset({
 		Number.isFinite(CANDLE_KEY_SIMILARITY) &&
 		Number.isFinite(CANDLE_KEY_BLEND);
 
-	const alphaBoost = clamp(CANDLE_ALPHA_BOOST, 0.8, 2.5);
-	const alphaCut = clamp(CANDLE_ALPHA_CUTOFF, 0, 80);
-	const needsPrep =
-		useKey ||
-		trimTop > 0.001 ||
-		CANDLE_CROP_ALPHA_ENABLED ||
-		alphaBoost > 1.01 ||
-		alphaCut > 0;
-	if (!needsPrep) return workingPath;
+	if (!useKey && trimTop <= 0.001) return workingPath;
 
 	const suffix = jobId || crypto.randomUUID();
-	const prePath = path.join(tmpDir, `candle_prepped_${suffix}.png`);
+	const outPath = path.join(tmpDir, `candle_prepped_${suffix}.png`);
 	const filters = ["format=rgba"];
 	if (useKey) {
 		const hex = rgbToHex(keyColor);
@@ -1053,14 +1014,6 @@ async function prepareCandleOverlayAsset({
 		filters.push(`crop=iw:ih*${keepPct}:0:ih*${trimTop.toFixed(4)}`);
 	}
 
-	if (alphaBoost > 1.01 || alphaCut > 0) {
-		const boostExpr =
-			alphaBoost > 1.01 ? `min(255,val*${alphaBoost.toFixed(2)})` : "val";
-		const cutExpr =
-			alphaCut > 0 ? `if(gte(val,${alphaCut}),${boostExpr},0)` : boostExpr;
-		filters.push(`lut=a='${cutExpr}'`);
-	}
-
 	try {
 		await runFfmpeg(
 			[
@@ -1071,54 +1024,60 @@ async function prepareCandleOverlayAsset({
 				"-frames:v",
 				"1",
 				"-y",
-				prePath,
+				outPath,
 			],
 			"candle_prep"
 		);
-		const dt = detectFileType(prePath);
+		const dt = detectFileType(outPath);
 		if (dt?.kind === "image") {
-			let finalPath = prePath;
-			let cropped = false;
-			let cropBounds = null;
 			if (CANDLE_CROP_ALPHA_ENABLED) {
-				const bounds = computeAlphaBounds(prePath, {
-					alphaThreshold: CANDLE_CROP_ALPHA_THRESHOLD,
-				});
-				if (bounds) {
-					const cropPath = path.join(tmpDir, `candle_crop_${suffix}.png`);
-					await runFfmpeg(
-						[
-							"-i",
-							prePath,
-							"-vf",
-							`crop=${bounds.w}:${bounds.h}:${bounds.x}:${bounds.y}`,
-							"-frames:v",
-							"1",
-							"-y",
-							cropPath,
-						],
-						"candle_crop"
-					);
-					const cropDetected = detectFileType(cropPath);
-					if (cropDetected?.kind === "image") {
-						finalPath = cropPath;
-						cropped = true;
-						cropBounds = { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h };
-						safeUnlink(prePath);
-					} else {
-						safeUnlink(cropPath);
+				try {
+					const bounds = computeAlphaBounds(outPath, {
+						alphaThreshold: CANDLE_CROP_ALPHA_THRESHOLD,
+					});
+					if (bounds && bounds.w && bounds.h) {
+						const croppedPath = path.join(
+							tmpDir,
+							`candle_cropped_${suffix}.png`
+						);
+						await runFfmpeg(
+							[
+								"-i",
+								outPath,
+								"-vf",
+								`crop=${bounds.w}:${bounds.h}:${bounds.x}:${bounds.y}`,
+								"-frames:v",
+								"1",
+								"-y",
+								croppedPath,
+							],
+							"candle_crop_alpha"
+						);
+						const dt2 = detectFileType(croppedPath);
+						if (dt2?.kind === "image") {
+							safeUnlink(outPath);
+							if (log)
+								log("candle asset cropped", {
+									path: path.basename(croppedPath),
+								});
+							return croppedPath;
+						}
+						safeUnlink(croppedPath);
 					}
+				} catch (e) {
+					if (log)
+						log("candle alpha crop failed (using prepped)", {
+							error: e?.message || String(e),
+						});
 				}
 			}
 			if (log)
 				log("candle asset prepped", {
-					path: path.basename(finalPath),
+					path: path.basename(outPath),
 					hasAlpha,
 					trimTopPct: Number(trimTop.toFixed(3)),
-					cropped,
-					cropBounds,
 				});
-			return finalPath;
+			return outPath;
 		}
 	} catch (e) {
 		if (log)
@@ -1127,7 +1086,7 @@ async function prepareCandleOverlayAsset({
 			});
 	}
 
-	safeUnlink(prePath);
+	safeUnlink(outPath);
 	return workingPath;
 }
 
@@ -1200,193 +1159,157 @@ function comparePresenterSimilarity(originalPath, candidatePath) {
 	return sum / scores.length;
 }
 
-async function extractFrameFromVideo({ videoPath, outPath }) {
-	const args = ["-ss", "0.4", "-i", videoPath, "-frames:v", "1", "-y", outPath];
-	await runFfmpeg(args, "presenter_sora_frame");
-	return outPath;
-}
-
-async function generateSoraPresenterFrame({
-	jobId,
+async function overlayWardrobeFromGenerated({
+	basePath,
+	generatedPath,
 	tmpDir,
-	presenterLocalPath,
-	prompt,
-	ratio,
-	openai,
+	jobId,
 	log,
 }) {
-	const apiKey = getOpenAiKey();
-	if (!apiKey && !openai)
-		throw new Error(
-			"OpenAI API key missing (OPENAI_API_KEY or CHATGPT_API_TOKEN)."
-		);
-	const client = openai || new OpenAI({ apiKey });
-	const size = soraSizeForRatio(ratio);
-	const seconds = String(SORA_SECONDS || "4");
+	if (!basePath || !fs.existsSync(basePath)) return basePath;
+	if (!generatedPath || !fs.existsSync(generatedPath)) return basePath;
+
+	const baseDims = probeImageDimensions(basePath);
+	const genDims = probeImageDimensions(generatedPath);
+	if (!baseDims.width || !baseDims.height || !genDims.width || !genDims.height)
+		return basePath;
+
+	const rx = Math.max(
+		0,
+		Math.round(baseDims.width * PRESENTER_WARDROBE_REGION.x)
+	);
+	const ry = Math.max(
+		0,
+		Math.round(baseDims.height * PRESENTER_WARDROBE_REGION.y)
+	);
+	const rw = Math.max(
+		1,
+		Math.round(baseDims.width * PRESENTER_WARDROBE_REGION.w)
+	);
+	const rh = Math.max(
+		1,
+		Math.round(baseDims.height * PRESENTER_WARDROBE_REGION.h)
+	);
+
+	const suffix = jobId || crypto.randomUUID();
+	const outPath = path.join(tmpDir, `presenter_wardrobe_${suffix}.png`);
+	const scaleFilter =
+		genDims.width !== baseDims.width || genDims.height !== baseDims.height
+			? `[1:v]scale=${baseDims.width}:${baseDims.height}:flags=lanczos,format=rgba[gen];`
+			: `[1:v]format=rgba[gen];`;
+	const filter =
+		`${scaleFilter}` +
+		`[gen]crop=${rw}:${rh}:${rx}:${ry}[wardrobe];` +
+		`[0:v][wardrobe]overlay=x=${rx}:y=${ry}:format=auto[outv]`;
+
+	await runFfmpeg(
+		[
+			"-i",
+			basePath,
+			"-i",
+			generatedPath,
+			"-filter_complex",
+			filter,
+			"-map",
+			"[outv]",
+			"-frames:v",
+			"1",
+			"-y",
+			outPath,
+		],
+		"presenter_wardrobe_overlay"
+	);
 
 	if (log)
-		log("presenter sora prompt", {
-			prompt: prompt.slice(0, 200),
-			size,
-			seconds,
-		});
-
-	let imageInput = null;
-	if (presenterLocalPath && fs.existsSync(presenterLocalPath)) {
-		try {
-			const buf = fs.readFileSync(presenterLocalPath);
-			const mime = inferImageMime(presenterLocalPath) || "image/png";
-			imageInput = await toFile(buf, path.basename(presenterLocalPath), {
-				type: mime,
-			});
-		} catch {}
-	}
-
-	const createJob = async (includeImage) => {
-		const payload = {
-			model: SORA_MODEL,
-			prompt,
-			seconds,
-			size,
-		};
-		if (includeImage && imageInput) payload.image = imageInput;
-		return await client.videos.create(payload);
-	};
-
-	let job = null;
-	try {
-		job = await createJob(Boolean(imageInput));
-	} catch (e) {
-		if (imageInput && log)
-			log("presenter sora create retry without image", {
-				error: e?.message || String(e),
-			});
-		job = await createJob(false);
-	}
-
-	const running = new Set(["queued", "in_progress", "processing"]);
-	let attempts = 0;
-	while (
-		running.has(String(job?.status || "")) &&
-		attempts < SORA_MAX_POLL_ATTEMPTS
-	) {
-		await sleep(SORA_POLL_INTERVAL_MS);
-		try {
-			const updated = await client.videos.retrieve(job.id);
-			if (updated) job = updated;
-		} catch (pollErr) {
-			if (log)
-				log("presenter sora poll failed", {
-					attempt: attempts + 1,
-					message: pollErr?.message,
-					code: pollErr?.code || pollErr?.response?.data?.error?.code || null,
-					status: pollErr?.response?.status || null,
-				});
-		}
-		attempts++;
-	}
-
-	if (String(job?.status) !== "completed") {
-		const jobErr = job?.error || job?.last_error || job?.failure || null;
-		const code = jobErr?.code || jobErr?.type || null;
-		const message =
-			jobErr?.message || jobErr?.error?.message || job?.failure_reason || null;
-		const err = new Error(
-			message ||
-				`Sora job ${job?.id} failed (status=${job?.status || "unknown"})`
-		);
-		err.code = code;
-		err.jobId = job?.id;
-		err.status = job?.status;
-		throw err;
-	}
-
-	let response = null;
-	try {
-		response = await client.videos.downloadContent(job.id, {
-			variant: "video",
-		});
-	} catch {
-		response = await client.videos.downloadContent(job.id, {
-			variant: "mp4",
-		});
-	}
-
-	const buf = Buffer.from(await response.arrayBuffer());
-	const videoPath = path.join(tmpDir, `presenter_sora_${jobId}.mp4`);
-	fs.writeFileSync(videoPath, buf);
-	const framePath = path.join(tmpDir, `presenter_sora_${jobId}.png`);
-	await extractFrameFromVideo({ videoPath, outPath: framePath });
-	return framePath;
-}
-
-async function generateOpenAiPresenterImage({
-	jobId,
-	tmpDir,
-	presenterLocalPath,
-	prompt,
-	maskPath,
-	openai,
-	log,
-}) {
-	const apiKey = getOpenAiKey();
-	if (!apiKey && !openai)
-		throw new Error(
-			"OpenAI API key missing (OPENAI_API_KEY or CHATGPT_API_TOKEN)."
-		);
-	const client = openai || new OpenAI({ apiKey });
-	const inputs = [];
-	if (presenterLocalPath && fs.existsSync(presenterLocalPath)) {
-		try {
-			const buf = fs.readFileSync(presenterLocalPath);
-			const mime = inferImageMime(presenterLocalPath);
-			if (mime)
-				inputs.push(
-					await toFile(buf, path.basename(presenterLocalPath), { type: mime })
-				);
-		} catch {}
-	}
-	if (!inputs.length) throw new Error("presenter image inputs missing");
-	let maskInput = null;
-	if (maskPath && fs.existsSync(maskPath)) {
-		try {
-			const buf = fs.readFileSync(maskPath);
-			maskInput = await toFile(buf, path.basename(maskPath), {
-				type: "image/png",
-			});
-		} catch {}
-	}
-
-	const editOptions = {
-		model: DEFAULT_IMAGE_MODEL,
-		image: inputs.length === 1 ? inputs[0] : inputs,
-		prompt,
-		quality: DEFAULT_IMAGE_QUALITY,
-		output_format: "png",
-		background: "auto",
-	};
-	if (maskInput) editOptions.mask = maskInput;
-	if (DEFAULT_IMAGE_INPUT_FIDELITY)
-		editOptions.input_fidelity = DEFAULT_IMAGE_INPUT_FIDELITY;
-
-	let resp = null;
-	try {
-		resp = await client.images.edit(editOptions);
-	} catch {
-		editOptions.size = DEFAULT_IMAGE_SIZE;
-		resp = await client.images.edit(editOptions);
-	}
-
-	const image = resp?.data?.[0];
-	if (!image?.b64_json) throw new Error("presenter_openai_empty");
-	const buf = Buffer.from(String(image.b64_json), "base64");
-	const outPath = path.join(tmpDir, `presenter_openai_${jobId}.png`);
-	fs.writeFileSync(outPath, buf);
-	if (log)
-		log("presenter openai fallback ready", {
+		log("presenter wardrobe overlay ready", {
 			path: path.basename(outPath),
 		});
+
 	return outPath;
+}
+
+async function generateRunwayPresenterImage({
+	jobId,
+	tmpDir,
+	presenterLocalPath,
+	prompt,
+	log,
+}) {
+	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
+	if (!presenterLocalPath || !fs.existsSync(presenterLocalPath))
+		throw new Error("presenter image inputs missing");
+	ensureDir(tmpDir);
+
+	const dims = probeImageDimensions(presenterLocalPath);
+	const ratio = runwayImageRatioForDims(dims);
+	const seed = seedFromText(`${jobId || "presenter"}_presenter`);
+
+	const facePath = path.join(
+		tmpDir,
+		`presenter_face_${jobId || crypto.randomUUID()}.png`
+	);
+	await createCropFromRegion({
+		inputPath: presenterLocalPath,
+		regionPct: PRESENTER_FACE_REGION,
+		outPath: facePath,
+		label: "presenter_face_crop",
+	});
+
+	let presenterUri = null;
+	let faceUri = null;
+	try {
+		presenterUri = await runwayCreateEphemeralUpload({
+			filePath: presenterLocalPath,
+			filename: path.basename(presenterLocalPath),
+		});
+		faceUri = await runwayCreateEphemeralUpload({
+			filePath: facePath,
+			filename: path.basename(facePath),
+		});
+	} catch (e) {
+		safeUnlink(facePath);
+		throw e;
+	}
+
+	const referenceImages = [
+		{ uri: presenterUri, tag: "presenter_ref" },
+		{ uri: faceUri, tag: "face_ref" },
+	];
+
+	if (log)
+		log("presenter runway prompt", {
+			prompt: String(prompt || "").slice(0, 200),
+			ratio,
+		});
+
+	let runwayPath = null;
+	try {
+		const outputUri = await runwayTextToImage({
+			promptText: prompt,
+			ratio,
+			referenceImages,
+			seed,
+		});
+
+		runwayPath = path.join(
+			tmpDir,
+			`presenter_runway_${jobId || crypto.randomUUID()}.png`
+		);
+		await downloadRunwayImageToPath({ uri: outputUri, outPath: runwayPath });
+	} finally {
+		safeUnlink(facePath);
+	}
+	if (!runwayPath) throw new Error("runway presenter image missing");
+
+	const compositePath = await overlayWardrobeFromGenerated({
+		basePath: presenterLocalPath,
+		generatedPath: runwayPath,
+		tmpDir,
+		jobId,
+		log,
+	});
+	if (compositePath && compositePath !== runwayPath) safeUnlink(runwayPath);
+	return compositePath || runwayPath;
 }
 
 async function overlayCandleOnPresenterSmart({
@@ -1428,14 +1351,19 @@ async function overlayCandleOnPresenterSmart({
 	deskEdgeY = deskEdgeY || Math.round(baseDims.height * fallbackDeskPct);
 	deskEdgeY = clamp(deskEdgeY, 0, baseDims.height - 1);
 
-	const bottomY = clamp(
-		deskEdgeY - CANDLE_BOTTOM_MARGIN_PX,
-		1,
-		baseDims.height - 1
+	const bottomMarginPx = Math.max(
+		CANDLE_BOTTOM_MARGIN_PX,
+		Math.round(baseDims.height * clamp(CANDLE_BOTTOM_MARGIN_PCT, 0, 0.2))
 	);
+	const bottomY = clamp(deskEdgeY - bottomMarginPx, 1, baseDims.height - 1);
 
+	const clearancePct = clamp(CANDLE_CLEARANCE_PCT, 0, 0.2);
 	const wardrobeRight = Math.round(
-		baseDims.width * (PRESENTER_WARDROBE_REGION.x + PRESENTER_WARDROBE_REGION.w)
+		baseDims.width *
+			Math.max(
+				0,
+				PRESENTER_WARDROBE_REGION.x + PRESENTER_WARDROBE_REGION.w - clearancePct
+			)
 	);
 	const margin = 12;
 	const desiredXCenter = Math.round(baseDims.width * CANDLE_X_PCT);
@@ -1560,11 +1488,9 @@ async function generatePresenterAdjustedImage({
 	tmpDir,
 	presenterLocalPath,
 	candleLocalPath,
-	ratio = DEFAULT_RATIO,
 	title,
 	topics = [],
 	categoryLabel,
-	openai,
 	log,
 }) {
 	if (!presenterLocalPath || !fs.existsSync(presenterLocalPath))
@@ -1574,165 +1500,40 @@ async function generatePresenterAdjustedImage({
 	let outPath = null;
 	let method = "original";
 
-	if (PRESENTER_LOCK_IDENTITY) {
-		const wardrobePrompt = buildWardrobeEditPrompt({
-			title,
-			topics,
-			categoryLabel,
+	const wardrobePrompt = buildWardrobeEditPrompt({
+		title,
+		topics,
+		categoryLabel,
+	});
+	try {
+		outPath = await generateRunwayPresenterImage({
+			jobId,
+			tmpDir,
+			presenterLocalPath,
+			prompt: wardrobePrompt,
+			log,
 		});
-		try {
-			const maskPath = await createWardrobeMask(
-				presenterLocalPath,
-				tmpDir,
-				jobId
-			);
-			outPath = await generateOpenAiPresenterImage({
-				jobId,
-				tmpDir,
-				presenterLocalPath,
-				prompt: wardrobePrompt,
-				maskPath,
-				openai,
-				log,
-			});
-			safeUnlink(maskPath);
-			method = "openai_mask";
-			const similarity = comparePresenterSimilarity(
-				presenterLocalPath,
-				outPath
-			);
-			if (Number.isFinite(similarity) && similarity < PRESENTER_LIKENESS_MIN) {
-				if (log)
-					log("presenter edit rejected (low similarity)", {
-						similarity: Number(similarity.toFixed(3)),
-					});
-				safeUnlink(outPath);
-				outPath = presenterLocalPath;
-				method = "original";
-			}
-		} catch (e) {
+		method = "runway_wardrobe";
+		const similarity = comparePresenterSimilarity(presenterLocalPath, outPath);
+		if (Number.isFinite(similarity) && similarity < PRESENTER_LIKENESS_MIN) {
 			if (log)
-				log("presenter wardrobe edit failed; using original", {
-					error: e?.message || String(e),
+				log("presenter edit rejected (low similarity)", {
+					similarity: Number(similarity.toFixed(3)),
 				});
+			safeUnlink(outPath);
 			outPath = presenterLocalPath;
+			method = "original";
 		}
-	} else {
-		const prompt = buildPresenterPrompt({ title, topics, categoryLabel });
-		method = "sora";
-		try {
-			outPath = await generateSoraPresenterFrame({
-				jobId,
-				tmpDir,
-				presenterLocalPath,
-				prompt,
-				ratio,
-				openai,
-				log,
+	} catch (e) {
+		if (log)
+			log("presenter wardrobe edit failed; using original", {
+				error: e?.message || String(e),
 			});
-			const similarity = comparePresenterSimilarity(
-				presenterLocalPath,
-				outPath
-			);
-			if (Number.isFinite(similarity) && similarity < PRESENTER_LIKENESS_MIN) {
-				if (log)
-					log("presenter sora rejected (low similarity)", {
-						similarity: Number(similarity.toFixed(3)),
-					});
-				safeUnlink(outPath);
-				outPath = presenterLocalPath;
-				method = "original";
-			}
-		} catch (e) {
-			method = "openai_image";
-			if (log)
-				log("presenter sora failed; trying image edit", {
-					error: e?.message || String(e),
-				});
-			try {
-				outPath = await generateOpenAiPresenterImage({
-					jobId,
-					tmpDir,
-					presenterLocalPath,
-					prompt,
-					openai,
-					log,
-				});
-				const similarity = comparePresenterSimilarity(
-					presenterLocalPath,
-					outPath
-				);
-				if (
-					Number.isFinite(similarity) &&
-					similarity < PRESENTER_LIKENESS_MIN
-				) {
-					if (log)
-						log("presenter image edit rejected (low similarity)", {
-							similarity: Number(similarity.toFixed(3)),
-						});
-					safeUnlink(outPath);
-					outPath = presenterLocalPath;
-					method = "original";
-				}
-			} catch (e2) {
-				if (log)
-					log("presenter image edit failed; using original", {
-						error: e2?.message || String(e2),
-					});
-				outPath = presenterLocalPath;
-				method = "original";
-			}
-		}
-	}
-
-	if (LOCK_IDENTITY_ENABLED && outPath !== presenterLocalPath) {
-		ensurePresenterFile(outPath);
+		outPath = presenterLocalPath;
 	}
 
 	if (outPath !== presenterLocalPath) {
-		let compositeApplied = false;
-		try {
-			const composited = await compositeWardrobeRegion({
-				basePath: outPath,
-				sourcePath: presenterLocalPath,
-				regionPct: PRESENTER_WARDROBE_REGION,
-				tmpDir,
-				jobId,
-				log,
-			});
-			if (composited && composited !== outPath) {
-				safeUnlink(outPath);
-				outPath = composited;
-				compositeApplied = true;
-			}
-		} catch (e) {
-			if (log)
-				log("wardrobe composite failed (using edited)", {
-					error: e?.message || String(e),
-				});
-		}
-
-		try {
-			if (!compositeApplied) {
-				const locked = await lockIdentityRegion({
-					basePath: outPath,
-					sourcePath: presenterLocalPath,
-					regionPct: PRESENTER_IDENTITY_REGION,
-					tmpDir,
-					jobId,
-					log,
-				});
-				if (locked && locked !== outPath) {
-					safeUnlink(outPath);
-					outPath = locked;
-				}
-			}
-		} catch (e) {
-			if (log)
-				log("identity lock failed (using edited)", {
-					error: e?.message || String(e),
-				});
-		}
+		ensurePresenterFile(outPath);
 	}
 
 	let withCandle = null;
@@ -1743,7 +1544,6 @@ async function generatePresenterAdjustedImage({
 			tmpDir,
 			jobId,
 			log,
-			openai,
 		});
 	} catch (e) {
 		if (log)
