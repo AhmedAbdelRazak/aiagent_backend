@@ -14,8 +14,8 @@
  *    - Cap gestures; avoid hands; stabilize prompt
  *
  * 3) Presenter wardrobe adjustment (classy outfit):
- *    - Optional Runway-based presenter edit after script + before thumbnail
- *    - Keeps identity/studio and enforces candle placement
+ *    - Optional Runway presenter edit after script + thumbnail
+ *    - Keeps identity/studio consistent
  *
  * 4) Camera is slightly farther away:
  *    - After lipsync, apply a subtle zoom-out with blurred background padding
@@ -188,34 +188,6 @@ const DEFAULT_PRESENTER_ASSET_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767062842/aivideomatic/long_thumbnails/MyPhotoWithASuit_s1xay4.png";
 const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 	"https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
-const DEFAULT_BRAND_CANDLE_IMAGE_PATH = path.resolve(
-	__dirname,
-	"../uploads/images/MyCandle.png"
-);
-const DEFAULT_BRAND_CANDLE_IMAGE_URL =
-	"https://res.cloudinary.com/infiniteapps/image/upload/v1767134899/aivideomatic/MyCandle_u9skio.png";
-const CANDLE_PREFER_REMOTE =
-	String(process.env.CANDLE_PREFER_REMOTE || "1") !== "0";
-
-const CANDLE_REF_SCALE = clampNumber(0.35, 0.1, 1);
-const CANDLE_WIDTH_PCT = clampNumber(0.12, 0.02, 0.2);
-const CANDLE_HEAD_HEIGHT_PCT = clampNumber(0.05, 0.04, 0.16);
-const CANDLE_X_PCT = clampNumber(0.86, 0.6, 0.9);
-const CANDLE_Y_PCT = clampNumber(0.8, 0.55, 0.92);
-const CANDLE_SIZE_DESC = `about ${Math.round(
-	CANDLE_WIDTH_PCT * 100
-)}% of frame width and no larger than about ${Math.round(
-	CANDLE_HEAD_HEIGHT_PCT * 100
-)}% of the presenter's head height`;
-const CANDLE_POSITION_DESC = `centered around ${Math.round(
-	CANDLE_X_PCT * 100
-)}% of frame width (from left) and ${Math.round(
-	CANDLE_Y_PCT * 100
-)}% of frame height (from top), with the base resting on the desk`;
-
-const PRESENTER_CANDLE_PROMPT =
-	"small, elegant lit candle in a glass holder with a subtle visible brand logo, placed on the desk to the presenter's left (viewer-right side), toward the back-right corner of the desk; keep it a realistic small tabletop size (about a 4-6 oz jar, not oversized), " +
-	`${CANDLE_SIZE_DESC}; keep it fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge; position it consistently, ${CANDLE_POSITION_DESC}; clearly visible but not dominant and not in the foreground center or near the face; warm flame visible with a gentle flicker; wick glowing; candle stays in frame; not centered; already lit; open jar with NO lid or cap visible anywhere in frame; do not place the lid on the desk; show open wax surface; no square background, no sticker edges, no pedestal; only one candle; do NOT place on the viewer-left side; keep the candle in the exact same spot across shots.`;
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter.";
 const PRESENTER_MOTION_STYLE =
@@ -232,7 +204,7 @@ const INTERMEDIATE_PRESET = "fast";
 const FINAL_PRESET = "slow";
 const AUDIO_BITRATE = "256k";
 const FINAL_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.0:LRA=11";
-const FINAL_MASTER_MAX_HEIGHT = 1080;
+const FINAL_MASTER_MAX_HEIGHT = 2160;
 const FINAL_MASTER_MIN_HEIGHT = 1080;
 const FINAL_GOP_SECONDS = 2;
 const FINAL_COLOR_SPACE = "bt709";
@@ -286,63 +258,18 @@ const INTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
 const INTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const OUTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
 const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
-const INTRO_ATEMPO_IDEAL_MIN = clampNumber(0.97, 0.9, 1.0);
-const INTRO_ATEMPO_IDEAL_MAX = clampNumber(1.03, 1.0, 1.12);
-const OUTRO_ATEMPO_IDEAL_MIN = clampNumber(0.97, 0.9, 1.0);
-const OUTRO_ATEMPO_IDEAL_MAX = clampNumber(1.03, 1.0, 1.12);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
 const VOICE_SPEED_BOOST = clampNumber(1.0, 0.98, 1.08);
-const USE_GOLD_VOICE_MERGE =
-	String(process.env.USE_GOLD_VOICE_MERGE || "1") !== "0";
-const VOICEOVER_ALIGN_WITH_TRANSCRIPT =
-	String(process.env.VOICEOVER_ALIGN_WITH_TRANSCRIPT || "1") !== "0";
-const ENABLE_ORCHESTRATED_BOOKENDS =
-	String(process.env.ENABLE_ORCHESTRATED_BOOKENDS || "1") !== "0";
-const ENABLE_BOOKENDS_READALOUD =
-	String(process.env.ENABLE_BOOKENDS_READALOUD || "1") !== "0";
-const ENABLE_BOOKENDS_REGEN_ON_MISFIT =
-	String(process.env.ENABLE_BOOKENDS_REGEN_ON_MISFIT || "1") !== "0";
-const ENABLE_BOOKEND_QUALITY_GATE =
-	String(process.env.ENABLE_BOOKEND_QUALITY_GATE || "1") !== "0";
-const ENABLE_ELEVEN_PCM_OUTPUT =
-	String(process.env.ENABLE_ELEVEN_PCM_OUTPUT || "1") !== "0";
-const ENABLE_VO_CLEANUP = String(process.env.ENABLE_VO_CLEANUP || "1") !== "0";
-const INTRO_TARGET_WPM = clampNumber(175, 130, 220);
-const OUTRO_TARGET_WPM = clampNumber(155, 120, 200);
-const INTRO_WPM_MIN = clampNumber(140, 110, 210);
-const INTRO_WPM_MAX = clampNumber(210, 150, 240);
-const OUTRO_WPM_MIN = clampNumber(125, 100, 200);
-const OUTRO_WPM_MAX = clampNumber(190, 140, 230);
-const INTRO_SILENCE_RATIO_MAX = clampNumber(0.22, 0.08, 0.5);
-const OUTRO_SILENCE_RATIO_MAX = clampNumber(0.28, 0.1, 0.6);
-const VOICE_SILENCE_THRESHOLD_DB = clampNumber(-45, -60, -30);
-const VOICE_SILENCE_MIN_SEC = clampNumber(0.25, 0.1, 0.6);
-const VOICE_PEAK_MAX_DB = clampNumber(-0.5, -6, -0.1);
-const BOOKEND_REGEN_MAX_ATTEMPTS = clampNumber(1, 0, 2);
-const VOICE_SILENCE_TRIM_START_SEC = clampNumber(0.2, 0.05, 0.5);
-const VOICE_SILENCE_TRIM_END_SEC = clampNumber(0.25, 0.05, 0.6);
-const VOICE_CLEANUP_PAD_SEC = clampNumber(0.08, 0, 0.2);
-const VOICE_CLEANUP_FADE_IN_SEC = clampNumber(0.01, 0, 0.05);
-const VOICE_CLEANUP_FADE_OUT_SEC = clampNumber(0.02, 0, 0.08);
-const VOICE_HIGHPASS_HZ = clampNumber(70, 40, 120);
-const ENABLE_SYNC_VOICE_TRIM =
-	String(process.env.ENABLE_SYNC_VOICE_TRIM || "1") !== "0";
-const SYNC_TRIM_START_SEC = clampNumber(0.03, 0.01, 0.12);
-const SYNC_TRIM_END_SEC = clampNumber(0.08, 0.03, 0.2);
-const SYNC_TRIM_START_DB = clampNumber(-50, -70, -35);
-const SYNC_TRIM_END_DB = clampNumber(-55, -70, -35);
-const SYNC_TRIM_FADE_IN_SEC = clampNumber(0.008, 0, 0.03);
-const SYNC_TRIM_FADE_OUT_SEC = clampNumber(0.012, 0, 0.04);
 
 // Sync input prep
 const SYNC_SO_INPUT_FPS = 30;
-const SYNC_SO_INPUT_CRF = 19;
+const SYNC_SO_INPUT_CRF = 22;
 const SYNC_SO_MAX_BYTES = 19_900_000;
-const SYNC_SO_PRE_MAX_EDGE = clampNumber(1280, 960, 1536);
+const SYNC_SO_PRE_MAX_EDGE = clampNumber(960, 640, 1280);
 const SYNC_SO_PRESCALE_ALWAYS = false;
 const SYNC_SO_PRESCALE_SIZE_PCT = clampNumber(0.85, 0.5, 0.98);
 const SYNC_SO_PRESCALE_MIN_SEC = clampNumber(9, 4, 15);
-const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(1280, 960, 1536);
+const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(960, 640, 1280);
 const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(2, 0, 5);
 const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
 const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
@@ -353,8 +280,8 @@ const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
 const USE_MOTION_REF_BASELINE = true;
 const BASELINE_DUR_SEC = clampNumber(12, 6, 15);
-const BASELINE_VARIANTS = clampNumber(1, 1, 3);
-const CAMERA_ZOOM_OUT = clampNumber(1.0, 0.9, 1.0);
+const BASELINE_VARIANTS = clampNumber(2, 1, 3);
+const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 
 // Music
@@ -378,7 +305,7 @@ const OVERLAY_DEFAULT_POSITION = "topRight";
 const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 
 // Content visual mix (presenter vs static images)
-const CONTENT_PRESENTER_RATIO = clampNumber(1.0, 0.2, 1);
+const CONTENT_PRESENTER_RATIO = clampNumber(0.5, 0.2, 0.8);
 const IMAGE_SEGMENT_TARGET_SEC = clampNumber(4.6, 2.5, 8);
 const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
 const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(4, 2, 8);
@@ -690,20 +617,6 @@ async function probeMedia(filePath) {
 async function probeDurationSeconds(filePath) {
 	const info = await probeMedia(filePath);
 	return info.duration || 0;
-}
-
-async function ensureHasAudioTrack(filePath, jobId, label) {
-	if (!filePath || !fs.existsSync(filePath)) return false;
-	const info = await probeMedia(filePath);
-	const hasAudio = Boolean(info?.hasAudio);
-	if (!hasAudio) {
-		logJob(jobId, "audio track missing", {
-			label,
-			path: path.basename(filePath),
-			duration: Number((info?.duration || 0).toFixed(3)),
-		});
-	}
-	return hasAudio;
 }
 
 /* ---------------------------------------------------------------
@@ -2232,101 +2145,6 @@ async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
 	return null;
 }
 
-async function maybeScaleCandleReference(inputPath, tmpDir, jobId) {
-	if (!inputPath || !fs.existsSync(inputPath)) return inputPath;
-	if (
-		!ffmpegPath ||
-		!Number.isFinite(CANDLE_REF_SCALE) ||
-		CANDLE_REF_SCALE >= 0.98
-	) {
-		return inputPath;
-	}
-	const suffix = jobId || crypto.randomUUID();
-	const outPath = path.join(tmpDir, `candle_ref_scaled_${suffix}.png`);
-	try {
-		await spawnBin(
-			ffmpegPath,
-			[
-				"-i",
-				inputPath,
-				"-vf",
-				`scale=iw*${CANDLE_REF_SCALE}:ih*${CANDLE_REF_SCALE}:flags=lanczos`,
-				"-y",
-				outPath,
-			],
-			"candle_ref_scale",
-			{ timeoutMs: 120000 }
-		);
-		const detected = detectFileType(outPath);
-		if (detected?.kind === "image") return outPath;
-	} catch (e) {
-		logJob(jobId, "brand candle scale failed (using original)", {
-			error: e.message,
-		});
-	}
-	safeUnlink(outPath);
-	return inputPath;
-}
-
-async function ensureLocalBrandCandleImage(tmpDir, jobId) {
-	const url = DEFAULT_BRAND_CANDLE_IMAGE_URL;
-	const downloadAndValidate = async (u) => {
-		const extGuess = path.extname(u.split("?")[0] || "").toLowerCase();
-		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".jpg";
-		const outPath = path.join(
-			tmpDir,
-			`candle_ref_${crypto.randomUUID()}${ext}`
-		);
-		await downloadToFile(u, outPath, 45000, 2);
-		const detected = detectFileType(outPath);
-		if (!detected || detected.kind !== "image") {
-			safeUnlink(outPath);
-			return null;
-		}
-		return await maybeScaleCandleReference(outPath, tmpDir, jobId);
-	};
-
-	if (CANDLE_PREFER_REMOTE && url) {
-		try {
-			const p = await downloadAndValidate(url);
-			if (p) return p;
-		} catch (e) {
-			logJob(jobId, "brand candle download failed (ignored)", {
-				error: e.message,
-			});
-		}
-	}
-
-	const localPath = DEFAULT_BRAND_CANDLE_IMAGE_PATH;
-	if (localPath && fs.existsSync(localPath)) {
-		const detected = detectFileType(localPath);
-		if (detected?.kind === "image")
-			return await maybeScaleCandleReference(localPath, tmpDir, jobId);
-		logJob(jobId, "brand candle local invalid", {
-			path: localPath,
-			detected: detected?.kind || "unknown",
-		});
-		throw new Error("Brand candle image is invalid");
-	}
-	if (localPath) {
-		logJob(jobId, "brand candle local missing", { path: localPath });
-		if (!url) throw new Error("Brand candle image not found");
-	}
-
-	if (!CANDLE_PREFER_REMOTE && url) {
-		try {
-			const p = await downloadAndValidate(url);
-			if (p) return p;
-		} catch (e) {
-			logJob(jobId, "brand candle download failed (ignored)", {
-				error: e.message,
-			});
-		}
-	}
-
-	return null;
-}
-
 function runwayHeadersJson() {
 	return {
 		Authorization: `Bearer ${RUNWAY_API_KEY}`,
@@ -2579,7 +2397,7 @@ Keep the SAME identity (Ahmed): same face structure, beard, glasses, and age.
 Location: clean desk, tasteful background, soft practical lighting, studio quality. ${STUDIO_EMPTY_PROMPT}
 Outfit: classy tailored suit or blazer with a neat shirt.
 Lighting: slightly darker cinematic look with a warm key light and gentle shadows (not too dark).
-Keep all props and objects exactly as in the reference image; do not add or remove any objects.
+Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; do not add extra candles.
 Preserve the original performance timing and micro-expressions (eyebrows, blinks, subtle reactions).
 No text overlays, no extra people, no weird hands, no face warping, no mouth distortion.
 ${smileLine}
@@ -2620,7 +2438,7 @@ function buildBaselinePrompt(
 	return `
 Photorealistic talking-head video of the SAME person as the reference image.
 Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT}
-Keep all props and objects exactly as in the reference image; do not add or remove any objects. If a candle exists in the reference, preserve it unchanged.
+Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; no extra candles.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 ${expressionLine}
 Motion: ${motionHint} ${variantHint}
@@ -2628,7 +2446,7 @@ Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
 Eyes: relaxed, comfortable, natural reflections and blink cadence; avoid glassy or robotic eyes.
 Hands: subtle, small gestures near the desk; do NOT cover the face.
-No extra people, no text overlays, no screens, no charts, no new logos, no camera shake, no mouth warping.
+No extra people, no text overlays, no screens, no charts, no logos except those already present in the reference, no camera shake, no mouth warping.
 Do NOT try to lip-sync.
 `.trim();
 }
@@ -3047,311 +2865,6 @@ function buildOutroLine({ topics = [], shortTitle, mood = "neutral" }) {
 	return sanitizeIntroOutroLine(line);
 }
 
-function normalizeAlignmentText(text = "") {
-	return String(text || "")
-		.toLowerCase()
-		.replace(/[^a-z0-9\s]/gi, " ")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
-function buildTranscriptIndex(words = []) {
-	const tokens = [];
-	const tokenStart = [];
-	const wordStartSec = [];
-	const wordEndSec = [];
-	let cursor = 0;
-
-	for (const w of words || []) {
-		const token = normalizeAlignmentText(w?.word || "");
-		if (!token) continue;
-		if (tokens.length > 0) cursor += 1;
-		tokens.push(token);
-		tokenStart.push(cursor);
-		wordStartSec.push(Number(w?.start || 0));
-		wordEndSec.push(Number(w?.end || 0));
-		cursor += token.length;
-	}
-
-	return {
-		text: tokens.join(" "),
-		tokens,
-		tokenStart,
-		wordStartSec,
-		wordEndSec,
-	};
-}
-
-function findWordIndexAtChar(pos, tokenStart = []) {
-	if (!tokenStart.length) return 0;
-	let lo = 0;
-	let hi = tokenStart.length - 1;
-	while (lo < hi) {
-		const mid = Math.floor((lo + hi + 1) / 2);
-		if (tokenStart[mid] <= pos) lo = mid;
-		else hi = mid - 1;
-	}
-	return lo;
-}
-
-function findSegmentMatchInTranscript({
-	segmentText,
-	transcriptText,
-	tokenStart,
-	cursorChar = 0,
-}) {
-	const needle = normalizeAlignmentText(segmentText || "");
-	if (!needle || !transcriptText) return null;
-
-	let idx = transcriptText.indexOf(needle, Math.max(0, cursorChar));
-	if (idx >= 0) {
-		const startIdx = findWordIndexAtChar(idx, tokenStart);
-		const endIdx = findWordIndexAtChar(idx + needle.length - 1, tokenStart);
-		return { startIdx, endIdx };
-	}
-
-	const tokens = needle.split(" ").filter(Boolean);
-	if (tokens.length >= 4) {
-		const headCount = Math.min(6, tokens.length);
-		const head = tokens.slice(0, headCount).join(" ");
-		const headIdx = transcriptText.indexOf(head, Math.max(0, cursorChar));
-		if (headIdx >= 0) {
-			const startIdx = findWordIndexAtChar(headIdx, tokenStart);
-			let endIdx = Math.min(
-				tokenStart.length - 1,
-				startIdx + Math.max(1, tokens.length - 1)
-			);
-			const tail = tokens.slice(-headCount).join(" ");
-			const tailIdx = transcriptText.indexOf(tail, headIdx + head.length);
-			if (tailIdx >= 0) {
-				endIdx = findWordIndexAtChar(tailIdx + tail.length - 1, tokenStart);
-			}
-			return { startIdx, endIdx };
-		}
-	}
-
-	return null;
-}
-
-function buildWordWeightedSplitPlan(segments = [], totalVoiceDur = 0) {
-	const weights = segments.map((s) => Math.max(1, countWords(s.text || "")));
-	const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
-	const plan = [];
-	let cursor = 0;
-
-	for (let i = 0; i < segments.length; i++) {
-		const startSec = cursor;
-		const ideal = (totalVoiceDur * weights[i]) / totalWeight;
-		const dur = i === segments.length - 1 ? totalVoiceDur - startSec : ideal;
-		const endSec = Math.max(startSec + 0.2, startSec + dur);
-		cursor = endSec;
-		plan.push({ index: segments[i].index, startSec, endSec });
-	}
-
-	return plan;
-}
-
-async function transcribeVoiceoverWords({ openai, audioPath, jobId }) {
-	if (!openai || !audioPath) return null;
-	try {
-		const file = fs.createReadStream(audioPath);
-		const resp = await openai.audio.transcriptions.create({
-			file,
-			model: "whisper-1",
-			response_format: "verbose_json",
-			timestamp_granularities: ["word"],
-		});
-		const words =
-			resp?.words ||
-			resp?.data?.words ||
-			resp?.segments?.flatMap((s) => s.words || []) ||
-			[];
-		if (!Array.isArray(words) || !words.length) return null;
-		logJob(jobId, "voiceover transcription ready", {
-			words: words.length,
-		});
-		return words;
-	} catch (e) {
-		logJob(jobId, "voiceover transcription failed; fallback", {
-			error: e?.message || String(e),
-		});
-		return null;
-	}
-}
-
-async function buildVoiceoverSplitPlan({
-	openai,
-	segments = [],
-	voiceWavPath,
-	jobId,
-}) {
-	const totalVoiceDur = await probeDurationSeconds(voiceWavPath);
-	if (!segments.length || !totalVoiceDur) return { plan: [], method: "none" };
-
-	if (VOICEOVER_ALIGN_WITH_TRANSCRIPT && openai) {
-		const words = await transcribeVoiceoverWords({
-			openai,
-			audioPath: voiceWavPath,
-			jobId,
-		});
-		if (Array.isArray(words) && words.length) {
-			const idx = buildTranscriptIndex(words);
-			let cursorChar = 0;
-			let lastEnd = 0;
-			const plan = [];
-
-			for (let i = 0; i < segments.length; i++) {
-				const seg = segments[i];
-				const match = findSegmentMatchInTranscript({
-					segmentText: seg.text,
-					transcriptText: idx.text,
-					tokenStart: idx.tokenStart,
-					cursorChar,
-				});
-				if (!match)
-					return {
-						plan: buildWordWeightedSplitPlan(segments, totalVoiceDur),
-						method: "word_weighted",
-					};
-
-				const startIdx = Math.max(match.startIdx, lastEnd);
-				const endIdx = Math.max(match.endIdx, startIdx);
-				const rawStart = idx.wordStartSec[startIdx] || 0;
-				const rawEnd = idx.wordEndSec[endIdx] || rawStart + 0.2;
-				const startSec = Math.max(0, rawStart - 0.02);
-				const endSec = Math.min(totalVoiceDur, rawEnd + 0.02);
-				if (endSec <= startSec)
-					return {
-						plan: buildWordWeightedSplitPlan(segments, totalVoiceDur),
-						method: "word_weighted",
-					};
-
-				plan.push({ index: seg.index, startSec, endSec });
-				lastEnd = endIdx + 1;
-				const nextChar =
-					startIdx < idx.tokenStart.length
-						? idx.tokenStart[lastEnd] || idx.text.length
-						: idx.text.length;
-				cursorChar = Math.max(cursorChar, nextChar);
-			}
-
-			if (plan.length === segments.length)
-				return { plan, method: "transcript_align" };
-		}
-	}
-
-	return {
-		plan: buildWordWeightedSplitPlan(segments, totalVoiceDur),
-		method: "word_weighted",
-	};
-}
-
-function estimateTargetWords(durationSec, wpm) {
-	const dur = Math.max(0, Number(durationSec) || 0);
-	const rate = Math.max(80, Number(wpm) || 0);
-	return Math.max(6, Math.round((dur * rate) / 60));
-}
-
-function normalizeBookendPace(raw, fallback = "normal") {
-	const t = String(raw || "").toLowerCase();
-	if (t.includes("snapp") || t.includes("fast")) return "snappy";
-	if (t.includes("calm") || t.includes("slow")) return "calm";
-	if (t.includes("normal") || t.includes("steady")) return "normal";
-	return fallback;
-}
-
-async function planBookends({
-	openai,
-	topics = [],
-	shortTitle,
-	introSec,
-	outroSec,
-	tonePlan,
-}) {
-	const introWords = estimateTargetWords(introSec, INTRO_TARGET_WPM);
-	const outroWords = estimateTargetWords(outroSec, OUTRO_TARGET_WPM);
-	const topicNames = (topics || [])
-		.map((t) => t.displayTopic || t.topic)
-		.filter(Boolean)
-		.slice(0, 4);
-
-	const prompt = `
-Create an intro + outro for a short YouTube-style presenter video.
-
-Constraints:
-- US audience, conversational, NOT exaggerated, no hype slang.
-- Intro: ~${introWords} words (±3), 1-2 sentences max.
-- Outro: ~${outroWords} words (±4), 1-2 sentences max.
-- No filler words ("um", "uh", "like"). No micro-emotes ("whew", "hmm").
-- Clear pacing with natural punctuation (commas ok, avoid long clauses).
-- Mention the show title: "${shortTitle}" only if it fits naturally (optional).
-- Briefly preview topics in intro (mention 1-2 topics max).
-- Outro: short recap + one genuine comment question (single '?').
-
-Return JSON ONLY:
-{
-  "intro": { "text": "...", "expression": "confident|neutral|warm", "pace": "snappy|normal|calm" },
-  "outro": { "text": "...", "expression": "warm|neutral", "pace": "normal|calm" }
-}
-
-Topics: ${topicNames.join(", ")}
-Tone mood: ${tonePlan?.mood || "neutral"}
-`.trim();
-
-	const resp = await openai.chat.completions.create({
-		model: CHAT_MODEL,
-		messages: [{ role: "user", content: prompt }],
-	});
-
-	return parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
-}
-
-async function rewriteBookendForReadAloud({
-	openai,
-	text,
-	targetWords,
-	label,
-}) {
-	const prompt = `
-Rewrite this ${label} to sound natural when read aloud.
-Keep the same meaning and tone.
-Target about ${targetWords} words (±3). 1-2 sentences max.
-No filler words. No micro-emotes. Return JSON ONLY: { "text": "..." }
-
-Line:
-${text}
-`.trim();
-
-	const resp = await openai.chat.completions.create({
-		model: CHAT_MODEL,
-		messages: [{ role: "user", content: prompt }],
-	});
-
-	const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
-	return String(parsed?.text || "").trim();
-}
-
-async function adjustLineToDuration({ openai, text, targetSec, actualSec }) {
-	const ratio =
-		Number(actualSec) > 0 ? Number(targetSec) / Number(actualSec) : 1;
-	const direction = ratio > 1 ? "LONGER" : "SHORTER";
-	const pct = clampNumber(Math.round(Math.abs(1 - ratio) * 100), 6, 18);
-	const prompt = `
-Rewrite this line to be about ${pct}% ${direction} while preserving meaning and tone.
-No filler words. Keep it 1-2 sentences. Return JSON ONLY: { "text": "..." }
-
-Line:
-${text}
-`.trim();
-
-	const resp = await openai.chat.completions.create({
-		model: CHAT_MODEL,
-		messages: [{ role: "user", content: prompt }],
-	});
-	const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
-	return String(parsed?.text || "").trim();
-}
-
 const SEGMENT_ENDING_BLOCKLIST = new Set([
 	"and",
 	"but",
@@ -3700,10 +3213,6 @@ Style rules (IMPORTANT):
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
 - Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic), but stay professional.
 - Use contractions. Punchy sentences. A little playful, but not cringe.
-- Prefer 8-14 word sentences when possible.
-- Max 2 commas per segment; avoid comma-heavy clauses.
-- Avoid parentheticals and colon-heavy lists.
-- Avoid repeating the same opening phrase across adjacent segments.
 - Avoid staccato punctuation. Do NOT put commas between single words.
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
 - Lead with the answer, then add context (what happened, why it matters, what to watch for).
@@ -3934,59 +3443,6 @@ function buildVoiceSettingsForExpression(
 	};
 }
 
-function clampVoiceSettings(settings) {
-	const out = { ...(settings || {}) };
-	if ("stability" in out) out.stability = clampNumber(out.stability, 0.2, 0.9);
-	if ("similarity_boost" in out)
-		out.similarity_boost = clampNumber(out.similarity_boost, 0.7, 0.98);
-	if ("style" in out) out.style = clampNumber(out.style, 0, 0.35);
-	out.use_speaker_boost = true;
-	return out;
-}
-
-function applyPaceToVoiceSettings(
-	settings,
-	pace = "normal",
-	role = "",
-	{ allowAdjustment = true } = {}
-) {
-	const base = { ...(settings || {}) };
-	if (!allowAdjustment) return clampVoiceSettings(base);
-
-	let stability = Number(base.stability);
-	let style = Number(base.style);
-
-	if (pace === "snappy") {
-		stability -= 0.05;
-		style += 0.05;
-	}
-	if (pace === "calm") {
-		stability += 0.04;
-		style -= 0.04;
-	}
-	if (role === "intro") style += 0.02;
-	if (role === "outro") stability += 0.02;
-
-	const maxStabilityDelta = 0.08;
-	const maxStyleDelta = 0.08;
-	if (Number.isFinite(base.stability)) {
-		stability = clampNumber(
-			stability,
-			base.stability - maxStabilityDelta,
-			base.stability + maxStabilityDelta
-		);
-	}
-	if (Number.isFinite(base.style)) {
-		style = clampNumber(
-			style,
-			base.style - maxStyleDelta,
-			base.style + maxStyleDelta
-		);
-	}
-
-	return clampVoiceSettings({ ...base, stability, style });
-}
-
 async function synthesizeTtsWav({
 	text,
 	tmpDir,
@@ -3996,40 +3452,23 @@ async function synthesizeTtsWav({
 	voiceSettings,
 	modelId,
 	modelOrder,
-	outputFormats,
 }) {
 	const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
-	const outBase = path.join(tmpDir, `${safeLabel}_${jobId}`);
+	const mp3 = path.join(tmpDir, `${safeLabel}_${jobId}.mp3`);
 	const wav = path.join(tmpDir, `${safeLabel}_${jobId}.wav`);
 	const cleanText = stripAllFillers(text);
-	const lockedOrder = modelId ? [] : modelOrder;
-	const ttsResult = await elevenLabsTTS({
+	const usedModelId = await elevenLabsTTS({
 		text: cleanText,
-		outPathBase: outBase,
+		outMp3Path: mp3,
 		voiceId,
 		voiceSettings,
 		modelId,
-		modelOrder: lockedOrder,
-		outputFormats:
-			Array.isArray(outputFormats) && outputFormats.length
-				? outputFormats
-				: ENABLE_ELEVEN_PCM_OUTPUT
-				? ["pcm_44100", "mp3_44100_192"]
-				: ["mp3_44100_192"],
+		modelOrder,
 	});
-	if (String(ttsResult?.format || "").startsWith("pcm_")) {
-		await pcmToCleanWav(ttsResult.outPath, wav, 44100);
-	} else {
-		await mp3ToCleanWav(ttsResult.outPath, wav);
-	}
-	safeUnlink(ttsResult?.outPath);
+	await mp3ToCleanWav(mp3, wav);
+	safeUnlink(mp3);
 	const durationSec = await probeDurationSeconds(wav);
-	return {
-		wavPath: wav,
-		durationSec,
-		modelId: ttsResult?.modelId || "",
-		outputFormat: ttsResult?.format || "",
-	};
+	return { wavPath: wav, durationSec, modelId: usedModelId };
 }
 
 async function fitWavToTargetDuration({
@@ -4056,249 +3495,6 @@ async function fitWavToTargetDuration({
 	safeUnlink(wavPath);
 	const durationSec = await probeDurationSeconds(out);
 	return { wavPath: out, durationSec, atempo, rawAtempo };
-}
-
-async function measureSilenceDuration(wavPath) {
-	if (!wavPath || !fs.existsSync(wavPath)) return null;
-	try {
-		const { stderr } = await spawnBin(
-			ffmpegPath,
-			[
-				"-i",
-				wavPath,
-				"-af",
-				`silencedetect=n=${VOICE_SILENCE_THRESHOLD_DB}dB:d=${VOICE_SILENCE_MIN_SEC}`,
-				"-f",
-				"null",
-				"-",
-			],
-			"silencedetect",
-			{ timeoutMs: 20000 }
-		);
-		const re = /silence_duration:\s*([0-9.]+)/g;
-		let total = 0;
-		let m = null;
-		while ((m = re.exec(stderr || ""))) {
-			total += Number(m[1]) || 0;
-		}
-		return total;
-	} catch {
-		return null;
-	}
-}
-
-async function measurePeakDb(wavPath) {
-	if (!wavPath || !fs.existsSync(wavPath)) return null;
-	try {
-		const { stderr } = await spawnBin(
-			ffmpegPath,
-			["-i", wavPath, "-af", "volumedetect", "-f", "null", "-"],
-			"volumedetect",
-			{ timeoutMs: 20000 }
-		);
-		const m = String(stderr || "").match(
-			/max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/
-		);
-		return m ? Number(m[1]) : null;
-	} catch {
-		return null;
-	}
-}
-
-async function analyzeBookendQuality({ wavPath, text, role = "intro" }) {
-	const durationSec = await probeDurationSeconds(wavPath);
-	const words = countWords(text);
-	const wpm = durationSec > 0 ? words / (durationSec / 60) : 0;
-	const silenceSec = await measureSilenceDuration(wavPath);
-	const silenceRatio =
-		Number.isFinite(silenceSec) && durationSec > 0
-			? silenceSec / durationSec
-			: null;
-	const peakDb = await measurePeakDb(wavPath);
-
-	const wpmMin = role === "intro" ? INTRO_WPM_MIN : OUTRO_WPM_MIN;
-	const wpmMax = role === "intro" ? INTRO_WPM_MAX : OUTRO_WPM_MAX;
-	const silenceMax =
-		role === "intro" ? INTRO_SILENCE_RATIO_MAX : OUTRO_SILENCE_RATIO_MAX;
-
-	const wpmOk = Number.isFinite(wpm) ? wpm >= wpmMin && wpm <= wpmMax : true;
-	const silenceOk = silenceRatio === null ? true : silenceRatio <= silenceMax;
-	const peakOk = peakDb === null ? true : peakDb <= VOICE_PEAK_MAX_DB;
-
-	const reasons = [];
-	if (!wpmOk) reasons.push("wpm");
-	if (!silenceOk) reasons.push("silence_ratio");
-	if (!peakOk) reasons.push("peak_db");
-
-	return {
-		durationSec,
-		words,
-		wpm,
-		silenceSec: Number.isFinite(silenceSec) ? silenceSec : null,
-		silenceRatio,
-		peakDb,
-		passed: reasons.length === 0,
-		reasons,
-		thresholds: { wpmMin, wpmMax, silenceMax, peakMax: VOICE_PEAK_MAX_DB },
-	};
-}
-
-async function synthesizeBookendVoice({
-	role,
-	line,
-	targetSec,
-	minAtempo,
-	maxAtempo,
-	idealMinAtempo,
-	idealMaxAtempo,
-	voiceId,
-	voiceSettings,
-	modelId,
-	modelOrder,
-	outputFormats,
-	openai,
-	tmpDir,
-	jobId,
-	fallbackLine,
-	fallbackVoiceSettings,
-	log,
-}) {
-	const labelBase = String(role || "bookend").replace(/[^a-z0-9_-]/gi, "");
-	let currentLine = sanitizeIntroOutroLine(line || "");
-	if (!currentLine)
-		currentLine = sanitizeIntroOutroLine(fallbackLine || "") || line;
-	let currentSettings = voiceSettings;
-	let usedFallback = false;
-	let ttsModelId = modelId || "";
-	let ttsOutputFormat = "";
-	let regenCount = 0;
-
-	const synthesizeOnce = async (text, settings, suffix = "") => {
-		const tts = await synthesizeTtsWav({
-			text,
-			tmpDir,
-			jobId,
-			label: `${labelBase}${suffix}`,
-			voiceId,
-			voiceSettings: settings,
-			modelId: ttsModelId || undefined,
-			modelOrder,
-			outputFormats,
-		});
-		if (tts?.modelId && !ttsModelId) ttsModelId = tts.modelId;
-		if (tts?.outputFormat && !ttsOutputFormat)
-			ttsOutputFormat = tts.outputFormat;
-		return tts;
-	};
-
-	let tts = await synthesizeOnce(currentLine, currentSettings, "");
-	let rawAtempo =
-		Number(targetSec) > 0 ? tts.durationSec / Number(targetSec) : 1;
-
-	if (ENABLE_BOOKENDS_REGEN_ON_MISFIT && openai) {
-		while (
-			regenCount < BOOKEND_REGEN_MAX_ATTEMPTS &&
-			(rawAtempo < idealMinAtempo || rawAtempo > idealMaxAtempo)
-		) {
-			const adjusted = await adjustLineToDuration({
-				openai,
-				text: currentLine,
-				targetSec,
-				actualSec: tts.durationSec,
-			});
-			if (!adjusted) break;
-			safeUnlink(tts.wavPath);
-			currentLine = sanitizeIntroOutroLine(adjusted) || currentLine;
-			regenCount += 1;
-			tts = await synthesizeOnce(
-				currentLine,
-				currentSettings,
-				`_regen${regenCount}`
-			);
-			rawAtempo =
-				Number(targetSec) > 0 ? tts.durationSec / Number(targetSec) : 1;
-		}
-	}
-
-	const useIdealRange =
-		rawAtempo >= idealMinAtempo && rawAtempo <= idealMaxAtempo;
-	const fit = await fitWavToTargetDuration({
-		wavPath: tts.wavPath,
-		targetSec,
-		minAtempo: useIdealRange ? idealMinAtempo : minAtempo,
-		maxAtempo: useIdealRange ? idealMaxAtempo : maxAtempo,
-		tmpDir,
-		jobId,
-		label: labelBase,
-	});
-	const trimmedPath = await trimVoiceForSync(
-		fit.wavPath,
-		path.join(tmpDir, `${labelBase}_trim_${jobId}.wav`)
-	);
-	if (trimmedPath !== fit.wavPath) safeUnlink(fit.wavPath);
-	const trimmedDur = await probeDurationSeconds(trimmedPath);
-
-	let quality = null;
-	if (ENABLE_BOOKEND_QUALITY_GATE) {
-		quality = await analyzeBookendQuality({
-			wavPath: trimmedPath,
-			text: currentLine,
-			role,
-		});
-		if (!quality.passed && fallbackLine && fallbackVoiceSettings) {
-			if (log)
-				log(`bookend quality gate failed; fallback ${role}`, {
-					reasons: quality.reasons,
-					wpm: Number((quality.wpm || 0).toFixed(1)),
-					silenceRatio: Number((quality.silenceRatio || 0).toFixed(3)),
-					peakDb: Number((quality.peakDb || 0).toFixed(2)),
-				});
-			safeUnlink(trimmedPath);
-			currentLine = sanitizeIntroOutroLine(fallbackLine) || fallbackLine;
-			currentSettings = fallbackVoiceSettings;
-			usedFallback = true;
-			tts = await synthesizeOnce(currentLine, currentSettings, "_fallback");
-			const fitFallback = await fitWavToTargetDuration({
-				wavPath: tts.wavPath,
-				targetSec,
-				minAtempo,
-				maxAtempo,
-				tmpDir,
-				jobId,
-				label: `${labelBase}_fallback`,
-			});
-			const trimmedFallback = await trimVoiceForSync(
-				fitFallback.wavPath,
-				path.join(tmpDir, `${labelBase}_trim_fallback_${jobId}.wav`)
-			);
-			if (trimmedFallback !== fitFallback.wavPath)
-				safeUnlink(fitFallback.wavPath);
-			const fallbackDur = await probeDurationSeconds(trimmedFallback);
-			return {
-				line: currentLine,
-				wavPath: trimmedFallback,
-				durationSec: fallbackDur || fitFallback.durationSec,
-				atempo: fitFallback.atempo,
-				rawAtempo: fitFallback.rawAtempo,
-				modelId: ttsModelId,
-				outputFormat: ttsOutputFormat,
-				usedFallback,
-				quality,
-			};
-		}
-	}
-
-	return {
-		line: currentLine,
-		wavPath: trimmedPath,
-		durationSec: trimmedDur || fit.durationSec,
-		atempo: fit.atempo,
-		rawAtempo: fit.rawAtempo,
-		modelId: ttsModelId,
-		outputFormat: ttsOutputFormat,
-		usedFallback,
-		quality,
-	};
 }
 
 async function createSilentWav({ durationSec, outPath }) {
@@ -4559,31 +3755,21 @@ async function streamToString(readable, limitBytes = 2000) {
 	});
 }
 
-function resolveTtsOutputPath(basePath, format) {
-	const base = String(basePath || "").replace(/\.(mp3|pcm|wav|bin)$/i, "");
-	if (/^pcm_/i.test(format)) return `${base}.pcm`;
-	if (/^mp3_/i.test(format)) return `${base}.mp3`;
-	return `${base}.bin`;
-}
-
-function resolveTtsAcceptHeader(format) {
-	return /^pcm_/i.test(format) ? "audio/pcm" : "audio/mpeg";
-}
-
 async function elevenLabsTTS({
 	text,
-	outPathBase,
+	outMp3Path,
 	voiceId,
 	voiceSettings,
 	modelId,
 	modelOrder,
-	outputFormats,
 }) {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
 	const vId = String(voiceId || ELEVEN_FIXED_VOICE_ID).trim();
 	if (!vId) throw new Error("ELEVENLABS voiceId missing");
 
 	// Use a more stable configuration to reduce glitches
+	// Higher bitrate MP3 for more natural timbre (avoid low-bitrate artifacts)
+	const url = `https://api.elevenlabs.io/v1/text-to-speech/${vId}/stream?output_format=mp3_44100_192`;
 	const basePayload = {
 		text: cleanForTTS(text),
 		voice_settings: voiceSettings || {
@@ -4593,11 +3779,6 @@ async function elevenLabsTTS({
 			use_speaker_boost: ELEVEN_TTS_SPEAKER_BOOST,
 		},
 	};
-
-	const formats =
-		Array.isArray(outputFormats) && outputFormats.length
-			? outputFormats.filter(Boolean)
-			: ["mp3_44100_192"];
 
 	let models = [];
 	if (modelId) {
@@ -4612,68 +3793,53 @@ async function elevenLabsTTS({
 	}
 
 	let lastErr = null;
-	for (const format of formats) {
-		const url = `https://api.elevenlabs.io/v1/text-to-speech/${vId}/stream?output_format=${format}`;
-		const acceptHeader = resolveTtsAcceptHeader(format);
-		const outPath = resolveTtsOutputPath(outPathBase, format);
-		let formatErr = null;
+	for (const candidateModel of models) {
+		const payload = { ...basePayload, model_id: candidateModel };
+		const doReq = async () => {
+			const res = await axios.post(url, payload, {
+				headers: {
+					"xi-api-key": ELEVEN_API_KEY,
+					"Content-Type": "application/json",
+					accept: "audio/mpeg",
+				},
+				responseType: "stream",
+				timeout: 70000,
+				validateStatus: (s) => s < 500,
+			});
 
-		for (const candidateModel of models) {
-			const payload = { ...basePayload, model_id: candidateModel };
-			const doReq = async () => {
-				safeUnlink(outPath);
-				const res = await axios.post(url, payload, {
-					headers: {
-						"xi-api-key": ELEVEN_API_KEY,
-						"Content-Type": "application/json",
-						accept: acceptHeader,
-					},
-					responseType: "stream",
-					timeout: 70000,
-					validateStatus: (s) => s < 500,
-				});
-
-				if (res.status >= 300) {
-					const body = await streamToString(res.data, 2500);
-					const hint = body ? ` | ${body.slice(0, 600)}` : "";
-					const err = new Error(`ElevenLabs TTS failed (${res.status})${hint}`);
-					err.response = { status: res.status };
-					throw err;
-				}
-
-				await new Promise((resolve, reject) => {
-					const ws = fs.createWriteStream(outPath);
-					res.data.pipe(ws);
-					ws.on("finish", resolve);
-					ws.on("error", reject);
-				});
-
-				const st = fs.existsSync(outPath) ? fs.statSync(outPath) : null;
-				if (!st || st.size < 256)
-					throw new Error("ElevenLabs TTS returned empty audio");
-
-				return outPath;
-			};
-
-			try {
-				await withRetries(doReq, {
-					retries: 3,
-					baseDelayMs: 700,
-					label: "elevenlabs_tts",
-				});
-				return { modelId: candidateModel, format, outPath };
-			} catch (e) {
-				formatErr = e;
-				lastErr = e;
-				if (isElevenModelNotFound(e)) {
-					console.warn(`[ElevenLabs] Model not found: ${candidateModel}`);
-					continue;
-				}
-				break;
+			if (res.status >= 300) {
+				const body = await streamToString(res.data, 2500);
+				const hint = body ? ` | ${body.slice(0, 600)}` : "";
+				const err = new Error(`ElevenLabs TTS failed (${res.status})${hint}`);
+				err.response = { status: res.status };
+				throw err;
 			}
-		}
 
-		if (formatErr && format !== formats[formats.length - 1]) continue;
+			await new Promise((resolve, reject) => {
+				const ws = fs.createWriteStream(outMp3Path);
+				res.data.pipe(ws);
+				ws.on("finish", resolve);
+				ws.on("error", reject);
+			});
+
+			return outMp3Path;
+		};
+
+		try {
+			await withRetries(doReq, {
+				retries: 3,
+				baseDelayMs: 700,
+				label: "elevenlabs_tts",
+			});
+			return candidateModel;
+		} catch (e) {
+			lastErr = e;
+			if (isElevenModelNotFound(e)) {
+				console.warn(`[ElevenLabs] Model not found: ${candidateModel}`);
+				continue;
+			}
+			throw e;
+		}
 	}
 
 	throw lastErr || new Error("ElevenLabs TTS failed");
@@ -4696,38 +3862,26 @@ function buildAtempoFilterChain(factor) {
 	return filters.join(",");
 }
 
-function buildVoiceCleanupFilter() {
-	const trimLead = `silenceremove=start_periods=1:start_duration=${VOICE_SILENCE_TRIM_START_SEC}:start_threshold=${VOICE_SILENCE_THRESHOLD_DB}dB`;
-	const trimTail = `areverse,silenceremove=start_periods=1:start_duration=${VOICE_SILENCE_TRIM_END_SEC}:start_threshold=${VOICE_SILENCE_THRESHOLD_DB}dB,areverse`;
-	const filters = [
-		`aresample=${AUDIO_SR}`,
-		"aformat=channel_layouts=mono",
-		trimLead,
-		trimTail,
-	];
-
-	if (ENABLE_VO_CLEANUP) {
-		if (VOICE_CLEANUP_PAD_SEC > 0)
-			filters.push(`apad=pad_dur=${VOICE_CLEANUP_PAD_SEC}`);
-		filters.push("atrim=0:9999");
-		if (VOICE_CLEANUP_FADE_IN_SEC > 0)
-			filters.push(`afade=t=in:d=${VOICE_CLEANUP_FADE_IN_SEC}`);
-		if (VOICE_CLEANUP_FADE_OUT_SEC > 0)
-			filters.push(`afade=t=out:d=${VOICE_CLEANUP_FADE_OUT_SEC}`);
-		if (VOICE_HIGHPASS_HZ > 0) filters.push(`highpass=f=${VOICE_HIGHPASS_HZ}`);
-	}
-
-	filters.push("loudnorm=I=-16:TP=-1.5:LRA=11");
-	return filters.join(",");
-}
-
 async function mp3ToCleanWav(mp3Path, wavPath) {
 	// IMPORTANT:
 	// - We only trim *leading* and *trailing* silence.
 	// - We do NOT remove internal pauses between words/sentences (those pauses are part of
 	//   natural speech and removing them can make the voice sound rushed / "stuttery").
 	//
-	const af = buildVoiceCleanupFilter();
+	// We use the common "reverse trick" to trim the tail using start-only silenceremove.
+	const trimLead =
+		"silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB";
+	const trimTail =
+		"areverse,silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB,areverse";
+
+	const af = [
+		`aresample=${AUDIO_SR}`,
+		"aformat=channel_layouts=mono",
+		trimLead,
+		trimTail,
+		// Loudness normalize (single-pass). Keeps perceived volume consistent.
+		"loudnorm=I=-16:TP=-1.5:LRA=11",
+	].join(",");
 
 	await spawnBin(
 		ffmpegPath,
@@ -4751,149 +3905,26 @@ async function mp3ToCleanWav(mp3Path, wavPath) {
 	);
 }
 
-async function pcmToCleanWav(pcmPath, wavPath, sampleRate = 44100) {
-	const af = buildVoiceCleanupFilter();
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-y",
-			"-f",
-			"s16le",
-			"-ar",
-			String(sampleRate),
-			"-ac",
-			"1",
-			"-i",
-			pcmPath,
-			"-vn",
-			"-af",
-			af,
-			"-acodec",
-			"pcm_s16le",
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			String(AUDIO_CHANNELS),
-			wavPath,
-		],
-		"pcm_to_wav",
-		{ timeoutMs: 120000 }
-	);
-}
-
-async function cleanVoiceoverWav(inWavPath, outWavPath) {
-	const af = buildVoiceCleanupFilter();
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-y",
-			"-i",
-			inWavPath,
-			"-vn",
-			"-af",
-			af,
-			"-acodec",
-			"pcm_s16le",
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			String(AUDIO_CHANNELS),
-			outWavPath,
-		],
-		"voiceover_clean",
-		{ timeoutMs: 120000 }
-	);
-	return outWavPath;
-}
-
-async function trimVoiceForSync(inWavPath, outWavPath) {
-	if (!ENABLE_SYNC_VOICE_TRIM) return inWavPath;
-	const trim = [
-		`silenceremove=start_periods=1:start_duration=${SYNC_TRIM_START_SEC}:start_threshold=${SYNC_TRIM_START_DB}dB`,
-		`silenceremove=stop_periods=1:stop_duration=${SYNC_TRIM_END_SEC}:stop_threshold=${SYNC_TRIM_END_DB}dB`,
-		`afade=t=in:d=${SYNC_TRIM_FADE_IN_SEC}`,
-		`afade=t=out:d=${SYNC_TRIM_FADE_OUT_SEC}`,
-		`aresample=${AUDIO_SR}`,
-		"aformat=channel_layouts=mono:sample_fmts=s16",
-	].join(",");
-
-	const before = await probeDurationSeconds(inWavPath);
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-y",
-			"-i",
-			inWavPath,
-			"-vn",
-			"-af",
-			trim,
-			"-acodec",
-			"pcm_s16le",
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			String(AUDIO_CHANNELS),
-			outWavPath,
-		],
-		"trim_voice_sync",
-		{ timeoutMs: 120000 }
-	);
-
-	const after = await probeDurationSeconds(outWavPath);
-	if (!after || after < Math.max(0.12, before * 0.6)) {
-		safeUnlink(outWavPath);
-		return inWavPath;
-	}
-	return outWavPath;
-}
-
-async function concatWavSegments({ segments, outPath, jobId, label }) {
-	if (!Array.isArray(segments) || !segments.length)
-		throw new Error("no_voice_segments");
-	const listPath = path.join(
-		path.dirname(outPath),
-		`concat_${label || "voice"}_${jobId}.txt`
-	);
-	const lines = segments.map((p) => `file '${p.replace(/'/g, "'\\''")}'`);
-	fs.writeFileSync(listPath, lines.join("\n"));
-
-	await spawnBin(
-		ffmpegPath,
-		["-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-y", outPath],
-		"concat_voice",
-		{ timeoutMs: 120000 }
-	);
-	safeUnlink(listPath);
-	return outPath;
-}
-
 async function applyGlobalAtempoToWav(inWav, outWav, atempo) {
-	const safeTempo = Number(atempo) || 1;
-	const isNearOne = Math.abs(safeTempo - 1) < 0.0005;
-	const filter = isNearOne
-		? `aresample=${AUDIO_SR}:resampler=soxr,aformat=channel_layouts=mono:sample_fmts=s16`
-		: `aformat=channel_layouts=mono:sample_fmts=fltp,${buildAtempoFilterChain(
-				safeTempo
-		  )},aresample=${AUDIO_SR}:resampler=soxr,aformat=channel_layouts=mono:sample_fmts=s16`;
-
+	const chain = buildAtempoFilterChain(atempo);
 	await spawnBin(
 		ffmpegPath,
 		[
-			"-y",
 			"-i",
 			inWav,
 			"-vn",
 			"-filter:a",
-			filter,
+			`${chain},aresample=${AUDIO_SR},aformat=channel_layouts=mono`,
 			"-acodec",
 			"pcm_s16le",
 			"-ar",
 			String(AUDIO_SR),
 			"-ac",
 			String(AUDIO_CHANNELS),
+			"-y",
 			outWav,
 		],
-		isNearOne ? "copy_resample_voice" : "apply_global_atempo",
+		"apply_global_atempo",
 		{ timeoutMs: 120000 }
 	);
 	return outWav;
@@ -5132,33 +4163,11 @@ function buildScaleFilter({ w, h, mode }) {
 	return `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}`;
 }
 
-function isLosslessContainer(filePath = "") {
-	return /\.mkv$/i.test(String(filePath || ""));
-}
-
-function buildAudioEncodeArgs(outPath) {
-	if (isLosslessContainer(outPath)) {
-		return ["-c:a", "flac", "-compression_level", "5"];
-	}
-	return ["-c:a", "aac", "-b:a", AUDIO_BITRATE];
-}
-
-function buildFastStartArgs(outPath) {
-	return /\.mp4$/i.test(String(outPath || ""))
-		? ["-movflags", "+faststart"]
-		: [];
-}
-
 async function normalizeClip(
 	inPath,
 	outPath,
 	outCfg,
-	{
-		zoomOut = 1.0,
-		addFades = false,
-		fadeOutOnly = false,
-		includeAudio = true,
-	} = {}
+	{ zoomOut = 1.0, addFades = false, fadeOutOnly = false } = {}
 ) {
 	const w = makeEven(outCfg.w);
 	const h = makeEven(outCfg.h);
@@ -5231,40 +4240,37 @@ async function normalizeClip(
 		}
 	}
 
-	const args = [
-		"-y",
-		"-i",
-		inPath,
-		"-vf",
-		vf,
-		"-r",
-		String(fps),
-		"-c:v",
-		"libx264",
-		"-preset",
-		INTERMEDIATE_PRESET,
-		"-crf",
-		String(INTERMEDIATE_VIDEO_CRF),
-		"-pix_fmt",
-		"yuv420p",
-	];
-
-	if (includeAudio) {
-		args.push(
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-y",
+			"-i",
+			inPath,
+			"-vf",
+			vf,
 			"-af",
 			af,
-			...buildAudioEncodeArgs(outPath),
-			"-ar",
-			String(AUDIO_SR)
-		);
-		args.push("-ac", "2");
-	} else {
-		args.push("-an");
-	}
-
-	args.push(...buildFastStartArgs(outPath), outPath);
-
-	await spawnBin(ffmpegPath, args, "normalize_clip", { timeoutMs: 240000 });
+			"-r",
+			String(fps),
+			"-c:v",
+			"libx264",
+			"-preset",
+			INTERMEDIATE_PRESET,
+			"-crf",
+			String(INTERMEDIATE_VIDEO_CRF),
+			"-pix_fmt",
+			"yuv420p",
+			"-c:a",
+			"aac",
+			"-b:a",
+			AUDIO_BITRATE,
+			"-movflags",
+			"+faststart",
+			outPath,
+		],
+		"normalize_clip",
+		{ timeoutMs: 240000 }
+	);
 }
 
 async function createSyncFallbackInput(
@@ -5327,7 +4333,6 @@ async function renderLipsyncedSegment({
 	label,
 	offsetSeed = 0,
 	addFades = false,
-	includeAudio = true,
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	const dur = Math.max(0.2, Number(segDur) || 0.2);
@@ -5499,23 +4504,15 @@ async function renderLipsyncedSegment({
 		lipsynced = fit;
 	}
 
+	const withAudio = path.join(tmpDir, `seg_${jobId}_${safeLabel}_audio.mp4`);
+	await mergeVideoWithAudio(lipsynced, audioPath, withAudio);
+
 	const norm = path.join(tmpDir, `seg_${jobId}_${safeLabel}_norm.mp4`);
-	if (includeAudio) {
-		const withAudio = path.join(tmpDir, `seg_${jobId}_${safeLabel}_audio.mkv`);
-		await mergeVideoWithAudio(lipsynced, audioPath, withAudio);
-		await normalizeClip(withAudio, norm, output, {
-			zoomOut: CAMERA_ZOOM_OUT,
-			addFades,
-			includeAudio: true,
-		});
-		safeUnlink(withAudio);
-	} else {
-		await normalizeClip(lipsynced, norm, output, {
-			zoomOut: CAMERA_ZOOM_OUT,
-			addFades,
-			includeAudio: false,
-		});
-	}
+	await normalizeClip(withAudio, norm, output, {
+		zoomOut: CAMERA_ZOOM_OUT,
+		addFades,
+	});
+	safeUnlink(withAudio);
 
 	return norm;
 }
@@ -5659,7 +4656,6 @@ async function renderImageSegment({
 	imagePaths = [],
 	label,
 	addFades = false,
-	includeAudio = true,
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	const montage = await createImageMontageClip({
@@ -5671,25 +4667,16 @@ async function renderImageSegment({
 		label: safeLabel,
 	});
 
+	const withAudio = path.join(tmpDir, `img_${jobId}_${safeLabel}_audio.mp4`);
+	await mergeVideoWithAudio(montage, audioPath, withAudio);
+	safeUnlink(montage);
+
 	const norm = path.join(tmpDir, `img_${jobId}_${safeLabel}_norm.mp4`);
-	if (includeAudio) {
-		const withAudio = path.join(tmpDir, `img_${jobId}_${safeLabel}_audio.mkv`);
-		await mergeVideoWithAudio(montage, audioPath, withAudio);
-		safeUnlink(montage);
-		await normalizeClip(withAudio, norm, output, {
-			zoomOut: CAMERA_ZOOM_OUT,
-			addFades,
-			includeAudio: true,
-		});
-		safeUnlink(withAudio);
-		return norm;
-	}
-	await normalizeClip(montage, norm, output, {
+	await normalizeClip(withAudio, norm, output, {
 		zoomOut: CAMERA_ZOOM_OUT,
 		addFades,
-		includeAudio: false,
 	});
-	safeUnlink(montage);
+	safeUnlink(withAudio);
 	return norm;
 }
 
@@ -5744,13 +4731,17 @@ async function mergeVideoWithAudio(videoPath, audioPath, outPath) {
 			"1:a:0",
 			"-c:v",
 			"copy",
-			...buildAudioEncodeArgs(outPath),
+			"-c:a",
+			"aac",
+			"-b:a",
+			AUDIO_BITRATE,
 			"-ar",
 			String(AUDIO_SR),
 			"-ac",
-			String(AUDIO_CHANNELS),
+			"2",
 			"-shortest",
-			...buildFastStartArgs(outPath),
+			"-movflags",
+			"+faststart",
 			"-y",
 			outPath,
 		],
@@ -5845,12 +4836,7 @@ async function ensureUnderBytes(
 	}
 }
 
-async function concatClips(
-	clips,
-	outPath,
-	outCfg,
-	{ includeAudio = true } = {}
-) {
+async function concatClips(clips, outPath, outCfg) {
 	if (!Array.isArray(clips) || !clips.length)
 		throw new Error("No clips to concat");
 	if (clips.length === 1) {
@@ -5868,27 +4854,25 @@ async function concatClips(
 	const args = [];
 	clips.forEach((p) => args.push("-i", p));
 
+	// concat filter
 	const pre = clips
-		.map((_, i) => {
-			const v = `[${i}:v:0]${scaleFilter}setpts=PTS-STARTPTS,format=yuv420p,setsar=1[v${i}]`;
-			if (!includeAudio) return v;
-			const a = `[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp[a${i}]`;
-			return `${v};${a}`;
-		})
+		.map(
+			(_, i) =>
+				`[${i}:v:0]${scaleFilter}setpts=PTS-STARTPTS,format=yuv420p,setsar=1[v${i}];` +
+				`[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp[a${i}]`
+		)
 		.join(";");
 
-	const catInputs = includeAudio
-		? clips.map((_, i) => `[v${i}][a${i}]`).join("")
-		: clips.map((_, i) => `[v${i}]`).join("");
-	const filter = includeAudio
-		? `${pre};${catInputs}concat=n=${clips.length}:v=1:a=1[v][a]`
-		: `${pre};${catInputs}concat=n=${clips.length}:v=1:a=0[v]`;
+	const catInputs = clips.map((_, i) => `[v${i}][a${i}]`).join("");
+	const filter = `${pre};${catInputs}concat=n=${clips.length}:v=1:a=1[v][a]`;
 
 	args.push(
 		"-filter_complex",
 		filter,
 		"-map",
 		"[v]",
+		"-map",
+		"[a]",
 		"-c:v",
 		"libx264",
 		"-preset",
@@ -5896,22 +4880,20 @@ async function concatClips(
 		"-crf",
 		String(INTERMEDIATE_VIDEO_CRF),
 		"-pix_fmt",
-		"yuv420p"
+		"yuv420p",
+		"-c:a",
+		"aac",
+		"-b:a",
+		AUDIO_BITRATE,
+		"-ar",
+		String(AUDIO_SR),
+		"-ac",
+		"2",
+		"-movflags",
+		"+faststart",
+		"-y",
+		outPath
 	);
-
-	if (includeAudio) {
-		args.push(
-			"-map",
-			"[a]",
-			...buildAudioEncodeArgs(outPath),
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			"2"
-		);
-	}
-
-	args.push(...buildFastStartArgs(outPath), "-y", outPath);
 
 	await spawnBin(ffmpegPath, args, "concat", { timeoutMs: 420000 });
 	return outPath;
@@ -5954,34 +4936,28 @@ async function createPresenterIntroMotion({
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
-Action: calm intro delivery with natural, subtle hand movement near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels. Keep the candle as-is (already lit).
-Keep the branded candle from the reference image. Keep the logo readable and undistorted. ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
-Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present.
-If the reference candle has a lid, remove it; no lid visible anywhere in frame.
+Action: calm intro delivery with natural, subtle hand movement near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
+Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; no extra candles.
 Expression: ${introFace}. Calm and neutral, composed and professional with a subtle, light smile (not constant).
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes. Briefly glance toward the open title area, then back to the camera.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
 ${motionHint}
-Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except the candle brand logo.
+Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except those already present in the reference.
 `.trim();
 
 	const fallbackPrompt = `
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
-Action: small, natural intro gesture near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels. Keep the candle as-is (already lit).
-Keep the branded candle from the reference image. Keep the logo readable and undistorted. ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
-Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present.
-If the reference candle has a lid, remove it; no lid visible anywhere in frame.
+Action: small, natural intro gesture near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
+Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; no extra candles.
 Expression: ${introFace}. Calm and neutral; subtle, light smile only, not constant.
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
 ${motionHint}
-Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except the candle brand logo.
+Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except those already present in the reference.
 `.trim();
 
 	const introModelOrder = [];
@@ -6245,7 +5221,6 @@ async function createIntroClip({
 	outCfg,
 	outPath,
 	disableVideoBlur = false,
-	includeAudio = true,
 }) {
 	const W = makeEven(outCfg.w);
 	const H = makeEven(outCfg.h);
@@ -6316,46 +5291,47 @@ async function createIntroClip({
 			? ["-stream_loop", "-1", "-i", bgImagePath]
 			: ["-i", bgImagePath]
 		: ["-loop", "1", "-i", bgImagePath];
-	const audioArgs =
-		includeAudio && needsSilentAudio
-			? ["-f", "lavfi", "-i", `anullsrc=r=${AUDIO_SR}:cl=stereo`]
-			: [];
+	const audioArgs = needsSilentAudio
+		? ["-f", "lavfi", "-i", `anullsrc=r=${AUDIO_SR}:cl=stereo`]
+		: [];
 	const audioMap = needsSilentAudio ? "1:a:0" : "0:a:0";
 
-	const args = [
-		...inputArgs,
-		...audioArgs,
-		"-t",
-		dur.toFixed(3),
-		"-vf",
-		vf,
-		"-map",
-		"0:v:0",
-	];
-
-	if (includeAudio) {
-		args.push("-map", audioMap, ...buildAudioEncodeArgs(outPath), "-shortest");
-	} else {
-		args.push("-an");
-	}
-
-	args.push(
-		"-r",
-		String(fps),
-		"-c:v",
-		"libx264",
-		"-preset",
-		INTERMEDIATE_PRESET,
-		"-crf",
-		String(INTERMEDIATE_VIDEO_CRF),
-		"-pix_fmt",
-		"yuv420p",
-		...buildFastStartArgs(outPath),
-		"-y",
-		outPath
+	await spawnBin(
+		ffmpegPath,
+		[
+			...inputArgs,
+			...audioArgs,
+			"-t",
+			dur.toFixed(3),
+			"-vf",
+			vf,
+			"-map",
+			"0:v:0",
+			"-map",
+			audioMap,
+			"-r",
+			String(fps),
+			"-c:v",
+			"libx264",
+			"-preset",
+			INTERMEDIATE_PRESET,
+			"-crf",
+			String(INTERMEDIATE_VIDEO_CRF),
+			"-pix_fmt",
+			"yuv420p",
+			"-c:a",
+			"aac",
+			"-b:a",
+			AUDIO_BITRATE,
+			"-shortest",
+			"-movflags",
+			"+faststart",
+			"-y",
+			outPath,
+		],
+		"intro_clip",
+		{ timeoutMs: 180000 }
 	);
-
-	await spawnBin(ffmpegPath, args, "intro_clip", { timeoutMs: 180000 });
 
 	return outPath;
 }
@@ -6474,12 +5450,7 @@ function buildAutoOverlaysFromTimeline({
 	return overlays;
 }
 
-async function applyOverlays(
-	baseVideoPath,
-	overlays,
-	outPath,
-	{ includeAudio = true } = {}
-) {
+async function applyOverlays(baseVideoPath, overlays, outPath) {
 	if (!overlays.length) {
 		fs.copyFileSync(baseVideoPath, outPath);
 		return outPath;
@@ -6535,29 +5506,37 @@ async function applyOverlays(
 
 	filterParts.push(`[${last}]format=yuv420p[vout]`);
 
-	const args = [
-		...inputs,
-		"-filter_complex",
-		filterParts.join(";"),
-		"-map",
-		"[vout]",
-		"-c:v",
-		"libx264",
-		"-preset",
-		INTERMEDIATE_PRESET,
-		"-crf",
-		String(INTERMEDIATE_VIDEO_CRF),
-		"-pix_fmt",
-		"yuv420p",
-	];
-	if (includeAudio) {
-		args.push("-map", "0:a?", ...buildAudioEncodeArgs(outPath), "-shortest");
-	} else {
-		args.push("-an");
-	}
-	args.push(...buildFastStartArgs(outPath), "-y", outPath);
-
-	await spawnBin(ffmpegPath, args, "overlay", { timeoutMs: 360000 });
+	await spawnBin(
+		ffmpegPath,
+		[
+			...inputs,
+			"-filter_complex",
+			filterParts.join(";"),
+			"-map",
+			"[vout]",
+			"-map",
+			"0:a?",
+			"-c:v",
+			"libx264",
+			"-preset",
+			INTERMEDIATE_PRESET,
+			"-crf",
+			String(INTERMEDIATE_VIDEO_CRF),
+			"-pix_fmt",
+			"yuv420p",
+			"-c:a",
+			"aac",
+			"-b:a",
+			AUDIO_BITRATE,
+			"-shortest",
+			"-movflags",
+			"+faststart",
+			"-y",
+			outPath,
+		],
+		"overlay",
+		{ timeoutMs: 360000 }
+	);
 
 	return outPath;
 }
@@ -6737,9 +5716,13 @@ async function mixBackgroundMusic(
 		"[aout]",
 		"-c:v",
 		"copy",
-		...buildAudioEncodeArgs(outPath),
+		"-c:a",
+		"aac",
+		"-b:a",
+		AUDIO_BITRATE,
 		"-shortest",
-		...buildFastStartArgs(outPath),
+		"-movflags",
+		"+faststart",
 		"-y",
 		outPath
 	);
@@ -7022,7 +6005,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			jobId
 		);
 		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
-		const candleLocalPath = await ensureLocalBrandCandleImage(tmpDir, jobId);
 		const detected = detectFileType(presenterLocal);
 		let presenterIsVideo = detected?.kind === "video";
 		let presenterIsImage = detected?.kind === "image";
@@ -7033,8 +6015,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			path: path.basename(presenterLocal),
 			detected: detected?.kind || "unknown",
 			hasMotionRef: Boolean(motionRefVideo),
-			hasBrandCandle: Boolean(candleLocalPath),
-			brandCandlePath: candleLocalPath ? path.basename(candleLocalPath) : null,
 		});
 
 		updateJob(jobId, { progressPct: 12 });
@@ -7064,7 +6044,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 
 		// 5) Script (content duration excludes intro/outro)
 		const lang = languageLabel || String(language || "en");
-		let narrationTargetSec = Math.max(18, Number(contentTargetSec) || 0);
+		const narrationTargetSec = Math.max(18, Number(contentTargetSec) || 0);
 		const segmentCount = computeSegmentCount(narrationTargetSec);
 		const wordCaps = buildWordCaps(segmentCount, narrationTargetSec);
 
@@ -7090,63 +6070,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			},
 		});
 
-		// 5.5) Presenter wardrobe + candle adjustment (post-script, pre-thumbnail)
-		if (enableWardrobeEdit && presenterIsImage) {
-			try {
-				const presenterTitle = String(
-					script.title || topicSummary || topicTitles[0] || ""
-				).trim();
-				const presenterResult = await generatePresenterAdjustedImage({
-					jobId,
-					tmpDir,
-					presenterLocalPath: presenterLocal,
-					candleLocalPath,
-					title: presenterTitle,
-					topics: topicPicks,
-					categoryLabel,
-					log: (message, payload) => logJob(jobId, message, payload),
-				});
-				if (
-					!presenterResult?.localPath ||
-					!fs.existsSync(presenterResult.localPath)
-				) {
-					throw new Error("presenter adjustments missing output");
-				}
-				const adjustedDetected = detectFileType(presenterResult.localPath);
-				if (adjustedDetected?.kind !== "image") {
-					throw new Error(
-						`presenter adjustments invalid output (${
-							adjustedDetected?.kind || "unknown"
-						})`
-					);
-				}
-				presenterLocal = presenterResult.localPath;
-				presenterIsVideo = false;
-				presenterIsImage = true;
-				logJob(jobId, "presenter adjustments ready", {
-					path: path.basename(presenterLocal),
-					method: presenterResult.method || "runway",
-					cloudinary: Boolean(presenterResult.url),
-				});
-				updateJob(jobId, {
-					meta: {
-						...JOBS.get(jobId)?.meta,
-						presenterImageUrl: presenterResult.url || "",
-					},
-				});
-			} catch (e) {
-				logJob(jobId, "presenter adjustments failed (hard stop)", {
-					error: e.message,
-				});
-				throw e;
-			}
-		} else if (enableWardrobeEdit && !presenterIsImage) {
-			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
-				detected: presenterIsVideo ? "video" : "unknown",
-			});
-		}
-
-		// 5.6) Thumbnail (script-aligned, fail-fast)
+		// 5.5) Thumbnail (script-aligned, fail-fast)
 		try {
 			const fallbackTitle = topicTitles[0] || topicSummary || "Quick Update";
 			const thumbTitle = String(script.title || fallbackTitle).trim();
@@ -7165,6 +6089,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				seoTitle: "",
 				topics: topicPicks,
 				expression: thumbExpression,
+				openai,
 				log: thumbLog,
 				requireTopicImages: true,
 			});
@@ -7203,6 +6128,58 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			throw e;
 		}
 
+		// 5.6) Presenter wardrobe adjustment (post-script/thumbnail)
+		if (enableWardrobeEdit && presenterIsImage) {
+			try {
+				const presenterTitle = String(
+					script.title || topicSummary || topicTitles[0] || ""
+				).trim();
+				const presenterResult = await generatePresenterAdjustedImage({
+					jobId,
+					tmpDir,
+					presenterLocalPath: presenterLocal,
+					title: presenterTitle,
+					topics: topicPicks,
+					categoryLabel,
+					log: (message, payload) => logJob(jobId, message, payload),
+				});
+				if (
+					presenterResult?.localPath &&
+					fs.existsSync(presenterResult.localPath)
+				) {
+					const adjustedDetected = detectFileType(presenterResult.localPath);
+					if (adjustedDetected?.kind === "image") {
+						presenterLocal = presenterResult.localPath;
+						presenterIsVideo = false;
+						presenterIsImage = true;
+						logJob(jobId, "presenter adjustments ready", {
+							path: path.basename(presenterLocal),
+							method: presenterResult.method || "runway",
+							cloudinary: Boolean(presenterResult.url),
+						});
+						updateJob(jobId, {
+							meta: {
+								...JOBS.get(jobId)?.meta,
+								presenterImageUrl: presenterResult.url || "",
+							},
+						});
+					} else {
+						logJob(jobId, "presenter adjustments invalid; using original", {
+							detected: adjustedDetected?.kind || "unknown",
+						});
+					}
+				}
+			} catch (e) {
+				logJob(jobId, "presenter adjustments failed; using original", {
+					error: e.message,
+				});
+			}
+		} else if (enableWardrobeEdit && !presenterIsImage) {
+			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
+				detected: presenterIsVideo ? "video" : "unknown",
+			});
+		}
+
 		const seoMeta = await buildSeoMetadata({
 			topics: topicPicks,
 			scriptTitle: script.title,
@@ -7223,104 +6200,17 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 
 		// 6) Orchestrator plan (intro/outro) + voice prep
 		const introOutroMood = "neutral";
-		const introLineFallback = buildIntroLine({
+		const introLine = buildIntroLine({
 			topics: topicPicks,
 			shortTitle: script.shortTitle || script.title,
 		});
-		const outroLineFallback = buildOutroLine({
+		const outroLine = buildOutroLine({
 			topics: topicPicks,
 			shortTitle: script.shortTitle || script.title,
 			mood: introOutroMood,
 		});
-		let introLine = introLineFallback;
-		let outroLine = outroLineFallback;
-		let introExpression = "neutral";
-		let outroExpression = "warm";
-		let introPace = "normal";
-		let outroPace = "calm";
-
-		if (ENABLE_ORCHESTRATED_BOOKENDS) {
-			try {
-				const planned = await planBookends({
-					openai,
-					topics: topicPicks,
-					shortTitle: script.shortTitle || script.title,
-					introSec: introDurationSec,
-					outroSec: outroDurationSec,
-					tonePlan,
-				});
-				if (planned?.intro?.text) introLine = String(planned.intro.text).trim();
-				if (planned?.outro?.text) outroLine = String(planned.outro.text).trim();
-				if (planned?.intro?.expression)
-					introExpression = normalizeExpression(
-						planned.intro.expression,
-						introOutroMood
-					);
-				if (planned?.outro?.expression)
-					outroExpression = normalizeExpression(
-						planned.outro.expression,
-						introOutroMood
-					);
-				if (planned?.intro?.pace)
-					introPace = normalizeBookendPace(planned.intro.pace, introPace);
-				if (planned?.outro?.pace)
-					outroPace = normalizeBookendPace(planned.outro.pace, outroPace);
-				logJob(jobId, "bookends planned", {
-					introExpression,
-					outroExpression,
-					introPace,
-					outroPace,
-				});
-			} catch (e) {
-				logJob(jobId, "bookends planner failed; fallback", {
-					error: e?.message || String(e),
-				});
-			}
-		}
-
-		if (ENABLE_BOOKENDS_READALOUD) {
-			try {
-				const introTargetWords = estimateTargetWords(
-					introDurationSec,
-					INTRO_TARGET_WPM
-				);
-				const outroTargetWords = estimateTargetWords(
-					outroDurationSec,
-					OUTRO_TARGET_WPM
-				);
-				const introRewrite = await rewriteBookendForReadAloud({
-					openai,
-					text: introLine,
-					targetWords: introTargetWords,
-					label: "intro",
-				});
-				if (introRewrite) introLine = introRewrite;
-				const outroRewrite = await rewriteBookendForReadAloud({
-					openai,
-					text: outroLine,
-					targetWords: outroTargetWords,
-					label: "outro",
-				});
-				if (outroRewrite) outroLine = outroRewrite;
-			} catch (e) {
-				logJob(jobId, "bookends read-aloud pass failed; fallback", {
-					error: e?.message || String(e),
-				});
-			}
-		}
-
-		introLine = sanitizeIntroOutroLine(introLine) || introLineFallback;
-		outroLine = sanitizeIntroOutroLine(outroLine) || outroLineFallback;
-		introExpression = coerceExpressionForNaturalness(
-			introExpression,
-			introLine,
-			introOutroMood
-		);
-		outroExpression = coerceExpressionForNaturalness(
-			outroExpression,
-			outroLine,
-			introOutroMood
-		);
+		const introExpression = "neutral";
+		const outroExpression = "warm";
 
 		logJob(jobId, "orchestrator plan", {
 			mood: introOutroMood,
@@ -7329,13 +6219,11 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				text: introLine,
 				targetSec: introDurationSec,
 				expression: introExpression,
-				pace: introPace,
 			},
 			outro: {
 				text: outroLine,
 				targetSec: outroDurationSec,
 				expression: outroExpression,
-				pace: outroPace,
 			},
 		});
 
@@ -7360,59 +6248,32 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			...ELEVEN_TTS_MODEL_FALLBACKS,
 		].filter(Boolean);
 		let ttsModelId = "";
-		let ttsOutputFormat = "";
-		const allowBookendTuning = !lockedVoiceSettings;
-		let useGoldVoiceMerge = USE_GOLD_VOICE_MERGE;
-		const includeSegmentAudio = true;
 
-		const introVoiceSettings = applyPaceToVoiceSettings(
-			resolveVoiceSettings(introExpression, introLine),
-			introPace,
-			"intro",
-			{ allowAdjustment: allowBookendTuning }
-		);
-		const introFallbackVoiceSettings = applyPaceToVoiceSettings(
-			resolveVoiceSettings("neutral", introLineFallback),
-			"normal",
-			"intro",
-			{ allowAdjustment: allowBookendTuning }
-		);
-		const introVoice = await synthesizeBookendVoice({
-			role: "intro",
-			line: introLine,
-			targetSec: introDurationSec,
-			minAtempo: INTRO_ATEMPO_MIN,
-			maxAtempo: INTRO_ATEMPO_MAX,
-			idealMinAtempo: INTRO_ATEMPO_IDEAL_MIN,
-			idealMaxAtempo: INTRO_ATEMPO_IDEAL_MAX,
+		const introVoiceSettings = resolveVoiceSettings(introExpression, introLine);
+		const introTts = await synthesizeTtsWav({
+			text: introLine,
+			tmpDir,
+			jobId,
+			label: "intro",
 			voiceId: effectiveVoiceId,
 			voiceSettings: introVoiceSettings,
 			modelId: ttsModelId || undefined,
 			modelOrder: ttsModelOrder,
-			outputFormats: ttsOutputFormat
-				? [ttsOutputFormat]
-				: ENABLE_ELEVEN_PCM_OUTPUT
-				? ["pcm_44100", "mp3_44100_192"]
-				: ["mp3_44100_192"],
-			openai,
+		});
+		if (introTts?.modelId) ttsModelId = introTts.modelId;
+		const introFit = await fitWavToTargetDuration({
+			wavPath: introTts.wavPath,
+			targetSec: introDurationSec,
+			minAtempo: INTRO_ATEMPO_MIN,
+			maxAtempo: INTRO_ATEMPO_MAX,
 			tmpDir,
 			jobId,
-			fallbackLine: introLineFallback,
-			fallbackVoiceSettings: introFallbackVoiceSettings,
-			log: (message, payload) => logJob(jobId, message, payload),
+			label: "intro",
 		});
-		if (introVoice?.modelId) ttsModelId = introVoice.modelId;
-		if (!ttsOutputFormat && introVoice?.outputFormat)
-			ttsOutputFormat = introVoice.outputFormat;
-		if (!introVoice.durationSec)
+		if (!introFit.durationSec)
 			throw new Error("Intro voice generation failed (empty duration)");
-		if (introVoice.usedFallback) {
-			introExpression = "neutral";
-			introPace = "normal";
-		}
-		introLine = introVoice.line || introLine;
-		const introAudioPath = introVoice.wavPath;
-		introDurationSec = introVoice.durationSec || introDurationSec;
+		const introAudioPath = introFit.wavPath;
+		introDurationSec = introFit.durationSec || introDurationSec;
 		if (introDurationSec < INTRO_MIN_SEC || introDurationSec > INTRO_MAX_SEC) {
 			logJob(jobId, "intro duration outside target range", {
 				introDurationSec: Number(introDurationSec.toFixed(3)),
@@ -7421,63 +6282,36 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			});
 		}
 		logJob(jobId, "intro voice ready", {
-			durationSec: Number((introVoice.durationSec || 0).toFixed(3)),
-			atempo: Number((introVoice.atempo || 1).toFixed(3)),
-			rawAtempo: Number((introVoice.rawAtempo || 1).toFixed(3)),
-			usedFallback: introVoice.usedFallback,
-			modelId: ttsModelId || "",
-			outputFormat: ttsOutputFormat || "",
-			voiceSettings: introVoiceSettings,
+			durationSec: Number((introFit.durationSec || 0).toFixed(3)),
+			atempo: Number(introFit.atempo.toFixed(3)),
+			rawAtempo: Number(introFit.rawAtempo.toFixed(3)),
 		});
 
-		const outroVoiceSettings = applyPaceToVoiceSettings(
-			resolveVoiceSettings(outroExpression, outroLine),
-			outroPace,
-			"outro",
-			{ allowAdjustment: allowBookendTuning }
-		);
-		const outroFallbackVoiceSettings = applyPaceToVoiceSettings(
-			resolveVoiceSettings("warm", outroLineFallback),
-			"calm",
-			"outro",
-			{ allowAdjustment: allowBookendTuning }
-		);
-		const outroVoice = await synthesizeBookendVoice({
-			role: "outro",
-			line: outroLine,
-			targetSec: outroDurationSec,
-			minAtempo: OUTRO_ATEMPO_MIN,
-			maxAtempo: OUTRO_ATEMPO_MAX,
-			idealMinAtempo: OUTRO_ATEMPO_IDEAL_MIN,
-			idealMaxAtempo: OUTRO_ATEMPO_IDEAL_MAX,
+		const outroVoiceSettings = resolveVoiceSettings(outroExpression, outroLine);
+		const outroTts = await synthesizeTtsWav({
+			text: outroLine,
+			tmpDir,
+			jobId,
+			label: "outro",
 			voiceId: effectiveVoiceId,
 			voiceSettings: outroVoiceSettings,
 			modelId: ttsModelId || undefined,
 			modelOrder: ttsModelOrder,
-			outputFormats: ttsOutputFormat
-				? [ttsOutputFormat]
-				: ENABLE_ELEVEN_PCM_OUTPUT
-				? ["pcm_44100", "mp3_44100_192"]
-				: ["mp3_44100_192"],
-			openai,
+		});
+		if (outroTts?.modelId) ttsModelId = outroTts.modelId;
+		const outroFit = await fitWavToTargetDuration({
+			wavPath: outroTts.wavPath,
+			targetSec: outroDurationSec,
+			minAtempo: OUTRO_ATEMPO_MIN,
+			maxAtempo: OUTRO_ATEMPO_MAX,
 			tmpDir,
 			jobId,
-			fallbackLine: outroLineFallback,
-			fallbackVoiceSettings: outroFallbackVoiceSettings,
-			log: (message, payload) => logJob(jobId, message, payload),
+			label: "outro",
 		});
-		if (outroVoice?.modelId) ttsModelId = outroVoice.modelId;
-		if (!ttsOutputFormat && outroVoice?.outputFormat)
-			ttsOutputFormat = outroVoice.outputFormat;
-		if (!outroVoice.durationSec)
+		if (!outroFit.durationSec)
 			throw new Error("Outro voice generation failed (empty duration)");
-		if (outroVoice.usedFallback) {
-			outroExpression = "warm";
-			outroPace = "calm";
-		}
-		outroLine = outroVoice.line || outroLine;
-		const outroAudioPath = outroVoice.wavPath;
-		outroDurationSec = outroVoice.durationSec || outroDurationSec;
+		const outroAudioPath = outroFit.wavPath;
+		outroDurationSec = outroFit.durationSec || outroDurationSec;
 		if (outroDurationSec < OUTRO_MIN_SEC || outroDurationSec > OUTRO_MAX_SEC) {
 			logJob(jobId, "outro duration outside target range", {
 				outroDurationSec: Number(outroDurationSec.toFixed(3)),
@@ -7486,21 +6320,9 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			});
 		}
 		logJob(jobId, "outro voice ready", {
-			durationSec: Number((outroVoice.durationSec || 0).toFixed(3)),
-			atempo: Number((outroVoice.atempo || 1).toFixed(3)),
-			rawAtempo: Number((outroVoice.rawAtempo || 1).toFixed(3)),
-			usedFallback: outroVoice.usedFallback,
-			modelId: ttsModelId || "",
-			outputFormat: ttsOutputFormat || "",
-			voiceSettings: outroVoiceSettings,
-		});
-
-		updateJob(jobId, {
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				intro: { text: introLine, targetSec: introDurationSec },
-				outro: { text: outroLine, targetSec: outroDurationSec },
-			},
+			durationSec: Number((outroFit.durationSec || 0).toFixed(3)),
+			atempo: Number(outroFit.atempo.toFixed(3)),
+			rawAtempo: Number(outroFit.rawAtempo.toFixed(3)),
 		});
 
 		updateJob(jobId, { progressPct: 22 });
@@ -7558,8 +6380,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let driftSec = 0;
 		let autoOverlayAssets = [];
 		let segmentImagePaths = new Map();
-		let voiceFullPath = "";
-		let outroTailSilencePath = "";
 		const maxRewriteAttempts = voiceoverUrl ? 0 : MAX_SCRIPT_REWRITES;
 
 		for (let attempt = 0; attempt <= maxRewriteAttempts; attempt++) {
@@ -7569,10 +6389,11 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			if (voiceoverUrl) {
 				// If you provide a full voiceoverUrl, we will NOT time-stretch; we just slice precisely.
 				// (Best quality approach is to provide already-edited VO that matches the content script.)
-				const voicePath = path.join(tmpDir, `voice_${jobId}.input`);
+				const voicePath = path.join(tmpDir, `voice_${jobId}.wav`);
 				await downloadToFile(voiceoverUrl, voicePath, 45000, 2);
 
-				const voiceWavRaw = path.join(tmpDir, `voice_${jobId}_pcm.wav`);
+				// Convert to wav if needed
+				const voiceWav = path.join(tmpDir, `voice_${jobId}_pcm.wav`);
 				await spawnBin(
 					ffmpegPath,
 					[
@@ -7586,42 +6407,25 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						"-ac",
 						String(AUDIO_CHANNELS),
 						"-y",
-						voiceWavRaw,
+						voiceWav,
 					],
 					"voiceover_to_wav",
 					{ timeoutMs: 180000 }
 				);
 				safeUnlink(voicePath);
 
-				const voiceClean = path.join(tmpDir, `voice_${jobId}_clean.wav`);
-				await cleanVoiceoverWav(voiceWavRaw, voiceClean);
-				safeUnlink(voiceWavRaw);
-
-				const totalVoiceDur = await probeDurationSeconds(voiceClean);
-				const split = await buildVoiceoverSplitPlan({
-					openai,
-					segments,
-					voiceWavPath: voiceClean,
-					jobId,
-				});
-				const splitPlan = Array.isArray(split?.plan) ? split.plan : [];
-				logJob(jobId, "voiceover split plan", {
-					method: split?.method || "unknown",
-					totalVoiceDur: Number((totalVoiceDur || 0).toFixed(3)),
-				});
-
-				const byIndex = new Map(splitPlan.map((p) => [Number(p.index), p]));
+				// naive equal split by expected segment durations
+				const totalVoiceDur = await probeDurationSeconds(voiceWav);
+				const per = totalVoiceDur / segments.length;
 				for (let i = 0; i < segments.length; i++) {
-					const plan = byIndex.get(i);
-					const start = Number(plan?.startSec || 0);
-					const end = Number(plan?.endSec || 0);
-					const dur = Math.max(0.2, end > start ? end - start : 0.2);
+					const start = i * per;
+					const dur = i === segments.length - 1 ? totalVoiceDur - start : per;
 					const out = path.join(tmpDir, `vo_clean_${jobId}_${i}.wav`);
 					await spawnBin(
 						ffmpegPath,
 						[
 							"-i",
-							voiceClean,
+							voiceWav,
 							"-ss",
 							start.toFixed(3),
 							"-t",
@@ -7643,15 +6447,12 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					cleanedWavs.push({ index: i, wav: out, cleanDur: d });
 					sumCleanDur += d;
 				}
-				safeUnlink(voiceClean);
-
-				narrationTargetSec = totalVoiceDur || narrationTargetSec;
+				safeUnlink(voiceWav);
 			} else {
 				logJob(jobId, "eleven voice locked", {
 					voiceId: effectiveVoiceId,
 					attempt,
 					modelId: ttsModelId || "auto",
-					outputFormat: ttsOutputFormat || "auto",
 				});
 
 				for (const seg of segments) {
@@ -7660,40 +6461,28 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						words: countWords(seg.text),
 					});
 
+					const mp3 = path.join(tmpDir, `tts_${jobId}_${seg.index}.mp3`);
+					const cleanWav = path.join(
+						tmpDir,
+						`tts_clean_${jobId}_${seg.index}.wav`
+					);
+
 					const cleanText = sanitizeSegmentText(seg.text);
 					const voiceSettings = resolveVoiceSettings(seg.expression, cleanText);
-					const tts = await synthesizeTtsWav({
+					const usedModelId = await elevenLabsTTS({
 						text: cleanText,
-						tmpDir,
-						jobId,
-						label: `tts_${seg.index}`,
+						outMp3Path: mp3,
 						voiceId: effectiveVoiceId,
 						voiceSettings,
 						modelId: ttsModelId || undefined,
 						modelOrder: ttsModelOrder,
-						outputFormats: ttsOutputFormat
-							? [ttsOutputFormat]
-							: ENABLE_ELEVEN_PCM_OUTPUT
-							? ["pcm_44100", "mp3_44100_192"]
-							: ["mp3_44100_192"],
 					});
-					if (!ttsModelId && tts?.modelId) ttsModelId = tts.modelId;
-					if (!ttsOutputFormat && tts?.outputFormat)
-						ttsOutputFormat = tts.outputFormat;
-					const d = Number(tts?.durationSec || 0);
-					if (seg.index === 0) {
-						logJob(jobId, "body voice baseline", {
-							durationSec: Number(d.toFixed(3)),
-							modelId: ttsModelId || "",
-							outputFormat: ttsOutputFormat || "",
-							voiceSettings,
-						});
-					}
-					cleanedWavs.push({
-						index: seg.index,
-						wav: tts.wavPath,
-						cleanDur: d,
-					});
+					if (!ttsModelId && usedModelId) ttsModelId = usedModelId;
+					await mp3ToCleanWav(mp3, cleanWav);
+					safeUnlink(mp3);
+
+					const d = await probeDurationSeconds(cleanWav);
+					cleanedWavs.push({ index: seg.index, wav: cleanWav, cleanDur: d });
 					sumCleanDur += d;
 				}
 			}
@@ -7852,13 +6641,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		for (const a of cleanedWavs.sort((x, y) => x.index - y.index)) {
 			const out = path.join(tmpDir, `seg_audio_${jobId}_${a.index}.wav`);
 			await applyGlobalAtempoToWav(a.wav, out, globalAtempo);
-			const trimmed = await trimVoiceForSync(
-				out,
-				path.join(tmpDir, `seg_audio_${jobId}_${a.index}_trim.wav`)
-			);
-			if (trimmed !== out) safeUnlink(out);
-			const d2 = await probeDurationSeconds(trimmed);
-			segmentAudio.push({ index: a.index, wav: trimmed, dur: d2 });
+			const d2 = await probeDurationSeconds(out);
+			segmentAudio.push({ index: a.index, wav: out, dur: d2 });
 			safeUnlink(a.wav);
 		}
 
@@ -7903,52 +6687,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			},
 		});
 
-		if (useGoldVoiceMerge) {
-			const voiceSegments = [
-				introAudioPath,
-				...segmentAudio.map((a) => a.wav),
-				outroAudioPath,
-			].filter(Boolean);
-			if (OUTRO_SMILE_TAIL_SEC > 0) {
-				outroTailSilencePath = path.join(
-					tmpDir,
-					`voice_tail_silence_${jobId}.wav`
-				);
-				await createSilentWav({
-					durationSec: OUTRO_SMILE_TAIL_SEC,
-					outPath: outroTailSilencePath,
-				});
-				voiceSegments.push(outroTailSilencePath);
-			}
-			voiceFullPath = path.join(tmpDir, `voice_full_${jobId}.wav`);
-			await concatWavSegments({
-				segments: voiceSegments,
-				outPath: voiceFullPath,
-				jobId,
-				label: "voice",
-			});
-			logJob(jobId, "voice full ready", {
-				path: path.basename(voiceFullPath),
-				segments: voiceSegments.length,
-			});
-			const voiceOk = await ensureHasAudioTrack(
-				voiceFullPath,
-				jobId,
-				"voice_full"
-			);
-			if (!voiceOk) {
-				useGoldVoiceMerge = false;
-				logJob(jobId, "gold voice merge disabled (voice track invalid)", {
-					path: path.basename(voiceFullPath),
-				});
-			}
-		}
-
 		// 8.5) Visual plan: 50/50 presenter vs static image segments (content only)
 		const totalSegments = timeline.length;
 		let presenterCount = Math.floor(totalSegments * CONTENT_PRESENTER_RATIO);
 		if (totalSegments >= 2) {
-			presenterCount = clampNumber(presenterCount, 1, totalSegments);
+			presenterCount = clampNumber(presenterCount, 1, totalSegments - 1);
 		} else {
 			presenterCount = totalSegments;
 		}
@@ -8211,7 +6954,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			label: "intro",
 			offsetSeed: introOffsetSeed,
 			addFades: true,
-			includeAudio: includeSegmentAudio,
 		});
 		const introPath = path.join(tmpDir, `intro_${jobId}.mp4`);
 		const introTitle = INTRO_OVERLAY_TEXT;
@@ -8224,7 +6966,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			outCfg: output,
 			outPath: introPath,
 			disableVideoBlur: true,
-			includeAudio: includeSegmentAudio,
 		});
 		safeUnlink(introBase);
 
@@ -8255,7 +6996,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							imagePaths,
 							label: String(seg.index),
 							addFades: ENABLE_SEGMENT_FADES,
-							includeAudio: includeSegmentAudio,
 						});
 					} catch (e) {
 						logJob(jobId, "image segment failed; fallback to presenter", {
@@ -8281,7 +7021,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					label: String(seg.index),
 					offsetSeed: seg.index,
 					addFades: ENABLE_SEGMENT_FADES,
-					includeAudio: includeSegmentAudio,
 				});
 			}
 
@@ -8306,7 +7045,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			label: "outro",
 			offsetSeed: outroOffsetSeed,
 			addFades: false,
-			includeAudio: includeSegmentAudio,
 		});
 
 		// Smile tail after the outro line (silent + fade-out).
@@ -8347,42 +7085,32 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		await fitVideoToDuration(tailRaw, OUTRO_SMILE_TAIL_SEC, tailFit);
 		safeUnlink(tailRaw);
 
-		let tailSource = tailFit;
-		if (includeSegmentAudio) {
-			const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
-			await createSilentWav({
-				durationSec: OUTRO_SMILE_TAIL_SEC,
-				outPath: tailSilence,
-			});
-			const tailWithAudio = path.join(tmpDir, `outro_tail_audio_${jobId}.mkv`);
-			await mergeVideoWithAudio(tailFit, tailSilence, tailWithAudio);
-			safeUnlink(tailSilence);
-			safeUnlink(tailFit);
-			tailSource = tailWithAudio;
-		}
-
-		const outroTail = path.join(tmpDir, `outro_tail_${jobId}.mp4`);
-		await normalizeClip(tailSource, outroTail, output, {
-			zoomOut: CAMERA_ZOOM_OUT,
-			fadeOutOnly: true,
-			includeAudio: includeSegmentAudio,
+		const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
+		await createSilentWav({
+			durationSec: OUTRO_SMILE_TAIL_SEC,
+			outPath: tailSilence,
 		});
-		if (tailSource !== tailFit) safeUnlink(tailSource);
+		const tailWithAudio = path.join(tmpDir, `outro_tail_audio_${jobId}.mp4`);
+		await mergeVideoWithAudio(tailFit, tailSilence, tailWithAudio);
+		safeUnlink(tailSilence);
 		safeUnlink(tailFit);
 
-		const outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
-		await concatClips([outroTalk, outroTail], outroPath, output, {
-			includeAudio: includeSegmentAudio,
+		const outroTail = path.join(tmpDir, `outro_tail_${jobId}.mp4`);
+		await normalizeClip(tailWithAudio, outroTail, output, {
+			zoomOut: CAMERA_ZOOM_OUT,
+			fadeOutOnly: true,
 		});
+		safeUnlink(tailWithAudio);
+
+		const outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
+		await concatClips([outroTalk, outroTail], outroPath, output);
 		segmentVideos.push(outroPath);
 
 		updateJob(jobId, { progressPct: 72 });
 
 		// 13) Concat intro + content + outro
 		const concatPath = path.join(tmpDir, `concat_${jobId}.mp4`);
-		await concatClips(segmentVideos, concatPath, output, {
-			includeAudio: includeSegmentAudio,
-		});
+		await concatClips(segmentVideos, concatPath, output);
 		logJob(jobId, "concat done", { clips: segmentVideos.length });
 
 		// 14) Overlays (optional; static image segments provide visuals)
@@ -8436,8 +7164,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				overlayedPath = await applyOverlays(
 					concatPath,
 					overlayLocal,
-					overlayedPath,
-					{ includeAudio: includeSegmentAudio }
+					overlayedPath
 				);
 				logJob(jobId, "overlays applied", { count: overlayLocal.length });
 			} catch (e) {
@@ -8452,65 +7179,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		updateJob(jobId, { progressPct: 84 });
 
-		// 14.5) Merge full voice track (gold path)
-		let voiceMergedPath = overlayedPath;
-		if (useGoldVoiceMerge) {
-			if (!voiceFullPath || !fs.existsSync(voiceFullPath))
-				throw new Error("Gold voice merge failed (missing voice track)");
-			const out = path.join(tmpDir, `voice_merge_${jobId}.mkv`);
-			voiceMergedPath = await mergeVideoWithAudio(
-				overlayedPath,
-				voiceFullPath,
-				out
-			);
-			const mergedOk = await ensureHasAudioTrack(
-				voiceMergedPath,
-				jobId,
-				"voice_merge"
-			);
-			if (!mergedOk) {
-				logJob(jobId, "voice merge missing audio; using segment audio", {
-					path: path.basename(voiceMergedPath),
-				});
-				voiceMergedPath = overlayedPath;
-				useGoldVoiceMerge = false;
-			}
-			logJob(jobId, "voice merged", {
-				path: path.basename(voiceMergedPath),
-			});
-		}
-
 		// 15) Music mix (must)
-		let mixedPath = voiceMergedPath;
+		let mixedPath = overlayedPath;
 		if (musicLocalPath) {
-			const baseHasAudio = await ensureHasAudioTrack(
-				voiceMergedPath,
+			const out = path.join(tmpDir, `mixed_${jobId}.mp4`);
+			mixedPath = await mixBackgroundMusic(overlayedPath, musicLocalPath, out, {
 				jobId,
-				"mix_base"
-			);
-			if (!baseHasAudio) {
-				logJob(jobId, "music mix skipped (no base audio)", {
-					path: path.basename(voiceMergedPath),
-				});
-			} else {
-				const ext = useGoldVoiceMerge ? "mkv" : "mp4";
-				const out = path.join(tmpDir, `mixed_${jobId}.${ext}`);
-				mixedPath = await mixBackgroundMusic(
-					voiceMergedPath,
-					musicLocalPath,
-					out,
-					{
-						jobId,
-					}
-				);
-				const mixedOk = await ensureHasAudioTrack(mixedPath, jobId, "mixed");
-				if (!mixedOk) {
-					logJob(jobId, "music mix missing audio; using voice-only mix", {
-						path: path.basename(mixedPath),
-					});
-					mixedPath = voiceMergedPath;
-				}
-			}
+			});
 		}
 
 		updateJob(jobId, { progressPct: 92 });
