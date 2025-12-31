@@ -232,7 +232,7 @@ const INTERMEDIATE_PRESET = "fast";
 const FINAL_PRESET = "slow";
 const AUDIO_BITRATE = "256k";
 const FINAL_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.0:LRA=11";
-const FINAL_MASTER_MAX_HEIGHT = 2160;
+const FINAL_MASTER_MAX_HEIGHT = 1080;
 const FINAL_MASTER_MIN_HEIGHT = 1080;
 const FINAL_GOP_SECONDS = 2;
 const FINAL_COLOR_SPACE = "bt709";
@@ -336,13 +336,13 @@ const SYNC_TRIM_FADE_OUT_SEC = clampNumber(0.012, 0, 0.04);
 
 // Sync input prep
 const SYNC_SO_INPUT_FPS = 30;
-const SYNC_SO_INPUT_CRF = 22;
+const SYNC_SO_INPUT_CRF = 19;
 const SYNC_SO_MAX_BYTES = 19_900_000;
-const SYNC_SO_PRE_MAX_EDGE = clampNumber(960, 640, 1280);
+const SYNC_SO_PRE_MAX_EDGE = clampNumber(1280, 960, 1536);
 const SYNC_SO_PRESCALE_ALWAYS = false;
 const SYNC_SO_PRESCALE_SIZE_PCT = clampNumber(0.85, 0.5, 0.98);
 const SYNC_SO_PRESCALE_MIN_SEC = clampNumber(9, 4, 15);
-const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(960, 640, 1280);
+const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(1280, 960, 1536);
 const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(2, 0, 5);
 const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
 const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
@@ -353,8 +353,8 @@ const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
 const USE_MOTION_REF_BASELINE = true;
 const BASELINE_DUR_SEC = clampNumber(12, 6, 15);
-const BASELINE_VARIANTS = clampNumber(2, 1, 3);
-const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
+const BASELINE_VARIANTS = clampNumber(1, 1, 3);
+const CAMERA_ZOOM_OUT = clampNumber(1.0, 0.9, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 
 // Music
@@ -378,7 +378,7 @@ const OVERLAY_DEFAULT_POSITION = "topRight";
 const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 
 // Content visual mix (presenter vs static images)
-const CONTENT_PRESENTER_RATIO = clampNumber(0.5, 0.2, 0.8);
+const CONTENT_PRESENTER_RATIO = clampNumber(1.0, 0.2, 1);
 const IMAGE_SEGMENT_TARGET_SEC = clampNumber(4.6, 2.5, 8);
 const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
 const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(4, 2, 8);
@@ -690,6 +690,20 @@ async function probeMedia(filePath) {
 async function probeDurationSeconds(filePath) {
 	const info = await probeMedia(filePath);
 	return info.duration || 0;
+}
+
+async function ensureHasAudioTrack(filePath, jobId, label) {
+	if (!filePath || !fs.existsSync(filePath)) return false;
+	const info = await probeMedia(filePath);
+	const hasAudio = Boolean(info?.hasAudio);
+	if (!hasAudio) {
+		logJob(jobId, "audio track missing", {
+			label,
+			path: path.basename(filePath),
+			duration: Number((info?.duration || 0).toFixed(3)),
+		});
+	}
+	return hasAudio;
 }
 
 /* ---------------------------------------------------------------
@@ -2565,10 +2579,9 @@ Keep the SAME identity (Ahmed): same face structure, beard, glasses, and age.
 Location: clean desk, tasteful background, soft practical lighting, studio quality. ${STUDIO_EMPTY_PROMPT}
 Outfit: classy tailored suit or blazer with a neat shirt.
 Lighting: slightly darker cinematic look with a warm key light and gentle shadows (not too dark).
-Add ONE small branded candle on the desk to the presenter's left (viewer-right), near the back-right corner; subtle, classy, and lit; keep it smaller and not centered, fully supported on the desk with a safe margin from the edge (no overhang, at least two candle-widths inboard). No extra candles. If the candle reference has a lid, remove it; no lid anywhere in frame or on the desk.
+Keep all props and objects exactly as in the reference image; do not add or remove any objects.
 Preserve the original performance timing and micro-expressions (eyebrows, blinks, subtle reactions).
 No text overlays, no extra people, no weird hands, no face warping, no mouth distortion.
-${PRESENTER_CANDLE_PROMPT}
 ${smileLine}
 `.trim();
 }
@@ -2606,11 +2619,8 @@ function buildBaselinePrompt(
 
 	return `
 Photorealistic talking-head video of the SAME person as the reference image.
-Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT} Keep ${PRESENTER_CANDLE_PROMPT}.
-Place the candle on the desk to the presenter's left (viewer-right side), toward the back-right corner; keep it clear but small and not in the foreground center. Do NOT place it in front of the presenter. Candle is a realistic small size (${CANDLE_SIZE_DESC}) and set fully on the desk with a safe margin from the edge (at least two candle-widths inboard) and farther back from the front edge, positioned consistently, ${CANDLE_POSITION_DESC}.
-Keep the candle identical to the reference image (no redesign, no extra candles), except remove the lid if present. Keep the label, glass, and color unchanged.
-Flame flickers subtly; candlelight glow shifts naturally.
-If the reference candle has a lid, remove it; no lid visible anywhere in frame or on the desk.
+Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT}
+Keep all props and objects exactly as in the reference image; do not add or remove any objects. If a candle exists in the reference, preserve it unchanged.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 ${expressionLine}
 Motion: ${motionHint} ${variantHint}
@@ -2618,7 +2628,7 @@ Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
 Eyes: relaxed, comfortable, natural reflections and blink cadence; avoid glassy or robotic eyes.
 Hands: subtle, small gestures near the desk; do NOT cover the face.
-No extra people, no text overlays, no screens, no charts, no logos except the candle brand logo, no camera shake, no mouth warping.
+No extra people, no text overlays, no screens, no charts, no new logos, no camera shake, no mouth warping.
 Do NOT try to lip-sync.
 `.trim();
 }
@@ -7352,7 +7362,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let ttsModelId = "";
 		let ttsOutputFormat = "";
 		const allowBookendTuning = !lockedVoiceSettings;
-		const includeSegmentAudio = !USE_GOLD_VOICE_MERGE;
+		let useGoldVoiceMerge = USE_GOLD_VOICE_MERGE;
+		const includeSegmentAudio = true;
 
 		const introVoiceSettings = applyPaceToVoiceSettings(
 			resolveVoiceSettings(introExpression, introLine),
@@ -7892,7 +7903,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			},
 		});
 
-		if (USE_GOLD_VOICE_MERGE) {
+		if (useGoldVoiceMerge) {
 			const voiceSegments = [
 				introAudioPath,
 				...segmentAudio.map((a) => a.wav),
@@ -7920,13 +7931,24 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				path: path.basename(voiceFullPath),
 				segments: voiceSegments.length,
 			});
+			const voiceOk = await ensureHasAudioTrack(
+				voiceFullPath,
+				jobId,
+				"voice_full"
+			);
+			if (!voiceOk) {
+				useGoldVoiceMerge = false;
+				logJob(jobId, "gold voice merge disabled (voice track invalid)", {
+					path: path.basename(voiceFullPath),
+				});
+			}
 		}
 
 		// 8.5) Visual plan: 50/50 presenter vs static image segments (content only)
 		const totalSegments = timeline.length;
 		let presenterCount = Math.floor(totalSegments * CONTENT_PRESENTER_RATIO);
 		if (totalSegments >= 2) {
-			presenterCount = clampNumber(presenterCount, 1, totalSegments - 1);
+			presenterCount = clampNumber(presenterCount, 1, totalSegments);
 		} else {
 			presenterCount = totalSegments;
 		}
@@ -8326,7 +8348,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		safeUnlink(tailRaw);
 
 		let tailSource = tailFit;
-		if (!USE_GOLD_VOICE_MERGE) {
+		if (!useGoldVoiceMerge) {
 			const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
 			await createSilentWav({
 				durationSec: OUTRO_SMILE_TAIL_SEC,
@@ -8343,7 +8365,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		await normalizeClip(tailSource, outroTail, output, {
 			zoomOut: CAMERA_ZOOM_OUT,
 			fadeOutOnly: true,
-			includeAudio: !USE_GOLD_VOICE_MERGE,
+			includeAudio: !useGoldVoiceMerge,
 		});
 		if (tailSource !== tailFit) safeUnlink(tailSource);
 		safeUnlink(tailFit);
@@ -8432,7 +8454,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		// 14.5) Merge full voice track (gold path)
 		let voiceMergedPath = overlayedPath;
-		if (USE_GOLD_VOICE_MERGE) {
+		if (useGoldVoiceMerge) {
 			if (!voiceFullPath || !fs.existsSync(voiceFullPath))
 				throw new Error("Gold voice merge failed (missing voice track)");
 			const out = path.join(tmpDir, `voice_merge_${jobId}.mkv`);
@@ -8441,6 +8463,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				voiceFullPath,
 				out
 			);
+			const mergedOk = await ensureHasAudioTrack(
+				voiceMergedPath,
+				jobId,
+				"voice_merge"
+			);
+			if (!mergedOk) {
+				logJob(jobId, "voice merge missing audio; using segment audio", {
+					path: path.basename(voiceMergedPath),
+				});
+				voiceMergedPath = overlayedPath;
+				useGoldVoiceMerge = false;
+			}
 			logJob(jobId, "voice merged", {
 				path: path.basename(voiceMergedPath),
 			});
@@ -8449,16 +8483,34 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		// 15) Music mix (must)
 		let mixedPath = voiceMergedPath;
 		if (musicLocalPath) {
-			const ext = USE_GOLD_VOICE_MERGE ? "mkv" : "mp4";
-			const out = path.join(tmpDir, `mixed_${jobId}.${ext}`);
-			mixedPath = await mixBackgroundMusic(
+			const baseHasAudio = await ensureHasAudioTrack(
 				voiceMergedPath,
-				musicLocalPath,
-				out,
-				{
-					jobId,
-				}
+				jobId,
+				"mix_base"
 			);
+			if (!baseHasAudio) {
+				logJob(jobId, "music mix skipped (no base audio)", {
+					path: path.basename(voiceMergedPath),
+				});
+			} else {
+				const ext = useGoldVoiceMerge ? "mkv" : "mp4";
+				const out = path.join(tmpDir, `mixed_${jobId}.${ext}`);
+				mixedPath = await mixBackgroundMusic(
+					voiceMergedPath,
+					musicLocalPath,
+					out,
+					{
+						jobId,
+					}
+				);
+				const mixedOk = await ensureHasAudioTrack(mixedPath, jobId, "mixed");
+				if (!mixedOk) {
+					logJob(jobId, "music mix missing audio; using voice-only mix", {
+						path: path.basename(mixedPath),
+					});
+					mixedPath = voiceMergedPath;
+				}
+			}
 		}
 
 		updateJob(jobId, { progressPct: 92 });
