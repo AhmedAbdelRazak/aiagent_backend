@@ -33,7 +33,7 @@ const ORCHESTRATOR_CANDLE_REF_URL =
 const ORCHESTRATOR_CANDLE_PRODUCT_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767134899/aivideomatic/MyCandle_u9skio.png";
 const FINAL_PLACEMENT_CONSTRAINTS =
-	"Placement: use the existing back table/desk behind the presenter (rear desk, not the front tabletop). Place the candle on that tabletop on the viewer-right side, inboard from the right edge with a visible margin (not cropped, not on the edge). Size: natural small jar size matching the reference candle. Lid off, candle lit with a tiny calm flame. Do NOT add or move any tables/surfaces/props; add only the candle. Keep the studio and presenter unchanged. Preserve candle branding/label exactly.";
+	"Placement: use the existing back table/desk behind the presenter (rear desk, not the front tabletop). Place the candle on that tabletop on the viewer-right side, inboard from the right edge with a visible margin (not cropped, not on the edge). Size: natural small jar size matching the reference candle. Lid off, candle lit with a tiny calm flame. Do NOT add or move any tables/surfaces/props; add only the candle. Keep the studio and presenter unchanged. Preserve candle branding/label exactly. Presenter lock: face/head/clothing must match @presenter_ref exactly (no retouching, no smoothing, no added blur). No crop/zoom, no borders, no letterboxing/vignette, no framing or lighting changes.";
 
 const WARDROBE_VARIANTS = [
 	"dark charcoal matte button-up, open collar, no blazer",
@@ -241,6 +241,7 @@ Change ONLY the outfit on the torso/upper body area to a dark, classy outfit. Ou
 Outfit colors must be dark only (charcoal, black, deep navy). No bright or light colors.
 Do NOT alter the face or head at all. Keep glasses, beard, hairline, skin texture, and facial features exactly as in @presenter_ref. Single face only, no ghosting.
 Studio background, desk, lighting, camera angle, and all props must remain EXACTLY the same.
+No crop/zoom, no borders/letterboxing/vignettes, no added blur or beautification; keep exact framing and processing.
 No candles, no extra objects, no text, no logos. Topic context: ${topicLine}.
 `.trim();
 }
@@ -254,6 +255,7 @@ Place it on the rear desk (behind the presenter), not the front tabletop or fore
 ${FINAL_PLACEMENT_CONSTRAINTS}
 The candle jar is OPEN with NO lid visible. The candle is LIT with a tiny calm flame; no exaggerated glow.
 Do NOT alter the face or head at all; keep it exactly as in @presenter_ref. Single face only, no double exposure or ghosting.
+No crop/zoom, no borders/letterboxing/vignettes, no added blur or beautification; keep exact framing, color, and lighting.
 No transparency on the candle; label text/logo must remain EXACT and crisp, glass must be solid, with a soft natural shadow on the desk.
 Keep candle size natural and slightly smaller than the presenter; do not exaggerate scale.
 Only add the candle; do NOT change any other pixels or elements in the scene.
@@ -318,8 +320,8 @@ Return JSON only with keys: wardrobePrompt, finalPrompt.
 	Rules:
 	- Use @presenter_ref as the only person reference.
 	- Study the provided reference images to match the studio framing and candle placement.
-	- Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts.
-	- Keep studio/desk/background/camera/lighting unchanged.
+	- Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts, no retouching or smoothing.
+	- Keep studio/desk/background/camera/framing/lighting unchanged; no crop/zoom, no borders/letterboxing/vignettes, no added blur or processing.
 	- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; the prompt must include the cue explicitly and match it exactly (dark colors only, open collar, optional open blazer).
 	- Final: add @candle_ref on the back table/desk to the right side near the edge, fully visible, lid removed, tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating), normal size in scene. Match the candle placement/size to the reference image (same relative offset/scale). Candle label/branding must remain EXACT and readable. Only add the candle; do not change any other pixels. Explicitly state to use the existing back table (rear desk) and not add or move any tables/surfaces/props. Also state the candle is not placed on the edge and is fully inside the frame with a visible right margin. Do NOT mention wardrobe changes in the final prompt; state that the outfit stays exactly as @presenter_ref.
 - Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
@@ -641,7 +643,7 @@ Return JSON only with keys: accept (boolean), reason (string), improvedPrompt (s
 Accept only if:
 - Candle placement closely matches the reference placement image (position on right desk, same relative size/offset).
 - Candle is fully visible, lid removed, tiny calm flame, natural shadow, no transparency.
-- Presenter face/head and studio are unchanged.
+- Presenter face/head and studio are unchanged, with no crop/zoom, borders/letterboxing/vignettes, or processing shifts.
 - Do not reject solely for minor label/branding differences; prioritize placement/scale and presenter integrity.
 If reject, provide a revised final prompt that keeps all constraints and fixes placement/size/label clarity.
 `.trim();

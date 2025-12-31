@@ -193,7 +193,7 @@ const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter.";
 const PRESENTER_MOTION_STYLE =
-	"natural head and neck movement, human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; smile, if any, is very subtle; no exaggerated grin";
+	"natural head and neck movement, human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; mouth neutral; avoid smiles unless explicitly requested; no exaggerated expressions";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -262,6 +262,9 @@ const OUTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
 const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
 const VOICE_SPEED_BOOST = clampNumber(1.0, 0.98, 1.08);
+const FORCE_NEUTRAL_VOICEOVER = true;
+const MAX_SUBTLE_VISUAL_EXPRESSIONS = clampNumber(2, 0, 2);
+const SUBTLE_VISUAL_EDGE_BUFFER = clampNumber(1, 0, 3);
 
 // Sync input prep
 const SYNC_SO_INPUT_FPS = 30;
@@ -2631,19 +2634,19 @@ function buildBaselinePrompt(
 ) {
 	const expr = normalizeExpression(expression);
 	let expressionLine =
-		"Expression: calm and professional; mouth near-neutral with a very subtle smile (barely noticeable, not constant).";
+		"Expression: calm and professional; neutral mouth, no smile.";
 	if (expr === "warm")
 		expressionLine =
-			"Expression: friendly and approachable with a very subtle, light smile (barely there, not constant).";
+			"Expression: friendly and approachable with a tiny micro-smile (closed mouth, no teeth).";
 	if (expr === "excited")
 		expressionLine =
-			"Expression: energized and engaged, minimal smile only, no exaggerated grin.";
+			"Expression: upbeat and engaged with a brief, very slight smile; minimal teeth only for a moment, no wide grin.";
 	if (expr === "serious")
 		expressionLine =
-			"Expression: serious but calm, neutral mouth, low-energy delivery, soft eye contact.";
+			"Expression: neutral and steady, no frown, no exaggerated concern, soft eye contact.";
 	if (expr === "thoughtful")
 		expressionLine =
-			"Expression: thoughtful and attentive, relaxed mouth, gentle eye focus, minimal smile.";
+			"Expression: thoughtful and composed, neutral mouth, gentle eye focus, no smile.";
 
 	const variantHint =
 		variant === 1
@@ -2665,6 +2668,7 @@ Motion: ${motionHint} ${variantHint}
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
 Eyes: relaxed, comfortable, natural reflections and blink cadence; avoid glassy or robotic eyes.
+Avoid exaggerated eye expressions or wide-eyed looks.
 Hands: subtle, small gestures near the desk; do NOT cover the face.
 No extra people, no text overlays, no screens, no charts, no logos except those already present in the reference, no camera shake, no mouth warping.
 Do NOT try to lip-sync.
@@ -2783,11 +2787,14 @@ function inferExplicitExpression(text = "") {
 function coerceExpressionForNaturalness(rawExpression, text, mood = "neutral") {
 	const base = normalizeExpression(rawExpression, mood);
 	const explicit = inferExplicitExpression(text);
-	if (explicit) return explicit;
-	if (mood === "serious" && base === "serious") return "serious";
-	if (mood === "excited" && base === "excited") return "excited";
-	if (base === "warm") return "warm";
-	if (base === "neutral" && mood !== "serious") return "warm";
+	if (explicit) {
+		if (explicit === "serious") return "neutral";
+		if (explicit === "excited") return "excited";
+		return explicit;
+	}
+	if (mood === "serious") return "neutral";
+	if (base === "excited") return "warm";
+	if (base === "warm" || base === "thoughtful") return base;
 	return "neutral";
 }
 
@@ -2835,6 +2842,55 @@ function buildVideoExpressionPlan(expressions = [], mood = "neutral") {
 		last = next;
 	}
 	return out;
+}
+
+function pickSubtleExpressionIndices(
+	total,
+	seed,
+	maxCount = MAX_SUBTLE_VISUAL_EXPRESSIONS,
+	edgeBuffer = SUBTLE_VISUAL_EDGE_BUFFER
+) {
+	const t = Number.isFinite(Number(total)) ? Number(total) : 0;
+	const buffer = Math.max(0, Math.floor(Number(edgeBuffer) || 0));
+	const max = Math.max(0, Math.floor(Number(maxCount) || 0));
+	if (!t || max <= 0) return [];
+	if (t <= buffer * 2 + 1) return [];
+
+	const eligible = [];
+	for (let i = buffer; i <= t - buffer - 1; i++) eligible.push(i);
+	if (!eligible.length) return [];
+
+	const pickCount = Math.min(max, eligible.length);
+	const base = pickEvenlySpacedIndices(eligible.length, pickCount);
+	const shift = Math.abs(Number(seed) || 0) % eligible.length;
+	const shifted = base.map((idx) => eligible[(idx + shift) % eligible.length]);
+	return Array.from(new Set(shifted)).sort((a, b) => a - b);
+}
+
+function buildSubtleVideoExpressionPlan(
+	segments = [],
+	mood = "neutral",
+	jobId
+) {
+	if (!segments.length) return [];
+	const total = segments.length;
+	const plan = Array.from({ length: total }, () => "neutral");
+	if (mood === "serious") return plan;
+
+	const seed = jobId ? seedFromJobId(jobId) : 0;
+	const indices = pickSubtleExpressionIndices(total, seed);
+	if (!indices.length) return plan;
+
+	const normalized = segments.map((s) =>
+		normalizeExpression(s.expression, mood)
+	);
+	for (const idx of indices) {
+		const preferred = normalized[idx];
+		if (preferred === "excited") plan[idx] = "excited";
+		else if (preferred === "thoughtful") plan[idx] = "thoughtful";
+		else plan[idx] = "warm";
+	}
+	return plan;
 }
 
 function shortTitleFromText(text = "") {
@@ -2953,6 +3009,32 @@ function splitSentences(text = "") {
 		if (sentence) sentences.push(sentence);
 	}
 	return sentences.length ? sentences : [raw];
+}
+
+function trimToSentenceCap(text = "", cap = 0) {
+	const clean = String(text || "").trim();
+	if (!clean) return clean;
+	const limit = Number(cap) || 0;
+	if (!limit) return clean;
+	const words = clean.split(/\s+/).filter(Boolean);
+	if (words.length <= limit) return clean;
+
+	const sentences = splitSentences(clean);
+	if (sentences.length <= 1) return clean;
+
+	let count = 0;
+	const kept = [];
+	for (const sentence of sentences) {
+		const w = countWords(sentence);
+		if (!kept.length && w > limit) {
+			return clean;
+		}
+		if (count + w > limit) break;
+		kept.push(sentence);
+		count += w;
+	}
+	const trimmed = cleanupSpeechText(kept.join(" "));
+	return trimmed || clean;
 }
 
 function stripMetaNarration(text = "") {
@@ -3277,19 +3359,7 @@ function enforceSegmentCompleteness(
 }
 
 function trimSegmentToCap(text = "", cap = 0) {
-	const clean = String(text || "").trim();
-	if (!clean) return clean;
-	const limit = Number(cap) || 0;
-	if (!limit) return clean;
-	const words = clean.split(/\s+/).filter(Boolean);
-	if (words.length <= limit) return clean;
-
-	const softLimit = Math.min(words.length, limit + 3);
-	const truncated = words.slice(0, softLimit).join(" ");
-	if (/[.!?]["')\]]?$/.test(truncated)) return truncated;
-	const match = truncated.match(/(.+?[.!?])\s+[^.!?]*$/);
-	if (match && match[1]) return match[1].trim();
-	return clean;
+	return trimToSentenceCap(text, cap);
 }
 
 const TOPIC_TRANSITION_TEMPLATES = [
@@ -3391,11 +3461,10 @@ function ensureTopicEngagementQuestions(
 
 		let baseText = base;
 		if (cap) {
-			const baseWords = baseText.split(/\s+/).filter(Boolean);
 			const questionWords = question.split(/\s+/).filter(Boolean);
 			const allowedBaseWords = Math.max(0, cap - questionWords.length);
-			if (baseWords.length > allowedBaseWords) {
-				baseText = baseWords.slice(0, allowedBaseWords).join(" ");
+			if (allowedBaseWords > 0) {
+				baseText = trimToSentenceCap(baseText, allowedBaseWords);
 			}
 		}
 
@@ -3555,8 +3624,10 @@ Style rules (IMPORTANT):
 - Topic questions must be short and end with a single question mark.
 - Provide "shortTitle": 2-5 words, punchy and easy to read.
 - For each segment, include "expression" from: neutral, warm, serious, excited, thoughtful.
-- Default to warm (light smile) for regular news; use serious for sad/hard news, neutral for somber or low-tone lines, thoughtful when reflective.
-- Keep expressions coherent across segments; avoid abrupt mood flips. Use warm smiles lightly and very subtle (barely noticeable), never exaggerated.
+- Default to neutral for most segments. Use warm/thoughtful sparingly (1-2 middle segments max) and keep it subtle.
+- If the topic is sad or serious, use neutral (no exaggerated sadness).
+- If the line is happy, use a light smile; if very happy, a brief small smile with slight teeth (never a wide grin).
+- Keep expressions coherent across segments; avoid abrupt mood flips and avoid exaggerated expressions.
 - Each segment must include EXACTLY one overlayCues entry with a search query that matches that segment.
 - overlayCues.query must be 2-6 words, describe a real photo to search for, include the topic name or a key subject from that segment, no punctuation or hashtags.
 - overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
@@ -3716,11 +3787,14 @@ function buildVoiceSettingsForExpression(
 	opts = {}
 ) {
 	const uniform = Boolean(opts?.uniform);
-	const expr = coerceExpressionForNaturalness(expression, text, mood);
+	const forceNeutral = Boolean(opts?.forceNeutral);
+	const expr = forceNeutral
+		? "neutral"
+		: coerceExpressionForNaturalness(expression, text, mood);
 	let stability = Math.max(ELEVEN_TTS_STABILITY, uniform ? 0.72 : 0.6);
 	let style = Math.min(ELEVEN_TTS_STYLE, uniform ? 0.16 : 0.22);
 
-	if (uniform) {
+	if (uniform || forceNeutral) {
 		// Lock a neutral, natural voice regardless of mood/expression.
 		stability = ELEVEN_TTS_STABILITY;
 		style = ELEVEN_TTS_STYLE;
@@ -6526,7 +6600,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			mood: introOutroMood,
 		});
 		const introExpression = "neutral";
-		const outroExpression = "warm";
+		const outroExpression = "neutral";
 
 		logJob(jobId, "orchestrator plan", {
 			mood: introOutroMood,
@@ -6551,14 +6625,18 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			},
 		});
 
-		const lockedVoiceSettings = UNIFORM_TTS_VOICE_SETTINGS
-			? buildVoiceSettingsForExpression("neutral", "neutral", "", {
-					uniform: true,
-			  })
-			: null;
+		const lockedVoiceSettings =
+			UNIFORM_TTS_VOICE_SETTINGS || FORCE_NEUTRAL_VOICEOVER
+				? buildVoiceSettingsForExpression("neutral", "neutral", "", {
+						uniform: true,
+						forceNeutral: FORCE_NEUTRAL_VOICEOVER,
+				  })
+				: null;
 		const resolveVoiceSettings = (expression, text) =>
 			lockedVoiceSettings ||
-			buildVoiceSettingsForExpression(expression, tonePlan?.mood, text);
+			buildVoiceSettingsForExpression(expression, tonePlan?.mood, text, {
+				forceNeutral: FORCE_NEUTRAL_VOICEOVER,
+			});
 		const ttsModelOrder = [
 			ELEVEN_TTS_MODEL,
 			...ELEVEN_TTS_MODEL_FALLBACKS,
@@ -6672,10 +6750,18 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			segments.map((s) => s.expression),
 			tonePlan?.mood
 		);
-		segments = segments.map((s, i) => ({
+		const segmentsWithExpressions = segments.map((s, i) => ({
 			...s,
 			expression: smoothedExpressions[i] || s.expression,
-			videoExpression: "neutral",
+		}));
+		const videoExpressionPlan = buildSubtleVideoExpressionPlan(
+			segmentsWithExpressions,
+			tonePlan?.mood,
+			jobId
+		);
+		segments = segmentsWithExpressions.map((s, i) => ({
+			...s,
+			videoExpression: videoExpressionPlan[i] || "neutral",
 			topicIndex:
 				Number.isFinite(Number(s.topicIndex)) && Number(s.topicIndex) >= 0
 					? Number(s.topicIndex)
@@ -7065,6 +7151,24 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			},
 		});
 
+		const presenterSegSet = new Set(finalPresenterSegments);
+		const presenterOnlySegments = segments.filter((s) =>
+			presenterSegSet.has(s.index)
+		);
+		const presenterVideoPlan = buildSubtleVideoExpressionPlan(
+			presenterOnlySegments,
+			tonePlan?.mood,
+			jobId
+		);
+		const presenterPlanByIndex = new Map();
+		presenterOnlySegments.forEach((seg, idx) => {
+			presenterPlanByIndex.set(seg.index, presenterVideoPlan[idx] || "neutral");
+		});
+		segments = segments.map((s) => ({
+			...s,
+			videoExpression: presenterPlanByIndex.get(s.index) || "neutral",
+		}));
+
 		// Build topic-aligned overlays from segment cues (if no custom overlays provided)
 		if (
 			ENABLE_LONG_VIDEO_OVERLAYS &&
@@ -7113,8 +7217,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				].filter(Boolean)
 			)
 		);
-		if (OUTRO_SMILE_TAIL_SEC > 0 && !expressionsNeeded.includes("warm"))
-			expressionsNeeded.push("warm");
 		if (!expressionsNeeded.includes("neutral"))
 			expressionsNeeded.unshift("neutral");
 
@@ -7365,9 +7467,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			addFades: false,
 		});
 
-		// Smile tail after the outro line (silent + fade-out).
+		// Calm tail after the outro line (silent + fade-out).
 		const tailBaseline =
-			pickBaselineVariant("warm", 2) || outroBaseline || baselineDefault;
+			pickBaselineVariant("neutral", 2) || outroBaseline || baselineDefault;
 		const tailBaselineDur = await probeDurationSeconds(tailBaseline);
 		const tailStart = Math.max(0, tailBaselineDur - OUTRO_SMILE_TAIL_SEC);
 		const tailRaw = path.join(tmpDir, `outro_tail_raw_${jobId}.mp4`);
