@@ -132,6 +132,8 @@ const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
 const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY || null;
 
 const GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
+const WIKIPEDIA_API_BASE = "https://en.wikipedia.org/w/api.php";
+const WIKIMEDIA_API_BASE = "https://commons.wikimedia.org/w/api.php";
 
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
@@ -1649,6 +1651,130 @@ async function fetchCseImages(topic, extraTokens = []) {
 	return filtered;
 }
 
+function parseMetaAttributes(tag = "") {
+	const attrs = {};
+	const re = /([a-zA-Z0-9:_-]+)\s*=\s*["']([^"']+)["']/g;
+	let match = null;
+	while ((match = re.exec(tag))) {
+		const key = String(match[1] || "").toLowerCase();
+		const val = String(match[2] || "").trim();
+		if (key && val) attrs[key] = val;
+	}
+	return attrs;
+}
+
+function extractOpenGraphImage(html = "", baseUrl = "") {
+	const metaTags = String(html || "").match(/<meta[^>]+>/gi) || [];
+	const priority = [
+		"og:image:secure_url",
+		"og:image",
+		"twitter:image:src",
+		"twitter:image",
+	];
+	for (const key of priority) {
+		for (const tag of metaTags) {
+			const attrs = parseMetaAttributes(tag);
+			const prop = attrs.property || attrs.name || "";
+			if (!prop || prop.toLowerCase() !== key) continue;
+			const content = attrs.content || "";
+			if (!content) continue;
+			try {
+				const resolved = new URL(content, baseUrl);
+				if (!/^https?:$/i.test(resolved.protocol)) continue;
+				return resolved.toString();
+			} catch {
+				continue;
+			}
+		}
+	}
+	return "";
+}
+
+async function fetchOpenGraphImageUrl(pageUrl, timeoutMs = 9000) {
+	try {
+		if (!/^https?:\/\//i.test(pageUrl || "")) return null;
+		const res = await axios.get(pageUrl, {
+			timeout: timeoutMs,
+			maxContentLength: 1024 * 1024,
+			maxBodyLength: 1024 * 1024,
+			headers: { "User-Agent": "agentai-long-video/2.0" },
+			validateStatus: (s) => s >= 200 && s < 400,
+		});
+		const html = String(res.data || "");
+		if (!html) return null;
+		const og = extractOpenGraphImage(html, pageUrl);
+		return og || null;
+	} catch {
+		return null;
+	}
+}
+
+async function fetchWikipediaPageImageUrl(topic = "") {
+	const title = cleanTopicLabel(topic);
+	if (!title) return null;
+	try {
+		const { data } = await axios.get(WIKIPEDIA_API_BASE, {
+			params: {
+				action: "query",
+				format: "json",
+				prop: "pageimages|info",
+				inprop: "url",
+				piprop: "original|thumbnail",
+				pithumbsize: 1200,
+				redirects: 1,
+				titles: title,
+			},
+			timeout: 8000,
+			validateStatus: (s) => s < 500,
+			headers: { "User-Agent": "agentai-long-video/2.0" },
+		});
+		const pages = data?.query?.pages || {};
+		const page = Object.values(pages)[0];
+		if (!page || page.missing) return null;
+		const imageUrl = page.original?.source || page.thumbnail?.source || "";
+		return imageUrl || null;
+	} catch {
+		return null;
+	}
+}
+
+async function fetchWikimediaImageUrls(query = "", limit = 3) {
+	const q = sanitizeOverlayQuery(query);
+	if (!q) return [];
+	const target = clampNumber(Number(limit) || 3, 1, 8);
+	try {
+		const { data } = await axios.get(WIKIMEDIA_API_BASE, {
+			params: {
+				action: "query",
+				format: "json",
+				generator: "search",
+				gsrsearch: q,
+				gsrnamespace: 6,
+				gsrlimit: Math.max(5, target * 2),
+				prop: "imageinfo",
+				iiprop: "url|size|mime",
+				iiurlwidth: 1600,
+			},
+			timeout: 8000,
+			validateStatus: (s) => s < 500,
+			headers: { "User-Agent": "agentai-long-video/2.0" },
+		});
+		const pages = data?.query?.pages || {};
+		const urls = [];
+		for (const page of Object.values(pages)) {
+			const info = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
+			const url = String(info?.url || info?.thumburl || "").trim();
+			const mime = String(info?.mime || "").toLowerCase();
+			if (!url || (mime && !mime.startsWith("image/"))) continue;
+			urls.push(url);
+			if (urls.length >= target) break;
+		}
+		return uniqueStrings(urls, { limit: target });
+	} catch {
+		return [];
+	}
+}
+
 function sanitizeOverlayQuery(query = "") {
 	return String(query || "")
 		.replace(/[^a-z0-9\s]/gi, " ")
@@ -1955,6 +2081,47 @@ async function downloadSegmentImages(urls, tmpDir, jobId, segIndex) {
 	return localPaths;
 }
 
+async function fetchFallbackImageUrlsForSegment({
+	query,
+	topicLabel,
+	limit = 4,
+}) {
+	const target = clampNumber(Number(limit) || 4, 1, 8);
+	const urls = [];
+
+	const contextItems = await fetchCseContext(
+		query || topicLabel,
+		topicLabel ? [topicLabel] : []
+	);
+	const articleUrls = uniqueStrings(
+		contextItems.map((c) => c?.link).filter(Boolean),
+		{ limit: 6 }
+	);
+	for (const pageUrl of articleUrls) {
+		if (urls.length >= target) break;
+		const og = await fetchOpenGraphImageUrl(pageUrl);
+		if (!og) continue;
+		if (isProbablyDirectImageUrl(og)) {
+			urls.push(og);
+			continue;
+		}
+		const ct = await headContentType(og, 7000);
+		if (ct && ct.startsWith("image/")) urls.push(og);
+	}
+
+	if (urls.length < target && topicLabel) {
+		const wiki = await fetchWikipediaPageImageUrl(topicLabel);
+		if (wiki) urls.push(wiki);
+	}
+
+	if (urls.length < target && topicLabel) {
+		const commons = await fetchWikimediaImageUrls(topicLabel, target);
+		urls.push(...commons);
+	}
+
+	return uniqueStrings(urls, { limit: target });
+}
+
 async function prepareImageSegments({
 	timeline = [],
 	topics = [],
@@ -1982,6 +2149,7 @@ async function prepareImageSegments({
 
 	const queryCache = new Map();
 	const topicCache = new Map();
+	const fallbackCache = new Map();
 	const usedUrls = new Set();
 	const segmentImagePaths = new Map();
 	const imagePlanSummary = [];
@@ -2022,13 +2190,52 @@ async function prepareImageSegments({
 			candidates = topicCache.get(topicLabel) || [];
 		}
 
+		if (!candidates.length) {
+			const fallbackKey = `${query}||${topicLabel}`;
+			if (fallbackCache.has(fallbackKey)) {
+				candidates = fallbackCache.get(fallbackKey) || [];
+			} else {
+				const fallbackUrls = await fetchFallbackImageUrlsForSegment({
+					query,
+					topicLabel,
+					limit: Math.max(3, desiredCount),
+				});
+				fallbackCache.set(fallbackKey, fallbackUrls);
+				candidates = fallbackUrls;
+				if (fallbackUrls.length && topicLabel)
+					topicCache.set(topicLabel, fallbackUrls);
+			}
+		}
+
 		const picks = pickSegmentImageUrls(candidates, desiredCount, usedUrls);
-		const localPaths = await downloadSegmentImages(
+		let localPaths = await downloadSegmentImages(
 			picks,
 			tmpDir,
 			jobId,
 			seg.index
 		);
+		if (!localPaths.length) {
+			const fallbackKey = `${query}||${topicLabel}`;
+			const fallbackUrls =
+				fallbackCache.get(fallbackKey) ||
+				(await fetchFallbackImageUrlsForSegment({
+					query,
+					topicLabel,
+					limit: Math.max(3, desiredCount),
+				}));
+			fallbackCache.set(fallbackKey, fallbackUrls);
+			const fallbackPicks = pickSegmentImageUrls(
+				fallbackUrls,
+				desiredCount,
+				usedUrls
+			);
+			localPaths = await downloadSegmentImages(
+				fallbackPicks,
+				tmpDir,
+				jobId,
+				seg.index
+			);
+		}
 
 		if (!localPaths.length) {
 			logJob(jobId, "segment images missing; fallback to presenter", {
@@ -2636,6 +2843,47 @@ function cleanTopicLabel(text = "") {
 		.trim();
 }
 
+function looksLikeQuestionTopic(text = "") {
+	const t = String(text || "")
+		.trim()
+		.toLowerCase();
+	return (
+		/^(what|when|where|why|how|who)\b/.test(t) ||
+		/\bwhat time\b/.test(t) ||
+		/\bcome out\b/.test(t)
+	);
+}
+
+function normalizeTopicLabelForQuestion(text = "") {
+	let t = cleanTopicLabel(text);
+	if (!t) return t;
+	t = t
+		.replace(/^(what time does|what time do|when does|when do)\s+/i, "")
+		.replace(
+			/^(what is|who is|who are|how does|how do|why does|why is)\s+/i,
+			""
+		)
+		.replace(/\bcome out\b/i, "")
+		.replace(/\brelease date\b/i, "release")
+		.replace(/\s+/g, " ")
+		.trim();
+	return t;
+}
+
+function selectEngagementLabel({ topicLabel, shortTitle, maxWords = 4 }) {
+	const base = cleanTopicLabel(topicLabel);
+	const isQuestion = looksLikeQuestionTopic(base);
+	const normalized = isQuestion ? normalizeTopicLabelForQuestion(base) : base;
+	const safeShortTitle = cleanTopicLabel(shortTitle || "");
+	const preferred =
+		isQuestion &&
+		safeShortTitle &&
+		safeShortTitle.toLowerCase() !== "quick update"
+			? safeShortTitle
+			: normalized || safeShortTitle || base;
+	return shortTopicLabel(preferred, maxWords);
+}
+
 function shortTopicLabel(text = "", maxWords = 4) {
 	const base = cleanTopicLabel(text);
 	const words = base.split(/\s+/).filter(Boolean);
@@ -2798,20 +3046,51 @@ function sanitizeSegmentText(text = "") {
 	return cleaned || "Quick update.";
 }
 
-function buildIntroLine({ topics = [], shortTitle }) {
+const INTRO_TEMPLATES = {
+	neutral: [
+		"Hi there, this is Ahmed, and today I will cover {topic}.",
+		"Hi there, this is Ahmed, and we have a very interesting topic regarding {topic}.",
+		"Hi there, this is Ahmed, and today we're covering {topic}.",
+	],
+	excited: [
+		"Hi there, this is Ahmed, and I'm thrilled to cover {topic}.",
+		"Hi there, this is Ahmed, and I'm excited to cover {topic}.",
+	],
+	serious: [
+		"Hi there, this is Ahmed, and today we have very sad news about {topic}.",
+		"Hi there, this is Ahmed, and we're sharing sad news about {topic}.",
+	],
+};
+
+function pickIntroTemplate(mood = "neutral", jobId) {
+	const key = INTRO_TEMPLATES[mood] ? mood : "neutral";
+	const pool = INTRO_TEMPLATES[key];
+	if (!pool.length) return INTRO_TEMPLATES.neutral[0];
+	const seed = jobId ? seedFromJobId(jobId) : 0;
+	return pool[seed % pool.length];
+}
+
+function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	const subject = shortTitle
-		? shortTopicLabel(shortTitle, 4)
+		? shortTopicLabel(shortTitle, 5)
 		: formatTopicList(topics);
-	const line = `Hi there, my name is Ahmed. Quick update on ${subject}.`;
+	const safeSubject = subject || "today's topic";
+	const normalizedMood = normalizeExpression(mood);
+	const template = pickIntroTemplate(normalizedMood, jobId);
+	const line = template.replace("{topic}", safeSubject);
 	return sanitizeIntroOutroLine(line);
 }
 
 function buildTopicEngagementQuestionForLabel(
 	topicLabel,
 	mood = "neutral",
-	{ compact = false } = {}
+	{ compact = false, shortTitle = "" } = {}
 ) {
-	const label = shortTopicLabel(topicLabel, compact ? 3 : 4);
+	const label = selectEngagementLabel({
+		topicLabel,
+		shortTitle,
+		maxWords: compact ? 4 : 5,
+	});
 	if (!label) return "What do you think?";
 	if (compact) return `Thoughts on ${label}?`;
 	if (mood === "serious") return `What is your take on ${label}?`;
@@ -2835,7 +3114,10 @@ function buildTopicEngagementQuestion({
 			: [];
 	if (!labels.length) return "What do you think?";
 	if (labels.length === 1)
-		return buildTopicEngagementQuestionForLabel(labels[0], mood, { compact });
+		return buildTopicEngagementQuestionForLabel(labels[0], mood, {
+			compact,
+			shortTitle,
+		});
 
 	if (compact)
 		return mood === "serious"
@@ -2855,12 +3137,12 @@ function buildOutroLine({ topics = [], shortTitle, mood = "neutral" }) {
 		mood,
 		compact: true,
 	});
-	let line = `${question} Thanks for watching. Like the video, and see you next time.`;
+	let line = `${question} Thank you for watching, and see you next time.`;
 	if (countWords(line) > 18) {
-		line = `${question} Thanks for watching, like the video, see you next time.`;
+		line = `${question} Thank you for watching. See you next time.`;
 	}
-	if (countWords(line) > 16) {
-		line = `${question} Thanks for watching. Like the video. See you next time.`;
+	if (countWords(line) > 14) {
+		line = `${question} Thank you for watching.`;
 	}
 	return sanitizeIntroOutroLine(line);
 }
@@ -3124,7 +3406,7 @@ async function generateScript({
 			? `Segment 0: high-energy, upbeat hook. ${outroGuide}`
 			: `Segment 0: confident, neutral hook. ${outroGuide}`;
 	const ctaLine = includeOutro
-		? "End the LAST segment of EACH topic with one short, topic-specific engagement question for comments. Do NOT add like/subscribe in content; the closing line handles thanks and likes."
+		? "End the LAST segment of EACH topic with one short, topic-specific engagement question for comments. Do NOT add like/subscribe in content; the closing line only says thank you and see you next time."
 		: "Last segment ends with ONE short CTA question (comment + subscribe).";
 
 	const topicPlanLines = topicRanges
@@ -3217,13 +3499,17 @@ Style rules (IMPORTANT):
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
 - Lead with the answer, then add context (what happened, why it matters, what to watch for).
 - Avoid repeating the topic question or using vague filler phrasing; be specific and helpful.
+- Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
 - Avoid exclamation points unless the script explicitly calls for excitement.
 - Each segment should be 1-2 sentences. Do NOT switch topics mid-sentence.
+- Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Avoid specific dates, rankings, or stats unless they appear in the provided context above.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - Segment 0 must be a strong hook that makes people stay.
+- Do NOT start segment 0 with "Quick update on..." or restate the intro line; the intro handles that.
+- Segment 0 should read like the very next sentence after the intro, continuing the same thought without reintroducing the topic.
 - Segment 0 follows the tone plan; middle segments stay conversational/neutral; last segment wraps with the tone plan.
 - Each topic is its own mini story with clear transitions.
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
@@ -6199,10 +6485,12 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		});
 
 		// 6) Orchestrator plan (intro/outro) + voice prep
-		const introOutroMood = "neutral";
+		const introOutroMood = tonePlan?.mood || "neutral";
 		const introLine = buildIntroLine({
 			topics: topicPicks,
 			shortTitle: script.shortTitle || script.title,
+			mood: introOutroMood,
+			jobId,
 		});
 		const outroLine = buildOutroLine({
 			topics: topicPicks,
@@ -6575,6 +6863,8 @@ Rules:
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
 - If a segment is the first for a new topic, start it with an explicit transition line naming the topic (example: "And now, let's talk about {topic}.").
 - Improve clarity and specificity; avoid vague filler phrasing or repeating the question.
+- Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
+- Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".

@@ -182,8 +182,13 @@ function normalizeFinalPrompt({ finalPrompt, wardrobeVariant }) {
 		.filter(Boolean);
 	const filtered = lines.filter((line) => {
 		const lower = line.toLowerCase();
-		if (wardrobeVariant && line.includes(wardrobeVariant)) return false;
+		const isNegative =
+			/(do not|don't|dont|no change|unchanged|keep)/i.test(lower) &&
+			/(outfit|wardrobe)/i.test(lower);
+		if (wardrobeVariant && line.includes(wardrobeVariant) && !isNegative)
+			return false;
 		if (
+			!isNegative &&
 			lower.includes("wardrobe") &&
 			(lower.includes("change") ||
 				lower.includes("apply") ||
@@ -191,6 +196,7 @@ function normalizeFinalPrompt({ finalPrompt, wardrobeVariant }) {
 		)
 			return false;
 		if (
+			!isNegative &&
 			lower.includes("outfit") &&
 			(lower.includes("change") ||
 				lower.includes("apply") ||
@@ -208,6 +214,24 @@ function normalizeFinalPrompt({ finalPrompt, wardrobeVariant }) {
 	);
 	if (!hasKeepLine) filtered.push(keepLine);
 	return filtered.join("\n");
+}
+
+function isFinalPromptComplete(prompt = "") {
+	const lower = String(prompt || "").toLowerCase();
+	const hasCandle = lower.includes("candle");
+	const hasRef = lower.includes("@candle_ref");
+	const hasSurface = lower.includes("desk") || lower.includes("table");
+	return hasCandle && hasRef && hasSurface;
+}
+
+function finalizeFinalPrompt({ finalPrompt, fallbackPrompt, wardrobeVariant }) {
+	const normalized = normalizeFinalPrompt({ finalPrompt, wardrobeVariant });
+	if (isFinalPromptComplete(normalized)) return normalized;
+	const fallback = normalizeFinalPrompt({
+		finalPrompt: fallbackPrompt,
+		wardrobeVariant,
+	});
+	return fallback;
 }
 
 function fallbackWardrobePrompt({ topicLine, wardrobeVariant }) {
@@ -263,6 +287,7 @@ async function buildOrchestratedPrompts({
 }) {
 	const topicLine = buildTopicLine({ title, topics });
 	const wardrobeVariant = pickWardrobeVariant({ jobId, title, topics });
+	const fallbackFinal = fallbackFinalPrompt({ topicLine });
 	if (log)
 		log("wardrobe variation selected", {
 			variant: wardrobeVariant,
@@ -273,8 +298,9 @@ async function buildOrchestratedPrompts({
 				topicLine,
 				wardrobeVariant,
 			}),
-			finalPrompt: normalizeFinalPrompt({
-				finalPrompt: fallbackFinalPrompt({ topicLine }),
+			finalPrompt: finalizeFinalPrompt({
+				finalPrompt: fallbackFinal,
+				fallbackPrompt: fallbackFinal,
 				wardrobeVariant,
 			}),
 		};
@@ -342,8 +368,9 @@ Topics: ${topicLine}
 		if (parsed && parsed.wardrobePrompt && parsed.finalPrompt) {
 			const result = {
 				wardrobePrompt: String(parsed.wardrobePrompt).trim(),
-				finalPrompt: normalizeFinalPrompt({
+				finalPrompt: finalizeFinalPrompt({
 					finalPrompt: parsed.finalPrompt,
+					fallbackPrompt: fallbackFinal,
 					wardrobeVariant,
 				}),
 			};
@@ -366,8 +393,9 @@ Topics: ${topicLine}
 			topicLine,
 			wardrobeVariant,
 		}),
-		finalPrompt: normalizeFinalPrompt({
-			finalPrompt: fallbackFinalPrompt({ topicLine }),
+		finalPrompt: finalizeFinalPrompt({
+			finalPrompt: fallbackFinal,
+			fallbackPrompt: fallbackFinal,
 			wardrobeVariant,
 		}),
 	};
@@ -791,6 +819,9 @@ async function generatePresenterAdjustedImage({
 		categoryLabel,
 		log,
 	});
+	const fallbackFinal = fallbackFinalPrompt({
+		topicLine: buildTopicLine({ title, topics }),
+	});
 
 	let outfitPath = null;
 	let outfitUpload = null;
@@ -899,7 +930,10 @@ async function generatePresenterAdjustedImage({
 					nextAttempt: attempt + 1,
 					prompt: String(nextPrompt || "").slice(0, 300),
 				});
-			finalPrompt = normalizeFinalPrompt({ finalPrompt: nextPrompt });
+			finalPrompt = finalizeFinalPrompt({
+				finalPrompt: nextPrompt,
+				fallbackPrompt: fallbackFinal,
+			});
 		}
 	}
 
