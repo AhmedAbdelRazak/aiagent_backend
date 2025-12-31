@@ -32,6 +32,8 @@ const ORCHESTRATOR_CANDLE_REF_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767142335/aivideomatic/PresenterWithCandle_f6t83r.png";
 const ORCHESTRATOR_CANDLE_PRODUCT_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767134899/aivideomatic/MyCandle_u9skio.png";
+const FINAL_PLACEMENT_CONSTRAINTS =
+	"Placement: use the existing back table/desk behind the presenter; place the candle on that tabletop on the viewer-right side near the edge. Do NOT add or move any tables/surfaces/props; add only the candle.";
 
 const WARDROBE_VARIANTS = [
 	"dark charcoal matte button-up, open collar, no blazer",
@@ -175,6 +177,7 @@ function fallbackFinalPrompt({ topicLine }) {
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment. Keep the outfit exactly the same as @presenter_ref.
 Match the candle placement and size to the provided candle placement reference image (same relative offset and scale).
 Add @candle_ref candle on the back table/desk to the right side behind the presenter, near the right edge, fully visible and grounded on the tabletop.
+${FINAL_PLACEMENT_CONSTRAINTS}
 The candle jar is OPEN with NO lid visible. The candle is LIT with a tiny calm flame; no exaggerated glow.
 Do NOT alter the face or head at all; keep it exactly as in @presenter_ref. Single face only, no double exposure or ghosting.
 No transparency on the candle; label text/logo must remain EXACT and crisp, glass must be solid, with a soft natural shadow on the desk.
@@ -242,7 +245,7 @@ Rules:
 - Keep studio/desk/background/camera/lighting unchanged.
 - Wardrobe: vary the outfit each run using the provided wardrobe variation cue; the prompt must include the cue explicitly and match it exactly (dark colors only, open collar, optional open blazer).
 - Candle product: use @candle_ref to generate a clean candle product image with lid removed, tiny calm flame, exact label/branding, no distortion; do not redraw or alter label art/text.
-- Final: add the candle (from the candle product prompt) on the back table/desk to the right side near the edge, fully visible, lid removed, tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating), normal size in scene. Match the candle placement/size to the reference image (same relative offset/scale). Candle label/branding must remain EXACT and readable. Only add the candle; do not change any other pixels.
+- Final: add the candle (from the candle product prompt) on the back table/desk to the right side near the edge, fully visible, lid removed, tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating), normal size in scene. Match the candle placement/size to the reference image (same relative offset/scale). Candle label/branding must remain EXACT and readable. Only add the candle; do not change any other pixels. Explicitly state to use the existing table and not add or move any tables/surfaces/props.
 - Candle must match the product reference (label, jar shape, proportions) while being normal size in scene.
 - Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
 - No extra objects and no added text/logos beyond the candle label; no watermarks.
@@ -807,7 +810,9 @@ async function generateRunwayFinalStage({
 			prompt: String(finalPrompt || "").slice(0, 200),
 		});
 	const outputUri = await runwayTextToImage({
-		promptText: finalPrompt,
+		promptText: `${String(
+			finalPrompt || ""
+		).trim()}\n${FINAL_PLACEMENT_CONSTRAINTS}`.trim(),
 		referenceImages: [
 			{ uri: presenterUri, tag: "presenter_ref" },
 			{ uri: candleUri, tag: "candle_ref" },

@@ -8348,7 +8348,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		safeUnlink(tailRaw);
 
 		let tailSource = tailFit;
-		if (!useGoldVoiceMerge) {
+		if (includeSegmentAudio) {
 			const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
 			await createSilentWav({
 				durationSec: OUTRO_SMILE_TAIL_SEC,
@@ -8365,7 +8365,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		await normalizeClip(tailSource, outroTail, output, {
 			zoomOut: CAMERA_ZOOM_OUT,
 			fadeOutOnly: true,
-			includeAudio: !useGoldVoiceMerge,
+			includeAudio: includeSegmentAudio,
 		});
 		if (tailSource !== tailFit) safeUnlink(tailSource);
 		safeUnlink(tailFit);
