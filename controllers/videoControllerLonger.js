@@ -1795,6 +1795,16 @@ function ensureTopicInQuery(query = "", topicLabel = "") {
 	return sanitizeOverlayQuery(`${topic} ${base}`) || topic;
 }
 
+function isGenericOverlayQuery(query = "", topicLabel = "") {
+	const base = sanitizeOverlayQuery(query);
+	if (!base) return true;
+	const tokens = tokenizeLabel(base);
+	if (tokens.length < 2) return true;
+	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
+	const nonTopic = tokens.filter((t) => !topicTokens.has(t));
+	return nonTopic.length === 0;
+}
+
 function buildOverlayQueryFallback(text = "", topic = "") {
 	const base = cleanTopicCandidate(topic);
 	const tokens = filterSpecificTopicTokens(tokenizeLabel(text)).slice(0, 4);
@@ -2013,9 +2023,12 @@ function resolveSegmentImageQuery(seg, topics = []) {
 			""
 	).trim();
 	const cueRaw = Array.isArray(seg?.overlayCues) ? seg.overlayCues[0] : null;
-	const cueQuery =
-		cueRaw?.query || buildOverlayQueryFallback(seg?.text || "", topicLabel);
-	const query = ensureTopicInQuery(cueQuery, topicLabel);
+	const fallbackQuery = buildOverlayQueryFallback(seg?.text || "", topicLabel);
+	const baseQuery = String(cueRaw?.query || "").trim();
+	const preferredQuery = isGenericOverlayQuery(baseQuery, topicLabel)
+		? fallbackQuery
+		: baseQuery || fallbackQuery;
+	const query = ensureTopicInQuery(preferredQuery, topicLabel);
 	return { query, topicLabel };
 }
 
@@ -3071,11 +3084,14 @@ function pickIntroTemplate(mood = "neutral", jobId) {
 }
 
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
-	const subject = shortTitle
-		? shortTopicLabel(shortTitle, 5)
-		: formatTopicList(topics);
-	const safeSubject = subject || "today's topic";
 	const normalizedMood = normalizeExpression(mood);
+	const subject =
+		normalizedMood === "serious"
+			? formatTopicList(topics)
+			: shortTitle
+			? shortTopicLabel(shortTitle, 5)
+			: formatTopicList(topics);
+	const safeSubject = subject || "today's topic";
 	const template = pickIntroTemplate(normalizedMood, jobId);
 	const line = template.replace("{topic}", safeSubject);
 	return sanitizeIntroOutroLine(line);
@@ -3258,6 +3274,22 @@ function enforceSegmentCompleteness(
 
 		return { ...s, text };
 	});
+}
+
+function trimSegmentToCap(text = "", cap = 0) {
+	const clean = String(text || "").trim();
+	if (!clean) return clean;
+	const limit = Number(cap) || 0;
+	if (!limit) return clean;
+	const words = clean.split(/\s+/).filter(Boolean);
+	if (words.length <= limit) return clean;
+
+	const softLimit = Math.min(words.length, limit + 3);
+	const truncated = words.slice(0, softLimit).join(" ");
+	if (/[.!?]["')\]]?$/.test(truncated)) return truncated;
+	const match = truncated.match(/(.+?[.!?])\s+[^.!?]*$/);
+	if (match && match[1]) return match[1].trim();
+	return clean;
 }
 
 const TOPIC_TRANSITION_TEMPLATES = [
@@ -3527,6 +3559,7 @@ Style rules (IMPORTANT):
 - Keep expressions coherent across segments; avoid abrupt mood flips. Use warm smiles lightly and very subtle (barely noticeable), never exaggerated.
 - Each segment must include EXACTLY one overlayCues entry with a search query that matches that segment.
 - overlayCues.query must be 2-6 words, describe a real photo to search for, include the topic name or a key subject from that segment, no punctuation or hashtags.
+- overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
 - overlayCues.startPct and endPct must be between 0.2 and 0.85, with endPct at least 0.2 greater than startPct.
 - overlayCues.position must be "topRight" only.
 
@@ -3613,18 +3646,12 @@ Return JSON ONLY:
 
 	segments = ensureTopicTransitions(segments, safeTopics);
 
-	// Enforce caps (hard trim if needed - keeps flow and avoids a second model call)
+	// Enforce caps softly (avoid mid-sentence cutoffs; allow longer if needed).
 	segments = segments.map((s, i) => {
 		const cap = wordCaps[i] || 22;
-		const words = s.text.split(/\s+/).filter(Boolean);
-		if (words.length <= cap) return s;
-		return {
-			...s,
-			text: words
-				.slice(0, cap)
-				.join(" ")
-				.replace(/[,;:]?$/, "."),
-		};
+		const trimmed = trimSegmentToCap(s.text, cap);
+		if (trimmed === s.text) return s;
+		return { ...s, text: trimmed };
 	});
 
 	segments = ensureTopicEngagementQuestions(
@@ -3694,8 +3721,9 @@ function buildVoiceSettingsForExpression(
 	let style = Math.min(ELEVEN_TTS_STYLE, uniform ? 0.16 : 0.22);
 
 	if (uniform) {
-		if (mood === "serious") stability += 0.04;
-		if (mood === "excited") style += 0.04;
+		// Lock a neutral, natural voice regardless of mood/expression.
+		stability = ELEVEN_TTS_STABILITY;
+		style = ELEVEN_TTS_STYLE;
 	} else {
 		switch (expr) {
 			case "warm":
@@ -6356,7 +6384,59 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			},
 		});
 
-		// 5.5) Thumbnail (script-aligned, fail-fast)
+		// 5.5) Presenter wardrobe adjustment (post-script)
+		if (enableWardrobeEdit && presenterIsImage) {
+			try {
+				const presenterTitle = String(
+					script.title || topicSummary || topicTitles[0] || ""
+				).trim();
+				const presenterResult = await generatePresenterAdjustedImage({
+					jobId,
+					tmpDir,
+					presenterLocalPath: presenterLocal,
+					title: presenterTitle,
+					topics: topicPicks,
+					categoryLabel,
+					log: (message, payload) => logJob(jobId, message, payload),
+				});
+				if (
+					presenterResult?.localPath &&
+					fs.existsSync(presenterResult.localPath)
+				) {
+					const adjustedDetected = detectFileType(presenterResult.localPath);
+					if (adjustedDetected?.kind === "image") {
+						presenterLocal = presenterResult.localPath;
+						presenterIsVideo = false;
+						presenterIsImage = true;
+						logJob(jobId, "presenter adjustments ready", {
+							path: path.basename(presenterLocal),
+							method: presenterResult.method || "runway",
+							cloudinary: Boolean(presenterResult.url),
+						});
+						updateJob(jobId, {
+							meta: {
+								...JOBS.get(jobId)?.meta,
+								presenterImageUrl: presenterResult.url || "",
+							},
+						});
+					} else {
+						logJob(jobId, "presenter adjustments invalid; using original", {
+							detected: adjustedDetected?.kind || "unknown",
+						});
+					}
+				}
+			} catch (e) {
+				logJob(jobId, "presenter adjustments failed; using original", {
+					error: e.message,
+				});
+			}
+		} else if (enableWardrobeEdit && !presenterIsImage) {
+			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
+				detected: presenterIsVideo ? "video" : "unknown",
+			});
+		}
+
+		// 5.6) Thumbnail (script-aligned, uses adjusted presenter when available)
 		try {
 			const fallbackTitle = topicTitles[0] || topicSummary || "Quick Update";
 			const thumbTitle = String(script.title || fallbackTitle).trim();
@@ -6412,58 +6492,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				error: e.message,
 			});
 			throw e;
-		}
-
-		// 5.6) Presenter wardrobe adjustment (post-script/thumbnail)
-		if (enableWardrobeEdit && presenterIsImage) {
-			try {
-				const presenterTitle = String(
-					script.title || topicSummary || topicTitles[0] || ""
-				).trim();
-				const presenterResult = await generatePresenterAdjustedImage({
-					jobId,
-					tmpDir,
-					presenterLocalPath: presenterLocal,
-					title: presenterTitle,
-					topics: topicPicks,
-					categoryLabel,
-					log: (message, payload) => logJob(jobId, message, payload),
-				});
-				if (
-					presenterResult?.localPath &&
-					fs.existsSync(presenterResult.localPath)
-				) {
-					const adjustedDetected = detectFileType(presenterResult.localPath);
-					if (adjustedDetected?.kind === "image") {
-						presenterLocal = presenterResult.localPath;
-						presenterIsVideo = false;
-						presenterIsImage = true;
-						logJob(jobId, "presenter adjustments ready", {
-							path: path.basename(presenterLocal),
-							method: presenterResult.method || "runway",
-							cloudinary: Boolean(presenterResult.url),
-						});
-						updateJob(jobId, {
-							meta: {
-								...JOBS.get(jobId)?.meta,
-								presenterImageUrl: presenterResult.url || "",
-							},
-						});
-					} else {
-						logJob(jobId, "presenter adjustments invalid; using original", {
-							detected: adjustedDetected?.kind || "unknown",
-						});
-					}
-				}
-			} catch (e) {
-				logJob(jobId, "presenter adjustments failed; using original", {
-					error: e.message,
-				});
-			}
-		} else if (enableWardrobeEdit && !presenterIsImage) {
-			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
-				detected: presenterIsVideo ? "video" : "unknown",
-			});
 		}
 
 		const seoMeta = await buildSeoMetadata({
@@ -6524,7 +6552,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		});
 
 		const lockedVoiceSettings = UNIFORM_TTS_VOICE_SETTINGS
-			? buildVoiceSettingsForExpression("neutral", tonePlan?.mood, "", {
+			? buildVoiceSettingsForExpression("neutral", "neutral", "", {
 					uniform: true,
 			  })
 			: null;
