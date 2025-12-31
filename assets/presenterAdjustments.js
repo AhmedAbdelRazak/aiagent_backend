@@ -46,6 +46,16 @@ const WARDROBE_VARIANTS = [
 	"charcoal button-up with thin pinstripe, open collar, open blazer",
 	"black button-up with hidden placket, open collar, no blazer",
 	"midnight-blue button-up, open collar, relaxed dark blazer",
+	"dark espresso button-up, open collar, tailored black blazer",
+	"deep charcoal twill button-up, open collar, structured dark blazer",
+	"black micro-texture button-up, open collar, clean dark blazer",
+	"midnight navy button-up, open collar, matte charcoal blazer",
+	"graphite button-up, open collar, dark windowpane blazer",
+	"deep slate button-up, open collar, minimalist black blazer",
+	"black poplin button-up, open collar, dark subtle-check blazer",
+	"charcoal oxford button-up, open collar, slim dark blazer",
+	"dark navy button-up, open collar, soft-structured black blazer",
+	"near-black button-up, open collar, clean dark blazer",
 ];
 
 const openai = process.env.CHATGPT_API_TOKEN
