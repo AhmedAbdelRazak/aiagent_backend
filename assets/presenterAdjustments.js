@@ -33,7 +33,7 @@ const ORCHESTRATOR_CANDLE_REF_URL =
 const ORCHESTRATOR_CANDLE_PRODUCT_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767134899/aivideomatic/MyCandle_u9skio.png";
 const FINAL_PLACEMENT_CONSTRAINTS =
-	"Placement: use the existing back table/desk behind the presenter; place the candle on that tabletop on the viewer-right side, slightly inboard from the right edge (not on the edge). Size: natural small jar size matching the reference candle. Lid off, candle lit with a tiny calm flame. Do NOT add or move any tables/surfaces/props; add only the candle. Keep the studio and presenter unchanged. Preserve candle branding/label exactly.";
+	"Placement: use the existing back table/desk behind the presenter (rear desk, not the front tabletop). Place the candle on that tabletop on the viewer-right side, inboard from the right edge with a visible margin (not cropped, not on the edge). Size: natural small jar size matching the reference candle. Lid off, candle lit with a tiny calm flame. Do NOT add or move any tables/surfaces/props; add only the candle. Keep the studio and presenter unchanged. Preserve candle branding/label exactly.";
 
 const WARDROBE_VARIANTS = [
 	"dark charcoal matte button-up, open collar, no blazer",
@@ -173,6 +173,43 @@ function pickWardrobeVariant({ jobId, title, topics }) {
 	return WARDROBE_VARIANTS[idx] || WARDROBE_VARIANTS[0];
 }
 
+function normalizeFinalPrompt({ finalPrompt, wardrobeVariant }) {
+	const raw = String(finalPrompt || "").trim();
+	if (!raw) return raw;
+	const lines = raw
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	const filtered = lines.filter((line) => {
+		const lower = line.toLowerCase();
+		if (wardrobeVariant && line.includes(wardrobeVariant)) return false;
+		if (
+			lower.includes("wardrobe") &&
+			(lower.includes("change") ||
+				lower.includes("apply") ||
+				lower.includes("wear"))
+		)
+			return false;
+		if (
+			lower.includes("outfit") &&
+			(lower.includes("change") ||
+				lower.includes("apply") ||
+				lower.includes("wearing"))
+		)
+			return false;
+		return true;
+	});
+	const keepLine =
+		"Keep the outfit exactly the same as @presenter_ref; do not change clothing or wardrobe in this step.";
+	const hasKeepLine = filtered.some(
+		(line) =>
+			/outfit|wardrobe/i.test(line) &&
+			/(same|unchanged|do not change)/i.test(line)
+	);
+	if (!hasKeepLine) filtered.push(keepLine);
+	return filtered.join("\n");
+}
+
 function fallbackWardrobePrompt({ topicLine, wardrobeVariant }) {
 	return `
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment.
@@ -188,7 +225,8 @@ function fallbackFinalPrompt({ topicLine }) {
 	return `
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment. Keep the outfit exactly the same as @presenter_ref.
 Match the candle placement and size to the provided candle placement reference image (same relative offset and scale).
-Add @candle_ref candle on the back table/desk to the right side behind the presenter, near the right edge, fully visible and grounded on the tabletop.
+Add @candle_ref candle on the back table/desk to the right side behind the presenter, near the right edge but NOT on the edge, fully inside the frame with a clear right margin and grounded on the tabletop.
+Place it on the rear desk (behind the presenter), not the front tabletop or foreground.
 ${FINAL_PLACEMENT_CONSTRAINTS}
 The candle jar is OPEN with NO lid visible. The candle is LIT with a tiny calm flame; no exaggerated glow.
 Do NOT alter the face or head at all; keep it exactly as in @presenter_ref. Single face only, no double exposure or ghosting.
@@ -235,7 +273,10 @@ async function buildOrchestratedPrompts({
 				topicLine,
 				wardrobeVariant,
 			}),
-			finalPrompt: fallbackFinalPrompt({ topicLine }),
+			finalPrompt: normalizeFinalPrompt({
+				finalPrompt: fallbackFinalPrompt({ topicLine }),
+				wardrobeVariant,
+			}),
 		};
 		if (log)
 			log("orchestrator prompts (fallback)", {
@@ -248,13 +289,13 @@ async function buildOrchestratedPrompts({
 	const system = `
 You write precise, regular descriptive prompts for Runway gen4_image.
 Return JSON only with keys: wardrobePrompt, finalPrompt.
-Rules:
-- Use @presenter_ref as the only person reference.
-- Study the provided reference images to match the studio framing and candle placement.
-- Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts.
-- Keep studio/desk/background/camera/lighting unchanged.
-- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; the prompt must include the cue explicitly and match it exactly (dark colors only, open collar, optional open blazer).
-- Final: add @candle_ref on the back table/desk to the right side near the edge, fully visible, lid removed, tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating), normal size in scene. Match the candle placement/size to the reference image (same relative offset/scale). Candle label/branding must remain EXACT and readable. Only add the candle; do not change any other pixels. Explicitly state to use the existing table and not add or move any tables/surfaces/props. Also state the candle is not placed on the edge.
+	Rules:
+	- Use @presenter_ref as the only person reference.
+	- Study the provided reference images to match the studio framing and candle placement.
+	- Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts.
+	- Keep studio/desk/background/camera/lighting unchanged.
+	- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; the prompt must include the cue explicitly and match it exactly (dark colors only, open collar, optional open blazer).
+	- Final: add @candle_ref on the back table/desk to the right side near the edge, fully visible, lid removed, tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating), normal size in scene. Match the candle placement/size to the reference image (same relative offset/scale). Candle label/branding must remain EXACT and readable. Only add the candle; do not change any other pixels. Explicitly state to use the existing back table (rear desk) and not add or move any tables/surfaces/props. Also state the candle is not placed on the edge and is fully inside the frame with a visible right margin. Do NOT mention wardrobe changes in the final prompt; state that the outfit stays exactly as @presenter_ref.
 - Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
 - No extra objects and no added text/logos beyond the candle label; no watermarks.
 `.trim();
@@ -262,10 +303,11 @@ Rules:
 	const userText = `
 Title: ${String(title || "").trim()}
 Topics: ${topicLine}
-Category: ${String(categoryLabel || "").trim()}
-Wardrobe variation cue (use exactly): ${wardrobeVariant}
-Study the reference images: 1) original presenter studio, 2) desired candle placement, 3) candle product reference.
-Output JSON only.
+	Category: ${String(categoryLabel || "").trim()}
+	Wardrobe variation cue (use exactly): ${wardrobeVariant}
+	Final prompt must NOT mention wardrobe changes; keep outfit exactly as @presenter_ref.
+	Study the reference images: 1) original presenter studio, 2) desired candle placement, 3) candle product reference.
+	Output JSON only.
 `.trim();
 
 	try {
@@ -300,7 +342,10 @@ Output JSON only.
 		if (parsed && parsed.wardrobePrompt && parsed.finalPrompt) {
 			const result = {
 				wardrobePrompt: String(parsed.wardrobePrompt).trim(),
-				finalPrompt: String(parsed.finalPrompt).trim(),
+				finalPrompt: normalizeFinalPrompt({
+					finalPrompt: parsed.finalPrompt,
+					wardrobeVariant,
+				}),
 			};
 			if (log)
 				log("orchestrator prompts", {
@@ -321,7 +366,10 @@ Output JSON only.
 			topicLine,
 			wardrobeVariant,
 		}),
-		finalPrompt: fallbackFinalPrompt({ topicLine }),
+		finalPrompt: normalizeFinalPrompt({
+			finalPrompt: fallbackFinalPrompt({ topicLine }),
+			wardrobeVariant,
+		}),
 	};
 	if (log)
 		log("orchestrator prompts (fallback)", {
@@ -851,7 +899,7 @@ async function generatePresenterAdjustedImage({
 					nextAttempt: attempt + 1,
 					prompt: String(nextPrompt || "").slice(0, 300),
 				});
-			finalPrompt = nextPrompt;
+			finalPrompt = normalizeFinalPrompt({ finalPrompt: nextPrompt });
 		}
 	}
 

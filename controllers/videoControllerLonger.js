@@ -191,7 +191,7 @@ const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter.";
 const PRESENTER_MOTION_STYLE =
-	"natural head and neck movement, human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; no exaggerated grin";
+	"natural head and neck movement, human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; smile, if any, is very subtle; no exaggerated grin";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -242,7 +242,7 @@ const SCRIPT_VOICE_WPS = 2.75; // used only for word caps
 const SCRIPT_PACE_BIAS = clampNumber(1.12, 0.85, 1.35);
 const SEGMENT_TARGET_SEC = 8;
 const MAX_SEGMENTS = 45;
-const SCRIPT_TOLERANCE_SEC = clampNumber(3.5, 2, 4);
+const SCRIPT_TOLERANCE_SEC = clampNumber(4.5, 2, 5);
 const MAX_SCRIPT_REWRITES = clampNumber(4, 0, 5);
 const MAX_FILLER_WORDS_PER_VIDEO = clampNumber(0, 0, 2);
 const MAX_FILLER_WORDS_PER_SEGMENT = clampNumber(0, 0, 2);
@@ -280,7 +280,7 @@ const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
 const USE_MOTION_REF_BASELINE = true;
 const BASELINE_DUR_SEC = clampNumber(12, 6, 15);
-const BASELINE_VARIANTS = clampNumber(2, 1, 3);
+const BASELINE_VARIANTS = clampNumber(1, 1, 3);
 const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 
@@ -2411,13 +2411,13 @@ function buildBaselinePrompt(
 ) {
 	const expr = normalizeExpression(expression);
 	let expressionLine =
-		"Expression: calm and professional with a subtle, light smile (not constant).";
+		"Expression: calm and professional; mouth near-neutral with a very subtle smile (barely noticeable, not constant).";
 	if (expr === "warm")
 		expressionLine =
-			"Expression: friendly and approachable with a light, natural smile (not constant).";
+			"Expression: friendly and approachable with a very subtle, light smile (barely there, not constant).";
 	if (expr === "excited")
 		expressionLine =
-			"Expression: energized and engaged, subtle smile only, no exaggerated grin.";
+			"Expression: energized and engaged, minimal smile only, no exaggerated grin.";
 	if (expr === "serious")
 		expressionLine =
 			"Expression: serious but calm, neutral mouth, low-energy delivery, soft eye contact.";
@@ -2654,7 +2654,7 @@ function formatTopicList(topics = []) {
 	return `${labels[0]}, ${labels[1]}, and ${labels[2]}`;
 }
 
-const FILLER_WORD_REGEX = /\b(?:um+|uh+|erm+|er|ah+)\b/gi;
+const FILLER_WORD_REGEX = /\b(?:um+|uh+|uhm+|erm+|er|ah+|hmm+)\b/gi;
 const LIKE_FILLER_REGEX = /([,.!?]\s+)like\s*,\s*/gi;
 const MICRO_EMOTE_REGEX = /\b(?:heh|whew)\b/gi;
 
@@ -3220,7 +3220,7 @@ Style rules (IMPORTANT):
 - Avoid exclamation points unless the script explicitly calls for excitement.
 - Each segment should be 1-2 sentences. Do NOT switch topics mid-sentence.
 - Avoid specific dates, rankings, or stats unless they appear in the provided context above.
-- Avoid filler words ("um", "uh", "like", "ah"). Use zero filler words in the entire script.
+- Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - Segment 0 must be a strong hook that makes people stay.
@@ -3238,7 +3238,7 @@ Style rules (IMPORTANT):
 - Provide "shortTitle": 2-5 words, punchy and easy to read.
 - For each segment, include "expression" from: neutral, warm, serious, excited, thoughtful.
 - Default to warm (light smile) for regular news; use serious for sad/hard news, neutral for somber or low-tone lines, thoughtful when reflective.
-- Keep expressions coherent across segments; avoid abrupt mood flips. Use warm smiles lightly, not exaggerated.
+- Keep expressions coherent across segments; avoid abrupt mood flips. Use warm smiles lightly and very subtle (barely noticeable), never exaggerated.
 - Each segment must include EXACTLY one overlayCues entry with a search query that matches that segment.
 - overlayCues.query must be 2-6 words, describe a real photo to search for, include the topic name or a key subject from that segment, no punctuation or hashtags.
 - overlayCues.startPct and endPct must be between 0.2 and 0.85, with endPct at least 0.2 greater than startPct.
@@ -4938,7 +4938,7 @@ Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PR
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: calm intro delivery with natural, subtle hand movement near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; no extra candles.
-Expression: ${introFace}. Calm and neutral, composed and professional with a subtle, light smile (not constant).
+Expression: ${introFace}. Calm and neutral, composed and professional with a very subtle, light smile (barely noticeable, not constant).
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes. Briefly glance toward the open title area, then back to the camera.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
@@ -4952,7 +4952,7 @@ Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PR
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: small, natural intro gesture near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; no extra candles.
-Expression: ${introFace}. Calm and neutral; subtle, light smile only, not constant.
+Expression: ${introFace}. Calm and neutral; very subtle, light smile only (barely noticeable), not constant.
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
@@ -6575,7 +6575,7 @@ Rules:
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
 - If a segment is the first for a new topic, start it with an explicit transition line naming the topic (example: "And now, let's talk about {topic}.").
 - Improve clarity and specificity; avoid vague filler phrasing or repeating the question.
-- Avoid filler words ("um", "uh", "like", "ah"). Use zero filler words in the entire script.
+- Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - End the LAST segment of EACH topic with one short, topic-specific engagement question for comments.
