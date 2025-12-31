@@ -25,39 +25,13 @@ const PRESENTER_CLOUDINARY_FOLDER = "aivideomatic/long_presenters";
 const PRESENTER_CLOUDINARY_PUBLIC_PREFIX = "presenter_master";
 const PRESENTER_OUTFIT_PREFIX = "presenter_outfit";
 const PRESENTER_CANDLE_PREFIX = "presenter_candle";
-const PRESENTER_BASE_PREFIX = "presenter_base";
-
-// OpenAI
 const CHAT_MODEL = "gpt-5.2";
-
-// Reference images (Cloudinary URLs)
 const ORCHESTRATOR_PRESENTER_REF_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767066355/aivideomatic/long_presenters/presenter_master_4b76c718-6a2a-4749-895e-e05bd2b2ecfc_1767066355424.png";
 const ORCHESTRATOR_CANDLE_REF_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767142335/aivideomatic/PresenterWithCandle_f6t83r.png";
 const ORCHESTRATOR_CANDLE_PRODUCT_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767134899/aivideomatic/MyCandle_u9skio.png";
-
-// Candle placement calibrated from ORCHESTRATOR_CANDLE_REF_URL relative to ORCHESTRATOR_PRESENTER_REF_URL.
-// Coordinates are in the 1280x720 reference frame (top-left origin).
-// These values were selected to match the candle's position on the right/back desk.
-const CANDLE_PLACEMENT_REF = {
-	baseW: 1280,
-	baseH: 720,
-	// top-left corner for candle overlay
-	x: 1021,
-	y: 441,
-	// target overlay size (approx jar+flame), used for scaling
-	w: 160,
-	h: 210,
-};
-
-// How many times to refine Cloudinary compositing placement (cheap, deterministic)
-const COMPOSITE_MAX_ATTEMPTS = 3;
-
-// If Cloudinary background removal returns 423 while preparing derived assets, retry download
-const CLOUDINARY_DERIVED_423_MAX_RETRIES = 10;
-const CLOUDINARY_DERIVED_423_SLEEP_MS = 1200;
 
 const WARDROBE_VARIANTS = [
 	"dark charcoal matte button-up, open collar, no blazer",
@@ -89,11 +63,6 @@ function safeUnlink(p) {
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
-}
-
-function clampInt(n, min, max) {
-	const v = Number.isFinite(Number(n)) ? Number(n) : 0;
-	return Math.max(min, Math.min(max, Math.round(v)));
 }
 
 function readFileHeader(filePath, bytes = 16) {
@@ -187,21 +156,17 @@ Change ONLY the outfit on the torso/upper body area to a dark, classy outfit. Ou
 Outfit colors must be dark only (charcoal, black, deep navy). No bright or light colors.
 Do NOT alter the face or head at all. Keep glasses, beard, hairline, skin texture, and facial features exactly as in @presenter_ref. Single face only, no ghosting.
 Studio background, desk, lighting, camera angle, and all props must remain EXACTLY the same.
-DO NOT add borders, frames, vignettes, letterboxing, or extra processing.
 No candles, no extra objects, no text, no logos. Topic context: ${topicLine}.
 `.trim();
 }
 
 function fallbackCandleProductPrompt() {
 	return `
-Use @candle_ref to create a clean candle CUTOUT that matches the reference candle jar/label.
-HARD REQUIREMENTS:
-- Lid/cap must be COMPLETELY REMOVED and NOT visible anywhere in frame.
-- Candle is LIT with a tiny calm flame (no large flame, no glow).
-- Label/branding must remain EXACT, sharp, readable, and undistorted; do NOT redraw or change label art/text.
-- Output MUST be a PNG with TRANSPARENT BACKGROUND (alpha). No white/gray backdrop, no shadows.
-- Candle centered, upright, normal proportions (no warping).
-No extra objects or text.
+Use @candle_ref to generate a single clean product image of the same candle.
+Jar must be OPEN with NO lid or cap visible. Candle is LIT with a tiny calm flame; no exaggerated glow.
+Label text/logo must remain EXACT, sharp, readable, and undistorted; do NOT redraw or change the label artwork or typography.
+Keep the candle centered, upright, and normal size (not oversized); no distortion.
+Isolate on a clean neutral background with no shadows or extra objects.
 `.trim();
 }
 
@@ -272,13 +237,15 @@ You write precise, regular descriptive prompts for Runway gen4_image.
 Return JSON only with keys: wardrobePrompt, candleProductPrompt, finalPrompt.
 Rules:
 - Use @presenter_ref as the only person reference.
-- Study the provided reference images to match the studio framing and the candle placement.
-- Face/head are strictly locked: do NOT alter the face/head, hairline, glasses, beard, skin texture, expression. No double face, no ghosting.
-- Keep studio/desk/background/camera/framing/lighting unchanged; DO NOT add borders/frames/vignettes/letterboxing.
-- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; include it exactly. Dark colors only.
-- Candle product: use @candle_ref to create a clean candle CUTOUT with lid removed, tiny calm flame, exact label/branding. Output must be PNG with transparent background (alpha). No shadows.
-- Final: (fallback-only) add the candle on the right/back desk matching the placement reference. Only add the candle; do not change any other pixels.
-- No extra objects and no added text/logos beyond the candle label.
+- Study the provided reference images to match the studio framing and candle placement.
+- Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts.
+- Keep studio/desk/background/camera/lighting unchanged.
+- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; the prompt must include the cue explicitly and match it exactly (dark colors only, open collar, optional open blazer).
+- Candle product: use @candle_ref to generate a clean candle product image with lid removed, tiny calm flame, exact label/branding, no distortion; do not redraw or alter label art/text.
+- Final: add the candle (from the candle product prompt) on the back table/desk to the right side near the edge, fully visible, lid removed, tiny calm flame, natural shadow, no transparency, sitting on the tabletop (not floating), normal size in scene. Match the candle placement/size to the reference image (same relative offset/scale). Candle label/branding must remain EXACT and readable. Only add the candle; do not change any other pixels.
+- Candle must match the product reference (label, jar shape, proportions) while being normal size in scene.
+- Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
+- No extra objects and no added text/logos beyond the candle label; no watermarks.
 `.trim();
 
 	const userText = `
@@ -466,19 +433,12 @@ async function pollRunwayTask(taskId, label) {
 	throw new Error(`${label} timed out`);
 }
 
-function stableSeedFrom(jobId, stage, attempt = 1) {
-	// Keep seeds stable-ish per job/stage so retries are more comparable.
-	const base = `${jobId || ""}|${stage || ""}|${attempt || 1}`;
-	return hashStringToInt(base) % 2147483647;
-}
-
-async function runwayTextToImage({ promptText, referenceImages, ratio, seed }) {
+async function runwayTextToImage({ promptText, referenceImages, ratio }) {
 	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
 	const payload = {
 		model: RUNWAY_IMAGE_MODEL,
 		promptText: String(promptText || "").slice(0, 1000),
 		ratio: String(ratio || "1920:1080"),
-		...(Number.isInteger(seed) ? { seed } : {}),
 		...(Array.isArray(referenceImages) && referenceImages.length
 			? { referenceImages }
 			: {}),
@@ -526,42 +486,14 @@ async function downloadRunwayImageToPath({ uri, outPath }) {
 	return outPath;
 }
 
-async function downloadUrlToFile(url, outPath, opts = {}) {
-	const {
-		timeoutMs = 60000,
-		maxRetries = 0,
-		retrySleepMs = 1000,
-		retryOnStatuses = [],
-	} = opts || {};
-
-	let lastErr = null;
-	for (let attempt = 0; attempt <= maxRetries; attempt++) {
-		try {
-			const res = await axios.get(url, {
-				responseType: "arraybuffer",
-				timeout: timeoutMs,
-				validateStatus: (s) => s < 500,
-			});
-			if (res.status >= 300) {
-				const shouldRetry = retryOnStatuses.includes(res.status);
-				if (shouldRetry && attempt < maxRetries) {
-					await sleep(retrySleepMs);
-					continue;
-				}
-				throw new Error(`download failed (${res.status})`);
-			}
-			if (!res?.data) throw new Error("download empty");
-			fs.writeFileSync(outPath, res.data);
-			return outPath;
-		} catch (e) {
-			lastErr = e;
-			if (attempt < maxRetries) {
-				await sleep(retrySleepMs);
-				continue;
-			}
-		}
-	}
-	throw lastErr || new Error("download failed");
+async function downloadUrlToFile(url, outPath) {
+	const res = await axios.get(url, {
+		responseType: "arraybuffer",
+		timeout: 60000,
+	});
+	if (!res?.data) throw new Error("download empty");
+	fs.writeFileSync(outPath, res.data);
+	return outPath;
 }
 
 function assertCloudinaryReady() {
@@ -616,46 +548,6 @@ async function deleteCloudinaryAsset(publicId, log) {
 	}
 }
 
-function cloudinaryOverlayId(publicId) {
-	// Cloudinary overlay URLs replace / with :
-	return String(publicId || "").replace(/\//g, ":");
-}
-
-function computeScaledCandlePlacement({ targetW, targetH, tweak = {} }) {
-	const baseW = CANDLE_PLACEMENT_REF.baseW;
-	const baseH = CANDLE_PLACEMENT_REF.baseH;
-	const scaleW = targetW / baseW;
-	const scaleH = targetH / baseH;
-	const scale =
-		Number.isFinite(scaleW) && Number.isFinite(scaleH)
-			? Math.min(scaleW, scaleH)
-			: 1;
-	const w = clampInt(
-		CANDLE_PLACEMENT_REF.w * (tweak.scale || 1) * scale,
-		16,
-		Math.max(16, targetW)
-	);
-	const h = clampInt(
-		CANDLE_PLACEMENT_REF.h * (tweak.scale || 1) * scale,
-		16,
-		Math.max(16, targetH)
-	);
-	// Keep the candle fully in-frame
-	const maxX = Math.max(0, targetW - w);
-	const maxY = Math.max(0, targetH - h);
-	const x = clampInt(
-		(CANDLE_PLACEMENT_REF.x + (tweak.dx || 0)) * scale,
-		0,
-		maxX
-	);
-	const y = clampInt(
-		(CANDLE_PLACEMENT_REF.y + (tweak.dy || 0)) * scale,
-		0,
-		maxY
-	);
-	return { x, y, w, h, scale };
-}
-
 async function reviewCandleProduct({ candleUrl, promptUsed, attempt, log }) {
 	if (!openai) {
 		return {
@@ -666,23 +558,21 @@ async function reviewCandleProduct({ candleUrl, promptUsed, attempt, log }) {
 	}
 
 	const system = `
-You are a strict quality reviewer for a candle CUTOUT image meant for compositing.
+You are a strict quality reviewer for a candle product image.
 Return JSON only with keys: accept (boolean), reason (string), improvedPrompt (string).
 Accept only if:
-- Lid/cap is fully removed (NO lid visible anywhere).
-- Candle is centered, upright, normal proportions (no warping).
-- Flame is tiny and calm (no large flame, no big glow).
-- Label/branding is readable and not obviously mangled (prioritize legibility).
-- Background is transparent (alpha) OR very clean and easy to remove; prefer transparent PNG.
-- No extra objects or text; no watermarks.
-IMPORTANT: The product reference image may have a lid — that is OK. Your requirement is LID REMOVED in the generated candle.
-If reject, provide a revised candle product prompt to fix the issues.
+- Candle lid/cap is fully removed (no lid visible).
+- Candle is centered, upright, normal size, with no warping.
+- Flame is tiny and calm (no large glow).
+- Label/branding is mostly readable and not obviously mangled; do not reject solely for minor label differences.
+- No extra objects or text; clean neutral background.
+If reject, provide a revised candle product prompt that fixes the issue.
 `.trim();
 
 	const userText = `
 Attempt: ${Number(attempt || 1)}
-Prompt used: ${String(promptUsed || "").slice(0, 700)}
-Review the generated candle image against the product reference (jar/label), BUT enforce lid removed. Output JSON only.
+Prompt used: ${String(promptUsed || "").slice(0, 600)}
+Review the generated candle image against the product reference. Output JSON only.
 `.trim();
 
 	try {
@@ -694,7 +584,10 @@ Review the generated candle image against the product reference (jar/label), BUT
 					role: "user",
 					content: [
 						{ type: "text", text: userText },
-						{ type: "image_url", image_url: { url: candleUrl } },
+						{
+							type: "image_url",
+							image_url: { url: candleUrl },
+						},
 						{
 							type: "image_url",
 							image_url: { url: ORCHESTRATOR_CANDLE_PRODUCT_URL },
@@ -731,17 +624,11 @@ Review the generated candle image against the product reference (jar/label), BUT
 		reason: "review_parse_failed",
 		improvedPrompt: `${String(
 			promptUsed || ""
-		).trim()}\nAdjust to: lid removed, tiny flame, crisp label text, and output PNG with transparent background.`,
+		).trim()}\nAdjust to remove lid, preserve exact label text/art, and avoid distortion.`,
 	};
 }
 
-async function reviewOutfitIntegrity({
-	baseUrl,
-	outfitUrl,
-	promptUsed,
-	attempt,
-	log,
-}) {
+async function reviewFinalPlacement({ finalUrl, promptUsed, attempt, log }) {
 	if (!openai) {
 		return {
 			accept: true,
@@ -751,38 +638,49 @@ async function reviewOutfitIntegrity({
 	}
 
 	const system = `
-You are a strict reviewer for a presenter wardrobe-change image.
+You are a strict quality reviewer for a presenter image with a branded candle.
 Return JSON only with keys: accept (boolean), reason (string), improvedPrompt (string).
 Accept only if:
-- Presenter face/head (hairline, glasses, beard, skin texture, expression) is unchanged vs base.
-- Studio, desk, camera angle, framing, lighting are unchanged.
-- NO borders, vignettes, letterboxing, added frames, or weird post-processing.
-- Only the wardrobe/clothing changed on the torso area, consistent with the prompt.
-If reject, provide an improved wardrobe prompt that emphasizes strict locking and removing borders/artifacts.
+- Candle placement closely matches the reference placement image (position on right desk, same relative size/offset).
+- Candle is fully visible, lid removed, tiny calm flame, natural shadow, no transparency.
+- Presenter face/head and studio are unchanged.
+- Do not reject solely for minor label/branding differences; prioritize placement/scale and presenter integrity.
+If reject, provide a revised final prompt that keeps all constraints and fixes placement/size/label clarity.
 `.trim();
 
 	const userText = `
 Attempt: ${Number(attempt || 1)}
-Prompt used: ${String(promptUsed || "").slice(0, 700)}
-Review the wardrobe result vs the base presenter. Output JSON only.
+Prompt used: ${String(promptUsed || "").slice(0, 600)}
+Review the generated image against the references. Output JSON only.
 `.trim();
 
-	try {
+	const runReview = async (sys, label) => {
 		const resp = await openai.chat.completions.create({
 			model: CHAT_MODEL,
 			messages: [
-				{ role: "system", content: system },
+				{ role: "system", content: sys },
 				{
 					role: "user",
 					content: [
 						{ type: "text", text: userText },
-						{ type: "image_url", image_url: { url: outfitUrl } },
-						{ type: "image_url", image_url: { url: baseUrl } },
+						{ type: "image_url", image_url: { url: finalUrl } },
+						{
+							type: "image_url",
+							image_url: { url: ORCHESTRATOR_PRESENTER_REF_URL },
+						},
+						{
+							type: "image_url",
+							image_url: { url: ORCHESTRATOR_CANDLE_REF_URL },
+						},
+						{
+							type: "image_url",
+							image_url: { url: ORCHESTRATOR_CANDLE_PRODUCT_URL },
+						},
 					],
 				},
 			],
 			temperature: 0.2,
-			max_completion_tokens: 260,
+			max_completion_tokens: 400,
 		});
 		const content = String(resp?.choices?.[0]?.message?.content || "").trim();
 		const parsed = parseJsonObject(content);
@@ -794,13 +692,34 @@ Review the wardrobe result vs the base presenter. Output JSON only.
 			};
 		}
 		if (log)
-			log("wardrobe review parse failed", {
+			log("presenter final review parse failed", {
 				attempt,
-				response: content.slice(0, 500),
+				label,
+				response: content.slice(0, 600),
 			});
+		return null;
+	};
+
+	try {
+		const primary = await runReview(system, "primary");
+		if (primary) return primary;
 	} catch (e) {
 		if (log)
-			log("wardrobe review failed", {
+			log("presenter final review failed", {
+				error: e?.message || String(e),
+			});
+	}
+
+	const fallbackSystem = `
+Return JSON only with keys: accept, reason, improvedPrompt.
+Be strict about candle placement vs reference. If unsure, reject.
+`.trim();
+	try {
+		const fallback = await runReview(fallbackSystem, "fallback");
+		if (fallback) return fallback;
+	} catch (e) {
+		if (log)
+			log("presenter final review failed (fallback)", {
 				error: e?.message || String(e),
 			});
 	}
@@ -812,103 +731,11 @@ Review the wardrobe result vs the base presenter. Output JSON only.
 	};
 }
 
-async function reviewCompositePlacement({ finalUrl, attempt, log }) {
-	if (!openai) {
-		return {
-			accept: true,
-			reason: "review_skipped_no_openai",
-			deltaX: 0,
-			deltaY: 0,
-			scaleMultiplier: 1,
-		};
-	}
-
-	const system = `
-You are a strict reviewer for candle placement in a presenter studio image.
-Return JSON only with keys: accept (boolean), reason (string), deltaX (integer), deltaY (integer), scaleMultiplier (number).
-Goals:
-- Candle placement must closely match the reference placement image (right/back desk near edge).
-- Candle size must match the reference (not tiny, not oversized).
-- Presenter and studio must remain unchanged.
-If ACCEPT = false, suggest small adjustments:
-- deltaX: move candle right (+) or left (-) by pixels.
-- deltaY: move candle down (+) or up (-) by pixels.
-- scaleMultiplier: e.g., 1.05 to slightly enlarge, 0.95 to slightly shrink.
-Keep adjustments small: |deltaX| <= 60, |deltaY| <= 60, scaleMultiplier between 0.85 and 1.20.
-`.trim();
-
-	const userText = `
-Attempt: ${Number(attempt || 1)}
-Compare the generated image to the candle placement reference. Output JSON only.
-`.trim();
-
-	try {
-		const resp = await openai.chat.completions.create({
-			model: CHAT_MODEL,
-			messages: [
-				{ role: "system", content: system },
-				{
-					role: "user",
-					content: [
-						{ type: "text", text: userText },
-						{ type: "image_url", image_url: { url: finalUrl } },
-						{
-							type: "image_url",
-							image_url: { url: ORCHESTRATOR_CANDLE_REF_URL },
-						},
-						{
-							type: "image_url",
-							image_url: { url: ORCHESTRATOR_PRESENTER_REF_URL },
-						},
-					],
-				},
-			],
-			temperature: 0.2,
-			max_completion_tokens: 260,
-		});
-		const content = String(resp?.choices?.[0]?.message?.content || "").trim();
-		const parsed = parseJsonObject(content);
-		if (parsed && typeof parsed.accept === "boolean") {
-			const dx = clampInt(parsed.deltaX ?? 0, -60, 60);
-			const dy = clampInt(parsed.deltaY ?? 0, -60, 60);
-			let sm = Number(parsed.scaleMultiplier ?? 1);
-			if (!Number.isFinite(sm)) sm = 1;
-			sm = Math.max(0.85, Math.min(1.2, sm));
-			return {
-				accept: Boolean(parsed.accept),
-				reason: String(parsed.reason || "").trim(),
-				deltaX: dx,
-				deltaY: dy,
-				scaleMultiplier: sm,
-			};
-		}
-		if (log)
-			log("composite placement review parse failed", {
-				attempt,
-				response: content.slice(0, 400),
-			});
-	} catch (e) {
-		if (log)
-			log("composite placement review failed", {
-				error: e?.message || String(e),
-			});
-	}
-
-	return {
-		accept: true,
-		reason: "review_failed_openai_error",
-		deltaX: 0,
-		deltaY: 0,
-		scaleMultiplier: 1,
-	};
-}
-
 async function generateRunwayOutfitStage({
 	jobId,
 	tmpDir,
 	presenterLocalPath,
 	wardrobePrompt,
-	attempt = 1,
 	log,
 }) {
 	const presenterUri = await runwayCreateEphemeralUpload({
@@ -917,16 +744,13 @@ async function generateRunwayOutfitStage({
 	});
 	if (log)
 		log("runway wardrobe prompt", {
-			attempt,
-			prompt: String(wardrobePrompt || "").slice(0, 220),
+			prompt: String(wardrobePrompt || "").slice(0, 200),
 		});
 	const outputUri = await runwayTextToImage({
 		promptText: wardrobePrompt,
 		referenceImages: [{ uri: presenterUri, tag: "presenter_ref" }],
-		ratio: "1280:720",
-		seed: stableSeedFrom(jobId, "wardrobe", attempt),
 	});
-	const outPath = path.join(tmpDir, `presenter_outfit_${jobId}_${attempt}.png`);
+	const outPath = path.join(tmpDir, `presenter_outfit_${jobId}.png`);
 	await downloadRunwayImageToPath({ uri: outputUri, outPath });
 	return outPath;
 }
@@ -936,7 +760,6 @@ async function generateRunwayCandleProductStage({
 	tmpDir,
 	candleLocalPath,
 	candleProductPrompt,
-	attempt = 1,
 	log,
 }) {
 	const candleUri = await runwayCreateEphemeralUpload({
@@ -946,16 +769,14 @@ async function generateRunwayCandleProductStage({
 
 	if (log)
 		log("runway candle product prompt", {
-			attempt,
-			prompt: String(candleProductPrompt || "").slice(0, 220),
+			prompt: String(candleProductPrompt || "").slice(0, 200),
 		});
 	const outputUri = await runwayTextToImage({
 		promptText: candleProductPrompt,
 		referenceImages: [{ uri: candleUri, tag: "candle_ref" }],
 		ratio: "1024:1024",
-		seed: stableSeedFrom(jobId, "candle", attempt),
 	});
-	const outPath = path.join(tmpDir, `candle_product_${jobId}_${attempt}.png`);
+	const outPath = path.join(tmpDir, `candle_product_${jobId}.png`);
 	await downloadRunwayImageToPath({ uri: outputUri, outPath });
 	return outPath;
 }
@@ -966,15 +787,11 @@ async function generateRunwayFinalStage({
 	presenterCloudUrl,
 	candleCloudUrl,
 	finalPrompt,
-	attempt = 1,
 	log,
 }) {
-	const presenterPath = path.join(
-		tmpDir,
-		`presenter_cloud_${jobId}_${attempt}.png`
-	);
+	const presenterPath = path.join(tmpDir, `presenter_cloud_${jobId}.png`);
 	await downloadUrlToFile(presenterCloudUrl, presenterPath);
-	const candlePath = path.join(tmpDir, `candle_cloud_${jobId}_${attempt}.png`);
+	const candlePath = path.join(tmpDir, `candle_cloud_${jobId}.png`);
 	await downloadUrlToFile(candleCloudUrl, candlePath);
 	const presenterUri = await runwayCreateEphemeralUpload({
 		filePath: presenterPath,
@@ -987,8 +804,7 @@ async function generateRunwayFinalStage({
 
 	if (log)
 		log("runway final prompt", {
-			attempt,
-			prompt: String(finalPrompt || "").slice(0, 220),
+			prompt: String(finalPrompt || "").slice(0, 200),
 		});
 	const outputUri = await runwayTextToImage({
 		promptText: finalPrompt,
@@ -996,217 +812,12 @@ async function generateRunwayFinalStage({
 			{ uri: presenterUri, tag: "presenter_ref" },
 			{ uri: candleUri, tag: "candle_ref" },
 		],
-		ratio: "1280:720",
-		seed: stableSeedFrom(jobId, "final", attempt),
 	});
-	const outPath = path.join(tmpDir, `presenter_final_${jobId}_${attempt}.png`);
+	const outPath = path.join(tmpDir, `presenter_final_${jobId}.png`);
 	await downloadRunwayImageToPath({ uri: outputUri, outPath });
 	safeUnlink(presenterPath);
 	safeUnlink(candlePath);
 	return outPath;
-}
-
-async function buildCloudinaryCompositeUrl({
-	basePublicId,
-	candlePublicId,
-	placement,
-	useBackgroundRemoval = true,
-}) {
-	assertCloudinaryReady();
-
-	const overlayId = cloudinaryOverlayId(candlePublicId);
-
-	const t = [];
-	// Place the candle overlay with a predictable size and location.
-	// All transformations between overlay and layer_apply affect the overlay.
-	const overlayTransform = {
-		overlay: overlayId,
-		width: placement.w,
-		height: placement.h,
-		crop: "scale",
-	};
-	if (useBackgroundRemoval) {
-		// Requires Cloudinary background removal add-on. On first request can return 423.
-		overlayTransform.effect = "background_removal";
-	}
-
-	t.push(overlayTransform);
-	t.push({
-		flags: "layer_apply",
-		gravity: "north_west",
-		x: placement.x,
-		y: placement.y,
-	});
-
-	// Force PNG output to preserve any alpha in the overlay result
-	return cloudinary.url(basePublicId, {
-		secure: true,
-		resource_type: "image",
-		format: "png",
-		transformation: t,
-	});
-}
-
-async function generateCloudinaryCompositeStage({
-	jobId,
-	tmpDir,
-	baseUpload,
-	candleUpload,
-	log,
-}) {
-	if (!baseUpload?.public_id || !candleUpload?.public_id) {
-		throw new Error("composite_missing_inputs");
-	}
-
-	const targetW = Number(baseUpload.width || 1280);
-	const targetH = Number(baseUpload.height || 720);
-
-	let tweak = { dx: 0, dy: 0, scale: 1 };
-	let best = null;
-
-	for (let attempt = 1; attempt <= COMPOSITE_MAX_ATTEMPTS; attempt++) {
-		const placement = computeScaledCandlePlacement({
-			targetW,
-			targetH,
-			tweak,
-		});
-
-		// Strategy: try with background removal first (handles non-transparent candle outputs).
-		let compositeUrl = null;
-		let usedBgRemoval = true;
-		try {
-			compositeUrl = await buildCloudinaryCompositeUrl({
-				basePublicId: baseUpload.public_id,
-				candlePublicId: candleUpload.public_id,
-				placement,
-				useBackgroundRemoval: true,
-			});
-		} catch {
-			compositeUrl = null;
-		}
-
-		let outPath = path.join(
-			tmpDir,
-			`presenter_composite_${jobId}_${attempt}.png`
-		);
-		let downloaded = false;
-		if (compositeUrl) {
-			try {
-				await downloadUrlToFile(compositeUrl, outPath, {
-					timeoutMs: 60000,
-					maxRetries: CLOUDINARY_DERIVED_423_MAX_RETRIES,
-					retrySleepMs: CLOUDINARY_DERIVED_423_SLEEP_MS,
-					retryOnStatuses: [423, 420],
-				});
-				downloaded = true;
-			} catch (e) {
-				if (log)
-					log("cloudinary composite download failed (bg removal)", {
-						attempt,
-						error: e?.message || String(e),
-					});
-				downloaded = false;
-			}
-		}
-
-		if (!downloaded) {
-			// Fallback strategy: no background removal. This will ONLY work if the candle image already has transparency.
-			usedBgRemoval = false;
-			try {
-				compositeUrl = await buildCloudinaryCompositeUrl({
-					basePublicId: baseUpload.public_id,
-					candlePublicId: candleUpload.public_id,
-					placement,
-					useBackgroundRemoval: false,
-				});
-				await downloadUrlToFile(compositeUrl, outPath, {
-					timeoutMs: 60000,
-				});
-				downloaded = true;
-			} catch (e) {
-				if (log)
-					log("cloudinary composite download failed (no bg removal)", {
-						attempt,
-						error: e?.message || String(e),
-					});
-				downloaded = false;
-			}
-		}
-
-		if (!downloaded) {
-			safeUnlink(outPath);
-			continue;
-		}
-
-		ensurePresenterFile(outPath);
-		const upload = await uploadPresenterToCloudinary(
-			outPath,
-			jobId,
-			PRESENTER_CLOUDINARY_PUBLIC_PREFIX
-		);
-
-		if (log)
-			log("cloudinary composite created", {
-				attempt,
-				usedBgRemoval,
-				placement,
-				url: upload.url,
-			});
-
-		// Review placement; if rejected, adjust tweak and retry
-		const placementReview = await reviewCompositePlacement({
-			finalUrl: upload.url,
-			attempt,
-			log,
-		});
-
-		if (log)
-			log("composite placement review", {
-				attempt,
-				accept: placementReview?.accept,
-				reason: placementReview?.reason || "",
-				deltaX: placementReview?.deltaX || 0,
-				deltaY: placementReview?.deltaY || 0,
-				scaleMultiplier: placementReview?.scaleMultiplier || 1,
-			});
-
-		best = { upload, outPath, placement, usedBgRemoval };
-
-		if (placementReview?.accept) {
-			return {
-				upload,
-				outPath,
-				method: "cloudinary_composite",
-			};
-		}
-
-		// Prepare tweak for next attempt
-		tweak = {
-			dx:
-				(tweak.dx || 0) +
-				(placementReview?.deltaX || 0) / Math.max(placement.scale || 1, 0.001),
-			dy:
-				(tweak.dy || 0) +
-				(placementReview?.deltaY || 0) / Math.max(placement.scale || 1, 0.001),
-			scale: (tweak.scale || 1) * (placementReview?.scaleMultiplier || 1),
-		};
-
-		// Keep tweak sane
-		tweak.dx = clampInt(tweak.dx, -120, 120);
-		tweak.dy = clampInt(tweak.dy, -120, 120);
-		tweak.scale = Math.max(0.85, Math.min(1.2, tweak.scale));
-	}
-
-	// If we never accepted, return best attempt (if any)
-	if (best?.upload) {
-		return {
-			upload: best.upload,
-			outPath: best.outPath,
-			method: "cloudinary_composite_best_effort",
-		};
-	}
-
-	throw new Error("cloudinary_composite_failed");
 }
 
 async function generatePresenterAdjustedImage({
@@ -1237,126 +848,37 @@ async function generatePresenterAdjustedImage({
 		log,
 	});
 
-	let baseUpload = null;
-	try {
-		baseUpload = await uploadPresenterToCloudinary(
-			presenterLocalPath,
-			jobId,
-			PRESENTER_BASE_PREFIX
-		);
-		if (log)
-			log("presenter base uploaded", {
-				url: baseUpload.url,
-				publicId: baseUpload.public_id,
-			});
-	} catch (e) {
-		// Base upload is only for review/compositing. If it fails, we can still proceed with local paths.
-		baseUpload = null;
-		if (log)
-			log("presenter base upload failed", {
-				error: e?.message || String(e),
-			});
-	}
-
 	let outfitPath = null;
 	let outfitUpload = null;
-	let wardrobePrompt = prompts.wardrobePrompt;
-
-	// Wardrobe stage with integrity review + retry.
-	for (let attempt = 1; attempt <= 2; attempt++) {
-		try {
-			outfitPath = await generateRunwayOutfitStage({
-				jobId,
-				tmpDir: workingDir,
-				presenterLocalPath,
-				wardrobePrompt,
-				attempt,
-				log,
-			});
-			ensurePresenterFile(outfitPath);
-			outfitUpload = await uploadPresenterToCloudinary(
-				outfitPath,
-				jobId,
-				PRESENTER_OUTFIT_PREFIX
-			);
-
-			// Review against base presenter (prefer job-specific base upload if available).
-			const baseUrlForReview =
-				baseUpload?.url || ORCHESTRATOR_PRESENTER_REF_URL;
-			const wardrobeReview = await reviewOutfitIntegrity({
-				baseUrl: baseUrlForReview,
-				outfitUrl: outfitUpload.url,
-				promptUsed: wardrobePrompt,
-				attempt,
-				log,
-			});
-			if (log)
-				log("wardrobe review", {
-					attempt,
-					accept: wardrobeReview?.accept,
-					reason: wardrobeReview?.reason || "",
-				});
-
-			if (
-				wardrobeReview?.accept ||
-				wardrobeReview?.reason === "review_parse_failed"
-			) {
-				break;
-			}
-
-			// Retry: delete the bad outfit asset
-			await deleteCloudinaryAsset(outfitUpload?.public_id, log);
-			safeUnlink(outfitPath);
-			outfitPath = null;
-			outfitUpload = null;
-
-			wardrobePrompt =
-				wardrobeReview?.improvedPrompt ||
-				`${prompts.wardrobePrompt}\nAdjustment: ${
-					wardrobeReview?.reason || "preserve face/studio and remove borders"
-				}`;
-			if (log)
-				log("wardrobe retry prompt", {
-					nextAttempt: attempt + 1,
-					prompt: String(wardrobePrompt).slice(0, 260),
-				});
-		} catch (e) {
-			if (log)
-				log("runway wardrobe stage failed", {
-					error: e?.message || String(e),
-					attempt,
-				});
-			// If wardrobe generation fails entirely, fallback to base presenter.
-			break;
-		}
-	}
-
-	// If wardrobe stage didn't produce a clean outfit, fallback to base presenter.
-	if (!outfitUpload) {
-		if (log)
-			log("wardrobe fallback to base presenter", {
-				reason: "wardrobe_failed_or_rejected",
-			});
-		if (baseUpload) {
-			outfitUpload = baseUpload;
-			outfitPath = presenterLocalPath;
-		} else {
-			// upload base again under outfit prefix
-			outfitUpload = await uploadPresenterToCloudinary(
-				presenterLocalPath,
-				jobId,
-				PRESENTER_OUTFIT_PREFIX
-			);
-			outfitPath = presenterLocalPath;
-		}
-	}
-
-	// Candle product stage
 	let candleProductPath = null;
 	let candleUpload = null;
+	let finalPath = null;
+	let finalUpload = null;
+
+	try {
+		outfitPath = await generateRunwayOutfitStage({
+			jobId,
+			tmpDir: workingDir,
+			presenterLocalPath,
+			wardrobePrompt: prompts.wardrobePrompt,
+			log,
+		});
+		ensurePresenterFile(outfitPath);
+		outfitUpload = await uploadPresenterToCloudinary(
+			outfitPath,
+			jobId,
+			PRESENTER_OUTFIT_PREFIX
+		);
+	} catch (e) {
+		if (log)
+			log("runway wardrobe stage failed", {
+				error: e?.message || String(e),
+			});
+		throw e;
+	}
+
 	let candlePrompt = prompts.candleProductPrompt;
 	let candleReview = null;
-
 	for (let attempt = 1; attempt <= 3; attempt++) {
 		try {
 			candleProductPath = await generateRunwayCandleProductStage({
@@ -1364,7 +886,6 @@ async function generatePresenterAdjustedImage({
 				tmpDir: workingDir,
 				candleLocalPath,
 				candleProductPrompt: candlePrompt,
-				attempt,
 				log,
 			});
 			ensureImageFile(candleProductPath);
@@ -1379,9 +900,7 @@ async function generatePresenterAdjustedImage({
 					error: e?.message || String(e),
 					attempt,
 				});
-			candleUpload = null;
-			candleProductPath = null;
-			break;
+			throw e;
 		}
 
 		candleReview = await reviewCandleProduct({
@@ -1396,127 +915,120 @@ async function generatePresenterAdjustedImage({
 				accept: candleReview?.accept,
 				reason: candleReview?.reason || "",
 			});
-
 		if (
 			candleReview?.accept ||
 			candleReview?.reason === "review_parse_failed"
 		) {
+			if (candleReview?.reason === "review_parse_failed" && log) {
+				log("candle product review skipped", {
+					attempt,
+					reason: "review_parse_failed",
+				});
+			}
 			break;
 		}
 
 		if (attempt < 3) {
 			await deleteCloudinaryAsset(candleUpload?.public_id, log);
 			safeUnlink(candleProductPath);
-			candleUpload = null;
 			candleProductPath = null;
+			candleUpload = null;
 		}
 
-		candlePrompt =
+		const nextPrompt =
 			candleReview?.improvedPrompt ||
 			`${prompts.candleProductPrompt}\nAdjustment: ${
-				candleReview?.reason ||
-				"lid removed, crisp label, tiny flame, transparent PNG"
+				candleReview?.reason || "remove lid and preserve exact label"
 			}`;
 		if (attempt < 3 && log)
 			log("candle product retry prompt", {
 				nextAttempt: attempt + 1,
-				prompt: String(candlePrompt).slice(0, 320),
+				prompt: String(nextPrompt || "").slice(0, 300),
 			});
+		candlePrompt = nextPrompt;
 	}
 
-	if (!candleUpload) {
-		// Last resort: upload the provided candleLocalPath and try compositing with background removal.
+	if (candleReview && candleReview.accept === false) {
 		if (log)
-			log("candle fallback to provided asset", {
-				reason: "candle_generation_failed",
+			log("candle product accepted with issues", {
+				reason: candleReview.reason || "label/lid mismatch",
 			});
-		try {
-			candleUpload = await uploadPresenterToCloudinary(
-				candleLocalPath,
-				jobId,
-				PRESENTER_CANDLE_PREFIX
-			);
-		} catch (e) {
-			candleUpload = null;
-			if (log)
-				log("candle fallback upload failed", {
-					error: e?.message || String(e),
-				});
-		}
 	}
 
-	let finalUpload = null;
-	let finalPath = null;
-	let method = "";
-
-	// Preferred: deterministic Cloudinary compositing (preserves presenter/studio perfectly)
-	if (candleUpload) {
+	let finalPrompt = prompts.finalPrompt;
+	let finalReview = null;
+	let finalAttempts = 0;
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		finalAttempts = attempt;
 		try {
-			const composite = await generateCloudinaryCompositeStage({
+			finalPath = await generateRunwayFinalStage({
 				jobId,
 				tmpDir: workingDir,
-				baseUpload: outfitUpload,
-				candleUpload,
+				presenterCloudUrl: outfitUpload.url,
+				candleCloudUrl: candleUpload.url,
+				finalPrompt,
 				log,
 			});
-			finalUpload = composite.upload;
-			finalPath = composite.outPath;
-			method = composite.method;
+			ensurePresenterFile(finalPath);
+			finalUpload = await uploadPresenterToCloudinary(
+				finalPath,
+				jobId,
+				PRESENTER_CLOUDINARY_PUBLIC_PREFIX
+			);
 		} catch (e) {
 			if (log)
-				log("cloudinary composite stage failed", {
+				log("runway final stage failed", {
 					error: e?.message || String(e),
-				});
-			finalUpload = null;
-			finalPath = null;
-		}
-	}
-
-	// Fallback: last-resort Runway final generation if compositing fails
-	if (!finalUpload && candleUpload) {
-		if (log)
-			log("fallback to runway final stage", {
-				reason: "cloudinary_composite_failed",
-			});
-		let finalPrompt = prompts.finalPrompt;
-		for (let attempt = 1; attempt <= 2; attempt++) {
-			try {
-				const tmpFinal = await generateRunwayFinalStage({
-					jobId,
-					tmpDir: workingDir,
-					presenterCloudUrl: outfitUpload.url,
-					candleCloudUrl: candleUpload.url,
-					finalPrompt,
 					attempt,
-					log,
 				});
-				ensurePresenterFile(tmpFinal);
-				finalPath = tmpFinal;
-				finalUpload = await uploadPresenterToCloudinary(
-					finalPath,
-					jobId,
-					PRESENTER_CLOUDINARY_PUBLIC_PREFIX
-				);
-				method = "runway_final_fallback";
-				break;
-			} catch (e) {
-				if (log)
-					log("runway final stage failed", {
-						error: e?.message || String(e),
-						attempt,
-					});
-				finalUpload = null;
-				finalPath = null;
-				finalPrompt = `${prompts.finalPrompt}\nAdjustment: preserve presenter exactly; fix candle placement to match reference; no borders.`;
-			}
+			throw e;
+		}
+
+		finalReview = await reviewFinalPlacement({
+			finalUrl: finalUpload?.url || "",
+			promptUsed: finalPrompt,
+			attempt,
+			log,
+		});
+		if (log)
+			log("presenter final review", {
+				attempt,
+				accept: finalReview?.accept,
+				reason: finalReview?.reason || "",
+			});
+		if (finalReview?.reason === "review_parse_failed" && log) {
+			log("presenter final review skipped", {
+				attempt,
+				reason: "review_parse_failed",
+			});
+		}
+		if (finalReview?.accept) break;
+
+		await deleteCloudinaryAsset(finalUpload?.public_id, log);
+		safeUnlink(finalPath);
+		finalPath = null;
+		finalUpload = null;
+
+		if (attempt < 3) {
+			const nextPrompt =
+				finalReview?.improvedPrompt ||
+				`${prompts.finalPrompt}\nAdjustment: ${
+					finalReview?.reason || "fix candle placement to match reference"
+				}`;
+			if (log)
+				log("presenter final retry prompt", {
+					nextAttempt: attempt + 1,
+					prompt: String(nextPrompt || "").slice(0, 300),
+				});
+			finalPrompt = nextPrompt;
 		}
 	}
 
-	// Final fallback: return the outfit (no candle) instead of hard failing the whole job.
-	if (!finalUpload) {
+	if (finalReview && finalReview.accept === false) {
 		if (log)
-			log("final fallback to outfit", {
-				reason: "final_generation_failed",
+			log("presenter final fallback to outfit", {
+				reason: finalReview.reason || "placement mismatch",
+				attempts: finalAttempts,
 			});
 		finalUpload = await uploadPresenterToCloudinary(
 			outfitPath,
@@ -1524,7 +1036,6 @@ async function generatePresenterAdjustedImage({
 			PRESENTER_CLOUDINARY_PUBLIC_PREFIX
 		);
 		finalPath = outfitPath;
-		method = method || "outfit_only_fallback";
 	}
 
 	return {
@@ -1533,7 +1044,7 @@ async function generatePresenterAdjustedImage({
 		publicId: finalUpload?.public_id || "",
 		width: finalUpload?.width || 0,
 		height: finalUpload?.height || 0,
-		method: method || "runway_three_stage",
+		method: "runway_three_stage",
 	};
 }
 
