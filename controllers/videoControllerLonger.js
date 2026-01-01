@@ -954,6 +954,19 @@ function minTopicTokenMatches(tokens = []) {
 	return 1;
 }
 
+function minImageTopicTokenMatches(tokens = []) {
+	const norm = normalizeTopicTokens(tokens);
+	if (!norm.length) return 0;
+	if (norm.length >= 2) return 2;
+	return 1;
+}
+
+function hasRequiredTopicMatch(tokens = [], fields = []) {
+	const required = minImageTopicTokenMatches(tokens);
+	if (!required) return true;
+	return topicMatchInfo(tokens, fields).count >= required;
+}
+
 function topicMatchInfo(tokens = [], fields = []) {
 	const norm = expandTopicTokens(tokens);
 	if (!norm.length) return { count: 0, matchedTokens: [], normTokens: [] };
@@ -1570,32 +1583,44 @@ async function fetchCseImages(topic, extraTokens = [], jobId = null) {
 		: [];
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
+	const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+	const searchLabel = topicTokens.slice(0, 4).join(" ") || topic;
+	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
 
 	const queries = [
-		`${topic} press photo`,
-		`${topic} news photo`,
-		`${topic} photo`,
+		`${searchLabel} press photo`,
+		`${searchLabel} news photo`,
+		`${searchLabel} photo`,
 	];
 	if (category === "film") {
 		queries.unshift(
-			`${topic} official still`,
-			`${topic} movie still`,
-			`${topic} premiere`
+			`${searchLabel} official still`,
+			`${searchLabel} movie still`,
+			`${searchLabel} premiere`
 		);
 	} else if (category === "tv") {
-		queries.unshift(`${topic} episode still`, `${topic} cast photo`);
+		queries.unshift(
+			`${searchLabel} episode still`,
+			`${searchLabel} cast photo`
+		);
 	} else if (category === "music") {
-		queries.unshift(`${topic} live performance`, `${topic} stage photo`);
+		queries.unshift(
+			`${searchLabel} live performance`,
+			`${searchLabel} stage photo`
+		);
 	} else if (category === "celebrity") {
-		queries.unshift(`${topic} red carpet`, `${topic} interview photo`);
+		queries.unshift(
+			`${searchLabel} red carpet`,
+			`${searchLabel} interview photo`
+		);
 	}
 
 	const fallbackQueries = [
-		`${topic} photo`,
-		`${topic} press`,
-		`${topic} red carpet`,
-		`${topic} still`,
-		`${topic} interview`,
+		`${searchLabel} photo`,
+		`${searchLabel} press`,
+		`${searchLabel} red carpet`,
+		`${searchLabel} still`,
+		`${searchLabel} interview`,
 	];
 	const keyPhrase = filterSpecificTopicTokens(baseTokens).slice(0, 2).join(" ");
 	if (keyPhrase) {
@@ -1656,12 +1681,15 @@ async function fetchCseImages(topic, extraTokens = [], jobId = null) {
 	for (const it of items) {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) continue;
-		const info = topicMatchInfo(matchTokens, [
+		const fields = [
 			it.title,
 			it.snippet,
 			it.link,
 			it.image?.contextLink || "",
-		]);
+		];
+		if (requiredTopicMatches && !hasRequiredTopicMatch(topicTokens, fields))
+			continue;
+		const info = topicMatchInfo(matchTokens, fields);
 		if (info.count < minMatches) continue;
 		const w = Number(it.image?.width || 0);
 		const h = Number(it.image?.height || 0);
@@ -1775,6 +1803,8 @@ async function fetchOpenGraphImageUrl(pageUrl, timeoutMs = 9000) {
 async function fetchWikipediaPageImageUrl(topic = "") {
 	const title = cleanTopicLabel(topic);
 	if (!title) return null;
+	const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
 	try {
 		const { data } = await axios.get(WIKIPEDIA_API_BASE, {
 			params: {
@@ -1794,6 +1824,11 @@ async function fetchWikipediaPageImageUrl(topic = "") {
 		const pages = data?.query?.pages || {};
 		const page = Object.values(pages)[0];
 		if (!page || page.missing) return null;
+		if (
+			requiredTopicMatches &&
+			topicMatchInfo(topicTokens, [page.title]).count < requiredTopicMatches
+		)
+			return null;
 		const imageUrl = page.original?.source || page.thumbnail?.source || "";
 		return imageUrl || null;
 	} catch {
@@ -1805,6 +1840,8 @@ async function fetchWikimediaImageUrls(query = "", limit = 3) {
 	const q = sanitizeOverlayQuery(query);
 	if (!q) return [];
 	const target = clampNumber(Number(limit) || 3, 1, 8);
+	const matchTokens = filterSpecificTopicTokens(tokenizeLabel(q));
+	const requiredTopicMatches = minImageTopicTokenMatches(matchTokens);
 	try {
 		const { data } = await axios.get(WIKIMEDIA_API_BASE, {
 			params: {
@@ -1825,6 +1862,11 @@ async function fetchWikimediaImageUrls(query = "", limit = 3) {
 		const pages = data?.query?.pages || {};
 		const urls = [];
 		for (const page of Object.values(pages)) {
+			if (
+				requiredTopicMatches &&
+				topicMatchInfo(matchTokens, [page.title]).count < requiredTopicMatches
+			)
+				continue;
 			const info = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
 			const url = String(info?.url || info?.thumburl || "").trim();
 			const mime = String(info?.mime || "").toLowerCase();
@@ -1887,10 +1929,12 @@ async function fetchCseImagesForQuery(
 	const q = sanitizeOverlayQuery(query);
 	if (!q) return [];
 	const target = clampNumber(Number(maxResults) || 4, 1, 12);
+	const strictTopicTokens = filterSpecificTopicTokens(topicTokens);
 	const tokens = expandTopicTokens(
-		filterSpecificTopicTokens([...tokenizeLabel(q), ...topicTokens])
+		filterSpecificTopicTokens([...tokenizeLabel(q), ...strictTopicTokens])
 	);
 	const minMatches = minTopicTokenMatches(tokens);
+	const requiredTopicMatches = minImageTopicTokenMatches(strictTopicTokens);
 	const attemptStats = [];
 	let items = await fetchCseItems([q], {
 		num: Math.min(15, Math.max(12, target * 3)),
@@ -1920,12 +1964,15 @@ async function fetchCseImagesForQuery(
 	for (const it of items) {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) continue;
-		const info = topicMatchInfo(tokens, [
+		const fields = [
 			it.title,
 			it.snippet,
 			it.link,
 			it.image?.contextLink || "",
-		]);
+		];
+		if (requiredTopicMatches && !hasRequiredTopicMatch(strictTopicTokens, fields))
+			continue;
+		const info = topicMatchInfo(tokens, fields);
 		if (info.count < minMatches) continue;
 		const w = Number(it.image?.width || 0);
 		const h = Number(it.image?.height || 0);
@@ -2224,12 +2271,23 @@ async function fetchFallbackImageUrlsForSegment({
 	const target = clampNumber(Number(limit) || 4, 1, 8);
 	const urls = [];
 
+	const topicTokens = filterSpecificTopicTokens(
+		topicTokensFromTitle(topicLabel || query || "")
+	);
+	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
 	const contextItems = await fetchCseContext(
 		query || topicLabel,
 		topicLabel ? [topicLabel] : []
 	);
+	const strictContextItems = requiredTopicMatches
+		? contextItems.filter(
+				(it) =>
+					topicMatchInfo(topicTokens, [it.title, it.snippet, it.link])
+						.count >= requiredTopicMatches
+		  )
+		: contextItems;
 	const articleUrls = uniqueStrings(
-		contextItems.map((c) => c?.link).filter(Boolean),
+		strictContextItems.map((c) => c?.link).filter(Boolean),
 		{ limit: 6 }
 	);
 	for (const pageUrl of articleUrls) {

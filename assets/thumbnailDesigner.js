@@ -68,7 +68,7 @@ const QA_LUMA_LEFT_MIN = 0.33;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
-const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.22;
+const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.12;
 const THUMBNAIL_BADGE_FONT_PCT = 0.045;
 const THUMBNAIL_BADGE_X_PCT = 0.05;
 const THUMBNAIL_BADGE_Y_PCT = 0.05;
@@ -135,8 +135,9 @@ const RUNWAY_PROMPT_CHAR_LIMIT = 520;
 function cleanThumbnailText(text = "") {
 	return String(text || "")
 		.replace(/([a-z])([A-Z])/g, "$1 $2")
-		.replace(/["'`]/g, "")
-		.replace(/[^a-z0-9\s]/gi, " ")
+		.replace(/[‘’]/g, "'")
+		.replace(/[“”]/g, '"')
+		.replace(/[^a-z0-9\s']/gi, " ")
 		.replace(/\s+/g, " ")
 		.trim();
 }
@@ -1518,6 +1519,115 @@ function samplePreviewLuma(filePath, region = null) {
 	}
 }
 
+function samplePreviewRgb(filePath, region = null) {
+	const w = QA_PREVIEW_WIDTH;
+	const h = QA_PREVIEW_HEIGHT;
+	let crop = "";
+	if (region) {
+		const rx = Math.max(0, Math.round(region.x || 0));
+		const ry = Math.max(0, Math.round(region.y || 0));
+		const rw = Math.max(1, Math.round(region.w || 1));
+		const rh = Math.max(1, Math.round(region.h || 1));
+		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
+	}
+	const filter = `scale=${w}:${h}:flags=area,${crop}scale=1:1:flags=area,format=rgb24`;
+	const args = [
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-i",
+		filePath,
+		"-vf",
+		filter,
+		"-frames:v",
+		"1",
+		"-f",
+		"rawvideo",
+		"pipe:1",
+	];
+	try {
+		const buf = runFfmpegBuffer(args, "thumbnail_rgb");
+		if (!buf || buf.length < 3) return null;
+		return { r: buf[0], g: buf[1], b: buf[2] };
+	} catch {
+		return null;
+	}
+}
+
+function analyzeImageTone(filePath) {
+	const rgb = samplePreviewRgb(filePath);
+	if (!rgb) return null;
+	const total = rgb.r + rgb.g + rgb.b;
+	const bRatio = total > 0 ? rgb.b / total : 0;
+	const rgOverB = rgb.b > 0 ? (rgb.r + rgb.g) / (2 * rgb.b) : null;
+	const luma = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+	return { rgb, luma, bRatio, rgOverB };
+}
+
+function scoreTopicImageCandidate(candidate) {
+	const minEdge = Math.min(candidate.width || 0, candidate.height || 0);
+	const sizeScore = clampNumber(minEdge / 1200, 0, 1);
+	const luma = candidate?.tone?.luma;
+	const lumaScore = Number.isFinite(luma)
+		? 1 - Math.min(Math.abs(luma - 0.45) / 0.35, 1)
+		: 0.4;
+	const bRatio = candidate?.tone?.bRatio;
+	let colorScore = 0.5;
+	if (Number.isFinite(bRatio)) {
+		const target = 0.3;
+		colorScore = 1 - Math.min(Math.abs(bRatio - target) / 0.12, 1);
+	}
+	const rgOverB = candidate?.tone?.rgOverB;
+	const warmPenalty = Number.isFinite(rgOverB) && rgOverB > 1.7 ? 0.2 : 0;
+	return sizeScore * 0.55 + lumaScore * 0.25 + colorScore * 0.2 - warmPenalty;
+}
+
+function shouldNeutralizeTopicImage(tone) {
+	if (!tone) return false;
+	if (!Number.isFinite(tone.bRatio) || !Number.isFinite(tone.rgOverB))
+		return false;
+	return tone.bRatio < 0.23 && tone.rgOverB > 1.7;
+}
+
+async function normalizeTopicImageIfNeeded({
+	inputPath,
+	tone,
+	tmpDir,
+	jobId,
+	index = 0,
+	log,
+}) {
+	if (!ffmpegPath) return inputPath;
+	if (!shouldNeutralizeTopicImage(tone)) return inputPath;
+	const outPath = path.join(tmpDir, `thumb_topic_norm_${jobId}_${index}.jpg`);
+	const filter =
+		"colorchannelmixer=rr=0.95:gg=0.97:bb=1.10," +
+		"eq=contrast=1.02:saturation=0.95:brightness=0.02";
+	await runFfmpeg(
+		[
+			"-i",
+			inputPath,
+			"-vf",
+			filter,
+			"-frames:v",
+			"1",
+			"-q:v",
+			"2",
+			"-y",
+			outPath,
+		],
+		"thumbnail_topic_colorfix"
+	);
+	safeUnlink(inputPath);
+	if (log)
+		log("thumbnail topic image neutralized", {
+			path: path.basename(outPath),
+			bRatio: Number(tone.bRatio.toFixed(3)),
+			rgOverB: Number(tone.rgOverB.toFixed(2)),
+		});
+	return outPath;
+}
+
 function getQaLeftSampleRegion() {
 	return {
 		x: 0,
@@ -1535,6 +1645,14 @@ async function applyThumbnailQaAdjustments(filePath, { log } = {}) {
 
 	const targetOverall = QA_LUMA_MIN;
 	const targetLeft = QA_LUMA_LEFT_MIN;
+	if (log) {
+		log("thumbnail qa precheck", {
+			beforeOverall: Number(beforeOverall.toFixed(3)),
+			beforeLeft: Number(beforeLeft.toFixed(3)),
+			targetOverall,
+			targetLeft,
+		});
+	}
 	if (beforeOverall >= targetOverall && beforeLeft >= targetLeft) {
 		return {
 			applied: false,
@@ -1743,7 +1861,7 @@ async function composeThumbnailBase({
 		const panelY =
 			panelCount > 1 ? margin : Math.max(0, Math.round(margin + topPad));
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = "(ih-oh)/2";
+		const panelCropY = "(ih-oh)*0.35";
 		filters.push(
 			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
 				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
@@ -1761,7 +1879,7 @@ async function composeThumbnailBase({
 		const panel2Idx = 3;
 		const panel2Y = Math.max(0, margin * 2 + panelH);
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = "(ih-oh)/2";
+		const panelCropY = "(ih-oh)*0.35";
 		filters.push(
 			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
 				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
@@ -2138,12 +2256,18 @@ async function renderThumbnailOverlay({
 	const vignetteStrength = Number.isFinite(Number(overlayOptions.vignette))
 		? Number(overlayOptions.vignette)
 		: 0.04;
+	const leftPanelPct = Number.isFinite(Number(overlayOptions.leftPanelPct))
+		? clampNumber(Number(overlayOptions.leftPanelPct), 0.3, 0.65)
+		: LEFT_PANEL_PCT;
 	const leftLift = Number.isFinite(Number(overlayOptions.leftLift))
 		? clampNumber(Number(overlayOptions.leftLift), 0, 0.18)
 		: 0.06;
 	const leftLiftHeight = Number.isFinite(Number(overlayOptions.leftLiftHeight))
 		? clampNumber(Number(overlayOptions.leftLiftHeight), 0.2, 1)
 		: 0.6;
+	const leftFeatherPct = Number.isFinite(Number(overlayOptions.leftFeatherPct))
+		? clampNumber(Number(overlayOptions.leftFeatherPct), 0, 0.12)
+		: Math.min(0.05, leftPanelPct * 0.25);
 	const badgeTextRaw =
 		typeof overlayOptions.badgeText === "string"
 			? overlayOptions.badgeText.trim()
@@ -2190,23 +2314,46 @@ async function renderThumbnailOverlay({
 	];
 	if (panelOpacity > 0) {
 		filters.push(
-			`drawbox=x=0:y=0:w=iw*0.48:h=ih:color=black@${panelOpacity.toFixed(
+			`drawbox=x=0:y=0:w=iw*${leftPanelPct.toFixed(
 				3
-			)}:t=fill`
+			)}:h=ih:color=black@${panelOpacity.toFixed(3)}:t=fill`
 		);
+		const panelFeatherOpacity = Math.min(panelOpacity, panelOpacity * 0.35);
+		if (leftFeatherPct > 0 && panelFeatherOpacity > 0) {
+			filters.push(
+				`drawbox=x=iw*${leftPanelPct.toFixed(
+					4
+				)}:y=0:w=iw*${leftFeatherPct.toFixed(
+					4
+				)}:h=ih:color=black@${panelFeatherOpacity.toFixed(3)}:t=fill`
+			);
+		}
 	}
 	if (leftLift > 0) {
+		const seg = leftPanelPct / 3;
+		const segStart2 = seg * 2;
+		const liftHeight = leftLiftHeight.toFixed(2);
 		filters.push(
-			`drawbox=x=0:y=0:w=iw*0.16:h=ih*${leftLiftHeight.toFixed(
-				2
-			)}:color=white@${leftLift.toFixed(3)}:t=fill`,
-			`drawbox=x=iw*0.16:y=0:w=iw*0.16:h=ih*${leftLiftHeight.toFixed(
-				2
-			)}:color=white@${(leftLift * 0.65).toFixed(3)}:t=fill`,
-			`drawbox=x=iw*0.32:y=0:w=iw*0.16:h=ih*${leftLiftHeight.toFixed(
-				2
-			)}:color=white@${(leftLift * 0.35).toFixed(3)}:t=fill`
+			`drawbox=x=0:y=0:w=iw*${seg.toFixed(
+				4
+			)}:h=ih*${liftHeight}:color=white@${leftLift.toFixed(3)}:t=fill`,
+			`drawbox=x=iw*${seg.toFixed(4)}:y=0:w=iw*${seg.toFixed(
+				4
+			)}:h=ih*${liftHeight}:color=white@${(leftLift * 0.65).toFixed(3)}:t=fill`,
+			`drawbox=x=iw*${segStart2.toFixed(4)}:y=0:w=iw*${seg.toFixed(
+				4
+			)}:h=ih*${liftHeight}:color=white@${(leftLift * 0.35).toFixed(3)}:t=fill`
 		);
+		const featherAlpha = leftLift * 0.12;
+		if (leftFeatherPct > 0 && featherAlpha > 0) {
+			filters.push(
+				`drawbox=x=iw*${leftPanelPct.toFixed(
+					4
+				)}:y=0:w=iw*${leftFeatherPct.toFixed(
+					4
+				)}:h=ih*${liftHeight}:color=white@${featherAlpha.toFixed(3)}:t=fill`
+			);
+		}
 	}
 	filters.push(
 		`drawbox=x=0:y=0:w=iw*0.2:h=ih:color=${accentColor}@0.012:t=fill`,
@@ -2236,7 +2383,7 @@ async function renderThumbnailOverlay({
 				textFilePath
 			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:box=1:boxcolor=black@${textBoxOpacity.toFixed(
 				2
-			)}:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*0.12`
+			)}:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*${THUMBNAIL_TEXT_Y_OFFSET_PCT}`
 		);
 	}
 
@@ -2307,32 +2454,44 @@ async function fetchCseImages(topic, extraTokens = []) {
 		: [];
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
+	const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+	const topicQuery = topicTokens.slice(0, 4).join(" ");
+	const searchLabel = topicQuery || topic;
 
 	const queries = [
-		`${topic} press photo`,
-		`${topic} news photo`,
-		`${topic} photo`,
+		`${searchLabel} press photo`,
+		`${searchLabel} news photo`,
+		`${searchLabel} photo`,
 	];
 	if (category === "film") {
 		queries.unshift(
-			`${topic} official still`,
-			`${topic} movie still`,
-			`${topic} premiere`
+			`${searchLabel} official still`,
+			`${searchLabel} movie still`,
+			`${searchLabel} premiere`
 		);
 	} else if (category === "tv") {
-		queries.unshift(`${topic} episode still`, `${topic} cast photo`);
+		queries.unshift(
+			`${searchLabel} episode still`,
+			`${searchLabel} cast photo`
+		);
 	} else if (category === "music") {
-		queries.unshift(`${topic} live performance`, `${topic} stage photo`);
+		queries.unshift(
+			`${searchLabel} live performance`,
+			`${searchLabel} stage photo`
+		);
 	} else if (category === "celebrity") {
-		queries.unshift(`${topic} red carpet`, `${topic} interview photo`);
+		queries.unshift(
+			`${searchLabel} red carpet`,
+			`${searchLabel} interview photo`
+		);
 	}
 
 	const fallbackQueries = [
-		`${topic} photo`,
-		`${topic} press`,
-		`${topic} red carpet`,
-		`${topic} still`,
-		`${topic} interview`,
+		`${searchLabel} photo`,
+		`${searchLabel} press`,
+		`${searchLabel} red carpet`,
+		`${searchLabel} still`,
+		`${searchLabel} interview`,
 	];
 	const keyPhrase = filterSpecificTopicTokens(baseTokens).slice(0, 2).join(" ");
 	if (keyPhrase) {
@@ -2370,19 +2529,19 @@ async function fetchCseImages(topic, extraTokens = []) {
 	const minMatches = minImageTokenMatches(matchTokens);
 
 	const candidates = [];
-	for (const it of items) {
+	const pushCandidate = (it, { minEdge, minTokenMatches }) => {
 		const url = it.link || "";
-		if (!url || !/^https:\/\//i.test(url)) continue;
+		if (!url || !/^https:\/\//i.test(url)) return;
 		const info = topicMatchInfo(matchTokens, [
 			it.title,
 			it.snippet,
 			it.link,
 			it.image?.contextLink || "",
 		]);
-		if (info.count < minMatches) continue;
+		if (info.count < minTokenMatches) return;
 		const w = Number(it.image?.width || 0);
 		const h = Number(it.image?.height || 0);
-		if (w && h && Math.min(w, h) < CSE_MIN_IMAGE_SHORT_EDGE) continue;
+		if (w && h && Math.min(w, h) < minEdge) return;
 		const urlText = `${it.link || ""} ${
 			it.image?.contextLink || ""
 		}`.toLowerCase();
@@ -2392,7 +2551,25 @@ async function fetchCseImages(topic, extraTokens = []) {
 		const score = info.count + urlMatches * 0.75;
 		const mime = String(it.image?.mime || "").toLowerCase();
 		candidates.push({ url, score, urlMatches, w, h, mime });
+	};
+
+	for (const it of items) {
+		pushCandidate(it, {
+			minEdge: CSE_MIN_IMAGE_SHORT_EDGE,
+			minTokenMatches: minMatches,
+		});
 		if (candidates.length >= 14) break;
+	}
+	if (!candidates.length && items.length) {
+		const relaxedMinEdge = Math.min(CSE_MIN_IMAGE_SHORT_EDGE, 600);
+		const relaxedMatches = Math.max(1, minMatches - 1);
+		for (const it of items) {
+			pushCandidate(it, {
+				minEdge: relaxedMinEdge,
+				minTokenMatches: relaxedMatches,
+			});
+			if (candidates.length >= 12) break;
+		}
 	}
 
 	candidates.sort((a, b) => {
@@ -2577,6 +2754,7 @@ async function collectThumbnailTopicImages({
 				continue;
 			}
 			const dims = ffprobeDimensions(out);
+			const tone = analyzeImageTone(out);
 			const minEdge = Math.min(dims.width || 0, dims.height || 0);
 			if (minEdge && minEdge < CSE_MIN_IMAGE_SHORT_EDGE) {
 				smallCandidates.push({
@@ -2584,6 +2762,12 @@ async function collectThumbnailTopicImages({
 					size: st.size,
 					width: dims.width || 0,
 					height: dims.height || 0,
+					tone,
+					score: scoreTopicImageCandidate({
+						width: dims.width || 0,
+						height: dims.height || 0,
+						tone,
+					}),
 				});
 				continue;
 			}
@@ -2592,6 +2776,12 @@ async function collectThumbnailTopicImages({
 				size: st.size,
 				width: dims.width || 0,
 				height: dims.height || 0,
+				tone,
+				score: scoreTopicImageCandidate({
+					width: dims.width || 0,
+					height: dims.height || 0,
+					tone,
+				}),
 			});
 		} catch {
 			safeUnlink(out);
@@ -2625,8 +2815,29 @@ async function collectThumbnailTopicImages({
 	});
 
 	const pickPool = preferred.length ? preferred : usableCandidates;
-	pickPool.sort((a, b) => b.size - a.size);
-	const selected = pickPool.slice(0, target).map((c) => c.path);
+	pickPool.sort((a, b) => {
+		if (Number.isFinite(a.score) && Number.isFinite(b.score)) {
+			if (b.score !== a.score) return b.score - a.score;
+		}
+		if (b.size !== a.size) return b.size - a.size;
+		const aPixels = (a.width || 0) * (a.height || 0);
+		const bPixels = (b.width || 0) * (b.height || 0);
+		return bPixels - aPixels;
+	});
+	const selectedCandidates = pickPool.slice(0, target);
+	const selected = [];
+	for (let i = 0; i < selectedCandidates.length; i++) {
+		const candidate = selectedCandidates[i];
+		const normalized = await normalizeTopicImageIfNeeded({
+			inputPath: candidate.path,
+			tone: candidate.tone,
+			tmpDir,
+			jobId,
+			index: i,
+			log,
+		});
+		selected.push(normalized);
+	}
 
 	for (const c of [...candidates, ...smallCandidates]) {
 		if (!selected.includes(c.path)) safeUnlink(c.path);
@@ -2853,12 +3064,18 @@ async function generateThumbnailPackage({
 			});
 
 			const finalPath = path.join(tmpDir, `thumb_${jobId}_${variant.key}.jpg`);
+			const overlayOptions = {
+				...variant.overlayOptions,
+				leftPanelPct: Number.isFinite(Number(variant.layout?.leftPanelPct))
+					? Number(variant.layout.leftPanelPct)
+					: LEFT_PANEL_PCT,
+			};
 			await renderThumbnailOverlay({
 				inputPath: baseImage,
 				outputPath: finalPath,
 				title: variant.title,
 				accentColor: stylePlan.accent,
-				overlayOptions: variant.overlayOptions,
+				overlayOptions,
 			});
 			ensureThumbnailFile(finalPath);
 			const qa = await applyThumbnailQaAdjustments(finalPath, { log });
