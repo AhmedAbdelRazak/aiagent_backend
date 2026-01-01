@@ -219,6 +219,7 @@ const WATERMARK_SHADOW_OPACITY = 0.3;
 const WATERMARK_SHADOW_PX = 2;
 const CSE_PREFERRED_IMG_SIZE = "xlarge";
 const CSE_FALLBACK_IMG_SIZE = "large";
+const CSE_ULTRA_IMG_SIZE = "xxlarge";
 const CSE_MIN_IMAGE_SHORT_EDGE = 720;
 
 // Intro (seconds)
@@ -269,6 +270,9 @@ const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
 const VOICE_SPEED_BOOST = clampNumber(1.0, 0.98, 1.08);
 const FORCE_NEUTRAL_VOICEOVER = true;
 const ALIGN_INTRO_OUTRO_ATEMPO = true;
+const ALLOW_NARRATION_OVERRUN = true;
+const MAX_NARRATION_OVERAGE_RATIO = clampNumber(1.5, 1.0, 1.8);
+const MAX_NARRATION_OVERAGE_SEC = clampNumber(30, 5, 60);
 const MAX_SUBTLE_VISUAL_EXPRESSIONS = clampNumber(2, 0, 2);
 const SUBTLE_VISUAL_EDGE_BUFFER = clampNumber(1, 0, 3);
 
@@ -1338,6 +1342,27 @@ async function loadRecentLongVideoTopics({ userId, categoryLabel }) {
 	}
 }
 
+async function loadRecentPresenterOutfits({ userId, limit = 10 }) {
+	if (!userId) return [];
+	try {
+		const recent = await Video.find({
+			user: userId,
+			isLongVideo: true,
+			presenterOutfit: { $exists: true, $ne: "" },
+		})
+			.sort({ createdAt: -1 })
+			.limit(Math.max(0, Number(limit) || 0))
+			.select({ presenterOutfit: 1 })
+			.lean();
+		return (recent || [])
+			.map((v) => String(v.presenterOutfit || "").trim())
+			.filter(Boolean);
+	} catch (e) {
+		logJob(null, "recent outfits lookup failed", { error: e.message });
+		return [];
+	}
+}
+
 function isDuplicateTopic(topic, existing = [], usedTopics = null) {
 	const norm = topicSignature(topic);
 	if (!norm) return true;
@@ -1538,7 +1563,7 @@ async function fetchCseContext(topic, extraTokens = []) {
 		.slice(0, 6);
 }
 
-async function fetchCseImages(topic, extraTokens = []) {
+async function fetchCseImages(topic, extraTokens = [], jobId = null) {
 	if (!topic) return [];
 	const extra = Array.isArray(extraTokens)
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
@@ -1577,29 +1602,50 @@ async function fetchCseImages(topic, extraTokens = []) {
 		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
 	}
 
+	const attemptStats = [];
 	let items = await fetchCseItems(queries, {
-		num: 8,
+		num: 12,
 		searchType: "image",
-		imgSize: CSE_PREFERRED_IMG_SIZE,
+		imgSize: CSE_ULTRA_IMG_SIZE,
+	});
+	attemptStats.push({
+		label: "primary_ultra",
+		items: items.length,
+		imgSize: CSE_ULTRA_IMG_SIZE,
 	});
 	if (!items.length) {
 		items = await fetchCseItems(queries, {
-			num: 8,
+			num: 12,
 			searchType: "image",
-			imgSize: CSE_FALLBACK_IMG_SIZE,
+			imgSize: CSE_PREFERRED_IMG_SIZE,
 		});
-	}
-	if (!items.length) {
-		items = await fetchCseItems(fallbackQueries, {
-			num: 8,
-			searchType: "image",
+		attemptStats.push({
+			label: "primary_preferred",
+			items: items.length,
 			imgSize: CSE_PREFERRED_IMG_SIZE,
 		});
 	}
 	if (!items.length) {
 		items = await fetchCseItems(fallbackQueries, {
-			num: 8,
+			num: 12,
 			searchType: "image",
+			imgSize: CSE_PREFERRED_IMG_SIZE,
+		});
+		attemptStats.push({
+			label: "fallback_preferred",
+			items: items.length,
+			imgSize: CSE_PREFERRED_IMG_SIZE,
+		});
+	}
+	if (!items.length) {
+		items = await fetchCseItems(fallbackQueries, {
+			num: 12,
+			searchType: "image",
+			imgSize: CSE_FALLBACK_IMG_SIZE,
+		});
+		attemptStats.push({
+			label: "fallback_large",
+			items: items.length,
 			imgSize: CSE_FALLBACK_IMG_SIZE,
 		});
 	}
@@ -1628,7 +1674,7 @@ async function fetchCseImages(topic, extraTokens = []) {
 		).length;
 		const score = info.count + urlMatches * 0.75;
 		candidates.push({ url, score, urlMatches, w, h });
-		if (candidates.length >= 14) break;
+		if (candidates.length >= 24) break;
 	}
 
 	candidates.sort((a, b) => {
@@ -1657,6 +1703,14 @@ async function fetchCseImages(topic, extraTokens = []) {
 		filtered.push(c.url);
 		if (filtered.length >= 6) break;
 	}
+	if (jobId)
+		logJob(jobId, "cse image search summary", {
+			topic,
+			category,
+			attempts: attemptStats,
+			candidates: candidates.length,
+			filtered: filtered.length,
+		});
 	return filtered;
 }
 
@@ -1824,7 +1878,12 @@ function buildOverlayQueryFallback(text = "", topic = "") {
 	return sanitizeOverlayQuery(parts.join(" "));
 }
 
-async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
+async function fetchCseImagesForQuery(
+	query,
+	topicTokens = [],
+	maxResults = 4,
+	jobId = null
+) {
 	const q = sanitizeOverlayQuery(query);
 	if (!q) return [];
 	const target = clampNumber(Number(maxResults) || 4, 1, 12);
@@ -1832,20 +1891,31 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 		filterSpecificTopicTokens([...tokenizeLabel(q), ...topicTokens])
 	);
 	const minMatches = minTopicTokenMatches(tokens);
+	const attemptStats = [];
 	let items = await fetchCseItems([q], {
-		num: Math.min(10, Math.max(8, target * 2)),
+		num: Math.min(15, Math.max(12, target * 3)),
 		searchType: "image",
-		imgSize: CSE_PREFERRED_IMG_SIZE,
+		imgSize: CSE_ULTRA_IMG_SIZE,
+	});
+	attemptStats.push({
+		label: "query_ultra",
+		items: items.length,
+		imgSize: CSE_ULTRA_IMG_SIZE,
 	});
 	if (!items.length) {
 		items = await fetchCseItems([q], {
-			num: Math.min(10, Math.max(8, target * 2)),
+			num: Math.min(15, Math.max(12, target * 3)),
 			searchType: "image",
-			imgSize: CSE_FALLBACK_IMG_SIZE,
+			imgSize: CSE_PREFERRED_IMG_SIZE,
+		});
+		attemptStats.push({
+			label: "query_preferred",
+			items: items.length,
+			imgSize: CSE_PREFERRED_IMG_SIZE,
 		});
 	}
 	const candidates = [];
-	const maxCandidates = Math.max(10, target * 3);
+	const maxCandidates = Math.max(12, target * 4);
 
 	for (const it of items) {
 		const url = it.link || "";
@@ -1895,6 +1965,14 @@ async function fetchCseImagesForQuery(query, topicTokens = [], maxResults = 4) {
 		filtered.push(c.url);
 		if (filtered.length >= target) break;
 	}
+	if (jobId)
+		logJob(jobId, "cse image query summary", {
+			query: q,
+			attempts: attemptStats,
+			candidates: candidates.length,
+			filtered: filtered.length,
+			target,
+		});
 
 	return filtered;
 }
@@ -2041,7 +2119,21 @@ function resolveSegmentImageQuery(seg, topics = []) {
 	return { query, topicLabel };
 }
 
-function pickSegmentImageUrls(candidates = [], desiredCount = 1, usedUrls) {
+function getUrlHost(url = "") {
+	try {
+		const host = new URL(String(url)).hostname || "";
+		return host.replace(/^www\./i, "");
+	} catch {
+		return "";
+	}
+}
+
+function pickSegmentImageUrls(
+	candidates = [],
+	desiredCount = 1,
+	usedUrls,
+	usedHosts
+) {
 	const pool = [];
 	const seen = new Set();
 	for (const u of candidates) {
@@ -2055,12 +2147,28 @@ function pickSegmentImageUrls(candidates = [], desiredCount = 1, usedUrls) {
 	const target = Math.max(1, Math.floor(desiredCount));
 	const picks = [];
 	const picked = new Set();
+	const pickedHosts = new Set();
 
 	for (const url of pool) {
 		if (picks.length >= target) break;
 		if (usedUrls && usedUrls.has(url)) continue;
+		const host = getUrlHost(url);
+		if (usedHosts && host && usedHosts.has(host)) continue;
 		picks.push(url);
 		picked.add(url);
+		if (host) pickedHosts.add(host);
+	}
+
+	if (picks.length < target) {
+		for (const url of pool) {
+			if (picks.length >= target) break;
+			if (picked.has(url)) continue;
+			if (usedUrls && usedUrls.has(url)) continue;
+			picks.push(url);
+			picked.add(url);
+			const host = getUrlHost(url);
+			if (host) pickedHosts.add(host);
+		}
 	}
 
 	if (picks.length < target) {
@@ -2069,11 +2177,16 @@ function pickSegmentImageUrls(candidates = [], desiredCount = 1, usedUrls) {
 			if (picked.has(url)) continue;
 			picks.push(url);
 			picked.add(url);
+			const host = getUrlHost(url);
+			if (host) pickedHosts.add(host);
 		}
 	}
 
 	if (usedUrls) {
 		for (const url of picks) usedUrls.add(url);
+	}
+	if (usedHosts) {
+		for (const host of pickedHosts) usedHosts.add(host);
 	}
 	return picks;
 }
@@ -2173,6 +2286,7 @@ async function prepareImageSegments({
 	const topicCache = new Map();
 	const fallbackCache = new Map();
 	const usedUrls = new Set();
+	const usedHosts = new Set();
 	const segmentImagePaths = new Map();
 	const imagePlanSummary = [];
 	const updated = [];
@@ -2188,6 +2302,13 @@ async function prepareImageSegments({
 		const { query, topicLabel } = resolveSegmentImageQuery(seg, topics);
 		const cacheKey = `${query}||${topicLabel}`;
 
+		logJob(jobId, "segment image search", {
+			segment: seg.index,
+			query,
+			topicLabel,
+			desiredCount,
+		});
+
 		let candidates = [];
 		if (query && queryCache.has(cacheKey)) {
 			candidates = queryCache.get(cacheKey) || [];
@@ -2196,20 +2317,35 @@ async function prepareImageSegments({
 			const fromQuery = await fetchCseImagesForQuery(
 				query,
 				topicTokens,
-				Math.max(6, desiredCount * 2)
+				Math.max(10, desiredCount * 3),
+				jobId
 			);
 			let fromTopic = [];
 			if (topicLabel && fromQuery.length < desiredCount) {
-				fromTopic = await fetchCseImages(topicLabel, [query]);
+				fromTopic = await fetchCseImages(topicLabel, [query], jobId);
 			}
 			candidates = Array.from(new Set([...(fromQuery || []), ...fromTopic]));
 			queryCache.set(cacheKey, candidates);
 			if (topicLabel && candidates.length)
 				topicCache.set(topicLabel, candidates);
+			logJob(jobId, "segment image candidates", {
+				segment: seg.index,
+				query,
+				topicLabel,
+				fromQuery: fromQuery.length,
+				fromTopic: fromTopic.length,
+				total: candidates.length,
+			});
 		}
 
 		if (!candidates.length && topicLabel && topicCache.has(topicLabel)) {
 			candidates = topicCache.get(topicLabel) || [];
+			logJob(jobId, "segment image candidates (topic cache)", {
+				segment: seg.index,
+				query,
+				topicLabel,
+				total: candidates.length,
+			});
 		}
 
 		if (!candidates.length) {
@@ -2227,15 +2363,32 @@ async function prepareImageSegments({
 				if (fallbackUrls.length && topicLabel)
 					topicCache.set(topicLabel, fallbackUrls);
 			}
+			logJob(jobId, "segment image candidates (fallback)", {
+				segment: seg.index,
+				query,
+				topicLabel,
+				total: candidates.length,
+			});
 		}
 
-		const picks = pickSegmentImageUrls(candidates, desiredCount, usedUrls);
+		const picks = pickSegmentImageUrls(
+			candidates,
+			desiredCount,
+			usedUrls,
+			usedHosts
+		);
 		let localPaths = await downloadSegmentImages(
 			picks,
 			tmpDir,
 			jobId,
 			seg.index
 		);
+		logJob(jobId, "segment image picks", {
+			segment: seg.index,
+			desiredCount,
+			picked: picks.length,
+			downloaded: localPaths.length,
+		});
 		if (!localPaths.length) {
 			const fallbackKey = `${query}||${topicLabel}`;
 			const fallbackUrls =
@@ -2249,7 +2402,8 @@ async function prepareImageSegments({
 			const fallbackPicks = pickSegmentImageUrls(
 				fallbackUrls,
 				desiredCount,
-				usedUrls
+				usedUrls,
+				usedHosts
 			);
 			localPaths = await downloadSegmentImages(
 				fallbackPicks,
@@ -2257,6 +2411,12 @@ async function prepareImageSegments({
 				jobId,
 				seg.index
 			);
+			logJob(jobId, "segment image picks (fallback)", {
+				segment: seg.index,
+				desiredCount,
+				picked: fallbackPicks.length,
+				downloaded: localPaths.length,
+			});
 		}
 
 		if (!localPaths.length) {
@@ -3379,6 +3539,23 @@ const TOPIC_TRANSITION_TEMPLATES = [
 	"Turning to {topic}. Here's the headline.",
 ];
 
+function dropIntroTransitionSentence(text = "") {
+	const trimmed = String(text || "").trim();
+	if (!trimmed) return "";
+	const transitionRegex =
+		/^(and now|now|next up|switching gears|turning to|moving on|pivoting|lets talk about|let\W*s talk about|we\W*re talking about|we are talking about)\b/i;
+	if (!transitionRegex.test(trimmed)) return trimmed;
+	const boundary = trimmed.search(/[.!?]\s+/);
+	if (boundary >= 0) {
+		const rest = trimmed.slice(boundary + 1).trim();
+		if (rest) return rest;
+	}
+	return trimmed
+		.replace(transitionRegex, "")
+		.replace(/^[,:\-\s]+/, "")
+		.trim();
+}
+
 function ensureTopicTransitions(segments = [], topics = []) {
 	const out = [];
 	let lastTopicIndex = null;
@@ -3396,7 +3573,9 @@ function ensureTopicTransitions(segments = [], topics = []) {
 			).trim();
 		let text = String(seg.text || "").trim();
 
-		if (i > 0 && topicIndex !== lastTopicIndex && topicLabel) {
+		if (i === 0) {
+			text = dropIntroTransitionSentence(text);
+		} else if (topicIndex !== lastTopicIndex && topicLabel) {
 			const lower = text.toLowerCase();
 			const topicLower = topicLabel.toLowerCase();
 			const hasTransition =
@@ -3608,6 +3787,7 @@ Style rules (IMPORTANT):
 - Avoid staccato punctuation. Do NOT put commas between single words.
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
 - Lead with the answer, then add context (what happened, why it matters, what to watch for).
+- Target duration is a guideline; if clarity needs more time, it's OK to run longer, but still try to stay close to the target.
 - Avoid repeating the topic question or using vague filler phrasing; be specific and helpful.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
 - Avoid exclamation points unless the script explicitly calls for excitement.
@@ -3620,10 +3800,11 @@ Style rules (IMPORTANT):
 - Segment 0 must be a strong hook that makes people stay.
 - Do NOT start segment 0 with "Quick update on..." or restate the intro line; the intro handles that.
 - Segment 0 should read like the very next sentence after the intro, continuing the same thought without reintroducing the topic.
+- Do NOT start segment 0 with transition phrases like "And now", "Now", "Next up", or "Let's talk about".
 - Segment 0 follows the tone plan; middle segments stay conversational/neutral; last segment wraps with the tone plan.
 - Each topic is its own mini story with clear transitions.
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
-- The FIRST segment of Topic 2+ must START with an explicit transition line that names the topic, like "And now, let's talk about {topic}."
+- For Topic 2+ only, the FIRST segment must START with an explicit transition line that names the topic. Do NOT use that transition for Topic 1.
 - The FIRST segment for every topic must mention the topic name in the first sentence.
 - Each segment should naturally flow into the next with a quick transition phrase.
 - Each segment ends with a complete sentence and strong terminal punctuation. Do NOT end with "and", "but", "so", "because", "with", "to", "for", "that", or an open parenthetical.
@@ -6360,6 +6541,10 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			userId: user?._id,
 			categoryLabel,
 		});
+		const recentOutfits = await loadRecentPresenterOutfits({
+			userId: user?._id,
+			limit: 10,
+		});
 		const topicPicks = await selectTopics({
 			preferredTopicHint,
 			dryRun,
@@ -6405,6 +6590,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		const detected = detectFileType(presenterLocal);
 		let presenterIsVideo = detected?.kind === "video";
 		let presenterIsImage = detected?.kind === "image";
+		let presenterOutfit = "";
 		if (!presenterIsImage)
 			throw new Error("Presenter asset must be a valid image");
 
@@ -6480,6 +6666,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					title: presenterTitle,
 					topics: topicPicks,
 					categoryLabel,
+					recentOutfits,
 					log: (message, payload) => logJob(jobId, message, payload),
 				});
 				if (
@@ -6491,6 +6678,9 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						presenterLocal = presenterResult.localPath;
 						presenterIsVideo = false;
 						presenterIsImage = true;
+						presenterOutfit = String(
+							presenterResult.presenterOutfit || ""
+						).trim();
 						logJob(jobId, "presenter adjustments ready", {
 							path: path.basename(presenterLocal),
 							method: presenterResult.method || "runway",
@@ -6500,6 +6690,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 							meta: {
 								...JOBS.get(jobId)?.meta,
 								presenterImageUrl: presenterResult.url || "",
+								presenterOutfit,
 							},
 						});
 					} else {
@@ -6990,12 +7181,27 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				Math.max(1, narrationTargetSec * 0.07)
 			);
 			const ratioDelta = Math.abs(1 - rawAtempo);
-			const withinTolerance = driftSec <= toleranceSec;
+			const overageSec = sumCleanDur - narrationTargetSec;
+			const maxOverageSec = Math.max(
+				0,
+				Math.min(
+					MAX_NARRATION_OVERAGE_SEC,
+					narrationTargetSec * (MAX_NARRATION_OVERAGE_RATIO - 1)
+				)
+			);
+			const allowOverage =
+				ALLOW_NARRATION_OVERRUN &&
+				overageSec > 0 &&
+				overageSec <= maxOverageSec;
+			const withinTolerance = driftSec <= toleranceSec || allowOverage;
 			const closeEnough =
+				allowOverage ||
 				ratioDelta <= REWRITE_CLOSE_RATIO_DELTA ||
 				driftSec <= toleranceSec * REWRITE_CLOSE_DRIFT_MULT;
 			const shouldTimeStretch =
-				!voiceoverUrl && (ratioDelta >= 0.04 || driftSec > toleranceSec);
+				!voiceoverUrl &&
+				!allowOverage &&
+				(ratioDelta >= 0.04 || driftSec > toleranceSec);
 			globalAtempo = shouldTimeStretch
 				? clampNumber(rawAtempo, GLOBAL_ATEMPO_MIN, GLOBAL_ATEMPO_MAX)
 				: 1;
@@ -7017,12 +7223,16 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				ratioDelta: Number(ratioDelta.toFixed(3)),
 				closeEnough,
 				shouldTimeStretch,
+				allowOverage,
+				overageSec: Number(overageSec.toFixed(3)),
+				maxOverageSec: Number(maxOverageSec.toFixed(3)),
 				attempt,
 				voiceSpeedBoost: VOICE_SPEED_BOOST,
 			});
 
 			const needsRewrite =
 				!voiceoverUrl &&
+				!allowOverage &&
 				!closeEnough &&
 				(!withinTolerance ||
 					rawAtempo < GLOBAL_ATEMPO_MIN ||
@@ -7063,6 +7273,7 @@ Rewrite this script to better fit ~${narrationTargetSec.toFixed(
 				1
 			)}s of spoken narration.
 Make the script about ${adjustPct}% ${direction} while keeping the same vibe.
+Quality first: do not remove key details or clarity just to hit the target.
 Per-segment word caps (updated): ${capsLine2}
 Expressions by segment (keep these expressions, only adjust text): ${expressionsLine}
 Topic assignment by segment (do NOT change order): ${topicsLine}
@@ -7073,13 +7284,14 @@ Rules:
 - Keep EXACTLY ${segments.length} segments.
 - Preserve smooth transitions.
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
-- If a segment is the first for a new topic, start it with an explicit transition line naming the topic (example: "And now, let's talk about {topic}.").
+- For Topic 2+ only, if a segment is the first for a new topic, start it with an explicit transition line naming the topic. Do NOT use that transition for Topic 1.
 - Improve clarity and specificity; avoid vague filler phrasing or repeating the question.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
+- Do NOT start segment 0 with transition phrases like "And now", "Now", "Next up", or "Let's talk about".
 - End the LAST segment of EACH topic with one short, topic-specific engagement question for comments.
 - Topic questions must be short and end with a single question mark.
 - Do NOT ask for likes or subscribe in content; the closing line handles thanks and likes.
@@ -7861,6 +8073,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						: youtubeTokenExpiresAt
 						? new Date(youtubeTokenExpiresAt)
 						: undefined,
+					presenterOutfit: presenterOutfit || "",
 				});
 				videoDocId = doc?._id ? String(doc._id) : null;
 			}

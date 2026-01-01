@@ -131,17 +131,30 @@ function hashStringToInt(value = "") {
 	return hash;
 }
 
-function pickWardrobeVariant({ jobId, title, topics }) {
+function pickWardrobeVariant({ jobId, title, topics, avoidOutfits = [] }) {
 	const topicText = Array.isArray(topics)
 		? topics
 				.map((t) => t.displayTopic || t.topic || "")
 				.filter(Boolean)
 				.join("|")
 		: "";
+	const normalizedAvoid = new Set(
+		(avoidOutfits || [])
+			.map((v) =>
+				String(v || "")
+					.trim()
+					.toLowerCase()
+			)
+			.filter(Boolean)
+	);
+	const candidates = WARDROBE_VARIANTS.filter(
+		(v) => !normalizedAvoid.has(String(v).toLowerCase())
+	);
+	const pool = candidates.length ? candidates : WARDROBE_VARIANTS;
 	const jitter = `${Date.now()}-${Math.random()}`;
 	const seed = `${jobId || ""}|${title || ""}|${topicText}|${jitter}`;
-	const idx = hashStringToInt(seed) % WARDROBE_VARIANTS.length;
-	return WARDROBE_VARIANTS[idx] || WARDROBE_VARIANTS[0];
+	const idx = hashStringToInt(seed) % pool.length;
+	return pool[idx] || WARDROBE_VARIANTS[0];
 }
 
 function fallbackWardrobePrompt({ topicLine, wardrobeVariant }) {
@@ -178,13 +191,20 @@ async function buildOrchestratedPrompts({
 	title,
 	topics,
 	categoryLabel,
+	avoidOutfits = [],
 	log,
 }) {
 	const topicLine = buildTopicLine({ title, topics });
-	const wardrobeVariant = pickWardrobeVariant({ jobId, title, topics });
+	const wardrobeVariant = pickWardrobeVariant({
+		jobId,
+		title,
+		topics,
+		avoidOutfits,
+	});
 	if (log)
 		log("wardrobe variation selected", {
 			variant: wardrobeVariant,
+			avoided: (avoidOutfits || []).length,
 		});
 	if (!openai) {
 		const fallback = {
@@ -244,6 +264,7 @@ Topics: ${topicLine}
 		if (parsed && parsed.wardrobePrompt) {
 			const result = {
 				wardrobePrompt: String(parsed.wardrobePrompt).trim(),
+				wardrobeVariant,
 			};
 			if (log)
 				log("orchestrator prompts", {
@@ -263,6 +284,7 @@ Topics: ${topicLine}
 			topicLine,
 			wardrobeVariant,
 		}),
+		wardrobeVariant,
 	};
 	if (log)
 		log("orchestrator prompts (fallback)", {
@@ -511,6 +533,7 @@ async function generatePresenterAdjustedImage({
 	title,
 	topics = [],
 	categoryLabel,
+	recentOutfits = [],
 	log,
 }) {
 	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
@@ -526,8 +549,10 @@ async function generatePresenterAdjustedImage({
 		title,
 		topics,
 		categoryLabel,
+		avoidOutfits: recentOutfits,
 		log,
 	});
+	const presenterOutfit = String(prompts.wardrobeVariant || "").trim();
 
 	let outfitPath = null;
 	let finalUpload = null;
@@ -561,6 +586,7 @@ async function generatePresenterAdjustedImage({
 		width: finalUpload?.width || 0,
 		height: finalUpload?.height || 0,
 		method: "runway_outfit",
+		presenterOutfit,
 	};
 }
 

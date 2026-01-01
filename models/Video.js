@@ -196,6 +196,11 @@ const videoSchema = new mongoose.Schema(
 		elevenLabsVoice: {
 			type: Object,
 		},
+		presenterOutfit: {
+			type: String,
+			trim: true,
+			default: "",
+		},
 	},
 	{ timestamps: true }
 );

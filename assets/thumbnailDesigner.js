@@ -69,6 +69,10 @@ const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
 const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.22;
+const THUMBNAIL_BADGE_FONT_PCT = 0.045;
+const THUMBNAIL_BADGE_X_PCT = 0.05;
+const THUMBNAIL_BADGE_Y_PCT = 0.05;
+const THUMBNAIL_BADGE_MAX_CHARS = 14;
 const THUMBNAIL_TOPIC_MAX_IMAGES = 1;
 const THUMBNAIL_TOPIC_MIN_EDGE = 900;
 const THUMBNAIL_TOPIC_MIN_BYTES = 60000;
@@ -2057,11 +2061,19 @@ async function renderThumbnailOverlay({
 	const vignetteStrength = Number.isFinite(Number(overlayOptions.vignette))
 		? Number(overlayOptions.vignette)
 		: 0.08;
+	const badgeTextRaw =
+		typeof overlayOptions.badgeText === "string"
+			? overlayOptions.badgeText.trim()
+			: "";
+	const badgeText = badgeTextRaw
+		? hardTruncateText(badgeTextRaw.toUpperCase(), THUMBNAIL_BADGE_MAX_CHARS)
+		: "";
 	const { text, fontScale } = buildThumbnailText(title, {
 		maxWords,
 		baseChars,
 	});
 	const hasText = Boolean(text);
+	const hasBadge = Boolean(badgeText);
 	const fontFile = THUMBNAIL_FONT_FILE
 		? `:fontfile='${escapeDrawtext(THUMBNAIL_FONT_FILE)}'`
 		: "";
@@ -2077,7 +2089,14 @@ async function renderThumbnailOverlay({
 				`thumb_text_${path.basename(outputPath, path.extname(outputPath))}.txt`
 		  )
 		: "";
+	const badgeFilePath = hasBadge
+		? path.join(
+				path.dirname(outputPath),
+				`thumb_badge_${path.basename(outputPath, path.extname(outputPath))}.txt`
+		  )
+		: "";
 	if (hasText) fs.writeFileSync(textFilePath, text, "utf8");
+	if (hasBadge) fs.writeFileSync(badgeFilePath, badgeText, "utf8");
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
@@ -2103,6 +2122,18 @@ async function renderThumbnailOverlay({
 		`drawbox=x=0:y=0:w=iw:h=ih:color=${accentColor}@0.08:t=4`,
 		`vignette=${vignetteStrength.toFixed(2)}`
 	);
+	if (hasBadge) {
+		const badgeFontSize = Math.max(
+			18,
+			Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_FONT_PCT)
+		);
+		const badgeBorder = Math.round(badgeFontSize * 0.55);
+		filters.push(
+			`drawtext=textfile='${escapeDrawtext(
+				badgeFilePath
+			)}'${fontFile}:fontsize=${badgeFontSize}:fontcolor=white:box=1:boxcolor=${accentColor}@0.85:boxborderw=${badgeBorder}:shadowcolor=black@0.35:shadowx=1:shadowy=1:x=w*${THUMBNAIL_BADGE_X_PCT}:y=h*${THUMBNAIL_BADGE_Y_PCT}`
+		);
+	}
 	if (hasText) {
 		filters.push(
 			`drawtext=textfile='${escapeDrawtext(
@@ -2131,6 +2162,7 @@ async function renderThumbnailOverlay({
 		);
 	} finally {
 		if (textFilePath) safeUnlink(textFilePath);
+		if (badgeFilePath) safeUnlink(badgeFilePath);
 	}
 
 	return outputPath;
@@ -2631,6 +2663,8 @@ async function generateThumbnailPackage({
 		seoTitle,
 		topics,
 	});
+	const topicCount = Array.isArray(topics) ? topics.length : 0;
+	const badgeText = topicCount > 1 ? `${Math.min(topicCount, 9)} STORIES` : "";
 
 	const topicImagePaths = await collectThumbnailTopicImages({
 		topics,
@@ -2659,7 +2693,7 @@ async function generateThumbnailPackage({
 			key: "a",
 			title: thumbTitle,
 			layout: {},
-			overlayOptions: {},
+			overlayOptions: { badgeText },
 		},
 		{
 			key: "b",
@@ -2674,6 +2708,7 @@ async function generateThumbnailPackage({
 				contrast: THUMBNAIL_VARIANT_B_CONTRAST,
 				panelOpacity: THUMBNAIL_VARIANT_B_PANEL_PCT,
 				textBoxOpacity: THUMBNAIL_VARIANT_B_TEXT_BOX_PCT,
+				badgeText,
 			},
 		},
 	];
