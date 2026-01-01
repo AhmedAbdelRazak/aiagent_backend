@@ -37,7 +37,7 @@ const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
 const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.42;
 const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.1;
 const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.18;
-const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.5;
+const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.38;
 const THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS = 3;
 const THUMBNAIL_VARIANT_B_CONTRAST = 1.12;
 const THUMBNAIL_VARIANT_B_BASE_CHARS = 10;
@@ -63,7 +63,7 @@ const THUMBNAIL_PRESENTER_EYES_REGION = {
 };
 const QA_PREVIEW_WIDTH = 320;
 const QA_PREVIEW_HEIGHT = 180;
-const QA_LUMA_MIN = 0.36;
+const QA_LUMA_MIN = 0.34;
 const QA_LUMA_LEFT_MIN = 0.33;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
@@ -861,11 +861,13 @@ function buildRunwayThumbnailPrompt({ title, topics }) {
 		topicFocusRaw || cleanThumbnailText(title || "") || "the topic";
 
 	const prompt = `
-Premium cinematic studio background plate for a YouTube thumbnail.
+Premium studio background plate for a YouTube thumbnail.
 No people, no faces, no text, no logos, no watermarks, no candles.
-Left ~40% is clean and brighter for headline text and panels; keep it uncluttered with a smooth gradient backdrop.
+Lighting: BRIGHT, high-key studio lighting with lifted shadows (avoid deep blacks), clean highlights, crisp detail, balanced contrast (not moody, not low-key).
+Left ~40% is clean AND BRIGHTER for headline text and panels; keep it uncluttered with a smooth gradient backdrop.
 Subtle, tasteful topic atmosphere inspired by: ${topicFocus}.
-Classy, upscale editorial lighting, crisp detail, balanced contrast, shallow depth of field, soft vignette, rich but elegant color palette.
+No dark corners, no heavy vignette, no gloomy cinematic look.
+Elegant, vibrant but controlled color palette, clean subject separation feel.
 `.trim();
 
 	return prompt.length > RUNWAY_PROMPT_CHAR_LIMIT
@@ -1516,45 +1518,102 @@ function samplePreviewLuma(filePath, region = null) {
 	}
 }
 
+function getQaLeftSampleRegion() {
+	return {
+		x: 0,
+		y: Math.round(QA_PREVIEW_HEIGHT * 0.45),
+		w: Math.round(QA_PREVIEW_WIDTH * 0.45),
+		h: Math.round(QA_PREVIEW_HEIGHT * 0.25),
+	};
+}
+
 async function applyThumbnailQaAdjustments(filePath, { log } = {}) {
 	if (!ffmpegPath) return { applied: false };
-	const overall = samplePreviewLuma(filePath);
-	const left = samplePreviewLuma(filePath, {
-		x: 0,
-		y: 0,
-		w: Math.round(QA_PREVIEW_WIDTH * 0.45),
-		h: Math.round(QA_PREVIEW_HEIGHT * 0.35),
-	});
-	if (overall == null || left == null) return { applied: false };
-	if (overall >= QA_LUMA_MIN && left >= QA_LUMA_LEFT_MIN)
-		return { applied: false, overall, left };
-	const tmp = path.join(
-		path.dirname(filePath),
-		`thumb_qalift_${path.basename(filePath)}`
-	);
-	await runFfmpeg(
-		[
-			"-i",
-			filePath,
-			"-vf",
-			"eq=contrast=1.02:saturation=1.06:brightness=0.05:gamma=0.96",
-			"-frames:v",
-			"1",
-			"-q:v",
-			"2",
-			"-y",
-			tmp,
-		],
-		"thumbnail_qa_lift"
-	);
-	safeUnlink(filePath);
-	fs.renameSync(tmp, filePath);
-	if (log)
+	const beforeOverall = samplePreviewLuma(filePath);
+	const beforeLeft = samplePreviewLuma(filePath, getQaLeftSampleRegion());
+	if (beforeOverall == null || beforeLeft == null) return { applied: false };
+
+	const targetOverall = QA_LUMA_MIN;
+	const targetLeft = QA_LUMA_LEFT_MIN;
+	if (beforeOverall >= targetOverall && beforeLeft >= targetLeft) {
+		return {
+			applied: false,
+			before: { overall: beforeOverall, left: beforeLeft },
+			after: { overall: beforeOverall, left: beforeLeft },
+			passes: 0,
+		};
+	}
+
+	const passes = [
+		{ contrast: 1.05, saturation: 1.1, brightness: 0.07, gamma: 0.92 },
+		{ contrast: 1.08, saturation: 1.15, brightness: 0.1, gamma: 0.9 },
+	];
+
+	let afterOverall = beforeOverall;
+	let afterLeft = beforeLeft;
+	let used = 0;
+
+	for (const p of passes) {
+		used += 1;
+		const tmp = path.join(
+			path.dirname(filePath),
+			`thumb_qalift_${used}_${path.basename(filePath)}`
+		);
+		await runFfmpeg(
+			[
+				"-i",
+				filePath,
+				"-vf",
+				`eq=contrast=${p.contrast}:saturation=${p.saturation}:brightness=${p.brightness}:gamma=${p.gamma}`,
+				"-frames:v",
+				"1",
+				"-q:v",
+				"2",
+				"-y",
+				tmp,
+			],
+			"thumbnail_qa_lift"
+		);
+		safeUnlink(filePath);
+		fs.renameSync(tmp, filePath);
+
+		const nextOverall = samplePreviewLuma(filePath);
+		const nextLeft = samplePreviewLuma(filePath, getQaLeftSampleRegion());
+		if (nextOverall == null || nextLeft == null) break;
+		afterOverall = nextOverall;
+		afterLeft = nextLeft;
+		if (afterOverall >= targetOverall && afterLeft >= targetLeft) break;
+	}
+
+	if (log) {
 		log("thumbnail qa lift applied", {
-			overall: Number(overall.toFixed(3)),
-			left: Number(left.toFixed(3)),
+			beforeOverall: Number(beforeOverall.toFixed(3)),
+			beforeLeft: Number(beforeLeft.toFixed(3)),
+			afterOverall: Number(afterOverall.toFixed(3)),
+			afterLeft: Number(afterLeft.toFixed(3)),
+			passes: used,
 		});
-	return { applied: true, overall, left };
+	}
+
+	return {
+		applied: used > 0,
+		before: { overall: beforeOverall, left: beforeLeft },
+		after: { overall: afterOverall, left: afterLeft },
+		passes: used,
+	};
+}
+
+function scoreThumbnailLuma({ overall, left }) {
+	if (!Number.isFinite(overall) || !Number.isFinite(left)) return -Infinity;
+	const targetOverall = clampNumber(QA_LUMA_MIN + 0.02, 0.32, 0.42);
+	const targetLeft = clampNumber(QA_LUMA_LEFT_MIN + 0.01, 0.3, 0.4);
+	const overallScore = 1 - Math.min(Math.abs(overall - targetOverall) / 0.1, 1);
+	const leftScore = 1 - Math.min(Math.abs(left - targetLeft) / 0.08, 1);
+	let score = overallScore * 0.65 + leftScore * 0.35;
+	const overLimit = targetOverall + 0.1;
+	if (overall > overLimit) score -= (overall - overLimit) * 2;
+	if (left < QA_LUMA_LEFT_MIN) score -= (QA_LUMA_LEFT_MIN - left) * 2;
+	return score;
 }
 
 async function generateFallbackBackground({
@@ -1663,7 +1722,10 @@ async function composeThumbnailBase({
 		`[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}[base]`
 	);
 	filters.push(
-		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)/2,format=rgba[presenter]`
+		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=increase:flags=lanczos,` +
+			`crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)/2,format=rgba,` +
+			`eq=contrast=1.05:saturation=1.04:brightness=0.035:gamma=0.95,` +
+			`unsharp=3:3:0.45[presenter]`
 	);
 	if (presenterHasAlpha) {
 		filters.push("[presenter]split=2[p][ps]");
@@ -1683,7 +1745,10 @@ async function composeThumbnailBase({
 		const panelCropX = "(iw-ow)/2";
 		const panelCropY = "(ih-oh)/2";
 		filters.push(
-			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel1i]`
+			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+				`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+				`unsharp=3:3:0.35[panel1i]`
 		);
 		filters.push(
 			`[panel1i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel1]`
@@ -1698,7 +1763,10 @@ async function composeThumbnailBase({
 		const panelCropX = "(iw-ow)/2";
 		const panelCropY = "(ih-oh)/2";
 		filters.push(
-			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY}[panel2i]`
+			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+				`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+				`unsharp=3:3:0.35[panel2i]`
 		);
 		filters.push(
 			`[panel2i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel2]`
@@ -2052,15 +2120,30 @@ async function renderThumbnailOverlay({
 	const contrast = Number.isFinite(Number(overlayOptions.contrast))
 		? Number(overlayOptions.contrast)
 		: 1.05;
+	const saturation = Number.isFinite(Number(overlayOptions.saturation))
+		? Number(overlayOptions.saturation)
+		: 1.1;
+	const brightness = Number.isFinite(Number(overlayOptions.brightness))
+		? Number(overlayOptions.brightness)
+		: 0.06;
+	const gamma = Number.isFinite(Number(overlayOptions.gamma))
+		? Number(overlayOptions.gamma)
+		: 0.96;
 	const panelOpacity = Number.isFinite(Number(overlayOptions.panelOpacity))
 		? Number(overlayOptions.panelOpacity)
 		: 0;
 	const textBoxOpacity = Number.isFinite(Number(overlayOptions.textBoxOpacity))
 		? Number(overlayOptions.textBoxOpacity)
-		: 0.35;
+		: 0.28;
 	const vignetteStrength = Number.isFinite(Number(overlayOptions.vignette))
 		? Number(overlayOptions.vignette)
-		: 0.08;
+		: 0.04;
+	const leftLift = Number.isFinite(Number(overlayOptions.leftLift))
+		? clampNumber(Number(overlayOptions.leftLift), 0, 0.18)
+		: 0.06;
+	const leftLiftHeight = Number.isFinite(Number(overlayOptions.leftLiftHeight))
+		? clampNumber(Number(overlayOptions.leftLiftHeight), 0.2, 1)
+		: 0.6;
 	const badgeTextRaw =
 		typeof overlayOptions.badgeText === "string"
 			? overlayOptions.badgeText.trim()
@@ -2081,7 +2164,7 @@ async function renderThumbnailOverlay({
 		42,
 		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
 	);
-	const boxBorder = Math.round(fontSize * 0.55);
+	const boxBorder = Math.round(fontSize * 0.45);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
 	const textFilePath = hasText
 		? path.join(
@@ -2100,9 +2183,9 @@ async function renderThumbnailOverlay({
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
-		`eq=contrast=${contrast.toFixed(
+		`eq=contrast=${contrast.toFixed(2)}:saturation=${saturation.toFixed(
 			2
-		)}:saturation=1.10:brightness=0.06:gamma=0.96`,
+		)}:brightness=${brightness.toFixed(3)}:gamma=${gamma.toFixed(3)}`,
 		"unsharp=5:5:0.7",
 	];
 	if (panelOpacity > 0) {
@@ -2110,6 +2193,19 @@ async function renderThumbnailOverlay({
 			`drawbox=x=0:y=0:w=iw*0.48:h=ih:color=black@${panelOpacity.toFixed(
 				3
 			)}:t=fill`
+		);
+	}
+	if (leftLift > 0) {
+		filters.push(
+			`drawbox=x=0:y=0:w=iw*0.16:h=ih*${leftLiftHeight.toFixed(
+				2
+			)}:color=white@${leftLift.toFixed(3)}:t=fill`,
+			`drawbox=x=iw*0.16:y=0:w=iw*0.16:h=ih*${leftLiftHeight.toFixed(
+				2
+			)}:color=white@${(leftLift * 0.65).toFixed(3)}:t=fill`,
+			`drawbox=x=iw*0.32:y=0:w=iw*0.16:h=ih*${leftLiftHeight.toFixed(
+				2
+			)}:color=white@${(leftLift * 0.35).toFixed(3)}:t=fill`
 		);
 	}
 	filters.push(
@@ -2637,11 +2733,18 @@ async function generateThumbnailPackage({
 		topics,
 		expression,
 	});
-	const presenterForCompose = presenterLocalPath;
+	const resolvedCutout = resolvePresenterCutoutPath(stylePlan.pose);
+	const presenterForCompose = resolvedCutout || presenterLocalPath;
 	if (log)
-		log("presenter fixed (no emotion variants)", {
-			path: path.basename(presenterForCompose),
-		});
+		log(
+			resolvedCutout
+				? "presenter cutout selected"
+				: "presenter fixed (no emotion variants)",
+			{
+				path: path.basename(presenterForCompose),
+				pose: stylePlan.pose,
+			}
+		);
 	const chosenDetected = detectFileType(presenterForCompose);
 	if (!chosenDetected || chosenDetected.kind !== "image")
 		throw new Error("thumbnail_presenter_missing_or_invalid");
@@ -2688,6 +2791,14 @@ async function generateThumbnailPackage({
 		log,
 	});
 
+	const variantBOverlayOptions = {
+		maxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
+		baseChars: THUMBNAIL_VARIANT_B_BASE_CHARS,
+		contrast: THUMBNAIL_VARIANT_B_CONTRAST,
+		panelOpacity: THUMBNAIL_VARIANT_B_PANEL_PCT,
+		textBoxOpacity: THUMBNAIL_VARIANT_B_TEXT_BOX_PCT,
+		badgeText,
+	};
 	const variantPlans = [
 		{
 			key: "a",
@@ -2702,13 +2813,23 @@ async function generateThumbnailPackage({
 				leftPanelPct: THUMBNAIL_VARIANT_B_LEFT_PCT,
 				presenterOverlapPct: THUMBNAIL_VARIANT_B_OVERLAP_PCT,
 			},
+			overlayOptions: variantBOverlayOptions,
+		},
+		{
+			key: "c",
+			title: punchyTitle,
+			layout: {
+				leftPanelPct: THUMBNAIL_VARIANT_B_LEFT_PCT,
+				presenterOverlapPct: THUMBNAIL_VARIANT_B_OVERLAP_PCT,
+			},
 			overlayOptions: {
-				maxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
-				baseChars: THUMBNAIL_VARIANT_B_BASE_CHARS,
-				contrast: THUMBNAIL_VARIANT_B_CONTRAST,
-				panelOpacity: THUMBNAIL_VARIANT_B_PANEL_PCT,
-				textBoxOpacity: THUMBNAIL_VARIANT_B_TEXT_BOX_PCT,
-				badgeText,
+				...variantBOverlayOptions,
+				brightness: 0.1,
+				gamma: 0.9,
+				saturation: 1.15,
+				vignette: 0.03,
+				leftLift: 0.08,
+				textBoxOpacity: 0.26,
 			},
 		},
 	];
@@ -2745,6 +2866,7 @@ async function generateThumbnailPackage({
 			ensureThumbnailFile(finalPath);
 
 			const maxBytes = 2 * 1024 * 1024;
+			let didReencode = false;
 			if (fs.statSync(finalPath).size > maxBytes) {
 				const qualitySteps = [3, 4, 5, 6];
 				for (const q of qualitySteps) {
@@ -2768,6 +2890,7 @@ async function generateThumbnailPackage({
 					safeUnlink(finalPath);
 					fs.renameSync(smaller, finalPath);
 					ensureThumbnailFile(finalPath);
+					didReencode = true;
 					if (fs.statSync(finalPath).size <= maxBytes) break;
 				}
 				if (fs.statSync(finalPath).size > maxBytes && log) {
@@ -2779,6 +2902,37 @@ async function generateThumbnailPackage({
 				}
 			}
 
+			let overallLuma = qa?.after?.overall;
+			let leftLuma = qa?.after?.left;
+			if (
+				didReencode ||
+				!Number.isFinite(overallLuma) ||
+				!Number.isFinite(leftLuma)
+			) {
+				overallLuma = samplePreviewLuma(finalPath);
+				leftLuma = samplePreviewLuma(finalPath, getQaLeftSampleRegion());
+			}
+			const lumaScore = scoreThumbnailLuma({
+				overall: overallLuma,
+				left: leftLuma,
+			});
+			const overallLog = Number.isFinite(overallLuma)
+				? Number(overallLuma.toFixed(3))
+				: null;
+			const leftLog = Number.isFinite(leftLuma)
+				? Number(leftLuma.toFixed(3))
+				: null;
+			const scoreLog = Number.isFinite(lumaScore)
+				? Number(lumaScore.toFixed(3))
+				: null;
+			if (log)
+				log("thumbnail luma score", {
+					variant: variant.key,
+					overall: overallLog,
+					left: leftLog,
+					score: scoreLog,
+				});
+
 			const uploaded = await uploadThumbnailToCloudinary(finalPath, jobId);
 			variantResults.push({
 				variant: variant.key,
@@ -2788,6 +2942,11 @@ async function generateThumbnailPackage({
 				width: uploaded.width,
 				height: uploaded.height,
 				title: variant.title,
+				luma: {
+					overall: overallLuma,
+					left: leftLuma,
+					score: lumaScore,
+				},
 			});
 		} catch (e) {
 			if (log)
@@ -2799,8 +2958,16 @@ async function generateThumbnailPackage({
 	}
 
 	if (!variantResults.length) throw new Error("thumbnail_generation_failed");
+	const scoredVariants = variantResults.filter((v) =>
+		Number.isFinite(v?.luma?.score)
+	);
 	const preferred =
-		variantResults.find((v) => v.variant === "b") || variantResults[0];
+		scoredVariants.reduce((best, next) => {
+			if (!best) return next;
+			return next.luma.score > best.luma.score ? next : best;
+		}, null) ||
+		variantResults.find((v) => v.variant === "b") ||
+		variantResults[0];
 	return {
 		localPath: preferred.localPath,
 		url: preferred.url,

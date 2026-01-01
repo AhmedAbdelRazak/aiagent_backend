@@ -2,7 +2,7 @@
 /**
  * videoControllerLonger.js (DROP-IN REPLACEMENT - QUALITY + STABILITY)
  *
- * Key improvements (mapped to Ahmed's requirements):
+ * Key improvements (mapped to Amad's requirements):
  * 1) No voice stutter / no silent gaps:
  *    - Generate TTS per segment -> convert to WAV -> remove leading/trailing silence
  *    - Compute ONE global atempo factor to perfectly fill narration duration (no padding)
@@ -3312,17 +3312,17 @@ function sanitizeSegmentText(text = "") {
 
 const INTRO_TEMPLATES = {
 	neutral: [
-		"Hi there, this is Ahmed, and today I will cover {topic}.",
-		"Hi there, this is Ahmed, and we have a very interesting topic regarding {topic}.",
-		"Hi there, this is Ahmed, and today we're covering {topic}.",
+		"Hi there, this is Amad, and today I will cover {topic}.",
+		"Hi there, this is Amad, and we have a very interesting topic regarding {topic}.",
+		"Hi there, this is Amad, and today we're covering {topic}.",
 	],
 	excited: [
-		"Hi there, this is Ahmed, and I'm thrilled to cover {topic}.",
-		"Hi there, this is Ahmed, and I'm excited to cover {topic}.",
+		"Hi there, this is Amad, and I'm thrilled to cover {topic}.",
+		"Hi there, this is Amad, and I'm excited to cover {topic}.",
 	],
 	serious: [
-		"Hi there, this is Ahmed, and today we have very sad news about {topic}.",
-		"Hi there, this is Ahmed, and we're sharing sad news about {topic}.",
+		"Hi there, this is Amad, and today we have very sad news about {topic}.",
+		"Hi there, this is Amad, and we're sharing sad news about {topic}.",
 	],
 };
 
