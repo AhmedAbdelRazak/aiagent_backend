@@ -2354,19 +2354,19 @@ async function composeThumbnailBase({
 				? panelMargin
 				: Math.max(0, Math.round(panelMargin + topPad));
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = "(ih-oh)*0.35";
+		const panelCropY = hasSinglePanel ? "(ih-oh)*0.22" : "(ih-oh)*0.35";
 		if (hasSinglePanel) {
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH},boxblur=12:1,` +
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
 					`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
 					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
-					`unsharp=3:3:0.35,format=rgba,` +
-					`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0[panel1fg]`
+					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
 			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
 		} else {
@@ -2707,6 +2707,17 @@ function titleCaseIfLower(text = "") {
 	return cleaned.replace(/\b[a-z]/g, (m) => m.toUpperCase());
 }
 
+function shouldAppendQuestionMark(text = "") {
+	const info = extractQuestionSegments(text);
+	return Boolean(info && (info.questionWord || info.hasQuestionMark));
+}
+
+function ensureQuestionMark(text = "") {
+	if (!text) return text;
+	const cleaned = String(text).replace(/\?+$/, "").trim();
+	return cleaned ? `${cleaned}?` : text;
+}
+
 function buildThumbnailText(
 	title = "",
 	{
@@ -2719,14 +2730,18 @@ function buildThumbnailText(
 	const pretty = titleCaseIfLower(cleaned);
 	const words = pretty.split(" ").filter(Boolean);
 	const trimmedWords = words.slice(0, Math.max(1, maxWords));
-	const trimmed = trimmedWords.join(" ");
+	const wantsQuestionMark = shouldAppendQuestionMark(title);
+	let trimmed = trimmedWords.join(" ");
+	if (wantsQuestionMark) trimmed = ensureQuestionMark(trimmed);
 	const fit = fitHeadlineText(trimmed, {
 		baseMaxChars: baseChars,
 		preferLines: 2,
 		maxLines: 2,
 	});
+	const fitted = fit.text || trimmed;
+	const finalText = wantsQuestionMark ? ensureQuestionMark(fitted) : fitted;
 	return {
-		text: fit.text || trimmed,
+		text: finalText,
 		fontScale: fit.fontScale || 1,
 	};
 }
