@@ -2438,7 +2438,11 @@ function buildSegmentImageQueryVariants({
 		push(withTopic);
 	}
 
-	return uniqueStrings(variants, { limit: maxVariants });
+	const unique = uniqueStrings(variants, { limit: maxVariants });
+	const multiWord = unique.filter((v) => tokenizeLabel(v).length >= 2);
+	return multiWord.length
+		? uniqueStrings(multiWord, { limit: maxVariants })
+		: unique;
 }
 
 function extractSegmentMatchTokens(
@@ -4738,6 +4742,111 @@ function ensureTopicAnchors(segments = [], topics = [], topicIntents = []) {
 	});
 }
 
+function escapeRegExp(value = "") {
+	return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasInstallmentEvidence(text = "") {
+	const raw = String(text || "");
+	return (
+		/\b(season|episode|part|chapter|volume)\s*\d+\b/i.test(raw) ||
+		/\bs\s*\d+\s*e\s*\d+\b/i.test(raw)
+	);
+}
+
+function stripUnverifiedInstallmentDetails(
+	text,
+	{ anchor = "", allowInstallmentNumbers = false } = {}
+) {
+	if (!text || allowInstallmentNumbers) return text;
+	let updated = String(text);
+	const cleanedAnchor = cleanTopicLabel(anchor || "");
+	const hasAnchor = Boolean(cleanedAnchor);
+	if (hasAnchor) {
+		const escaped = escapeRegExp(cleanedAnchor);
+		updated = updated
+			.replace(
+				new RegExp(`\\b${escaped}\\s+\\d+\\s+episode\\s+\\d+\\b`, "gi"),
+				cleanedAnchor
+			)
+			.replace(
+				new RegExp(`\\b${escaped}\\s+episode\\s+\\d+\\b`, "gi"),
+				cleanedAnchor
+			)
+			.replace(
+				new RegExp(`\\b${escaped}\\s+season\\s+\\d+\\b`, "gi"),
+				cleanedAnchor
+			);
+		if (!/\d/.test(cleanedAnchor)) {
+			updated = updated.replace(
+				new RegExp(`\\b${escaped}\\s+\\d+\\b`, "gi"),
+				cleanedAnchor
+			);
+		}
+	}
+	updated = updated
+		.replace(/\bseason\s*\d+\b/gi, "the season")
+		.replace(/\bepisode\s*\d+\b/gi, "the episode")
+		.replace(/\bpart\s*\d+\b/gi, "the part")
+		.replace(/\bchapter\s*\d+\b/gi, "the chapter")
+		.replace(/\bvolume\s*\d+\b/gi, "the volume")
+		.replace(/\bs\s*\d+\s*e\s*\d+\b/gi, "the episode");
+	if (hasAnchor) {
+		const escaped = escapeRegExp(cleanedAnchor);
+		updated = updated.replace(
+			new RegExp(
+				`\\b${escaped}\\s+the\\s+(episode|season|part|chapter|volume)\\b`,
+				"gi"
+			),
+			cleanedAnchor
+		);
+	}
+	return updated
+		.replace(/\s{2,}/g, " ")
+		.replace(/\s+,/g, ",")
+		.trim();
+}
+
+function enforceTopicSpecificityGuards(
+	segments = [],
+	topics = [],
+	topicContexts = [],
+	topicIntents = []
+) {
+	const topicMeta = new Map();
+	for (let i = 0; i < (topics || []).length; i++) {
+		const label = String(
+			topics[i]?.displayTopic || topics[i]?.topic || ""
+		).trim();
+		const contextItems = Array.isArray(topicContexts?.[i]?.context)
+			? topicContexts[i].context
+			: [];
+		const contextText = contextItems
+			.map((c) =>
+				typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`
+			)
+			.join(" ");
+		const combined = `${label} ${contextText}`.trim();
+		const anchor = cleanTopicLabel(topicIntents?.[i]?.anchor || label || "");
+		topicMeta.set(i, {
+			anchor,
+			allowInstallmentNumbers: hasInstallmentEvidence(combined),
+		});
+	}
+
+	return (segments || []).map((seg) => {
+		const idx =
+			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+				? Number(seg.topicIndex)
+				: 0;
+		const meta = topicMeta.get(idx);
+		if (!meta) return seg;
+		const updated = stripUnverifiedInstallmentDetails(seg.text, meta);
+		if (!updated || updated === seg.text) return seg;
+		return { ...seg, text: updated };
+	});
+}
+
 function ensureTopicEngagementQuestions(
 	segments = [],
 	topics = [],
@@ -4978,6 +5087,7 @@ Style rules (IMPORTANT):
 - Each segment should be 1-2 sentences. Do NOT switch topics mid-sentence.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Avoid specific dates, rankings, or stats unless they appear in the provided context above.
+- Do NOT invent season/episode/part/chapter numbers. Only mention numbered installments if they appear in the topic label or provided context; otherwise say "the episode" or "the season" without numbers.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
@@ -5096,6 +5206,12 @@ Return JSON ONLY:
 
 	segments = ensureTopicTransitions(segments, safeTopics);
 	segments = ensureTopicAnchors(segments, safeTopics, topicIntents);
+	segments = enforceTopicSpecificityGuards(
+		segments,
+		safeTopics,
+		topicContexts,
+		topicIntents
+	);
 
 	// Enforce caps softly (avoid mid-sentence cutoffs; allow longer if needed).
 	segments = segments.map((s, i) => {
