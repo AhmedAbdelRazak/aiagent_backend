@@ -99,6 +99,61 @@ const THUMBNAIL_HOOK_WORDS = [
 	"album",
 	"single",
 ];
+const QUESTION_START_TOKENS = new Set([
+	"did",
+	"does",
+	"do",
+	"is",
+	"are",
+	"was",
+	"were",
+	"will",
+	"can",
+	"could",
+	"should",
+	"would",
+	"has",
+	"have",
+	"had",
+	"who",
+	"what",
+	"why",
+	"how",
+	"when",
+	"where",
+	"which",
+]);
+const QUESTION_CONTEXT_SPLIT_TOKENS = new Set([
+	"in",
+	"on",
+	"at",
+	"for",
+	"with",
+	"from",
+	"about",
+	"into",
+	"over",
+	"under",
+	"after",
+	"before",
+	"of",
+	"vs",
+	"vs.",
+]);
+const IMAGE_DEEMPHASIS_TOKENS = new Set([
+	"die",
+	"dies",
+	"died",
+	"dead",
+	"death",
+	"kill",
+	"killed",
+	"killing",
+	"funeral",
+	"murder",
+	"suicide",
+	"shooting",
+]);
 const THUMBNAIL_CLOUDINARY_FOLDER = "aivideomatic/long_thumbnails";
 const THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX = "long_thumb";
 const ACCENT_PALETTE = {
@@ -390,13 +445,83 @@ function inferEntertainmentCategory(tokens = []) {
 	return "general";
 }
 
+function extractQuestionSegments(rawText = "") {
+	const raw = String(rawText || "").trim();
+	if (!raw) return null;
+	const cleaned = cleanThumbnailText(raw);
+	if (!cleaned) return null;
+	const hasQuestionMark = /\?/.test(raw);
+	const tokens = cleaned.toLowerCase().split(" ").filter(Boolean);
+	if (!tokens.length) return null;
+	const first = tokens[0];
+	const hasQuestionWord = QUESTION_START_TOKENS.has(first);
+	if (!hasQuestionWord && !hasQuestionMark) return null;
+	const questionWord = hasQuestionWord ? first : "";
+	const rest = hasQuestionWord ? tokens.slice(1) : tokens;
+	if (!rest.length) return null;
+	const splitIdx = rest.findIndex((t) => QUESTION_CONTEXT_SPLIT_TOKENS.has(t));
+	const subjectTokens = splitIdx > 0 ? rest.slice(0, splitIdx) : rest.slice(0);
+	const contextTokens = splitIdx > 0 ? rest.slice(splitIdx + 1) : [];
+	return {
+		questionWord,
+		subjectTokens: subjectTokens.filter(Boolean),
+		contextTokens: contextTokens.filter(Boolean),
+		hasQuestionMark,
+	};
+}
+
+function filterImageSearchTokens(tokens = []) {
+	const norm = normalizeTopicTokens(tokens);
+	if (!norm.length) return [];
+	const filtered = norm.filter((t) => !IMAGE_DEEMPHASIS_TOKENS.has(t));
+	return filtered.length ? filtered : norm;
+}
+
+function buildSearchLabelTokens(topic = "", extraTokens = []) {
+	const extra = Array.isArray(extraTokens)
+		? extraTokens.flatMap((t) => tokenizeLabel(t))
+		: [];
+	const baseTokens = filterSpecificTopicTokens([
+		...topicTokensFromTitle(topic),
+		...extra,
+	]);
+	const filtered = filterImageSearchTokens(baseTokens);
+	const tokens = filtered.length ? filtered : baseTokens;
+	return normalizeTopicTokens(tokens).slice(0, 6);
+}
+
+function buildTopicIdentityLabel(topic = "", extraTokens = []) {
+	const questionInfo = extractQuestionSegments(topic);
+	let tokens = [];
+	if (questionInfo?.contextTokens?.length) {
+		tokens = questionInfo.contextTokens;
+	} else if (questionInfo?.subjectTokens?.length) {
+		tokens = questionInfo.subjectTokens;
+	} else {
+		tokens = buildSearchLabelTokens(topic, extraTokens);
+	}
+	const filtered = filterImageSearchTokens(tokens);
+	const cleaned = filterSpecificTopicTokens(filtered);
+	if (!cleaned.length) return "";
+	const phrase = cleaned.slice(0, 4).join(" ");
+	return phrase ? titleCaseIfLower(phrase) : "";
+}
+
 function buildImageMatchCriteria(topic = "", extraTokens = []) {
 	const rawTokens = tokenizeLabel(topic);
 	const baseTokens = topicTokensFromTitle(topic);
 	const wordSource = baseTokens.length >= 2 ? baseTokens : rawTokens;
 	const specificWords = filterSpecificTopicTokens(wordSource);
-	const wordTokens = specificWords.length ? specificWords : wordSource;
-	const phraseToken = rawTokens.length >= 2 ? rawTokens.join(" ") : "";
+	const filteredWords = filterImageSearchTokens(
+		specificWords.length ? specificWords : wordSource
+	);
+	const wordTokens = filteredWords.length
+		? filteredWords
+		: specificWords.length
+		? specificWords
+		: wordSource;
+	const phraseSource = wordTokens.length >= 2 ? wordTokens : rawTokens;
+	const phraseToken = phraseSource.length >= 2 ? phraseSource.join(" ") : "";
 	const extra = Array.isArray(extraTokens)
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
 		: [];
@@ -410,6 +535,7 @@ function buildImageMatchCriteria(topic = "", extraTokens = []) {
 		contextTokens: contextTokens.slice(0, 6),
 		minWordMatches: minImageTokenMatches(wordTokens),
 		rawTokenCount: rawTokens.length,
+		searchTokens: wordTokens,
 	};
 }
 
@@ -2706,9 +2832,12 @@ async function fetchCseImages(topic, extraTokens = []) {
 		: [];
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
-	const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
-	const topicQuery = topicTokens.slice(0, 4).join(" ");
-	const searchLabel = topicQuery || topic;
+	const topicTokensBase = filterSpecificTopicTokens(
+		topicTokensFromTitle(topic)
+	);
+	const topicTokens = filterImageSearchTokens(topicTokensBase);
+	const searchTokens = buildSearchLabelTokens(topic, extraTokens);
+	const searchLabel = searchTokens.slice(0, 4).join(" ") || topic;
 
 	const queries = [
 		`${searchLabel} press photo`,
@@ -2745,7 +2874,7 @@ async function fetchCseImages(topic, extraTokens = []) {
 		`${searchLabel} still`,
 		`${searchLabel} interview`,
 	];
-	const keyPhrase = filterSpecificTopicTokens(baseTokens).slice(0, 2).join(" ");
+	const keyPhrase = searchTokens.slice(0, 2).join(" ");
 	if (keyPhrase) {
 		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
 	}
@@ -2785,7 +2914,8 @@ async function fetchCseImages(topic, extraTokens = []) {
 		});
 	}
 
-	const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
+	const matchSourceTokens = topicTokens.length ? topicTokens : topicTokensBase;
+	const matchTokens = expandTopicTokens(matchSourceTokens);
 	const minMatches = minImageTokenMatches(matchTokens);
 
 	const candidates = [];
@@ -2971,10 +3101,38 @@ async function collectThumbnailTopicImages({
 		const label = t?.displayTopic || t?.topic || "";
 		if (!label) continue;
 		const extraTokens = Array.isArray(t?.keywords) ? t.keywords : [];
-		const mergedTokens = contextTokens.length
-			? [...contextTokens, ...extraTokens]
-			: extraTokens;
+		const trendHints = uniqueStrings(
+			[
+				...(Array.isArray(t?.trendStory?.searchPhrases)
+					? t.trendStory.searchPhrases
+					: []),
+				...(Array.isArray(t?.trendStory?.entityNames)
+					? t.trendStory.entityNames
+					: []),
+				...(Array.isArray(t?.trendStory?.articles)
+					? t.trendStory.articles.map((a) => a?.title)
+					: []),
+				t?.trendStory?.imageComment,
+				...(Array.isArray(t?.trendStory?.viralImageBriefs)
+					? t.trendStory.viralImageBriefs.map((b) =>
+							String(
+								b?.visualHook || b?.idea || b?.hook || b?.description || ""
+							).trim()
+					  )
+					: []),
+			].filter(Boolean),
+			{ limit: 12 }
+		);
+		const mergedTokens = uniqueStrings(
+			[
+				...(contextTokens.length ? contextTokens : []),
+				...extraTokens,
+				...trendHints,
+			],
+			{ limit: 18 }
+		);
 		const criteria = buildImageMatchCriteria(label, mergedTokens);
+		const identityLabel = buildTopicIdentityLabel(label, mergedTokens);
 		const seedUrls = uniqueStrings(
 			[
 				t?.trendStory?.image,
@@ -3043,9 +3201,11 @@ async function collectThumbnailTopicImages({
 			urlCandidates.length < maxUrls &&
 			label
 		) {
-			const googleQueries = [label, contextQuery].filter(Boolean);
-			const limited = googleQueries.slice(0, GOOGLE_IMAGES_VARIANT_LIMIT);
-			for (const gQuery of limited) {
+			const googleQueries = uniqueStrings(
+				[label, identityLabel, contextQuery].filter(Boolean),
+				{ limit: GOOGLE_IMAGES_VARIANT_LIMIT }
+			);
+			for (const gQuery of googleQueries) {
 				const googleUrls = await fetchGoogleImagesFromService(gQuery, {
 					limit: GOOGLE_IMAGES_RESULTS_PER_QUERY,
 					tokens: criteria.wordTokens,
@@ -3063,20 +3223,22 @@ async function collectThumbnailTopicImages({
 		}
 
 		if (urlCandidates.length < maxUrls) {
-			const wikiUrl = await fetchWikipediaPageImageUrl(label);
+			const wikiLabel = identityLabel || label;
+			const wikiUrl = await fetchWikipediaPageImageUrl(wikiLabel);
 			if (wikiUrl) {
 				if (log)
 					log("thumbnail topic images fallback wiki", {
-						topic: label,
+						topic: wikiLabel,
 					});
-				pushCandidate(wikiUrl, { source: label, priority: 0.4, criteria });
+				pushCandidate(wikiUrl, { source: wikiLabel, priority: 0.4, criteria });
 			}
 		}
 		if (urlCandidates.length < maxUrls) {
-			const commons = await fetchWikimediaImageUrls(label, 3);
+			const commonsLabel = identityLabel || label;
+			const commons = await fetchWikimediaImageUrls(commonsLabel, 3);
 			if (commons.length && log)
 				log("thumbnail topic images fallback commons", {
-					topic: label,
+					topic: commonsLabel,
 					count: commons.length,
 				});
 			for (const url of commons) {
@@ -3098,7 +3260,15 @@ async function collectThumbnailTopicImages({
 
 	const candidates = [];
 	const smallCandidates = [];
-	const ranked = urlCandidates
+	const strictCandidates = urlCandidates.filter((c) => !c.relaxed);
+	const candidatePool =
+		strictCandidates.length >= target ? strictCandidates : urlCandidates;
+	const signalCandidates = candidatePool.filter(
+		(c) => (c.wordMatches || 0) + (c.contextMatches || 0) > 0 || c.phraseHit
+	);
+	const filteredPool =
+		signalCandidates.length >= target ? signalCandidates : candidatePool;
+	const ranked = filteredPool
 		.map((c) => ({
 			...c,
 			relevanceScore:
@@ -3259,6 +3429,75 @@ function selectHeadlineWords(text = "", maxWords = 4) {
 	return words.slice(0, maxWords);
 }
 
+function buildQuestionHeadline(questionInfo, maxWords = 4) {
+	if (!questionInfo) return "";
+	const questionWord = questionInfo.questionWord;
+	let subjectTokens = questionInfo.subjectTokens.filter(
+		(t) => !TOPIC_STOP_WORDS.has(t)
+	);
+	if (!subjectTokens.length) subjectTokens = questionInfo.subjectTokens;
+	const maxSubject = Math.max(1, maxWords - (questionWord ? 1 : 0));
+	subjectTokens = subjectTokens.slice(0, maxSubject);
+	const headTokens = questionWord
+		? [questionWord, ...subjectTokens]
+		: subjectTokens;
+	let headline = headTokens.join(" ").trim();
+	headline = titleCaseIfLower(headline);
+	if (!headline) return "";
+	if (questionInfo.hasQuestionMark || questionWord) {
+		headline = headline.replace(/\?+$/, "");
+		headline = `${headline}?`;
+	}
+	return headline;
+}
+
+function buildQuestionBadge(questionInfo) {
+	if (!questionInfo?.contextTokens?.length) return "";
+	const hookSet = new Set(THUMBNAIL_HOOK_WORDS);
+	const filtered = questionInfo.contextTokens
+		.map((t) => String(t || "").toLowerCase())
+		.filter(Boolean)
+		.filter(
+			(t) =>
+				!TOPIC_STOP_WORDS.has(t) &&
+				!GENERIC_TOPIC_TOKENS.has(t) &&
+				!IMAGE_DEEMPHASIS_TOKENS.has(t) &&
+				!hookSet.has(t)
+		);
+	if (!filtered.length) return "";
+	const phrase = filtered.slice(0, 3).join(" ");
+	return titleCaseIfLower(phrase);
+}
+
+function deriveQuestionHeadlinePlan({
+	title,
+	shortTitle,
+	seoTitle,
+	topics,
+	maxWords = 4,
+	punchyMaxWords = 3,
+} = {}) {
+	const sources = [
+		topics?.[0]?.displayTopic,
+		topics?.[0]?.topic,
+		title,
+		shortTitle,
+		seoTitle,
+	]
+		.map((s) => String(s || "").trim())
+		.filter(Boolean);
+	for (const src of sources) {
+		const info = extractQuestionSegments(src);
+		if (!info) continue;
+		const headline = buildQuestionHeadline(info, maxWords);
+		if (!headline) continue;
+		const punchy = buildQuestionHeadline(info, punchyMaxWords) || headline;
+		const badgeText = buildQuestionBadge(info);
+		return { headline, punchy, badgeText };
+	}
+	return null;
+}
+
 function buildTopicPhrase(topics = [], maxWords = 3) {
 	const list = Array.isArray(topics) ? topics : [];
 	const primary = list[0]?.displayTopic || list[0]?.topic || "";
@@ -3417,20 +3656,35 @@ async function generateThumbnailPackage({
 		});
 	}
 
-	const thumbTitle = selectThumbnailTitle({
+	const questionPlan = deriveQuestionHeadlinePlan({
 		title,
 		shortTitle,
 		seoTitle,
 		topics,
+		maxWords: THUMBNAIL_TEXT_MAX_WORDS,
+		punchyMaxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
 	});
-	const punchyTitle = buildShortHookTitle({
-		title,
-		shortTitle,
-		seoTitle,
-		topics,
-	});
+	const thumbTitle =
+		questionPlan?.headline ||
+		selectThumbnailTitle({
+			title,
+			shortTitle,
+			seoTitle,
+			topics,
+		});
+	const punchyTitle =
+		questionPlan?.punchy ||
+		buildShortHookTitle({
+			title,
+			shortTitle,
+			seoTitle,
+			topics,
+		});
 	const topicCount = Array.isArray(topics) ? topics.length : 0;
-	const badgeText = topicCount > 1 ? `${Math.min(topicCount, 9)} STORIES` : "";
+	const badgeText =
+		topicCount > 1
+			? `${Math.min(topicCount, 9)} STORIES`
+			: questionPlan?.badgeText || "";
 
 	const topicImagePaths = await collectThumbnailTopicImages({
 		topics,

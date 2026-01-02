@@ -704,6 +704,39 @@ const TOPIC_TOKEN_ALIASES = Object.freeze({
 	"golden globes": ["golden globe"],
 });
 
+const FICTIONAL_CONTEXT_STRONG_TOKENS = [
+	"episode",
+	"season",
+	"series",
+	"character",
+	"plot",
+	"storyline",
+	"ending",
+	"finale",
+	"spoiler",
+	"recap",
+	"scene",
+];
+
+const FICTIONAL_CONTEXT_WEAK_TOKENS = [
+	"show",
+	"tv",
+	"television",
+	"movie",
+	"film",
+	"trailer",
+	"cast",
+	"premiere",
+	"streaming",
+	"netflix",
+	"hbo",
+	"disney",
+	"prime",
+	"paramount",
+	"peacock",
+	"apple tv",
+];
+
 function topicTokensFromTitle(title = "") {
 	return tokenizeLabel(title || "").filter((t) => !TOPIC_STOP_WORDS.has(t));
 }
@@ -762,6 +795,239 @@ function buildAnchorPhrasesFromStory(trendStory = null) {
 		].filter(Boolean),
 		10
 	);
+}
+
+function uniqueStrings(list = [], { limit = 0 } = {}) {
+	const seen = new Set();
+	const out = [];
+	for (const raw of Array.isArray(list) ? list : []) {
+		const val = String(raw || "").trim();
+		if (!val) continue;
+		const key = val.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(val);
+		if (limit && out.length >= limit) break;
+	}
+	return out;
+}
+
+function splitTitleSegments(text = "") {
+	const raw = String(text || "").trim();
+	if (!raw) return [];
+	return raw
+		.split(/\s(?:-|\u2013|\u2014|\||:)\s/)
+		.map((seg) => seg.trim())
+		.filter(Boolean);
+}
+
+function cleanAnchorCandidate(text = "") {
+	return String(text || "")
+		.replace(/["'(){}\[\]]/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function detectFictionalContext(text = "") {
+	const hay = String(text || "").toLowerCase();
+	if (!hay) return false;
+	const hasStrong = FICTIONAL_CONTEXT_STRONG_TOKENS.some((tok) =>
+		hay.includes(tok)
+	);
+	if (hasStrong) return true;
+	const hasWeak = FICTIONAL_CONTEXT_WEAK_TOKENS.some((tok) =>
+		hay.includes(tok)
+	);
+	if (!hasWeak) return false;
+	return (
+		/\b(did|does|do)\s+\w[\w\s]{0,40}\b(die|dies|died|killed|survive|survives|alive)\b/.test(
+			hay
+		) ||
+		/\bending explained\b/.test(hay) ||
+		/\bwho\s+(dies|died|survives|survived)\b/.test(hay)
+	);
+}
+
+function scoreTopicAnchorCandidate(candidate = "", baseTokens = []) {
+	const cleaned = cleanAnchorCandidate(candidate);
+	if (!cleaned) return -999;
+	const lower = cleaned.toLowerCase();
+	const tokens = tokenizeLabel(cleaned);
+	if (!tokens.length) return -999;
+	const matchCount = baseTokens.filter((t) => lower.includes(t)).length;
+	const capWords = (cleaned.match(/\b[A-Z][a-z]{2,}\b/g) || []).length;
+	const wordCount = tokens.length;
+	let score =
+		matchCount * 2 +
+		capWords * 0.6 +
+		Math.min(wordCount, 6) * 0.25 -
+		Math.max(0, wordCount - 8) * 0.4;
+	if (
+		/^(did|does|do|is|are|was|were|will|can|could|should|would|has|have|had)\b/i.test(
+			cleaned
+		)
+	) {
+		score -= 0.7;
+	}
+	const isGenericOnly = tokens.every(
+		(t) => TOPIC_STOP_WORDS.has(t) || GENERIC_TOPIC_TOKENS.has(t)
+	);
+	if (isGenericOnly) score -= 2;
+	return score;
+}
+
+function buildShortsTopicContextStrings({
+	topic,
+	trendStory,
+	liveContext,
+	articleText,
+} = {}) {
+	const list = [];
+	const topicLabel = cleanAnchorCandidate(topic || "");
+	if (topicLabel) list.push(topicLabel);
+	if (trendStory) {
+		list.push(
+			trendStory.trendSearchTerm,
+			trendStory.trendDialogTitle,
+			trendStory.rawTitle,
+			trendStory.title,
+			trendStory.youtubeShortTitle,
+			trendStory.seoTitle,
+			trendStory.imageComment
+		);
+		if (Array.isArray(trendStory.searchPhrases))
+			list.push(...trendStory.searchPhrases);
+		if (Array.isArray(trendStory.entityNames))
+			list.push(...trendStory.entityNames);
+		if (Array.isArray(trendStory.articles)) {
+			list.push(...trendStory.articles.map((a) => a?.title).filter(Boolean));
+		}
+	}
+
+	if (Array.isArray(liveContext)) {
+		for (const item of liveContext) {
+			if (typeof item === "string") {
+				list.push(item);
+				continue;
+			}
+			if (item?.title) list.push(String(item.title));
+			if (item?.snippet) list.push(String(item.snippet));
+		}
+	}
+
+	if (articleText) {
+		const excerpt = String(articleText || "")
+			.replace(/\s+/g, " ")
+			.trim()
+			.slice(0, 220);
+		if (excerpt) list.push(excerpt);
+	}
+
+	return uniqueStrings(list.filter(Boolean), { limit: 28 });
+}
+
+function pickShortsAnchorPhrase(topic = "", trendStory, contextStrings = []) {
+	const baseTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+	const storyTokens = filterSpecificTopicTokens(
+		collectStoryTokens(topic, trendStory)
+	);
+	const anchorTokens = baseTokens.length ? baseTokens : storyTokens;
+	const candidates = new Set();
+	const pushCandidate = (value) => {
+		const cleaned = cleanAnchorCandidate(value);
+		if (!cleaned || cleaned.length < 3) return;
+		candidates.add(cleaned);
+	};
+
+	pushCandidate(topic);
+	for (const raw of Array.isArray(contextStrings) ? contextStrings : []) {
+		pushCandidate(raw);
+		const segments = splitTitleSegments(raw);
+		for (const seg of segments) pushCandidate(seg);
+	}
+
+	let best = "";
+	let bestScore = -999;
+	for (const c of candidates) {
+		const score = scoreTopicAnchorCandidate(c, anchorTokens);
+		if (score > bestScore) {
+			bestScore = score;
+			best = c;
+		}
+	}
+
+	const fallback = cleanAnchorCandidate(topic) || "";
+	if (!best) return fallback;
+	const words = best.split(/\s+/).filter(Boolean);
+	const trimmed = words.slice(0, 6).join(" ");
+	return trimmed || fallback;
+}
+
+function pickIntentEvidenceLine(contextStrings = [], anchor = "", topic = "") {
+	const lines = Array.isArray(contextStrings) ? contextStrings : [];
+	const anchorLower = String(anchor || "").toLowerCase();
+	if (anchorLower) {
+		const hit = lines.find((l) =>
+			String(l || "")
+				.toLowerCase()
+				.includes(anchorLower)
+		);
+		if (hit) return String(hit || "").slice(0, 160);
+	}
+	const baseTokens = topicTokensFromTitle(topic);
+	if (baseTokens.length) {
+		const hit = lines.find((l) =>
+			baseTokens.some((t) =>
+				String(l || "")
+					.toLowerCase()
+					.includes(t)
+			)
+		);
+		if (hit) return String(hit || "").slice(0, 160);
+	}
+	return lines.length ? String(lines[0] || "").slice(0, 160) : "";
+}
+
+function buildShortsTopicIntentSummary({
+	topic,
+	trendStory,
+	liveContext,
+	articleText,
+} = {}) {
+	const contextStrings = buildShortsTopicContextStrings({
+		topic,
+		trendStory,
+		liveContext,
+		articleText,
+	});
+	const contextText = contextStrings.join(" ");
+	const domain = detectFictionalContext(contextText) ? "fictional" : "real";
+	const anchor = pickShortsAnchorPhrase(topic, trendStory, contextStrings);
+	const evidence = pickIntentEvidenceLine(contextStrings, anchor, topic);
+	return {
+		anchor,
+		domain,
+		evidence,
+		hasContext: Boolean(contextStrings.length),
+	};
+}
+
+function ensureAnchorInShortsSegments(
+	segments = [],
+	anchor = "",
+	domain = "real"
+) {
+	if (!anchor || !segments.length) return segments;
+	const first = segments[0];
+	const text = String(first?.scriptText || "").trim();
+	if (!text) return segments;
+	const anchorLower = anchor.toLowerCase();
+	if (text.toLowerCase().includes(anchorLower)) return segments;
+	const prefix = domain === "fictional" ? `In ${anchor}, ` : `${anchor}: `;
+	const merged = `${prefix}${text}`.replace(/\s+/g, " ").trim();
+	const updated = segments.slice();
+	updated[0] = { ...first, scriptText: merged };
+	return updated;
 }
 
 function prioritizeTokenMatchedUrls(urls = [], tokens = []) {
@@ -6541,6 +6807,26 @@ async function buildVideoPlanWithGPT({
 	const top5Context = Array.isArray(top5LiveContext) ? top5LiveContext : [];
 	const liveImages = Array.isArray(top5ImagePool) ? top5ImagePool : [];
 	const liveTopicContext = Array.isArray(liveWebContext) ? liveWebContext : [];
+	const topicIntent = buildShortsTopicIntentSummary({
+		topic,
+		trendStory,
+		liveContext: liveTopicContext,
+		articleText,
+	});
+	const intentAnchor = cleanAnchorCandidate(topicIntent?.anchor || topic || "");
+	const intentEvidence = String(topicIntent?.evidence || "(none)")
+		.replace(/"/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	const intentDomain = topicIntent?.domain || "real";
+	const topicIntentBlock = `
+Topic intent (must follow; do NOT drift):
+- Anchor phrase: "${intentAnchor || topic}"
+- Domain: ${intentDomain}
+- Evidence: ${intentEvidence || "(none)"}
+- Use the anchor phrase in Segment 1.
+- If evidence is "(none)", keep statements high-level and say it is trending rather than claiming details.
+`.trim();
 	const top5NeedsExtraDetail =
 		category === "Top5" && Number.isFinite(duration) && duration >= 45;
 	const runwayAnimationNote =
@@ -6586,6 +6872,8 @@ You are an expert short-form video editor and producer.
 
 We need a ${duration}s ${category} YouTube Shorts video titled "${topic}",
 split into ${segCnt} sequential segments.
+
+${topicIntentBlock}
 
 Segment timing:
 ${segDescLines}
@@ -6994,7 +7282,7 @@ Return JSON:
 		segments = segments.map((seg) => ({ ...seg, imageIndex: null }));
 	}
 
-	return { segments };
+	return { segments, topicIntent };
 }
 
 /* ---------------------------------------------------------------
@@ -7460,6 +7748,7 @@ exports.createVideo = async (req, res) => {
 		const forceStaticVisuals = !useSora;
 
 		let segments;
+		let topicIntent = null;
 		if (category === "Top5") {
 			const built = await buildTop5SegmentsAndImages({
 				topic,
@@ -7487,7 +7776,7 @@ exports.createVideo = async (req, res) => {
 				language,
 				duration,
 				segLens,
-				trendStory: hasTrendImages ? trendStory : null,
+				trendStory,
 				trendImagesForPlanning: hasTrendImages
 					? trendImagePairs.map((p) => p.cloudinaryUrl)
 					: null,
@@ -7504,6 +7793,7 @@ exports.createVideo = async (req, res) => {
 			});
 
 			segments = plan.segments;
+			topicIntent = plan.topicIntent || null;
 
 			console.log("[GPT] buildVideoPlanWithGPT ? plan ready", {
 				segments: segments.length,
@@ -7562,6 +7852,14 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 				allowAITopic: topicIsAITopic,
 			}),
 		}));
+
+		if (category !== "Top5" && topicIntent?.anchor) {
+			segments = ensureAnchorInShortsSegments(
+				segments,
+				topicIntent.anchor,
+				topicIntent.domain || "real"
+			);
+		}
 
 		if (segments.length) {
 			const tailCap = Math.floor(segLens[segLens.length - 1] * WORDS_PER_SEC);

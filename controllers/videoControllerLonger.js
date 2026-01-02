@@ -3637,6 +3637,96 @@ const FICTIONAL_CONTEXT_WEAK_TOKENS = [
 	"apple tv",
 ];
 
+const TOPIC_DOMAIN_TOKENS = [
+	{
+		domain: "sports",
+		tokens: [
+			"nba",
+			"nfl",
+			"mlb",
+			"nhl",
+			"wnba",
+			"fifa",
+			"uefa",
+			"premier league",
+			"champions league",
+			"match",
+			"game",
+			"playoff",
+			"finals",
+			"tournament",
+			"team",
+			"coach",
+		],
+	},
+	{
+		domain: "music",
+		tokens: [
+			"album",
+			"song",
+			"single",
+			"tour",
+			"concert",
+			"festival",
+			"track",
+			"band",
+			"singer",
+			"rapper",
+			"billboard",
+		],
+	},
+	{
+		domain: "politics",
+		tokens: [
+			"election",
+			"senate",
+			"congress",
+			"house",
+			"president",
+			"campaign",
+			"vote",
+			"policy",
+			"governor",
+			"mayor",
+			"parliament",
+		],
+	},
+	{
+		domain: "business",
+		tokens: [
+			"earnings",
+			"stock",
+			"ipo",
+			"merger",
+			"acquisition",
+			"ceo",
+			"company",
+			"startup",
+			"investor",
+			"funding",
+		],
+	},
+	{
+		domain: "tech",
+		tokens: [
+			"ai",
+			"app",
+			"iphone",
+			"android",
+			"software",
+			"hardware",
+			"release",
+			"update",
+			"startup",
+			"platform",
+		],
+	},
+	{
+		domain: "gaming",
+		tokens: ["game", "gaming", "esports", "console", "steam", "playstation"],
+	},
+];
+
 function detectFictionalContext(text = "") {
 	const hay = String(text || "").toLowerCase();
 	if (!hay) return false;
@@ -3655,6 +3745,193 @@ function detectFictionalContext(text = "") {
 		/\bending explained\b/.test(hay) ||
 		/\bwho\s+(dies|died|survives|survived)\b/.test(hay);
 	return hasQuestionCue;
+}
+
+function inferFictionalMedium(text = "") {
+	const hay = String(text || "").toLowerCase();
+	if (
+		/\b(season|episode|series|show|tv|television|streaming|finale)\b/.test(hay)
+	)
+		return "series";
+	if (/\b(movie|film|trailer|premiere)\b/.test(hay)) return "film";
+	if (/\b(game|gaming|videogame)\b/.test(hay)) return "game";
+	if (/\b(anime|manga|novel|book|comic)\b/.test(hay)) return "story";
+	return "story";
+}
+
+function inferTopicDomainFromText(text = "") {
+	const hay = String(text || "").toLowerCase();
+	if (!hay) return { domain: "general" };
+	if (detectFictionalContext(hay)) {
+		return { domain: "fictional", medium: inferFictionalMedium(hay) };
+	}
+	let best = { domain: "general", score: 0 };
+	for (const group of TOPIC_DOMAIN_TOKENS) {
+		const score = group.tokens.reduce(
+			(acc, tok) => acc + (hay.includes(tok) ? 1 : 0),
+			0
+		);
+		if (score > best.score) best = { domain: group.domain, score };
+	}
+	return best.score ? { domain: best.domain } : { domain: "general" };
+}
+
+function splitTitleSegments(text = "") {
+	const raw = String(text || "").trim();
+	if (!raw) return [];
+	return raw
+		.split(/\s(?:-|\u2013|\u2014|\||:)\s/)
+		.map((seg) => seg.trim())
+		.filter(Boolean);
+}
+
+function buildTopicContextStrings(topicObj, contextItems = []) {
+	const list = [];
+	const topicLabel = cleanTopicLabel(
+		topicObj?.displayTopic || topicObj?.topic || ""
+	);
+	if (topicLabel) list.push(topicLabel);
+	if (topicObj?.rawTitle) list.push(String(topicObj.rawTitle));
+	if (topicObj?.seoTitle) list.push(String(topicObj.seoTitle));
+	if (topicObj?.youtubeShortTitle)
+		list.push(String(topicObj.youtubeShortTitle));
+
+	const story = topicObj?.trendStory || {};
+	const phrases = Array.isArray(story.searchPhrases) ? story.searchPhrases : [];
+	const entities = Array.isArray(story.entityNames) ? story.entityNames : [];
+	const articles = Array.isArray(story.articles) ? story.articles : [];
+	const articleTitles = articles.map((a) => a?.title).filter(Boolean);
+	const imageComment = story.imageComment || "";
+
+	list.push(...phrases, ...entities, ...articleTitles);
+	if (imageComment) list.push(String(imageComment));
+
+	for (const item of Array.isArray(contextItems) ? contextItems : []) {
+		if (typeof item === "string") {
+			list.push(item);
+			continue;
+		}
+		if (item?.title) list.push(String(item.title));
+		if (item?.snippet) list.push(String(item.snippet));
+	}
+
+	return uniqueStrings(list.filter(Boolean), { limit: 24 });
+}
+
+function scoreAnchorCandidate(candidate = "", baseTokens = []) {
+	const cleaned = cleanTopicLabel(candidate);
+	if (!cleaned) return -999;
+	const lower = cleaned.toLowerCase();
+	const tokens = tokenizeLabel(cleaned);
+	if (!tokens.length) return -999;
+	const matchCount = baseTokens.filter((t) => lower.includes(t)).length;
+	const capWords = (candidate.match(/\b[A-Z][a-z]+\b/g) || []).length;
+	const wordCount = tokens.length;
+	let score =
+		matchCount * 2 +
+		capWords * 0.6 +
+		Math.min(wordCount, 6) * 0.25 -
+		Math.max(0, wordCount - 8) * 0.4;
+	if (
+		/^(did|does|do|is|are|was|were|will|can|could|should|would|has|have|had)\b/i.test(
+			cleaned
+		)
+	) {
+		score -= 0.7;
+	}
+	const isGenericOnly = tokens.every(
+		(t) => TOPIC_STOP_WORDS.has(t) || GENERIC_TOPIC_TOKENS.has(t)
+	);
+	if (isGenericOnly) score -= 2;
+	return score;
+}
+
+function pickTopicAnchorLabel(topicLabel = "", contextStrings = []) {
+	const baseLabel = normalizeTopicLabelForQuestion(topicLabel) || topicLabel;
+	const baseTokens = filterSpecificTopicTokens(
+		topicTokensFromTitle(baseLabel || topicLabel)
+	);
+	const candidates = new Set();
+	const pushCandidate = (value) => {
+		const cleaned = cleanTopicLabel(String(value || ""));
+		if (!cleaned || cleaned.length < 3) return;
+		candidates.add(cleaned);
+	};
+
+	pushCandidate(baseLabel);
+	pushCandidate(topicLabel);
+	for (const raw of Array.isArray(contextStrings) ? contextStrings : []) {
+		pushCandidate(raw);
+		const segments = splitTitleSegments(raw);
+		for (const seg of segments) pushCandidate(seg);
+	}
+
+	let best = "";
+	let bestScore = -999;
+	for (const c of candidates) {
+		const score = scoreAnchorCandidate(c, baseTokens);
+		if (score > bestScore) {
+			bestScore = score;
+			best = c;
+		}
+	}
+
+	if (!best) return shortTopicLabel(baseLabel || topicLabel, 5);
+	const anchor = shortTopicLabel(best, 5);
+	return anchor || shortTopicLabel(baseLabel || topicLabel, 5);
+}
+
+function pickIntentEvidenceLine(
+	contextStrings = [],
+	anchor = "",
+	topicLabel = ""
+) {
+	const lines = Array.isArray(contextStrings) ? contextStrings : [];
+	const anchorLower = String(anchor || "").toLowerCase();
+	if (anchorLower) {
+		const hit = lines.find((l) =>
+			String(l || "")
+				.toLowerCase()
+				.includes(anchorLower)
+		);
+		if (hit) return String(hit || "").slice(0, 160);
+	}
+	const baseTokens = topicTokensFromTitle(
+		normalizeTopicLabelForQuestion(topicLabel) || topicLabel
+	);
+	if (baseTokens.length) {
+		const hit = lines.find((l) =>
+			baseTokens.some((t) =>
+				String(l || "")
+					.toLowerCase()
+					.includes(t)
+			)
+		);
+		if (hit) return String(hit || "").slice(0, 160);
+	}
+	return lines.length ? String(lines[0] || "").slice(0, 160) : "";
+}
+
+function buildTopicIntentSummary(topicObj, contextItems = []) {
+	const label = cleanTopicLabel(
+		topicObj?.displayTopic || topicObj?.topic || ""
+	);
+	const contextStrings = buildTopicContextStrings(topicObj, contextItems);
+	const contextText = contextStrings.join(" ");
+	const domainInfo = inferTopicDomainFromText(contextText);
+	const anchor = pickTopicAnchorLabel(
+		label || topicObj?.topic || "",
+		contextStrings
+	);
+	const evidence = pickIntentEvidenceLine(contextStrings, anchor, label);
+	return {
+		label,
+		anchor,
+		domain: domainInfo.domain,
+		medium: domainInfo.medium,
+		evidence,
+		hasContext: Boolean(contextStrings.length),
+	};
 }
 
 function inferTonePlan({ topic, topics, angle, liveContext }) {
@@ -4427,6 +4704,40 @@ function ensureTopicTransitions(segments = [], topics = []) {
 	return out;
 }
 
+function ensureTopicAnchors(segments = [], topics = [], topicIntents = []) {
+	const firstIndexByTopic = new Map();
+	for (let i = 0; i < (segments || []).length; i++) {
+		const topicIndex =
+			Number.isFinite(Number(segments[i]?.topicIndex)) &&
+			Number(segments[i]?.topicIndex) >= 0
+				? Number(segments[i]?.topicIndex)
+				: 0;
+		if (!firstIndexByTopic.has(topicIndex))
+			firstIndexByTopic.set(topicIndex, i);
+	}
+
+	return (segments || []).map((seg, idx) => {
+		const topicIndex =
+			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+				? Number(seg.topicIndex)
+				: 0;
+		const intent = topicIntents?.[topicIndex] || {};
+		const anchor = cleanTopicLabel(intent.anchor || "");
+		if (!anchor || anchor.toLowerCase() === "today's topic") return seg;
+		const text = String(seg.text || "").trim();
+		if (!text) return seg;
+		const lower = text.toLowerCase();
+		const anchorLower = anchor.toLowerCase();
+		if (lower.includes(anchorLower)) return seg;
+		if (idx !== firstIndexByTopic.get(topicIndex)) return seg;
+
+		const domain = intent.domain || "general";
+		const prefix = domain === "fictional" ? `In ${anchor}, ` : `${anchor}: `;
+		const merged = cleanupSpeechText(`${prefix}${text}`);
+		return { ...seg, text: merged };
+	});
+}
+
 function ensureTopicEngagementQuestions(
 	segments = [],
 	topics = [],
@@ -4551,6 +4862,30 @@ async function generateScript({
 		})
 		.join("\n\n");
 
+	const topicIntents = safeTopics.map((t, idx) => {
+		const contextItems = Array.isArray(topicContexts)
+			? topicContexts[idx]?.context
+			: [];
+		return buildTopicIntentSummary(t, contextItems);
+	});
+	const topicIntentLines = topicIntents
+		.map((intent, idx) => {
+			const label =
+				topicLabelFor(safeTopics[idx]) || intent?.label || `Topic ${idx + 1}`;
+			const anchor = String(intent?.anchor || "(unknown)")
+				.replace(/"/g, "")
+				.trim();
+			const domain = intent?.domain || "general";
+			const medium = intent?.medium ? ` | medium=${intent.medium}` : "";
+			const evidence = String(intent?.evidence || "(none)")
+				.replace(/\s+/g, " ")
+				.trim();
+			return `- Topic ${
+				idx + 1
+			} (${label}): anchor="${anchor}" | domain=${domain}${medium}\n  Evidence: ${evidence}`;
+		})
+		.join("\n");
+
 	const topicContextGuide =
 		Array.isArray(topicContextFlags) && topicContextFlags.length
 			? topicContextFlags
@@ -4624,6 +4959,9 @@ ${topicContextGuide}
 Topic notes:
 ${topicHintLines}
 
+Topic intent resolution (MUST follow; do NOT invent beyond this):
+${topicIntentLines}
+
 Style rules (IMPORTANT):
 - Keep pacing steady and conversational; no sudden speed-ups.
 - Slightly brisk, natural American delivery; avoid drawn-out phrasing.
@@ -4665,6 +5003,8 @@ Style rules (IMPORTANT):
 - If a topic is about a TV show, film, or fictional character, frame it as plot/character discussion, not real-life tragedy.
 - If a topic is marked as Fictional/Story, keep it in-universe and avoid real-world mourning language.
 - Avoid phrasing like "sad news" unless it is a real-world tragedy.
+- Use the topic anchor phrase in the FIRST segment of each topic.
+- If a topic's evidence is "(none)", keep statements high-level and avoid specific claims; say it's trending and frame it as an open question.
 - If the line is happy, use a light smile; if very happy, a brief small smile with slight teeth (never a wide grin).
 - Keep expressions coherent across segments; avoid abrupt mood flips and avoid exaggerated expressions.
 - Each segment must include EXACTLY one overlayCues entry with a search query that matches that segment.
@@ -4755,6 +5095,7 @@ Return JSON ONLY:
 	}
 
 	segments = ensureTopicTransitions(segments, safeTopics);
+	segments = ensureTopicAnchors(segments, safeTopics, topicIntents);
 
 	// Enforce caps softly (avoid mid-sentence cutoffs; allow longer if needed).
 	segments = segments.map((s, i) => {
@@ -7457,8 +7798,26 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		for (const t of topicPicks) {
 			const extraTokens = Array.isArray(t.keywords) ? t.keywords : [];
 			const ctx = await fetchCseContext(t.topic, extraTokens);
-			topicContexts.push({ topic: t.topic, context: ctx });
-			liveContext = liveContext.concat(ctx || []);
+			const trendContext = uniqueStrings(
+				[
+					...(Array.isArray(t.trendStory?.searchPhrases)
+						? t.trendStory.searchPhrases
+						: []),
+					...(Array.isArray(t.trendStory?.entityNames)
+						? t.trendStory.entityNames
+						: []),
+					...(Array.isArray(t.trendStory?.articles)
+						? t.trendStory.articles.map((a) => a?.title)
+						: []),
+					t.trendStory?.imageComment,
+				].filter(Boolean),
+				{ limit: 8 }
+			);
+			const mergedContext = Array.isArray(ctx)
+				? ctx.concat(trendContext)
+				: trendContext;
+			topicContexts.push({ topic: t.topic, context: mergedContext });
+			liveContext = liveContext.concat(mergedContext || []);
 		}
 		const cseImages = [];
 		logJob(jobId, "cse context", {
