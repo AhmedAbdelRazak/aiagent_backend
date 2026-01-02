@@ -1,4 +1,4 @@
-/* routes/googleTrendsPuppeteer.js — bullet‑proof, updated 2025‑11‑28 */
+﻿/* routes/googleTrendsPuppeteer.js â€” bulletâ€‘proof, updated 2025â€‘11â€‘28 */
 /* eslint-disable no-console, max-len */
 
 require("dotenv").config();
@@ -17,9 +17,9 @@ puppeteer.use(Stealth());
 
 const router = express.Router();
 
-const ROW_LIMIT = 8; // how many rising‑search rows we scrape
-const ROW_TIMEOUT_MS = 12_000; // per‑row timeout (ms)
-const PROTOCOL_TIMEOUT = 120_000; // whole‑browser cap (ms)
+const ROW_LIMIT = 8; // how many risingâ€‘search rows we scrape
+const ROW_TIMEOUT_MS = 12_000; // perâ€‘row timeout (ms)
+const PROTOCOL_TIMEOUT = 120_000; // wholeâ€‘browser cap (ms)
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
 const log = (...m) => console.log("[Trends]", ...m);
 const ffmpegPath =
@@ -73,7 +73,7 @@ function isLikelyThumbnailUrl(u = "") {
 	return false;
 }
 
-/* ───────────────────────────────────────────── OpenAI client + helpers */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ OpenAI client + helpers */
 
 let openai = null;
 const CHATGPT_API_TOKEN =
@@ -127,8 +127,50 @@ function normaliseImageBriefs(briefs = [], topic = "") {
 	return Array.from(byAspect.values());
 }
 
+function stripCodeFences(raw = "") {
+	const trimmed = String(raw || "").trim();
+	if (!trimmed.startsWith("```")) return trimmed;
+	const match = trimmed.match(/^```[a-zA-Z]*\s*([\s\S]*?)\s*```$/);
+	return match ? String(match[1] || "").trim() : trimmed;
+}
+
+function extractJsonObject(raw = "") {
+	const text = String(raw || "");
+	const first = text.indexOf("{");
+	const last = text.lastIndexOf("}");
+	if (first === -1 || last === -1 || last <= first) return text;
+	return text.slice(first, last + 1);
+}
+
+function repairJsonString(raw = "") {
+	return String(raw || "")
+		.replace(/[\u201c\u201d]/g, '"')
+		.replace(/[\u2018\u2019]/g, "'")
+		.replace(/,\s*([}\]])/g, "$1");
+}
+
+function safeParseOpenAiJson(raw = "") {
+	const trimmed = String(raw || "").trim();
+	if (!trimmed) return null;
+	const base = stripCodeFences(trimmed);
+	const candidates = uniqueStrings(
+		[trimmed, base, extractJsonObject(base), extractJsonObject(trimmed)],
+		{ limit: 6 }
+	);
+	for (const candidate of candidates) {
+		if (!candidate) continue;
+		for (const variant of [candidate, repairJsonString(candidate)]) {
+			try {
+				return JSON.parse(variant);
+			} catch {
+				// try next
+			}
+		}
+	}
+	return null;
+}
 /**
- * Use GPT‑5.1 to generate SEO‑optimized blog + Shorts titles per story.
+ * Use GPTâ€‘5.1 to generate SEOâ€‘optimized blog + Shorts titles per story.
  * If anything fails, we just return the original stories unchanged.
  */
 async function enhanceStoriesWithOpenAI(
@@ -176,14 +218,11 @@ async function enhanceStoriesWithOpenAI(
 		});
 
 		const raw = response.output_text || "";
-		let parsed;
-		try {
-			parsed = JSON.parse(raw);
-		} catch (err) {
-			log("Failed to parse OpenAI JSON:", err.message || err.toString());
+		const parsed = safeParseOpenAiJson(raw);
+		if (!parsed) {
+			log("Failed to parse OpenAI JSON:", "unable to recover JSON output");
 			return stories;
 		}
-
 		const byTerm = new Map();
 		if (parsed && Array.isArray(parsed.topics)) {
 			for (const t of parsed.topics) {
@@ -229,10 +268,10 @@ async function enhanceStoriesWithOpenAI(
 	}
 }
 
-/* ───────────────────────────────────────────────────────────── helpers */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ helpers */
 
 const urlFor = ({ geo, hours, category, sort }) => {
-	// Clamp hours 1–168 and actually use the requested window.
+	// Clamp hours 1â€“168 and actually use the requested window.
 	// const hrs = Math.min(Math.max(Number(hours) || 24, 1), 168);
 
 	const params = new URLSearchParams({
@@ -253,7 +292,7 @@ const urlFor = ({ geo, hours, category, sort }) => {
 	return `https://trends.google.com/trending?${params.toString()}`;
 };
 
-/* ───────────────────────────────────────────────────── cached browser */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ cached browser */
 
 let browser; // one instance per container / PM2 worker
 
@@ -277,7 +316,7 @@ async function getBrowser() {
 	return browser;
 }
 
-/* ───────────────────────────────────── article image helpers (Node side) */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ article image helpers (Node side) */
 
 async function fetchHtmlWithTimeout(url, timeoutMs) {
 	// Older Node may not have global fetch; if so we just skip enrichment.
@@ -409,7 +448,7 @@ async function hydrateArticleImages(stories) {
 	);
 }
 
-/* ───────────────────────────────────────────────────────────── scraper */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ scraper */
 
 /* ---------------------------------------------------------------
  * Google Images scraping helper
@@ -646,7 +685,7 @@ async function scrape({ geo, hours, category, sort }) {
 							}
 						}
 
-						// If dialog vanished (virtual scroll) → reclick.
+						// If dialog vanished (virtual scroll) â†’ reclick.
 						if (!dialog) clickRow();
 						// eslint-disable-next-line no-await-in-loop
 						await sleep(200);
@@ -710,7 +749,7 @@ async function scrape({ geo, hours, category, sort }) {
 	return stories;
 }
 
-/* ───────────────────────────────────────────────────────────── express API */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ express API */
 
 router.get("/google-images", async (req, res) => {
 	const query = String(req.query.q || req.query.query || "").trim();
@@ -748,7 +787,7 @@ router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
 	if (!/^[A-Z]{2}$/.test(geo)) {
 		return res.status(400).json({
-			error: "`geo` must be an ISO‑3166 alpha‑2 country code",
+			error: "`geo` must be an ISOâ€‘3166 alphaâ€‘2 country code",
 		});
 	}
 
@@ -767,7 +806,7 @@ router.get("/google-trends", async (req, res) => {
 			sort,
 		});
 
-		// Ask GPT‑5.1 for better blog + YouTube titles.
+		// Ask GPTâ€‘5.1 for better blog + YouTube titles.
 		//    This is optional and skipped if CHATGPT_API_TOKEN / OPENAI_API_KEY
 		//    is not configured or the call fails.
 		stories = await enhanceStoriesWithOpenAI(stories, {

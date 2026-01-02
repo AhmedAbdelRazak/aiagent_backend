@@ -213,6 +213,63 @@ const WATERMARK_URL_TOKENS = [
 	"pixelsquid",
 	"watermark",
 ];
+const THUMBNAIL_MERCH_DISALLOWED_TOKENS = [
+	"funko",
+	"funko pop",
+	"pop vinyl",
+	"vinyl figure",
+	"vinyl figurine",
+	"figurine",
+	"action figure",
+	"collectible",
+	"collectable",
+	"toy",
+	"unboxing",
+	"box set",
+	"boxset",
+	"packaging",
+	"plush",
+	"doll",
+	"statue",
+	"keychain",
+	"tshirt",
+	"hoodie",
+	"mug",
+	"sticker",
+];
+const THUMBNAIL_MERCH_PENALTY_TOKENS = [
+	"poster",
+	"wallpaper",
+	"fanart",
+	"fan art",
+	"keyart",
+	"concept art",
+	"illustration",
+	"vector",
+	"collage",
+	"render",
+];
+const THUMBNAIL_MERCH_DISALLOWED_HOSTS = [
+	"amazon.com",
+	"ebay.com",
+	"etsy.com",
+	"walmart.com",
+	"target.com",
+	"mercari.com",
+	"poshmark.com",
+	"aliexpress.com",
+	"temu.com",
+	"funko.com",
+	"popinabox.com",
+	"popinabox.us",
+	"popcultcha.com.au",
+	"boxlunch.com",
+	"gamestop.com",
+	"shopdisney.com",
+	"hottopic.com",
+	"entertainmentearth.com",
+	"bigbadtoystore.com",
+];
 
 const RUNWAY_PROMPT_CHAR_LIMIT = 520;
 
@@ -515,6 +572,12 @@ function buildSearchLabelTokens(topic = "", extraTokens = []) {
 function buildTopicIdentityLabel(topic = "", extraTokens = []) {
 	const questionInfo = extractQuestionSegments(topic);
 	let tokens = [];
+	if (questionInfo?.subjectTokens?.length) {
+		const subjectContext = buildQuestionSubjectContextLabel(questionInfo, 5);
+		if (subjectContext) return subjectContext;
+		const subjectOnly = buildQuestionSubjectLabel(questionInfo, 4);
+		if (subjectOnly) return subjectOnly;
+	}
 	if (questionInfo?.contextTokens?.length) {
 		tokens = questionInfo.contextTokens;
 	} else if (questionInfo?.subjectTokens?.length) {
@@ -708,7 +771,8 @@ async function fetchGoogleImagesFromService(
 			const urls = (raw || [])
 				.map((u) => String(u || "").trim())
 				.filter((u) => /^https?:\/\//i.test(u))
-				.filter((u) => !isLikelyThumbnailUrl(u));
+				.filter((u) => !isLikelyThumbnailUrl(u))
+				.filter((u) => !isMerchDisallowedCandidate({ url: u }));
 			if (!urls.length) continue;
 
 			let pool = urls;
@@ -831,6 +895,39 @@ async function fetchCseItems(
 function isLikelyWatermarkedSource(url = "", contextLink = "") {
 	const hay = `${url} ${contextLink}`.toLowerCase();
 	return WATERMARK_URL_TOKENS.some((token) => hay.includes(token));
+}
+
+function matchesAnyToken(hay = "", tokens = []) {
+	if (!hay || !tokens || !tokens.length) return false;
+	return tokens.some((token) => hay.includes(token));
+}
+
+function isMerchDisallowedCandidate({
+	url = "",
+	source = "",
+	title = "",
+} = {}) {
+	const hay = `${url} ${source} ${title}`.toLowerCase();
+	if (matchesAnyToken(hay, THUMBNAIL_MERCH_DISALLOWED_TOKENS)) return true;
+	if (url) {
+		try {
+			const host = new URL(url).hostname.toLowerCase();
+			if (
+				THUMBNAIL_MERCH_DISALLOWED_HOSTS.some(
+					(h) => host === h || host.endsWith(`.${h}`)
+				)
+			)
+				return true;
+		} catch {
+			// ignore URL parse errors
+		}
+	}
+	return false;
+}
+
+function merchPenaltyScore({ url = "", source = "", title = "" } = {}) {
+	const hay = `${url} ${source} ${title}`.toLowerCase();
+	return matchesAnyToken(hay, THUMBNAIL_MERCH_PENALTY_TOKENS) ? 0.7 : 0;
 }
 
 function isProbablyDirectImageUrl(u) {
@@ -2956,6 +3053,14 @@ async function fetchCseImages(topic, extraTokens = []) {
 	const pushCandidate = (it, { minEdge, minTokenMatches }) => {
 		const url = it.link || "";
 		if (!url || !/^https:\/\//i.test(url)) return;
+		if (
+			isMerchDisallowedCandidate({
+				url,
+				source: it.image?.contextLink || it.displayLink || "",
+				title: it.title || "",
+			})
+		)
+			return;
 		const info = topicMatchInfo(matchTokens, [
 			it.title,
 			it.snippet,
@@ -3107,12 +3212,17 @@ async function collectThumbnailTopicImages({
 	const urlCandidates = [];
 	const seen = new Set();
 	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
-	const pushCandidate = (url, { source = "", priority = 0, criteria } = {}) => {
+	const pushCandidate = (
+		url,
+		{ source = "", title = "", priority = 0, criteria } = {}
+	) => {
 		if (!url) return;
 		const key = normalizeImageUrlKey(url);
 		if (seen.has(key)) return;
 		if (isLikelyThumbnailUrl(url)) return;
 		if (isLikelyWatermarkedSource(url, source)) return;
+		if (isMerchDisallowedCandidate({ url, source, title })) return;
+		const merchPenalty = merchPenaltyScore({ url, source, title });
 		const match = scoreThumbnailTopicMatch(url, source, criteria);
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
 		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
@@ -3128,8 +3238,9 @@ async function collectThumbnailTopicImages({
 			subjectMatches: match.subjectMatches,
 			phraseHit: match.phraseHit,
 			sourceScore: scoreSourceAffinity(url, source),
+			merchPenalty,
 			priority,
-			relaxed,
+			relaxed: relaxed || merchPenalty >= 0.6,
 		});
 		seen.add(key);
 	};
@@ -3192,18 +3303,22 @@ async function collectThumbnailTopicImages({
 		for (const url of seedUrls) {
 			pushCandidate(url, {
 				source: t?.trendStory?.articles?.[0]?.url || "",
+				title: t?.trendStory?.articles?.[0]?.title || "",
 				priority: 0.7,
 				criteria,
 			});
 		}
 
-		let hits = hasCSE ? await fetchCseImages(label, mergedTokens) : [];
+		const searchLabel =
+			questionSubjectContextLabel || questionSubjectLabel || label;
+		let hits = hasCSE ? await fetchCseImages(searchLabel, mergedTokens) : [];
 		if (hits.length) {
 			for (const hit of hits) {
 				const url = typeof hit === "string" ? hit : hit?.url;
 				if (!url) continue;
 				pushCandidate(url, {
 					source: hit?.source || "",
+					title: hit?.title || "",
 					priority: 0.55,
 					criteria,
 				});
@@ -3211,7 +3326,7 @@ async function collectThumbnailTopicImages({
 		}
 
 		if (!hits.length && hasCSE) {
-			const ctxItems = await fetchCseContext(label, mergedTokens);
+			const ctxItems = await fetchCseContext(searchLabel, mergedTokens);
 			const articleUrls = uniqueStrings(
 				[
 					...(Array.isArray(t?.trendStory?.articles)
@@ -3238,7 +3353,12 @@ async function collectThumbnailTopicImages({
 					count: ogHits.length,
 				});
 			for (const og of ogHits) {
-				pushCandidate(og, { source: label, priority: 0.5, criteria });
+				pushCandidate(og, {
+					source: label,
+					title: label,
+					priority: 0.5,
+					criteria,
+				});
 			}
 		}
 
@@ -3265,6 +3385,7 @@ async function collectThumbnailTopicImages({
 				for (const url of googleUrls) {
 					pushCandidate(url, {
 						source: "google-images",
+						title: gQuery,
 						priority: 0.25,
 						criteria,
 					});
@@ -3282,7 +3403,12 @@ async function collectThumbnailTopicImages({
 					log("thumbnail topic images fallback wiki", {
 						topic: wikiLabel,
 					});
-				pushCandidate(wikiUrl, { source: wikiLabel, priority: 0.4, criteria });
+				pushCandidate(wikiUrl, {
+					source: wikiLabel,
+					title: wikiLabel,
+					priority: 0.4,
+					criteria,
+				});
 			}
 		}
 		if (urlCandidates.length < maxUrls) {
@@ -3294,7 +3420,12 @@ async function collectThumbnailTopicImages({
 					count: commons.length,
 				});
 			for (const url of commons) {
-				pushCandidate(url, { source: label, priority: 0.35, criteria });
+				pushCandidate(url, {
+					source: label,
+					title: commonsLabel,
+					priority: 0.35,
+					criteria,
+				});
 				if (urlCandidates.length >= maxUrls) break;
 			}
 		}
@@ -3327,6 +3458,7 @@ async function collectThumbnailTopicImages({
 				(c.matchScore || 0) +
 				(c.sourceScore || 0) +
 				(c.priority || 0) -
+				(c.merchPenalty || 0) -
 				(c.relaxed ? 0.6 : 0),
 		}))
 		.sort((a, b) => b.relevanceScore - a.relevanceScore);
