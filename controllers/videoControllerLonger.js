@@ -236,7 +236,7 @@ const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter; background must be static with no moving elements, screens, or window activity.";
 const PRESENTER_MOTION_STYLE =
-	"natural head and neck movement with occasional small nods, slow and controlled; no fast turns or jerky motion; human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; mouth neutral or very light smile when appropriate; no exaggerated expressions";
+	"natural head and neck movement with very occasional micro-nods (not repetitive); head mostly steady; slow and controlled; avoid rhythmic bobbing; no fast turns or jerky motion; human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; mouth neutral or very light smile when appropriate; no exaggerated expressions";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -3543,7 +3543,7 @@ function buildBaselinePrompt(
 			? "Use a slightly different blink cadence and a soft head turn or two."
 			: "";
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance: gentle head movement with occasional small nods; slow and controlled; no fast turns or jerky motion; no hand gestures."
+		? "Match the natural motion style from the reference performance: gentle head movement with rare micro-nods (no repeated nodding); head mostly steady; slow and controlled; no fast turns or jerky motion; no hand gestures."
 		: PRESENTER_MOTION_STYLE;
 
 	return `
@@ -6809,7 +6809,7 @@ async function createPresenterIntroMotion({
 	);
 
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance: gentle head nods, human blink rate with slight variation, subtle hand gestures."
+		? "Match the natural motion style from the reference performance: gentle head movement with rare micro-nods (no repeated nodding), human blink rate with slight variation, subtle hand gestures."
 		: "Natural head and neck movement, human blink rate with slight variation, subtle breathing.";
 	const introFace = pickIntroExpression(jobId);
 	const titleTarget = `${Math.round(
