@@ -36,8 +36,8 @@ const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
 const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.42;
 const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.1;
-const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.18;
-const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.38;
+const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.22;
+const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.45;
 const THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS = 3;
 const THUMBNAIL_VARIANT_B_CONTRAST = 1.12;
 const THUMBNAIL_VARIANT_B_BASE_CHARS = 10;
@@ -140,6 +140,22 @@ const QUESTION_CONTEXT_SPLIT_TOKENS = new Set([
 	"vs",
 	"vs.",
 ]);
+const QUESTION_PUNCHY_DEATH_TOKENS = new Set([
+	"die",
+	"dies",
+	"died",
+	"dead",
+	"death",
+]);
+const QUESTION_PUNCHY_RETURN_TOKENS = new Set([
+	"return",
+	"returns",
+	"returned",
+	"returning",
+	"comeback",
+	"back",
+]);
+const QUESTION_PUNCHY_ALLOWED_CATEGORIES = new Set(["tv", "film", "celebrity"]);
 const IMAGE_DEEMPHASIS_TOKENS = new Set([
 	"die",
 	"dies",
@@ -2776,7 +2792,7 @@ async function renderThumbnailOverlay({
 		: 0;
 	const textBoxOpacity = Number.isFinite(Number(overlayOptions.textBoxOpacity))
 		? Number(overlayOptions.textBoxOpacity)
-		: 0.28;
+		: 0.34;
 	const vignetteStrength = Number.isFinite(Number(overlayOptions.vignette))
 		? Number(overlayOptions.vignette)
 		: 0.04;
@@ -2905,9 +2921,9 @@ async function renderThumbnailOverlay({
 		filters.push(
 			`drawtext=textfile='${escapeDrawtext(
 				textFilePath
-			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:box=1:boxcolor=black@${textBoxOpacity.toFixed(
+			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=4:bordercolor=black@0.6:box=1:boxcolor=black@${textBoxOpacity.toFixed(
 				2
-			)}:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*${THUMBNAIL_TEXT_Y_OFFSET_PCT}`
+			)}:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=3:shadowy=3:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*${THUMBNAIL_TEXT_Y_OFFSET_PCT}`
 		);
 	}
 
@@ -3650,6 +3666,33 @@ function buildQuestionHeadline(questionInfo, maxWords = 4) {
 	return headline;
 }
 
+function buildPunchyQuestionHeadline(
+	questionInfo,
+	maxWords = 3,
+	categoryHint = "general"
+) {
+	if (!questionInfo) return "";
+	const base = buildQuestionHeadline(questionInfo, maxWords);
+	const rawTokens = (questionInfo.subjectTokens || []).map((t) =>
+		String(t || "").toLowerCase()
+	);
+	const category = String(categoryHint || "").toLowerCase();
+	const canPunch = QUESTION_PUNCHY_ALLOWED_CATEGORIES.has(category);
+	const subjectTokens = filterQuestionSubjectTokens(
+		questionInfo.subjectTokens || []
+	);
+	const subjectCore = subjectTokens.slice(0, Math.max(1, maxWords - 1));
+	if (canPunch && subjectCore.length) {
+		if (rawTokens.some((t) => QUESTION_PUNCHY_DEATH_TOKENS.has(t))) {
+			return `${subjectCore.join(" ").toUpperCase()} DEAD?`;
+		}
+		if (rawTokens.some((t) => QUESTION_PUNCHY_RETURN_TOKENS.has(t))) {
+			return `${subjectCore.join(" ").toUpperCase()} BACK?`;
+		}
+	}
+	return base;
+}
+
 function buildQuestionBadge(questionInfo) {
 	if (!questionInfo?.contextTokens?.length) return "";
 	const hookSet = new Set(THUMBNAIL_HOOK_WORDS);
@@ -3685,12 +3728,17 @@ function deriveQuestionHeadlinePlan({
 	]
 		.map((s) => String(s || "").trim())
 		.filter(Boolean);
+	const categoryHint = inferEntertainmentCategory(
+		tokenizeLabel(sources.join(" "))
+	);
 	for (const src of sources) {
 		const info = extractQuestionSegments(src);
 		if (!info) continue;
 		const headline = buildQuestionHeadline(info, maxWords);
 		if (!headline) continue;
-		const punchy = buildQuestionHeadline(info, punchyMaxWords) || headline;
+		const punchy =
+			buildPunchyQuestionHeadline(info, punchyMaxWords, categoryHint) ||
+			headline;
 		const badgeText = buildQuestionBadge(info);
 		return { headline, punchy, badgeText };
 	}
@@ -3947,7 +3995,7 @@ async function generateThumbnailPackage({
 				saturation: 1.15,
 				vignette: 0.03,
 				leftLift: 0.08,
-				textBoxOpacity: 0.26,
+				textBoxOpacity: 0.36,
 			},
 		},
 	];

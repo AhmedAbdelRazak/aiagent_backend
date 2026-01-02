@@ -294,6 +294,9 @@ const SEGMENT_TARGET_SEC = 8;
 const MAX_SEGMENTS = 45;
 const SCRIPT_TOLERANCE_SEC = clampNumber(4.5, 2, 5);
 const MAX_SCRIPT_REWRITES = clampNumber(4, 0, 5);
+const MAX_QA_REWRITES = clampNumber(2, 0, 3);
+const QA_SIMILARITY_THRESHOLD = clampNumber(0.88, 0.75, 0.96);
+const QA_MIN_SEGMENT_WORDS = clampNumber(10, 6, 16);
 const REWRITE_RATIO_DAMPING = clampNumber(0.6, 0.4, 0.85);
 const REWRITE_CLOSE_RATIO_DELTA = clampNumber(0.05, 0.03, 0.1);
 const REWRITE_CLOSE_DRIFT_MULT = clampNumber(1.2, 1.0, 1.6);
@@ -367,13 +370,13 @@ const OVERLAY_DEFAULT_POSITION = "topRight";
 const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 
 // Content visual mix (presenter vs static images)
-const CONTENT_PRESENTER_RATIO = clampNumber(0.5, 0.2, 0.8);
-const IMAGE_SEGMENT_TARGET_SEC = clampNumber(4.6, 2.5, 8);
+const CONTENT_PRESENTER_RATIO = clampNumber(0.4, 0.2, 0.8);
+const IMAGE_SEGMENT_TARGET_SEC = clampNumber(3.8, 2.5, 8);
 const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
-const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(4, 2, 8);
-const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(5.5, 3, 12);
+const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(6, 2, 10);
+const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(4.8, 3, 12);
 const IMAGE_SEARCH_MAX_QUERY_VARIANTS = clampNumber(10, 4, 12);
-const IMAGE_SEARCH_CANDIDATE_MULTIPLIER = clampNumber(6, 2, 8);
+const IMAGE_SEARCH_CANDIDATE_MULTIPLIER = clampNumber(7, 2, 8);
 const GOOGLE_IMAGES_SEARCH_ENABLED = true;
 const GOOGLE_IMAGES_VARIANT_LIMIT = clampNumber(4, 1, 6);
 const GOOGLE_IMAGES_RESULTS_PER_QUERY = clampNumber(28, 8, 40);
@@ -529,6 +532,66 @@ function countWords(text = "") {
 		.trim()
 		.split(/\s+/)
 		.filter(Boolean).length;
+}
+
+function normalizeQaText(text = "") {
+	return String(text || "")
+		.toLowerCase()
+		.replace(/[^a-z0-9\s]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function tokenizeQaText(text = "") {
+	const tokens = normalizeQaText(text)
+		.split(" ")
+		.filter(Boolean)
+		.filter((t) => t.length >= 3);
+	return tokens.filter(
+		(t) => !TOPIC_STOP_WORDS.has(t) && !GENERIC_TOPIC_TOKENS.has(t)
+	);
+}
+
+function overlapRatio(aTokens = [], bTokens = []) {
+	if (!aTokens.length || !bTokens.length) return 0;
+	const a = new Set(aTokens);
+	const b = new Set(bTokens);
+	let hit = 0;
+	for (const tok of a) {
+		if (b.has(tok)) hit += 1;
+	}
+	return hit / Math.max(1, Math.min(a.size, b.size));
+}
+
+const ATTRIBUTION_CUE_RE =
+	/\b(according to|reported by|as reported by|per|via|sources? say|reports?|says|said|told)\b/i;
+
+function extractSourceTokensFromContext(contextItems = []) {
+	const tokens = new Set();
+	for (const item of Array.isArray(contextItems) ? contextItems : []) {
+		const host = getUrlHost(item?.link || "");
+		if (!host) continue;
+		const lowered = host.toLowerCase();
+		const base = lowered.replace(
+			/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
+			""
+		);
+		const cleaned = base.replace(/[^a-z0-9]+/g, " ").trim();
+		if (cleaned) tokens.add(cleaned);
+		if (lowered) tokens.add(lowered);
+	}
+	return Array.from(tokens);
+}
+
+function segmentHasAttribution(text = "", sourceTokens = []) {
+	const lower = String(text || "").toLowerCase();
+	const hasCue = ATTRIBUTION_CUE_RE.test(lower);
+	if (!sourceTokens.length) return hasCue;
+	const hasSource = sourceTokens.some((tok) => tok && lower.includes(tok));
+	if (hasCue && hasSource) return true;
+	if (hasSource && /\b(reports?|according|per|via|says|said)\b/i.test(lower))
+		return true;
+	return false;
 }
 
 /* ---------------------------------------------------------------
@@ -882,7 +945,7 @@ function validateCreateBody(body = {}) {
 
 	const targetDurationSec = Number(body.targetDurationSec || 60);
 	const duration = Number.isFinite(targetDurationSec)
-		? clampNumber(targetDurationSec, 20, 300)
+		? clampNumber(targetDurationSec, 20, 420)
 		: 60;
 	if (!Number.isFinite(duration))
 		errors.push("targetDurationSec must be number");
@@ -1396,10 +1459,74 @@ Return JSON ONLY:
 function topicCountForDuration(contentTargetSec) {
 	const sec = Number(contentTargetSec || 0);
 	if (!Number.isFinite(sec) || sec <= 0) return 1;
-	if (sec <= 90) return 1;
-	if (sec <= 120) return 2;
-	if (sec <= 180) return 3;
-	return 4;
+	if (sec <= 180) return 1;
+	if (sec <= 300) return 2;
+	return 3;
+}
+
+function computeFlexibleNarrationTargetSec({
+	requestedSec,
+	topics = [],
+	topicContexts = [],
+}) {
+	const requested = Math.max(18, Number(requestedSec) || 0);
+	const topicCount = Math.max(1, topics.length || 1);
+
+	const minSec = Math.max(18, Math.round(requested * 0.5));
+	const maxSec = Math.max(minSec, Math.round(requested * 2));
+
+	let totalSignal = 0;
+	for (let i = 0; i < topicCount; i++) {
+		const t = topics[i] || {};
+		const ctx = Array.isArray(topicContexts?.[i]?.context)
+			? topicContexts[i].context
+			: [];
+		const story = t.trendStory || {};
+		const articles = Array.isArray(story.articles) ? story.articles : [];
+		const phrases = Array.isArray(story.searchPhrases)
+			? story.searchPhrases
+			: [];
+		const entities = Array.isArray(story.entityNames) ? story.entityNames : [];
+
+		const signal =
+			ctx.length * 1.0 +
+			articles.length * 1.4 +
+			phrases.length * 0.4 +
+			entities.length * 0.3;
+		totalSignal += signal;
+	}
+
+	const avgSignal = totalSignal / topicCount;
+	const normalized = clampNumber(avgSignal / 10, 0, 1);
+
+	let target = requested;
+	if (normalized >= 0.92) {
+		target = maxSec;
+	} else if (normalized >= 0.75) {
+		target = Math.min(maxSec, Math.round(requested * 1.7));
+	} else if (normalized >= 0.55) {
+		target = Math.min(maxSec, Math.round(requested * 1.35));
+	} else if (normalized >= 0.4) {
+		target = Math.min(maxSec, Math.round(requested * 1.1));
+	} else if (normalized <= 0.15) {
+		target = minSec;
+	} else if (normalized <= 0.3) {
+		target = Math.max(minSec, Math.round(requested * 0.67));
+	}
+
+	target = clampNumber(target, minSec, maxSec);
+
+	return {
+		targetSec: target,
+		minSec,
+		maxSec,
+		mode: "flex",
+		signal: {
+			total: Number(totalSignal.toFixed(2)),
+			avg: Number(avgSignal.toFixed(2)),
+			normalized: Number(normalized.toFixed(3)),
+		},
+	};
 }
 
 function topicSignature(text = "") {
@@ -1692,6 +1819,9 @@ async function fetchCseContext(topic, extraTokens = []) {
 		`${topic} latest news`,
 		`${topic} trending`,
 		`${topic} explained`,
+		`${topic} timeline`,
+		`${topic} history`,
+		`${topic} report`,
 	];
 	if (category === "film") {
 		queries.push(`${topic} trailer`, `${topic} cast`, `${topic} box office`);
@@ -1711,6 +1841,9 @@ async function fetchCseContext(topic, extraTokens = []) {
 			`${topic} controversy`,
 			`${topic} social media`
 		);
+	}
+	if (category === "film" || category === "tv" || category === "celebrity") {
+		queries.push(`${topic} rumor`, `${topic} leak`);
 	}
 
 	const items = await fetchCseItems(queries, { num: 5, maxPages: 2 });
@@ -2524,6 +2657,8 @@ function pickSegmentImageUrls(
 		target,
 		Math.floor(Number(opts.maxPicks) || target)
 	);
+	const usedUrlsGlobal =
+		opts && opts.usedUrlsGlobal instanceof Set ? opts.usedUrlsGlobal : null;
 	const requireTokens = Array.isArray(opts.requireTokens)
 		? normalizeTopicTokens(opts.requireTokens)
 		: [];
@@ -2562,6 +2697,7 @@ function pickSegmentImageUrls(
 		if (picks.length >= maxPicks) break;
 		const key = normalizeImageUrlKey(url);
 		if (usedUrls && usedUrls.has(key)) continue;
+		if (usedUrlsGlobal && usedUrlsGlobal.has(key)) continue;
 		const host = getUrlHost(url);
 		if (usedHosts && host && usedHosts.has(host)) continue;
 		picks.push(url);
@@ -2574,6 +2710,19 @@ function pickSegmentImageUrls(
 			const key = normalizeImageUrlKey(url);
 			if (picked.has(key)) continue;
 			if (usedUrls && usedUrls.has(key)) continue;
+			if (usedUrlsGlobal && usedUrlsGlobal.has(key)) continue;
+			picks.push(url);
+			picked.add(key);
+		}
+	}
+
+	if (picks.length < target && usedHosts) {
+		for (const url of pool) {
+			if (picks.length >= target) break;
+			const key = normalizeImageUrlKey(url);
+			if (picked.has(key)) continue;
+			if (usedUrls && usedUrls.has(key)) continue;
+			if (usedUrlsGlobal && usedUrlsGlobal.has(key)) continue;
 			picks.push(url);
 			picked.add(key);
 		}
@@ -2816,6 +2965,7 @@ async function prepareImageSegments({
 	const fallbackCache = new Map();
 	const googleImageCache = new Map();
 	const usedHosts = new Set();
+	const usedUrlsGlobal = new Set();
 	const usedUrlsByTopic = new Map();
 	const topicMetaByIndex = new Map();
 	const outputCfg =
@@ -3046,6 +3196,7 @@ async function prepareImageSegments({
 				),
 				requireTokens: segmentTokens,
 				preferTokens: topicTokens,
+				usedUrlsGlobal,
 			}
 		);
 		let download = await downloadSegmentImages(
@@ -3061,6 +3212,7 @@ async function prepareImageSegments({
 		if (pickedUrls.length) {
 			for (const url of pickedUrls) {
 				usedUrlKeys.add(normalizeImageUrlKey(url));
+				usedUrlsGlobal.add(normalizeImageUrlKey(url));
 				const host = getUrlHost(url);
 				if (host) usedHosts.add(host);
 			}
@@ -3098,6 +3250,7 @@ async function prepareImageSegments({
 					),
 					requireTokens: segmentTokens,
 					preferTokens: topicTokens,
+					usedUrlsGlobal,
 				}
 			);
 			download = await downloadSegmentImages(
@@ -3112,6 +3265,7 @@ async function prepareImageSegments({
 			if (download.usedUrls?.length) {
 				for (const url of download.usedUrls) {
 					usedUrlKeys.add(normalizeImageUrlKey(url));
+					usedUrlsGlobal.add(normalizeImageUrlKey(url));
 					const host = getUrlHost(url);
 					if (host) usedHosts.add(host);
 				}
@@ -4924,10 +5078,15 @@ async function generateScript({
 		Array.isArray(topics) && topics.length
 			? topics.filter((t) => t && t.topic)
 			: [{ topic: "today's topic" }];
+	const topicCount = safeTopics.length;
 	const topicLabelFor = (t) => String(t?.displayTopic || t?.topic || "").trim();
 	const topicRanges = allocateTopicSegments(segmentCount, safeTopics);
 	const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
 	const mood = tonePlan?.mood || "neutral";
+	const deepDiveGuide =
+		topicCount === 1
+			? "Single-topic deep dive: spend more time on background, timeline, key evidence, and implications while staying concise and non-repetitive."
+			: "";
 	const outroGuide = includeOutro
 		? "Last segment: clean wrap that naturally closes the story and leaves space for the closing line (no like/subscribe CTA)."
 		: "Last segment: wrap + CTA question.";
@@ -5021,11 +5180,15 @@ async function generateScript({
 					.map((tc, idx) => {
 						const items = Array.isArray(tc.context) ? tc.context : [];
 						const lineItems = items
-							.map((c) =>
-								typeof c === "string"
-									? c
-									: `${c.title}${c.snippet ? " | " + c.snippet : ""}`
-							)
+							.map((c) => {
+								if (typeof c === "string") return c;
+								const title = String(c?.title || "").trim();
+								const snippet = String(c?.snippet || "").trim();
+								const sourceHost = getUrlHost(c?.link || "");
+								const sourceTag = sourceHost ? ` (source: ${sourceHost})` : "";
+								if (!title && !snippet) return "";
+								return `${title}${snippet ? " | " + snippet : ""}${sourceTag}`;
+							})
 							.filter(Boolean)
 							.slice(0, 5);
 						return `Topic ${idx + 1} (${tc.topic}):\n${
@@ -5036,6 +5199,25 @@ async function generateScript({
 					})
 					.join("\n\n")
 			: "- (no live context)";
+	const sourceLines =
+		Array.isArray(topicContexts) && topicContexts.length
+			? topicContexts
+					.map((tc, idx) => {
+						const items = Array.isArray(tc.context) ? tc.context : [];
+						const sources = uniqueStrings(
+							items
+								.map((c) =>
+									typeof c === "string" ? "" : getUrlHost(c?.link || "")
+								)
+								.filter(Boolean),
+							{ limit: 6 }
+						);
+						return `Topic ${idx + 1} (${tc.topic}): ${
+							sources.length ? sources.join(", ") : "(none)"
+						}`;
+					})
+					.join("\n")
+			: "- (none)";
 
 	const prompt = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
@@ -5053,6 +5235,8 @@ ${safeTopics
 Segment allocation (follow exactly):
 ${topicPlanLines}
 
+${deepDiveGuide}
+
 Target narration duration (NOT counting intro/outro): ~${narrationTargetSec.toFixed(
 		1
 	)}s
@@ -5061,6 +5245,9 @@ Per-segment word caps: ${capsLine}
 
 Use this background context as hints; do NOT pretend its real-time verified:
 ${contextLines}
+
+Sources for attribution (use when referencing facts):
+${sourceLines}
 
 Topic context guidance:
 ${topicContextGuide}
@@ -5080,9 +5267,13 @@ Style rules (IMPORTANT):
 - Avoid staccato punctuation. Do NOT put commas between single words.
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
 - Lead with the answer, then add context (what happened, why it matters, what to watch for).
+- Prioritize genuinely interesting facts (history, timeline, behind-the-scenes, credible rumors, estimates) without overstating.
+- If you mention a rumor or estimate, label it clearly as unconfirmed and attribute it (\"reports suggest\", \"according to [source]\").
+- Include at least one brief source attribution per topic using the provided context (e.g., \"According to Variety...\").
 - Target duration is a guideline; if clarity needs more time, it's OK to run longer, but still try to stay close to the target.
 - Avoid repeating the topic question or using vague filler phrasing; be specific and helpful.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
+- No redundancy: do not restate the same fact or idea in different words.
 - Avoid exclamation points unless the script explicitly calls for excitement.
 - Each segment should be 1-2 sentences. Do NOT switch topics mid-sentence.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
@@ -5092,6 +5283,7 @@ Style rules (IMPORTANT):
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - Segment 0 must be a strong hook that makes people stay.
+- Segment 0 should open with a tension/contrast line (what people assume vs what the evidence actually shows) in the first sentence.
 - Do NOT start segment 0 with "Quick update on..." or restate the intro line; the intro handles that.
 - Segment 0 should read like the very next sentence after the intro, continuing the same thought without reintroducing the topic.
 - Do NOT start segment 0 with transition phrases like "And now", "Now", "Next up", or "Let's talk about".
@@ -5270,6 +5462,221 @@ Return JSON ONLY:
 		shortTitle: finalShortTitle,
 		segments,
 	};
+}
+
+function analyzeScriptQuality({
+	script,
+	topics = [],
+	topicContexts = [],
+	wordCaps = [],
+}) {
+	const issues = [];
+	const warnings = [];
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	const title = String(script?.title || "").trim();
+	const shortTitle = String(script?.shortTitle || "").trim();
+
+	if (!title || countWords(title) < 2) {
+		issues.push("title_missing_or_too_short");
+	}
+	if (!shortTitle || countWords(shortTitle) < 2) {
+		warnings.push("short_title_missing_or_too_short");
+	}
+	if (!segments.length) {
+		issues.push("segments_missing");
+	}
+
+	const tokenSets = segments.map((s) => tokenizeQaText(s.text || ""));
+	const duplicatePairs = [];
+	for (let i = 0; i < segments.length; i++) {
+		const a = normalizeQaText(segments[i]?.text || "");
+		const aCount = countWords(a);
+		for (let j = i + 1; j < segments.length; j++) {
+			const b = normalizeQaText(segments[j]?.text || "");
+			if (!a || !b) continue;
+			if (a === b) {
+				duplicatePairs.push([i, j]);
+				continue;
+			}
+			const bCount = countWords(b);
+			if (aCount < QA_MIN_SEGMENT_WORDS || bCount < QA_MIN_SEGMENT_WORDS)
+				continue;
+			const ratio = overlapRatio(tokenSets[i], tokenSets[j]);
+			if (ratio >= QA_SIMILARITY_THRESHOLD) duplicatePairs.push([i, j]);
+		}
+	}
+	if (duplicatePairs.length) {
+		warnings.push("segment_redundancy_detected");
+	}
+
+	const shortSegments = segments.filter(
+		(s) => countWords(s.text) < QA_MIN_SEGMENT_WORDS
+	);
+	if (shortSegments.length) warnings.push("short_segments_detected");
+
+	const sourceTokensByTopic = new Map();
+	for (let i = 0; i < (topics || []).length; i++) {
+		const ctx = Array.isArray(topicContexts?.[i]?.context)
+			? topicContexts[i].context
+			: [];
+		sourceTokensByTopic.set(i, extractSourceTokensFromContext(ctx));
+	}
+
+	const missingAttributionTopics = [];
+	for (let i = 0; i < (topics || []).length; i++) {
+		const tokens = sourceTokensByTopic.get(i) || [];
+		if (!tokens.length) continue;
+		const topicSegments = segments.filter((s) => Number(s.topicIndex) === i);
+		const hasAttribution = topicSegments.some((s) =>
+			segmentHasAttribution(s.text || "", tokens)
+		);
+		if (!hasAttribution) missingAttributionTopics.push(i);
+	}
+	if (missingAttributionTopics.length)
+		warnings.push("missing_attribution_by_topic");
+
+	const needsRewrite =
+		duplicatePairs.length > 0 || missingAttributionTopics.length > 0;
+	const hasCritical = issues.length > 0;
+
+	return {
+		pass: !hasCritical,
+		needsRewrite,
+		hasCritical,
+		issues,
+		warnings,
+		stats: {
+			segmentCount: segments.length,
+			duplicatePairs,
+			shortSegments: shortSegments.map((s) => s.index),
+			missingAttributionTopics,
+		},
+	};
+}
+
+async function rewriteSegmentsForQuality({
+	jobId,
+	script,
+	topics = [],
+	topicContexts = [],
+	wordCaps = [],
+	tonePlan,
+	narrationTargetSec,
+	includeOutro = true,
+}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return script;
+	const mood = tonePlan?.mood || "neutral";
+
+	const topicSummaries = (topics || []).map((t, idx) => {
+		const ctx = Array.isArray(topicContexts?.[idx]?.context)
+			? topicContexts[idx].context
+			: [];
+		const intent = buildTopicIntentSummary(t, ctx);
+		const sources = uniqueStrings(
+			ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean),
+			{ limit: 6 }
+		);
+		return `Topic ${idx + 1} (${
+			intent.label || t?.topic || "topic"
+		}): anchor="${intent.anchor || ""}" | evidence="${
+			intent.evidence || ""
+		}" | sources=${sources.length ? sources.join(", ") : "(none)"}`;
+	});
+
+	const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
+	const topicLine = segments
+		.map(
+			(s) =>
+				`#${s.index}: topic ${s.topicIndex} (${
+					s.topicLabel || topics?.[s.topicIndex]?.topic || ""
+				})`
+		)
+		.join(", ");
+
+	const rewritePrompt = `
+Improve this script for clarity, interesting facts, and attribution.
+Target narration duration: ~${Number(narrationTargetSec || 0).toFixed(1)}s
+Mood: ${mood}
+Topic summaries:
+${topicSummaries.join("\n")}
+
+Topic assignment by segment (do NOT change):
+${topicLine}
+
+Per-segment word caps: ${capsLine}
+
+Rules:
+- Keep EXACTLY ${segments.length} segments with the same indexes.
+- Keep the same topic order and assignments.
+- No redundancy: each segment adds a new detail or angle with concrete, interesting facts.
+- Add at least one short attribution per topic when sources are available (e.g., "According to Variety...").
+- If you mention rumors or estimates, label them clearly as unconfirmed.
+- Keep it conversational and clear; no filler words.
+- End the last segment of each topic with a short engagement question.
+- Do NOT add like/subscribe CTAs.
+
+Return JSON ONLY:
+{ "segments":[{"index":0,"text":"..."}] }
+
+Script:
+${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
+`.trim();
+
+	const resp = await openai.chat.completions.create({
+		model: CHAT_MODEL,
+		messages: [{ role: "user", content: rewritePrompt }],
+	});
+	const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
+	if (!parsed || !Array.isArray(parsed.segments)) return script;
+
+	const textByIndex = new Map();
+	for (const seg of parsed.segments) {
+		const idx = Number(seg?.index);
+		if (!Number.isFinite(idx)) continue;
+		const text = String(seg?.text || "").trim();
+		if (text) textByIndex.set(idx, text);
+	}
+
+	let updated = segments.map((s, i) => {
+		const nextText = textByIndex.get(i) || s.text;
+		const cap = wordCaps[i] || 22;
+		const trimmed = trimSegmentToCap(String(nextText || ""), cap);
+		return { ...s, text: sanitizeSegmentText(trimmed) };
+	});
+
+	const topicIntents = (topics || []).map((t, idx) => {
+		const ctx = Array.isArray(topicContexts?.[idx]?.context)
+			? topicContexts[idx].context
+			: [];
+		return buildTopicIntentSummary(t, ctx);
+	});
+
+	updated = ensureTopicTransitions(updated, topics);
+	updated = ensureTopicAnchors(updated, topics, topicIntents);
+	updated = enforceTopicSpecificityGuards(
+		updated,
+		topics,
+		topicContexts,
+		topicIntents
+	);
+	updated = ensureTopicEngagementQuestions(updated, topics, mood, wordCaps);
+	updated = enforceSegmentCompleteness(updated, mood, {
+		includeCta: !includeOutro,
+	});
+	updated = limitFillerAndEmotesAcrossSegments(updated, {
+		maxFillers: MAX_FILLER_WORDS_PER_VIDEO,
+		maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
+		maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
+		maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
+		noFillerSegmentIndices: [0, 1, 2],
+	});
+	updated = updated.map((s) => ({
+		...s,
+		text: sanitizeSegmentText(s.text),
+	}));
+
+	return { ...script, segments: updated };
 }
 
 /* ---------------------------------------------------------------
@@ -7985,11 +8392,27 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 
 		// 5) Script (content duration excludes intro/outro)
 		const lang = languageLabel || String(language || "en");
-		const narrationTargetSec = Math.max(18, Number(contentTargetSec) || 0);
+		const narrationPlan = computeFlexibleNarrationTargetSec({
+			requestedSec: contentTargetSec,
+			topics: topicPicks,
+			topicContexts,
+		});
+		const narrationTargetSec = Math.max(
+			18,
+			Number(narrationPlan?.targetSec || contentTargetSec) || 0
+		);
 		const segmentCount = computeSegmentCount(narrationTargetSec);
 		const wordCaps = buildWordCaps(segmentCount, narrationTargetSec);
+		logJob(jobId, "narration target planned", {
+			requestedSec: Number(contentTargetSec || 0),
+			targetSec: Number(narrationTargetSec || 0),
+			minSec: narrationPlan?.minSec,
+			maxSec: narrationPlan?.maxSec,
+			mode: narrationPlan?.mode,
+			signal: narrationPlan?.signal,
+		});
 
-		const script = await generateScript({
+		let script = await generateScript({
 			jobId,
 			topics: topicPicks,
 			languageLabel: lang,
@@ -8002,12 +8425,82 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			includeOutro: true,
 		});
 
+		let qaResult = analyzeScriptQuality({
+			script,
+			topics: topicPicks,
+			topicContexts,
+			wordCaps,
+		});
+		logJob(jobId, "script qa", {
+			pass: qaResult.pass,
+			needsRewrite: qaResult.needsRewrite,
+			issues: qaResult.issues,
+			warnings: qaResult.warnings,
+			stats: qaResult.stats,
+		});
+
+		for (let qaAttempt = 0; qaAttempt < MAX_QA_REWRITES; qaAttempt++) {
+			if (!qaResult.needsRewrite) break;
+			logJob(jobId, "script qa rewrite start", { attempt: qaAttempt + 1 });
+			try {
+				script = await rewriteSegmentsForQuality({
+					jobId,
+					script,
+					topics: topicPicks,
+					topicContexts,
+					wordCaps,
+					tonePlan,
+					narrationTargetSec,
+					includeOutro: true,
+				});
+			} catch (e) {
+				logJob(jobId, "script qa rewrite failed", {
+					attempt: qaAttempt + 1,
+					error: e.message,
+				});
+				break;
+			}
+			qaResult = analyzeScriptQuality({
+				script,
+				topics: topicPicks,
+				topicContexts,
+				wordCaps,
+			});
+			logJob(jobId, "script qa rewrite result", {
+				attempt: qaAttempt + 1,
+				pass: qaResult.pass,
+				needsRewrite: qaResult.needsRewrite,
+				issues: qaResult.issues,
+				warnings: qaResult.warnings,
+				stats: qaResult.stats,
+			});
+		}
+		if (!qaResult.pass) {
+			throw new Error(
+				`script_qa_failed:${qaResult.issues.join("|") || "unknown"}`
+			);
+		}
+
 		updateJob(jobId, {
 			progressPct: 18,
 			meta: {
 				...JOBS.get(jobId)?.meta,
 				title: script.title,
 				shortTitle: script.shortTitle,
+				narrationPlan: {
+					requestedSec: Number(contentTargetSec || 0),
+					targetSec: Number(narrationTargetSec || 0),
+					minSec: narrationPlan?.minSec,
+					maxSec: narrationPlan?.maxSec,
+					mode: narrationPlan?.mode,
+					signal: narrationPlan?.signal,
+				},
+				scriptQa: {
+					pass: qaResult.pass,
+					issues: qaResult.issues,
+					warnings: qaResult.warnings,
+					stats: qaResult.stats,
+				},
 				script: { title: script.title, segments: script.segments },
 			},
 		});
@@ -8542,6 +9035,25 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			if (sumCleanDur < 3)
 				throw new Error("Voice audio generation failed (empty duration)");
 
+			if (cleanedWavs.length) {
+				const durList = cleanedWavs
+					.map((a) => Number(a.cleanDur || 0))
+					.filter((d) => Number.isFinite(d) && d > 0);
+				const minDur = durList.length ? Math.min(...durList) : 0;
+				const maxDur = durList.length ? Math.max(...durList) : 0;
+				const avgDur =
+					durList.length > 0
+						? durList.reduce((a, b) => a + b, 0) / durList.length
+						: 0;
+				logJob(jobId, "tts qa summary", {
+					segments: cleanedWavs.length,
+					minDur: Number(minDur.toFixed(3)),
+					maxDur: Number(maxDur.toFixed(3)),
+					avgDur: Number(avgDur.toFixed(3)),
+					sumCleanDur: Number(sumCleanDur.toFixed(3)),
+				});
+			}
+
 			const rawAtempo = sumCleanDur / narrationTargetSec;
 			driftSec = Math.abs(sumCleanDur - narrationTargetSec);
 			const toleranceSec = Math.min(
@@ -8655,7 +9167,10 @@ Rules:
 - For Topic 2+ only, if a segment is the first for a new topic, start it with an explicit transition line naming the topic. Do NOT use that transition for Topic 1.
 - Improve clarity and specificity; avoid vague filler phrasing or repeating the question.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
+- No redundancy: do not restate the same fact or idea in different words.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
+- Preserve source attributions already in the text; keep at least one brief attribution per topic when possible.
+- If you mention rumors or estimates, label them clearly as unconfirmed.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
@@ -8867,6 +9382,22 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			if (seg.visualType === "image") finalImageSegments.push(seg.index);
 			else finalPresenterSegments.push(seg.index);
 		}
+		const allImageUrls = [];
+		for (const seg of timeline) {
+			if (Array.isArray(seg.imageUrls)) allImageUrls.push(...seg.imageUrls);
+		}
+		const uniqueImageUrls = new Set(
+			allImageUrls.map((u) => normalizeImageUrlKey(u))
+		);
+		const duplicateImageCount = Math.max(
+			0,
+			allImageUrls.length - uniqueImageUrls.size
+		);
+		logJob(jobId, "segment image qa", {
+			totalImages: allImageUrls.length,
+			uniqueImages: uniqueImageUrls.size,
+			duplicates: duplicateImageCount,
+		});
 		if (imagePlanSummary.length) {
 			logJob(jobId, "segment image plan", {
 				count: imagePlanSummary.length,
@@ -8880,6 +9411,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				visualPlan: {
 					presenterSegments: finalPresenterSegments,
 					imageSegments: finalImageSegments,
+				},
+				imageQa: {
+					total: allImageUrls.length,
+					unique: uniqueImageUrls.size,
+					duplicates: duplicateImageCount,
 				},
 			},
 		});
@@ -9410,7 +9946,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				const durationValue = Math.round(contentTargetSec || 0);
 				const allowedDurations = new Set([
 					5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90,
-					120, 180, 240, 300,
+					120, 180, 240, 300, 360, 420,
 				]);
 				const durationForDoc = allowedDurations.has(durationValue)
 					? durationValue

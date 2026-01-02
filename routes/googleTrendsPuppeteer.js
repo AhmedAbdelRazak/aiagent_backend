@@ -279,6 +279,7 @@ const urlFor = ({ geo, hours, category, sort }) => {
 		hl: "en-US", // matches the UI you pasted
 		hours: String(48),
 		status: "active",
+		sort: "search-volume",
 	});
 
 	if (category) params.set("category", String(category).trim());
