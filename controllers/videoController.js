@@ -174,6 +174,10 @@ const GOOGLE_CSE_KEY =
 	null;
 const GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
 const GOOGLE_CSE_TIMEOUT_MS = 12000;
+const GOOGLE_IMAGES_SEARCH_ENABLED = true;
+const GOOGLE_IMAGES_RESULTS_PER_QUERY = 28;
+const GOOGLE_IMAGES_VARIANT_LIMIT = 4;
+const GOOGLE_IMAGES_MIN_POOL_MULTIPLIER = 2;
 
 const VALID_RATIOS = [
 	"1280:720",
@@ -3683,6 +3687,118 @@ function canUseGoogleSearch() {
 	return Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
 }
 
+function normalizeTrendsApiUrl(raw) {
+	return String(raw || "")
+		.trim()
+		.replace(/\/+$/, "");
+}
+
+function deriveTrendsServiceBase(raw) {
+	const cleaned = normalizeTrendsApiUrl(raw);
+	if (!cleaned) return "";
+	return cleaned.replace(/\/api\/google-trends$/i, "");
+}
+
+function buildGoogleImagesApiCandidates() {
+	const list = [];
+	const base = deriveTrendsServiceBase(TRENDS_API_URL);
+	if (base) {
+		const trimmed = base.replace(/\/+$/, "");
+		list.push(`${trimmed}/api/google-images`);
+		if (/localhost/i.test(trimmed)) {
+			list.push(
+				`${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`
+			);
+		}
+		if (/\[::1\]/.test(trimmed)) {
+			list.push(
+				`${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`
+			);
+		}
+	}
+	return Array.from(new Set(list));
+}
+
+function sanitizeImageQuery(query = "") {
+	return String(query || "")
+		.replace(/[^a-z0-9\s]/gi, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 100);
+}
+
+function isLikelyThumbnailUrl(u = "") {
+	const url = String(u || "").toLowerCase();
+	if (!url) return true;
+	if (url.startsWith("data:image/")) return true;
+	if (url.includes("encrypted-tbn0") || url.includes("tbn:")) return true;
+	if (url.includes("gstatic.com/images?q=tbn")) return true;
+	return false;
+}
+
+async function fetchGoogleImagesFromService(
+	query,
+	{ limit = GOOGLE_IMAGES_RESULTS_PER_QUERY, topicTokens = [] } = {}
+) {
+	if (!GOOGLE_IMAGES_SEARCH_ENABLED) return [];
+	const q = sanitizeImageQuery(query);
+	if (!q) return [];
+	const endpoints = buildGoogleImagesApiCandidates();
+	if (!endpoints.length) return [];
+	const normTokens = filterSpecificTopicTokens(topicTokens);
+	const minMatches = minTopicTokenMatches(normTokens);
+
+	for (const endpoint of endpoints) {
+		try {
+			const { data } = await axios.get(endpoint, {
+				params: { q, limit: Math.max(6, Number(limit) || 12) },
+				timeout: 45000,
+				validateStatus: (s) => s < 500,
+			});
+			const raw =
+				(Array.isArray(data?.images) && data.images) ||
+				(Array.isArray(data?.urls) && data.urls) ||
+				(Array.isArray(data?.results) && data.results) ||
+				[];
+			const urls = (raw || [])
+				.map((u) => String(u || "").trim())
+				.filter((u) => /^https?:\/\//i.test(u))
+				.filter((u) => !isLikelyThumbnailUrl(u));
+			if (!urls.length) continue;
+
+			let pool = urls;
+			if (normTokens.length) {
+				const matched = urls.filter(
+					(u) => topicMatchInfo(normTokens, [u]).count >= minMatches
+				);
+				if (matched.length) {
+					const matchedSet = new Set(matched);
+					const rest = urls.filter((u) => !matchedSet.has(u));
+					pool = matched.concat(rest);
+				}
+			}
+
+			const deduped = dedupeImageUrls(pool, Math.max(6, Number(limit) || 12));
+			if (deduped.length) {
+				console.log("[ImageSearch] google images fallback hit", {
+					query: q,
+					endpoint,
+					count: deduped.length,
+				});
+				return deduped;
+			}
+		} catch (e) {
+			console.warn("[ImageSearch] google images fallback failed", {
+				query: q,
+				endpoint,
+				message: e.message,
+			});
+		}
+	}
+
+	return [];
+}
+
 async function isUrlReachable(url) {
 	if (!url) return false;
 	const tryHead = async () =>
@@ -4085,6 +4201,19 @@ async function fetchHighQualityImagesForTopic({
 	const requireAnchor = requireAnchorPhrase && anchorPhrases.length > 0;
 	const textyUrlRe = TEXTY_IMAGE_URL_RE;
 	const strictNegativeTitleRe = OFF_TOPIC_IMAGE_TITLE_RE;
+	const maxCandidates = Math.max(24, limit * 3);
+	const year = dayjs().format("YYYY");
+	const queries = [
+		`${topic} latest news photo ${year}`,
+		`${topic} highlight photo ${year}`,
+		`${topic} editorial photo ${year}`,
+		`${topic} vertical phone photo ${year}`,
+	];
+	const fallbackQueries = [
+		`${topic} news photo ${year}`,
+		`${topic} press photo ${year}`,
+		`${topic} photo ${year}`,
+	];
 	const mergeNegativeTitleRe = (title = "") => {
 		if (strictNegativeTitleRe && strictNegativeTitleRe.test(title)) return true;
 		if (negativeTitleRe && negativeTitleRe.test(title)) return true;
@@ -4134,13 +4263,6 @@ async function fetchHighQualityImagesForTopic({
 
 	// 2) Google CSE search
 	if (canUseGoogleSearch()) {
-		const year = dayjs().format("YYYY");
-		const queries = [
-			`${topic} latest news photo ${year}`,
-			`${topic} highlight photo ${year}`,
-			`${topic} editorial photo ${year}`,
-			`${topic} vertical phone photo ${year}`,
-		];
 		const pages = [1, 11, 21];
 
 		for (const q of queries) {
@@ -4208,6 +4330,52 @@ async function fetchHighQualityImagesForTopic({
 		}
 	} else {
 		console.warn("[ImageSearch] Google CSE disabled (missing key/cx)");
+	}
+
+	if (
+		GOOGLE_IMAGES_SEARCH_ENABLED &&
+		candidates.length < desiredCount * GOOGLE_IMAGES_MIN_POOL_MULTIPLIER
+	) {
+		const googleQueries = [];
+		const seenGoogle = new Set();
+		const pushGoogleQuery = (q) => {
+			const cleaned = sanitizeImageQuery(q);
+			if (!cleaned) return;
+			const key = cleaned.toLowerCase();
+			if (seenGoogle.has(key)) return;
+			seenGoogle.add(key);
+			googleQueries.push(cleaned);
+		};
+		pushGoogleQuery(topic);
+		queries.forEach((q) => pushGoogleQuery(q));
+		fallbackQueries.forEach((q) => pushGoogleQuery(q));
+		const limitedQueries = googleQueries.slice(0, GOOGLE_IMAGES_VARIANT_LIMIT);
+
+		for (const gQuery of limitedQueries) {
+			const googleUrls = await fetchGoogleImagesFromService(gQuery, {
+				limit: Math.max(12, desiredCount * 2),
+				topicTokens: primaryTokens,
+			});
+			for (const url of googleUrls) {
+				if (!url || dedupeSet.has(url)) continue;
+				if (textyUrlRe.test(url)) continue;
+				const matchInfo = topicMatchInfo(primaryTokens, [url]);
+				if (strictTopicMatch && matchInfo.count < minTopicMatch) continue;
+				if (!strictTopicMatch && tokensAvailable && matchInfo.count === 0) {
+					if (candidates.length >= desiredCount) continue;
+				}
+				candidates.push({
+					url,
+					source: "google-images",
+					title: "",
+					topicMatchCount: matchInfo.count,
+					anchorHit: false,
+				});
+				dedupeSet.add(url);
+				if (candidates.length >= maxCandidates) break;
+			}
+			if (candidates.length >= maxCandidates) break;
+		}
 	}
 
 	const scored = candidates
@@ -4377,7 +4545,8 @@ async function fetchTop5ReplacementImage(
 	ratio,
 	avoidSet = new Set()
 ) {
-	if (!canUseGoogleSearch()) return null;
+	const canUseCse = canUseGoogleSearch();
+	if (!canUseCse && !GOOGLE_IMAGES_SEARCH_ENABLED) return null;
 	const yearHint = dayjs().format("YYYY");
 	const q = [label, topic, "editorial photo", yearHint]
 		.filter(Boolean)
@@ -4389,44 +4558,66 @@ async function fetchTop5ReplacementImage(
 		...new Set([...requiredTokensForLabel(label), ...labelTokens.slice(0, 3)]),
 	];
 
-	try {
-		const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
-			params: {
-				key: GOOGLE_CSE_KEY,
-				cx: GOOGLE_CSE_ID,
-				q,
-				searchType: "image",
-				imgType: "photo",
-				imgSize: "large",
-				num: 10,
-				safe: "active",
-			},
-			timeout: GOOGLE_CSE_TIMEOUT_MS,
-		});
+	if (canUseCse) {
+		try {
+			const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+				params: {
+					key: GOOGLE_CSE_KEY,
+					cx: GOOGLE_CSE_ID,
+					q,
+					searchType: "image",
+					imgType: "photo",
+					imgSize: "large",
+					num: 10,
+					safe: "active",
+				},
+				timeout: GOOGLE_CSE_TIMEOUT_MS,
+			});
 
-		return await pickBestImageFromSearch(
-			data?.items || [],
-			ratio,
-			label,
-			avoidSet,
-			{
-				requirePortraitForRatio: true,
-				minEdge: Math.max(1100, minEdgeForRatio(ratio) || 0),
-				negativeTitleRe: /(stock|wallpaper|logo|cartoon|illustration)/i,
-				requireTokens: requiredTokens,
-				topicTokens: combinedTokens,
-				requireAnyToken: true,
-			}
-		);
-	} catch (e) {
-		console.warn("[Top5] Replacement image search failed", {
-			label,
-			message: e.message,
-			status: e.response?.status,
-			data: e.response?.data,
-		});
-		return null;
+			const picked = await pickBestImageFromSearch(
+				data?.items || [],
+				ratio,
+				label,
+				avoidSet,
+				{
+					requirePortraitForRatio: true,
+					minEdge: Math.max(1100, minEdgeForRatio(ratio) || 0),
+					negativeTitleRe: /(stock|wallpaper|logo|cartoon|illustration)/i,
+					requireTokens: requiredTokens,
+					topicTokens: combinedTokens,
+					requireAnyToken: true,
+				}
+			);
+			if (picked?.link) return picked;
+		} catch (e) {
+			console.warn("[Top5] Replacement image search failed", {
+				label,
+				message: e.message,
+				status: e.response?.status,
+				data: e.response?.data,
+			});
+		}
 	}
+
+	const googleUrls = await fetchGoogleImagesFromService(q, {
+		limit: 18,
+		topicTokens: combinedTokens,
+	});
+	for (const url of googleUrls) {
+		if (!url || avoidSet.has(url)) continue;
+		let host = "";
+		try {
+			host = new URL(url).hostname.toLowerCase();
+			if (isBlockedHost(host) || isSoftBlockedHost(host)) continue;
+		} catch {
+			continue;
+		}
+		const ok = await isUrlReachable(url);
+		if (!ok) continue;
+		return { link: url, url, source: "google-images", title: label };
+	}
+
+	return null;
 }
 
 /* ---------------------------------------------------------------

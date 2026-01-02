@@ -29,6 +29,11 @@ const ffmpegPath =
 	"ffmpeg";
 const BROWSER_UA =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const GOOGLE_IMAGES_DEFAULT_LIMIT = 30;
+const GOOGLE_IMAGES_MAX_RESULTS = 80;
+const GOOGLE_IMAGES_SCROLLS = 7;
+const GOOGLE_IMAGES_SCROLL_DELAY_MS = 650;
+const GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS = 15000;
 
 function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
@@ -47,6 +52,25 @@ function uniqueStrings(list = [], { limit = 0 } = {}) {
 		if (limit && out.length >= limit) break;
 	}
 	return out;
+}
+
+function clampInt(value, min, max) {
+	const n = Number(value);
+	if (!Number.isFinite(n)) return min;
+	return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+function delay(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLikelyThumbnailUrl(u = "") {
+	const url = String(u || "").toLowerCase();
+	if (!url) return true;
+	if (url.startsWith("data:image/")) return true;
+	if (url.includes("encrypted-tbn0") || url.includes("tbn:")) return true;
+	if (url.includes("gstatic.com/images?q=tbn")) return true;
+	return false;
 }
 
 /* ───────────────────────────────────────────── OpenAI client + helpers */
@@ -387,6 +411,107 @@ async function hydrateArticleImages(stories) {
 
 /* ───────────────────────────────────────────────────────────── scraper */
 
+/* ---------------------------------------------------------------
+ * Google Images scraping helper
+ * ------------------------------------------------------------- */
+
+async function autoScrollPage(page, { scrolls, delayMs } = {}) {
+	const steps = clampInt(scrolls ?? GOOGLE_IMAGES_SCROLLS, 1, 12);
+	const pause = clampInt(delayMs ?? GOOGLE_IMAGES_SCROLL_DELAY_MS, 200, 2000);
+	for (let i = 0; i < steps; i++) {
+		await page.evaluate(() => {
+			window.scrollBy(0, window.innerHeight * 1.2);
+		});
+		// eslint-disable-next-line no-await-in-loop
+		await delay(pause);
+	}
+}
+
+async function scrapeGoogleImages({
+	query,
+	limit = GOOGLE_IMAGES_DEFAULT_LIMIT,
+}) {
+	const page = await (await getBrowser()).newPage();
+	page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
+	await page.setUserAgent(BROWSER_UA);
+
+	// Block only fonts for speed; keep images so lazy-loaded URLs hydrate.
+	await page.setRequestInterception(true);
+	page.on("request", (req) => {
+		const type = req.resourceType();
+		if (type === "font") return req.abort();
+		return req.continue();
+	});
+
+	const targetUrl = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(
+		query
+	)}`;
+	log("Google images navigate:", targetUrl);
+
+	try {
+		await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+		try {
+			await page.waitForSelector("img", {
+				timeout: GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS,
+			});
+		} catch {
+			// Continue even if images are slow to load.
+		}
+
+		await autoScrollPage(page, {
+			scrolls: GOOGLE_IMAGES_SCROLLS,
+			delayMs: GOOGLE_IMAGES_SCROLL_DELAY_MS,
+		});
+
+		const rawUrls = await page.evaluate(() => {
+			const out = [];
+			const push = (u) => {
+				if (u) out.push(u);
+			};
+
+			const anchors = Array.from(
+				document.querySelectorAll('a[href^="/imgres?"]')
+			);
+			for (const a of anchors) {
+				const href = a.getAttribute("href") || "";
+				const qIndex = href.indexOf("?");
+				if (qIndex === -1) continue;
+				try {
+					const params = new URLSearchParams(href.slice(qIndex + 1));
+					const imgurl = params.get("imgurl");
+					if (imgurl) push(imgurl);
+				} catch {
+					// ignore URLSearchParams failures
+				}
+			}
+
+			const imgs = Array.from(document.querySelectorAll("img"));
+			for (const img of imgs) {
+				const candidate =
+					img.getAttribute("data-iurl") ||
+					img.getAttribute("data-src") ||
+					img.getAttribute("data-lsrc") ||
+					img.src ||
+					"";
+				if (candidate) push(candidate);
+			}
+
+			return out;
+		});
+
+		const filtered = (rawUrls || [])
+			.map((u) => String(u || "").trim())
+			.filter((u) => /^https?:\/\//i.test(u))
+			.filter((u) => !isLikelyThumbnailUrl(u));
+
+		return uniqueStrings(filtered, {
+			limit: clampInt(limit, 6, GOOGLE_IMAGES_MAX_RESULTS),
+		});
+	} finally {
+		await page.close().catch(() => {});
+	}
+}
+
 async function scrape({ geo, hours, category, sort }) {
 	const page = await (await getBrowser()).newPage();
 	page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
@@ -587,6 +712,38 @@ async function scrape({ geo, hours, category, sort }) {
 
 /* ───────────────────────────────────────────────────────────── express API */
 
+router.get("/google-images", async (req, res) => {
+	const query = String(req.query.q || req.query.query || "").trim();
+	if (!query) {
+		return res.status(400).json({
+			error: "`q` query param is required",
+		});
+	}
+
+	const rawLimit = Number(req.query.limit);
+	const limit = Number.isFinite(rawLimit)
+		? clampInt(rawLimit, 6, GOOGLE_IMAGES_MAX_RESULTS)
+		: GOOGLE_IMAGES_DEFAULT_LIMIT;
+
+	try {
+		const images = await scrapeGoogleImages({ query, limit });
+		return res.json({
+			query,
+			count: images.length,
+			images,
+		});
+	} catch (err) {
+		console.error(
+			"[Trends] Google Images scraping failed:",
+			err.message || err
+		);
+		return res.status(500).json({
+			error: "Google Images scraping failed",
+			detail: err.message || String(err),
+		});
+	}
+});
+
 router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
 	if (!/^[A-Z]{2}$/.test(geo)) {
@@ -598,6 +755,9 @@ router.get("/google-trends", async (req, res) => {
 	const hours = Number(req.query.hours) || 24;
 	const category = req.query.category ?? null;
 	const sort = req.query.sort ?? null;
+	const includeImages = ["1", "true", "yes", "on"].includes(
+		String(req.query.includeImages || "").toLowerCase()
+	);
 
 	try {
 		let stories = await scrape({
@@ -616,16 +776,29 @@ router.get("/google-trends", async (req, res) => {
 			category,
 		});
 
+		if (includeImages) {
+			stories = await hydrateArticleImages(stories);
+		}
+
 		// Strip images here; downstream orchestrator will search high-quality images per ratio.
 		stories = stories.map((s) => ({
 			...s,
 			trendSearchTerm:
 				s.trendSearchTerm || s.rawTitle || s.title || s.trendDialogTitle || "",
-			image: null,
-			images: [],
+			image: includeImages ? s.image || null : null,
+			images: includeImages
+				? uniqueStrings(
+						[
+							s.image || null,
+							...(s.articles || []).map((a) => a.image).filter(Boolean),
+						],
+						{ limit: 8 }
+				  )
+				: [],
 			articles: (s.articles || []).map((a) => ({
 				title: a.title,
 				url: a.url,
+				...(includeImages && a.image ? { image: a.image } : {}),
 			})),
 		}));
 
@@ -647,4 +820,3 @@ router.get("/google-trends", async (req, res) => {
 });
 
 module.exports = router;
-

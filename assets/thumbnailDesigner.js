@@ -76,8 +76,29 @@ const THUMBNAIL_BADGE_MAX_CHARS = 14;
 const THUMBNAIL_TOPIC_MAX_IMAGES = 1;
 const THUMBNAIL_TOPIC_MIN_EDGE = 900;
 const THUMBNAIL_TOPIC_MIN_BYTES = 60000;
-const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 6;
+const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 8;
 const THUMBNAIL_MIN_BYTES = 12000;
+const THUMBNAIL_HOOK_WORDS = [
+	"trailer",
+	"finale",
+	"ending",
+	"cast",
+	"update",
+	"explained",
+	"revealed",
+	"confirmed",
+	"return",
+	"comeback",
+	"recap",
+	"review",
+	"reaction",
+	"release",
+	"season",
+	"episode",
+	"tour",
+	"album",
+	"single",
+];
 const THUMBNAIL_CLOUDINARY_FOLDER = "aivideomatic/long_thumbnails";
 const THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX = "long_thumb";
 const ACCENT_PALETTE = {
@@ -90,10 +111,18 @@ const ACCENT_PALETTE = {
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
 const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY || null;
 const GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
+const TRENDS_API_URL =
+	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
 const CSE_PREFERRED_IMG_SIZE = "xlarge";
 const CSE_FALLBACK_IMG_SIZE = "large";
 const CSE_PREFERRED_IMG_COLOR = "color";
 const CSE_MIN_IMAGE_SHORT_EDGE = 720;
+const CSE_MAX_PAGE_SIZE = 10;
+const CSE_MAX_PAGES = 2;
+const GOOGLE_IMAGES_SEARCH_ENABLED = true;
+const GOOGLE_IMAGES_RESULTS_PER_QUERY = 28;
+const GOOGLE_IMAGES_VARIANT_LIMIT = 3;
+const GOOGLE_IMAGES_MIN_POOL_MULTIPLIER = 2;
 const REQUIRE_THUMBNAIL_TOPIC_IMAGES = true;
 const WIKIPEDIA_FALLBACK_ENABLED = true;
 const WIKIMEDIA_FALLBACK_ENABLED = true;
@@ -384,12 +413,165 @@ function buildImageMatchCriteria(topic = "", extraTokens = []) {
 	};
 }
 
+const THUMBNAIL_PREFERRED_SOURCE_TOKENS = [
+	"imdb",
+	"wikipedia",
+	"wikimedia",
+	"disney",
+	"netflix",
+	"hbomax",
+	"hbo",
+	"primevideo",
+	"paramount",
+	"warnerbros",
+	"universal",
+	"sony",
+	"marvel",
+	"starwars",
+	"reuters",
+	"apnews",
+	"bbc",
+	"cnn",
+	"variety",
+	"hollywoodreporter",
+	"deadline",
+	"rollingstone",
+];
+
+function scoreSourceAffinity(url = "", contextLink = "") {
+	const hay = `${url} ${contextLink}`.toLowerCase();
+	for (const token of THUMBNAIL_PREFERRED_SOURCE_TOKENS) {
+		if (hay.includes(token)) return 0.35;
+	}
+	return 0;
+}
+
+function scoreThumbnailTopicMatch(url = "", contextLink = "", criteria = null) {
+	if (!criteria) return { score: 0, wordMatches: 0, contextMatches: 0 };
+	const fields = [url, contextLink];
+	const wordInfo = topicMatchInfo(criteria.wordTokens, fields);
+	const contextInfo = topicMatchInfo(criteria.contextTokens, fields);
+	const phraseHit = criteria.phraseToken
+		? fields.join(" ").toLowerCase().includes(criteria.phraseToken)
+		: false;
+	const score =
+		wordInfo.count * 1.2 + contextInfo.count * 0.6 + (phraseHit ? 1.2 : 0);
+	return {
+		score,
+		wordMatches: wordInfo.count,
+		contextMatches: contextInfo.count,
+		phraseHit,
+	};
+}
+
 function sanitizeOverlayQuery(query = "") {
 	return String(query || "")
 		.replace(/[^a-z0-9\s]/gi, " ")
 		.replace(/\s+/g, " ")
 		.trim()
 		.slice(0, 80);
+}
+
+function normalizeTrendsApiUrl(raw) {
+	return String(raw || "")
+		.trim()
+		.replace(/\/+$/, "");
+}
+
+function deriveTrendsServiceBase(raw) {
+	const cleaned = normalizeTrendsApiUrl(raw);
+	if (!cleaned) return "";
+	return cleaned.replace(/\/api\/google-trends$/i, "");
+}
+
+function buildGoogleImagesApiCandidates() {
+	const list = [];
+	const base = deriveTrendsServiceBase(TRENDS_API_URL);
+	if (base) {
+		const trimmed = base.replace(/\/+$/, "");
+		list.push(`${trimmed}/api/google-images`);
+		if (/localhost/i.test(trimmed)) {
+			list.push(
+				`${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`
+			);
+		}
+		if (/\[::1\]/.test(trimmed)) {
+			list.push(
+				`${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`
+			);
+		}
+	}
+	return Array.from(new Set(list));
+}
+
+function sanitizeImageQuery(query = "") {
+	return String(query || "")
+		.replace(/[^a-z0-9\s]/gi, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 100);
+}
+
+function isLikelyThumbnailUrl(u = "") {
+	const url = String(u || "").toLowerCase();
+	if (!url) return true;
+	if (url.startsWith("data:image/")) return true;
+	if (url.includes("encrypted-tbn0") || url.includes("tbn:")) return true;
+	if (url.includes("gstatic.com/images?q=tbn")) return true;
+	return false;
+}
+
+async function fetchGoogleImagesFromService(
+	query,
+	{ limit = GOOGLE_IMAGES_RESULTS_PER_QUERY, tokens = [] } = {}
+) {
+	if (!GOOGLE_IMAGES_SEARCH_ENABLED) return [];
+	const q = sanitizeImageQuery(query);
+	if (!q) return [];
+	const endpoints = buildGoogleImagesApiCandidates();
+	if (!endpoints.length) return [];
+	const matchTokens = filterSpecificTopicTokens(tokens);
+	const minMatches = minImageTokenMatches(matchTokens);
+
+	for (const endpoint of endpoints) {
+		try {
+			const { data } = await axios.get(endpoint, {
+				params: { q, limit: Math.max(6, Number(limit) || 12) },
+				timeout: 45000,
+				validateStatus: (s) => s < 500,
+			});
+			const raw =
+				(Array.isArray(data?.images) && data.images) ||
+				(Array.isArray(data?.urls) && data.urls) ||
+				(Array.isArray(data?.results) && data.results) ||
+				[];
+			const urls = (raw || [])
+				.map((u) => String(u || "").trim())
+				.filter((u) => /^https?:\/\//i.test(u))
+				.filter((u) => !isLikelyThumbnailUrl(u));
+			if (!urls.length) continue;
+
+			let pool = urls;
+			if (matchTokens.length) {
+				const matched = urls.filter(
+					(u) => topicMatchInfo(matchTokens, [u]).count >= minMatches
+				);
+				if (matched.length) {
+					const matchedSet = new Set(matched);
+					const rest = urls.filter((u) => !matchedSet.has(u));
+					pool = matched.concat(rest);
+				}
+			}
+
+			return uniqueStrings(pool, {
+				limit: Math.max(6, Number(limit) || 12),
+			});
+		} catch {
+			// ignore and try next endpoint
+		}
+	}
+
+	return [];
 }
 
 function uniqueStrings(list = [], { limit = 0 } = {}) {
@@ -409,7 +591,14 @@ function uniqueStrings(list = [], { limit = 0 } = {}) {
 
 async function fetchCseItems(
 	queries,
-	{ num = 4, searchType = null, imgSize = null, imgColorType = null } = {}
+	{
+		num = 4,
+		searchType = null,
+		imgSize = null,
+		imgColorType = null,
+		start = 1,
+		maxPages = 1,
+	} = {}
 ) {
 	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
 	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
@@ -417,52 +606,63 @@ async function fetchCseItems(
 
 	const results = [];
 	const seen = new Set();
+	const totalTarget = Math.max(1, Math.floor(Number(num) || 1));
+	const pageSize = Math.min(CSE_MAX_PAGE_SIZE, totalTarget);
+	const pageCap = clampNumber(Number(maxPages) || 1, 1, 5);
+	const baseStart = Math.max(1, Math.floor(Number(start) || 1));
 
 	for (const q of list) {
-		try {
-			const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
-				params: {
-					key: GOOGLE_CSE_KEY,
-					cx: GOOGLE_CSE_ID,
-					q,
-					num,
-					safe: "active",
-					gl: "us",
-					hl: "en",
-					...(searchType ? { searchType } : {}),
-					...(searchType === "image"
-						? {
-								imgType: "photo",
-								imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
-								...(imgColorType ? { imgColorType } : {}),
-						  }
-						: {}),
-				},
-				timeout: 12000,
-				validateStatus: (s) => s < 500,
-			});
-
-			if (!data || data.error) continue;
-
-			const items = Array.isArray(data?.items) ? data.items : [];
-			for (const it of items) {
-				const title = String(it.title || "").trim();
-				const link = it.link || it.formattedUrl || "";
-				if (!title || !link) continue;
-				const key = `${title}|${link}`.toLowerCase();
-				if (seen.has(key)) continue;
-				seen.add(key);
-				results.push({
-					title: title.slice(0, 180),
-					snippet: String(it.snippet || "")
-						.trim()
-						.slice(0, 260),
-					link,
-					image: it.image || null,
+		let pagesFetched = 0;
+		let pageStart = baseStart;
+		while (pagesFetched < pageCap) {
+			try {
+				const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+					params: {
+						key: GOOGLE_CSE_KEY,
+						cx: GOOGLE_CSE_ID,
+						q,
+						num: pageSize,
+						start: pageStart,
+						safe: "active",
+						gl: "us",
+						hl: "en",
+						...(searchType ? { searchType } : {}),
+						...(searchType === "image"
+							? {
+									imgType: "photo",
+									imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
+									...(imgColorType ? { imgColorType } : {}),
+							  }
+							: {}),
+					},
+					timeout: 12000,
+					validateStatus: (s) => s < 500,
 				});
+
+				if (!data || data.error) break;
+
+				const items = Array.isArray(data?.items) ? data.items : [];
+				for (const it of items) {
+					const title = String(it.title || "").trim();
+					const link = it.link || it.formattedUrl || "";
+					if (!title || !link) continue;
+					const key = `${title}|${link}`.toLowerCase();
+					if (seen.has(key)) continue;
+					seen.add(key);
+					results.push({
+						title: title.slice(0, 180),
+						snippet: String(it.snippet || "")
+							.trim()
+							.slice(0, 260),
+						link,
+						image: it.image || null,
+					});
+				}
+			} catch {
+				break;
 			}
-		} catch {
-			// ignore
+			pagesFetched += 1;
+			pageStart += pageSize;
 		}
 	}
 	return results;
@@ -477,6 +677,20 @@ function isProbablyDirectImageUrl(u) {
 	const url = String(u || "").trim();
 	if (!/^https?:\/\//i.test(url)) return false;
 	return /\.(png|jpe?g|webp)(\?|#|$)/i.test(url);
+}
+
+function normalizeImageUrlKey(url = "") {
+	try {
+		const parsed = new URL(String(url || ""));
+		parsed.hash = "";
+		parsed.search = "";
+		return parsed.toString().toLowerCase();
+	} catch {
+		return String(url || "")
+			.split("?")[0]
+			.split("#")[0]
+			.toLowerCase();
+	}
 }
 
 async function headContentType(url, timeoutMs = 8000) {
@@ -1579,7 +1793,21 @@ function scoreTopicImageCandidate(candidate) {
 	}
 	const rgOverB = candidate?.tone?.rgOverB;
 	const warmPenalty = Number.isFinite(rgOverB) && rgOverB > 1.7 ? 0.2 : 0;
-	return sizeScore * 0.55 + lumaScore * 0.25 + colorScore * 0.2 - warmPenalty;
+	const matchScoreRaw = Number.isFinite(candidate?.matchScore)
+		? candidate.matchScore
+		: 0.6;
+	const matchScore = clampNumber(matchScoreRaw / 4, 0, 1);
+	const sourceScore = Number.isFinite(candidate?.sourceScore)
+		? clampNumber(candidate.sourceScore, 0, 1)
+		: 0;
+	return (
+		sizeScore * 0.35 +
+		lumaScore * 0.2 +
+		colorScore * 0.1 +
+		matchScore * 0.3 +
+		sourceScore * 0.05 -
+		warmPenalty
+	);
 }
 
 function shouldNeutralizeTopicImage(tone) {
@@ -1823,12 +2051,18 @@ async function composeThumbnailBase({
 		? topicImagePaths.filter(Boolean).slice(0, 2)
 		: [];
 	const panelCount = topics.length;
-	const panelW = makeEven(Math.max(2, leftW - margin * 2));
-	const topPad = panelCount === 1 ? Math.round(H * 0.22) : 0;
+	const hasSinglePanel = panelCount === 1;
+	const panelMargin = hasSinglePanel ? 0 : margin;
+	const topPad = hasSinglePanel
+		? 0
+		: panelCount === 1
+		? Math.round(H * 0.22)
+		: 0;
+	const panelW = makeEven(Math.max(2, leftW - panelMargin * 2));
 	const panelH =
 		panelCount > 1
-			? makeEven(Math.max(2, Math.round((H - margin * 3) / 2)))
-			: makeEven(Math.max(2, H - margin * 2 - topPad));
+			? makeEven(Math.max(2, Math.round((H - panelMargin * 3) / 2)))
+			: makeEven(Math.max(2, H - panelMargin * 2 - topPad));
 	const panelBorder = Math.max(4, Math.round(W * 0.004));
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
@@ -1859,25 +2093,43 @@ async function composeThumbnailBase({
 	if (panelCount >= 1) {
 		const panel1Idx = 2;
 		const panelY =
-			panelCount > 1 ? margin : Math.max(0, Math.round(margin + topPad));
+			panelCount > 1
+				? panelMargin
+				: Math.max(0, Math.round(panelMargin + topPad));
 		const panelCropX = "(iw-ow)/2";
 		const panelCropY = "(ih-oh)*0.35";
-		filters.push(
-			`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
-				`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
-				`unsharp=3:3:0.35[panel1i]`
-		);
+		if (hasSinglePanel) {
+			filters.push(
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+					`crop=${panelInnerW}:${panelInnerH},boxblur=12:1,` +
+					`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
+					`format=rgba[panel1bg]`
+			);
+			filters.push(
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+					`unsharp=3:3:0.35,format=rgba,` +
+					`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0[panel1fg]`
+			);
+			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
+		} else {
+			filters.push(
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+					`unsharp=3:3:0.35[panel1i]`
+			);
+		}
 		filters.push(
 			`[panel1i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel1]`
 		);
-		filters.push(`${current}[panel1]overlay=${margin}:${panelY}[tmp1]`);
+		filters.push(`${current}[panel1]overlay=${panelMargin}:${panelY}[tmp1]`);
 		current = "[tmp1]";
 	}
 
 	if (panelCount >= 2) {
 		const panel2Idx = 3;
-		const panel2Y = Math.max(0, margin * 2 + panelH);
+		const panel2Y = Math.max(0, panelMargin * 2 + panelH);
 		const panelCropX = "(iw-ow)/2";
 		const panelCropY = "(ih-oh)*0.35";
 		filters.push(
@@ -2499,29 +2751,37 @@ async function fetchCseImages(topic, extraTokens = []) {
 	}
 
 	let items = await fetchCseItems(queries, {
-		num: 8,
+		num: 10,
 		searchType: "image",
 		imgSize: CSE_PREFERRED_IMG_SIZE,
+		imgColorType: CSE_PREFERRED_IMG_COLOR,
+		maxPages: CSE_MAX_PAGES,
 	});
 	if (!items.length) {
 		items = await fetchCseItems(queries, {
-			num: 8,
+			num: 10,
 			searchType: "image",
 			imgSize: CSE_FALLBACK_IMG_SIZE,
+			imgColorType: CSE_PREFERRED_IMG_COLOR,
+			maxPages: CSE_MAX_PAGES,
 		});
 	}
 	if (!items.length) {
 		items = await fetchCseItems(fallbackQueries, {
-			num: 8,
+			num: 10,
 			searchType: "image",
 			imgSize: CSE_PREFERRED_IMG_SIZE,
+			imgColorType: CSE_PREFERRED_IMG_COLOR,
+			maxPages: CSE_MAX_PAGES,
 		});
 	}
 	if (!items.length) {
 		items = await fetchCseItems(fallbackQueries, {
-			num: 8,
+			num: 10,
 			searchType: "image",
 			imgSize: CSE_FALLBACK_IMG_SIZE,
+			imgColorType: CSE_PREFERRED_IMG_COLOR,
+			maxPages: CSE_MAX_PAGES,
 		});
 	}
 
@@ -2550,7 +2810,16 @@ async function fetchCseImages(topic, extraTokens = []) {
 		).length;
 		const score = info.count + urlMatches * 0.75;
 		const mime = String(it.image?.mime || "").toLowerCase();
-		candidates.push({ url, score, urlMatches, w, h, mime });
+		candidates.push({
+			url,
+			score,
+			urlMatches,
+			w,
+			h,
+			mime,
+			source: it.image?.contextLink || it.displayLink || "",
+			title: it.title || "",
+		});
 	};
 
 	for (const it of items) {
@@ -2578,6 +2847,50 @@ async function fetchCseImages(topic, extraTokens = []) {
 		return b.h - a.h;
 	});
 
+	if (
+		GOOGLE_IMAGES_SEARCH_ENABLED &&
+		candidates.length < GOOGLE_IMAGES_MIN_POOL_MULTIPLIER * 2
+	) {
+		const googleQueries = [];
+		const seenGoogle = new Set();
+		const pushQuery = (raw) => {
+			const cleaned = sanitizeImageQuery(raw);
+			if (!cleaned) return;
+			const key = cleaned.toLowerCase();
+			if (seenGoogle.has(key)) return;
+			seenGoogle.add(key);
+			googleQueries.push(cleaned);
+		};
+		pushQuery(searchLabel);
+		pushQuery(topic);
+		queries.forEach((q) => pushQuery(q));
+		fallbackQueries.forEach((q) => pushQuery(q));
+		const limited = googleQueries.slice(0, GOOGLE_IMAGES_VARIANT_LIMIT);
+		for (const gQuery of limited) {
+			const googleUrls = await fetchGoogleImagesFromService(gQuery, {
+				limit: GOOGLE_IMAGES_RESULTS_PER_QUERY,
+				tokens: matchTokens,
+			});
+			for (const url of googleUrls) {
+				if (!url) continue;
+				const info = topicMatchInfo(matchTokens, [url]);
+				if (info.count < Math.max(1, minMatches - 1)) continue;
+				candidates.push({
+					url,
+					score: info.count,
+					urlMatches: info.count,
+					w: 0,
+					h: 0,
+					mime: "",
+					source: "google-images",
+					title: "",
+				});
+				if (candidates.length >= 18) break;
+			}
+			if (candidates.length >= 18) break;
+		}
+	}
+
 	let pool = candidates;
 	if (matchTokens.length >= 2) {
 		const strict = candidates.filter((c) => c.urlMatches >= 1);
@@ -2593,7 +2906,7 @@ async function fetchCseImages(topic, extraTokens = []) {
 		if (!c?.url || seen.has(c.url)) continue;
 		seen.add(c.url);
 		if (!isProbablyDirectImageUrl(c.url) && !c.mime) continue;
-		filtered.push(c.url);
+		filtered.push(c);
 		if (filtered.length >= 6) break;
 	}
 	return filtered;
@@ -2604,6 +2917,8 @@ async function collectThumbnailTopicImages({
 	tmpDir,
 	jobId,
 	title = "",
+	shortTitle = "",
+	seoTitle = "",
 	maxImages = THUMBNAIL_TOPIC_MAX_IMAGES,
 	requireTopicImages = REQUIRE_THUMBNAIL_TOPIC_IMAGES,
 	log,
@@ -2616,24 +2931,81 @@ async function collectThumbnailTopicImages({
 	const topicList = Array.isArray(topics) ? topics : [];
 	if (!topicList.length) return [];
 
+	const combinedContext = `${title || ""} ${shortTitle || ""} ${
+		seoTitle || ""
+	}`.trim();
 	const contextQuery = sanitizeOverlayQuery(
-		sanitizeThumbnailContext(title || "")
+		sanitizeThumbnailContext(combinedContext)
 	);
 	const contextTokens =
 		contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
 
-	const urls = [];
+	const urlCandidates = [];
 	const seen = new Set();
 	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
+	const pushCandidate = (url, { source = "", priority = 0, criteria } = {}) => {
+		if (!url) return;
+		const key = normalizeImageUrlKey(url);
+		if (seen.has(key)) return;
+		if (isLikelyThumbnailUrl(url)) return;
+		if (isLikelyWatermarkedSource(url, source)) return;
+		const match = scoreThumbnailTopicMatch(url, source, criteria);
+		const minWordMatches = Number(criteria?.minWordMatches || 0);
+		const relaxed = minWordMatches && match.wordMatches < minWordMatches;
+		urlCandidates.push({
+			url,
+			source,
+			matchScore: match.score,
+			wordMatches: match.wordMatches,
+			contextMatches: match.contextMatches,
+			phraseHit: match.phraseHit,
+			sourceScore: scoreSourceAffinity(url, source),
+			priority,
+			relaxed,
+		});
+		seen.add(key);
+	};
+
 	for (const t of topicList) {
-		if (urls.length >= maxUrls) break;
+		if (urlCandidates.length >= maxUrls) break;
 		const label = t?.displayTopic || t?.topic || "";
 		if (!label) continue;
 		const extraTokens = Array.isArray(t?.keywords) ? t.keywords : [];
 		const mergedTokens = contextTokens.length
 			? [...contextTokens, ...extraTokens]
 			: extraTokens;
+		const criteria = buildImageMatchCriteria(label, mergedTokens);
+		const seedUrls = uniqueStrings(
+			[
+				t?.trendStory?.image,
+				...(Array.isArray(t?.trendStory?.images) ? t.trendStory.images : []),
+				...(Array.isArray(t?.trendStory?.articles)
+					? t.trendStory.articles.map((a) => a?.image)
+					: []),
+			].filter(Boolean),
+			{ limit: 8 }
+		);
+		for (const url of seedUrls) {
+			pushCandidate(url, {
+				source: t?.trendStory?.articles?.[0]?.url || "",
+				priority: 0.7,
+				criteria,
+			});
+		}
+
 		let hits = hasCSE ? await fetchCseImages(label, mergedTokens) : [];
+		if (hits.length) {
+			for (const hit of hits) {
+				const url = typeof hit === "string" ? hit : hit?.url;
+				if (!url) continue;
+				pushCandidate(url, {
+					source: hit?.source || "",
+					priority: 0.55,
+					criteria,
+				});
+			}
+		}
+
 		if (!hits.length && hasCSE) {
 			const ctxItems = await fetchCseContext(label, mergedTokens);
 			const articleUrls = uniqueStrings(
@@ -2656,72 +3028,65 @@ async function collectThumbnailTopicImages({
 				if (ct && !ct.startsWith("image/")) continue;
 				ogHits.push(og);
 			}
-			if (ogHits.length) {
-				if (log)
-					log("thumbnail topic images fallback og", {
-						topic: label,
-						count: ogHits.length,
-					});
-				hits = ogHits;
+			if (ogHits.length && log)
+				log("thumbnail topic images fallback og", {
+					topic: label,
+					count: ogHits.length,
+				});
+			for (const og of ogHits) {
+				pushCandidate(og, { source: label, priority: 0.5, criteria });
 			}
 		}
-		if (!hits.length) {
+
+		if (
+			GOOGLE_IMAGES_SEARCH_ENABLED &&
+			urlCandidates.length < maxUrls &&
+			label
+		) {
+			const googleQueries = [label, contextQuery].filter(Boolean);
+			const limited = googleQueries.slice(0, GOOGLE_IMAGES_VARIANT_LIMIT);
+			for (const gQuery of limited) {
+				const googleUrls = await fetchGoogleImagesFromService(gQuery, {
+					limit: GOOGLE_IMAGES_RESULTS_PER_QUERY,
+					tokens: criteria.wordTokens,
+				});
+				for (const url of googleUrls) {
+					pushCandidate(url, {
+						source: "google-images",
+						priority: 0.25,
+						criteria,
+					});
+					if (urlCandidates.length >= maxUrls) break;
+				}
+				if (urlCandidates.length >= maxUrls) break;
+			}
+		}
+
+		if (urlCandidates.length < maxUrls) {
 			const wikiUrl = await fetchWikipediaPageImageUrl(label);
 			if (wikiUrl) {
 				if (log)
 					log("thumbnail topic images fallback wiki", {
 						topic: label,
 					});
-				hits = [wikiUrl];
+				pushCandidate(wikiUrl, { source: label, priority: 0.4, criteria });
 			}
 		}
-		if (!hits.length) {
+		if (urlCandidates.length < maxUrls) {
 			const commons = await fetchWikimediaImageUrls(label, 3);
-			if (commons.length) {
-				if (log)
-					log("thumbnail topic images fallback commons", {
-						topic: label,
-						count: commons.length,
-					});
-				hits = commons;
-			}
-		}
-		for (const url of hits) {
-			if (urls.length >= maxUrls) break;
-			if (!url || seen.has(url)) continue;
-			seen.add(url);
-			urls.push(url);
-		}
-		if (urls.length < maxUrls) {
-			const wikiUrl = await fetchWikipediaPageImageUrl(label);
-			if (wikiUrl && !seen.has(wikiUrl)) {
-				if (log)
-					log("thumbnail topic images fallback wiki", {
-						topic: label,
-					});
-				seen.add(wikiUrl);
-				urls.push(wikiUrl);
-			}
-		}
-		if (urls.length < maxUrls) {
-			const commons = await fetchWikimediaImageUrls(label, 3);
-			if (commons.length) {
-				if (log)
-					log("thumbnail topic images fallback commons", {
-						topic: label,
-						count: commons.length,
-					});
-				for (const url of commons) {
-					if (urls.length >= maxUrls) break;
-					if (!url || seen.has(url)) continue;
-					seen.add(url);
-					urls.push(url);
-				}
+			if (commons.length && log)
+				log("thumbnail topic images fallback commons", {
+					topic: label,
+					count: commons.length,
+				});
+			for (const url of commons) {
+				pushCandidate(url, { source: label, priority: 0.35, criteria });
+				if (urlCandidates.length >= maxUrls) break;
 			}
 		}
 	}
 
-	if (!urls.length) {
+	if (!urlCandidates.length) {
 		if (requireTopicImages) throw new Error("thumbnail_topic_images_missing");
 		if (log)
 			log("thumbnail topic images none", {
@@ -2733,9 +3098,20 @@ async function collectThumbnailTopicImages({
 
 	const candidates = [];
 	const smallCandidates = [];
-	const downloadCount = Math.min(urls.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
+	const ranked = urlCandidates
+		.map((c) => ({
+			...c,
+			relevanceScore:
+				(c.matchScore || 0) +
+				(c.sourceScore || 0) +
+				(c.priority || 0) -
+				(c.relaxed ? 0.6 : 0),
+		}))
+		.sort((a, b) => b.relevanceScore - a.relevanceScore);
+	const downloadCount = Math.min(ranked.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
 	for (let i = 0; i < downloadCount; i++) {
-		const url = urls[i];
+		const candidate = ranked[i];
+		const url = candidate.url;
 		const extGuess = path
 			.extname(String(url).split("?")[0] || "")
 			.toLowerCase();
@@ -2777,10 +3153,16 @@ async function collectThumbnailTopicImages({
 				width: dims.width || 0,
 				height: dims.height || 0,
 				tone,
+				matchScore: candidate.matchScore,
+				sourceScore: candidate.sourceScore,
+				url,
+				source: candidate.source,
 				score: scoreTopicImageCandidate({
 					width: dims.width || 0,
 					height: dims.height || 0,
 					tone,
+					matchScore: candidate.matchScore,
+					sourceScore: candidate.sourceScore,
 				}),
 			});
 		} catch {
@@ -2852,36 +3234,106 @@ async function collectThumbnailTopicImages({
 	return selected;
 }
 
+function extractHookWord(texts = []) {
+	for (const raw of texts) {
+		const words = cleanThumbnailText(raw || "")
+			.toLowerCase()
+			.split(" ")
+			.filter(Boolean);
+		for (const hook of THUMBNAIL_HOOK_WORDS) {
+			if (words.includes(hook)) return hook.toUpperCase();
+		}
+	}
+	return "";
+}
+
+function selectHeadlineWords(text = "", maxWords = 4) {
+	const words = cleanThumbnailText(text).split(" ").filter(Boolean);
+	if (words.length <= maxWords) return words;
+	const filtered = words.filter(
+		(w) =>
+			!TOPIC_STOP_WORDS.has(w.toLowerCase()) &&
+			!GENERIC_TOPIC_TOKENS.has(w.toLowerCase())
+	);
+	if (filtered.length) return filtered.slice(0, maxWords);
+	return words.slice(0, maxWords);
+}
+
+function buildTopicPhrase(topics = [], maxWords = 3) {
+	const list = Array.isArray(topics) ? topics : [];
+	const primary = list[0]?.displayTopic || list[0]?.topic || "";
+	const secondary = list[1]?.displayTopic || list[1]?.topic || "";
+	const primaryWords = selectHeadlineWords(primary, maxWords);
+	if (!primaryWords.length) return "";
+	if (secondary) {
+		const secondaryWords = selectHeadlineWords(secondary, maxWords);
+		const combinedCount =
+			primaryWords.length +
+			secondaryWords.length +
+			(secondaryWords.length ? 1 : 0);
+		if (
+			primaryWords.length === 1 &&
+			secondaryWords.length === 1 &&
+			combinedCount <= maxWords
+		) {
+			return `${primaryWords[0]} & ${secondaryWords[0]}`;
+		}
+	}
+	return primaryWords.join(" ");
+}
+
+function buildSeoHeadline({
+	title,
+	shortTitle,
+	seoTitle,
+	topics,
+	maxWords = 4,
+} = {}) {
+	const topicPhrase = buildTopicPhrase(topics, Math.max(2, maxWords));
+	const hookWord = extractHookWord([shortTitle, seoTitle, title, topicPhrase]);
+	const hookToken = hookWord ? hookWord.toLowerCase() : "";
+	if (topicPhrase) {
+		const topicWords = topicPhrase.split(" ").filter(Boolean);
+		if (hookWord && topicWords.length < maxWords) {
+			return `${topicPhrase} ${hookWord}`;
+		}
+		return topicPhrase;
+	}
+	const candidates = [shortTitle, seoTitle, title];
+	for (const candidate of candidates) {
+		const words = selectHeadlineWords(candidate || "", maxWords);
+		if (!words.length) continue;
+		const normalizedWords = words.map((w) => w.toLowerCase());
+		if (
+			hookWord &&
+			words.length < maxWords &&
+			!normalizedWords.includes(hookToken)
+		) {
+			return `${words.join(" ")} ${hookWord}`;
+		}
+		return words.join(" ");
+	}
+	return "Quick Update";
+}
+
 function selectThumbnailTitle({ title, shortTitle, seoTitle, topics }) {
-	const topicLabel =
-		Array.isArray(topics) && topics.length
-			? topics[0]?.displayTopic || topics[0]?.topic || ""
-			: "";
-	const topicWords = cleanThumbnailText(topicLabel).split(" ").filter(Boolean);
-	const shortWords = cleanThumbnailText(shortTitle || "")
-		.split(" ")
-		.filter(Boolean);
-	if (topicWords.length && topicWords.length <= 3) return topicLabel;
-	if (shortWords.length && shortWords.length <= 3) return shortTitle || "";
-	return shortTitle || seoTitle || title || topicLabel;
+	return buildSeoHeadline({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+		maxWords: THUMBNAIL_TEXT_MAX_WORDS,
+	});
 }
 
 function buildShortHookTitle({ title, shortTitle, seoTitle, topics }) {
-	const topicLabel =
-		Array.isArray(topics) && topics.length
-			? topics[0]?.displayTopic || topics[0]?.topic || ""
-			: "";
-	const candidates = [shortTitle, seoTitle, title, topicLabel];
-	for (const candidate of candidates) {
-		const words = cleanThumbnailText(candidate || "")
-			.split(" ")
-			.filter(Boolean);
-		if (words.length >= 2) return words.slice(0, 3).join(" ");
-	}
-	const fallbackWords = cleanThumbnailText(topicLabel || title || "")
-		.split(" ")
-		.filter(Boolean);
-	return fallbackWords.slice(0, 3).join(" ") || "Quick Update";
+	return buildSeoHeadline({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+		maxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
+	});
 }
 
 function assertCloudinaryReady() {
@@ -2985,6 +3437,8 @@ async function generateThumbnailPackage({
 		tmpDir,
 		jobId,
 		title: title || seoTitle || "",
+		shortTitle,
+		seoTitle,
 		maxImages: THUMBNAIL_TOPIC_MAX_IMAGES,
 		requireTopicImages,
 		log,
@@ -3150,14 +3604,13 @@ async function generateThumbnailPackage({
 					score: scoreLog,
 				});
 
-			const uploaded = await uploadThumbnailToCloudinary(finalPath, jobId);
 			variantResults.push({
 				variant: variant.key,
 				localPath: finalPath,
-				url: uploaded.url,
-				publicId: uploaded.public_id,
-				width: uploaded.width,
-				height: uploaded.height,
+				url: "",
+				publicId: "",
+				width: THUMBNAIL_WIDTH,
+				height: THUMBNAIL_HEIGHT,
 				title: variant.title,
 				luma: {
 					overall: overallLuma,
@@ -3185,6 +3638,14 @@ async function generateThumbnailPackage({
 		}, null) ||
 		variantResults.find((v) => v.variant === "b") ||
 		variantResults[0];
+	const uploaded = await uploadThumbnailToCloudinary(
+		preferred.localPath,
+		jobId
+	);
+	preferred.url = uploaded.url;
+	preferred.publicId = uploaded.public_id;
+	preferred.width = uploaded.width;
+	preferred.height = uploaded.height;
 	return {
 		localPath: preferred.localPath,
 		url: preferred.url,
