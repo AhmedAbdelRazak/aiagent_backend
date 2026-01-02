@@ -72,7 +72,7 @@ const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.12;
 const THUMBNAIL_BADGE_FONT_PCT = 0.045;
 const THUMBNAIL_BADGE_X_PCT = 0.05;
 const THUMBNAIL_BADGE_Y_PCT = 0.05;
-const THUMBNAIL_BADGE_MAX_CHARS = 14;
+const THUMBNAIL_BADGE_MAX_CHARS = 18;
 const THUMBNAIL_TOPIC_MAX_IMAGES = 1;
 const THUMBNAIL_TOPIC_MIN_EDGE = 900;
 const THUMBNAIL_TOPIC_MIN_BYTES = 60000;
@@ -477,6 +477,28 @@ function filterImageSearchTokens(tokens = []) {
 	return filtered.length ? filtered : norm;
 }
 
+function filterQuestionSubjectTokens(tokens = []) {
+	const filtered = filterImageSearchTokens(filterSpecificTopicTokens(tokens));
+	return filtered.length ? filtered : filterImageSearchTokens(tokens);
+}
+
+function buildQuestionSubjectLabel(questionInfo, maxWords = 4) {
+	if (!questionInfo?.subjectTokens?.length) return "";
+	const tokens = filterQuestionSubjectTokens(questionInfo.subjectTokens);
+	if (!tokens.length) return "";
+	const phrase = tokens.slice(0, maxWords).join(" ");
+	return phrase ? titleCaseIfLower(phrase) : "";
+}
+
+function buildQuestionSubjectContextLabel(questionInfo, maxWords = 5) {
+	if (!questionInfo) return "";
+	const subject = filterQuestionSubjectTokens(questionInfo.subjectTokens || []);
+	const context = filterQuestionSubjectTokens(questionInfo.contextTokens || []);
+	const combined = [...subject, ...context].filter(Boolean).slice(0, maxWords);
+	if (!combined.length) return "";
+	return titleCaseIfLower(combined.join(" "));
+}
+
 function buildSearchLabelTokens(topic = "", extraTokens = []) {
 	const extra = Array.isArray(extraTokens)
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
@@ -529,6 +551,10 @@ function buildImageMatchCriteria(topic = "", extraTokens = []) {
 	const contextTokens = filterContextTokens(
 		extra.filter((tok) => !wordSet.has(String(tok).toLowerCase()))
 	);
+	const questionInfo = extractQuestionSegments(topic);
+	const subjectTokens = questionInfo?.subjectTokens?.length
+		? filterQuestionSubjectTokens(questionInfo.subjectTokens)
+		: [];
 	return {
 		wordTokens,
 		phraseToken,
@@ -536,6 +562,8 @@ function buildImageMatchCriteria(topic = "", extraTokens = []) {
 		minWordMatches: minImageTokenMatches(wordTokens),
 		rawTokenCount: rawTokens.length,
 		searchTokens: wordTokens,
+		subjectTokens,
+		minSubjectMatches: subjectTokens.length ? 1 : 0,
 	};
 }
 
@@ -573,19 +601,25 @@ function scoreSourceAffinity(url = "", contextLink = "") {
 }
 
 function scoreThumbnailTopicMatch(url = "", contextLink = "", criteria = null) {
-	if (!criteria) return { score: 0, wordMatches: 0, contextMatches: 0 };
+	if (!criteria)
+		return { score: 0, wordMatches: 0, contextMatches: 0, subjectMatches: 0 };
 	const fields = [url, contextLink];
 	const wordInfo = topicMatchInfo(criteria.wordTokens, fields);
 	const contextInfo = topicMatchInfo(criteria.contextTokens, fields);
+	const subjectInfo = topicMatchInfo(criteria.subjectTokens || [], fields);
 	const phraseHit = criteria.phraseToken
 		? fields.join(" ").toLowerCase().includes(criteria.phraseToken)
 		: false;
 	const score =
-		wordInfo.count * 1.2 + contextInfo.count * 0.6 + (phraseHit ? 1.2 : 0);
+		wordInfo.count * 1.2 +
+		contextInfo.count * 0.6 +
+		subjectInfo.count * 1.4 +
+		(phraseHit ? 1.2 : 0);
 	return {
 		score,
 		wordMatches: wordInfo.count,
 		contextMatches: contextInfo.count,
+		subjectMatches: subjectInfo.count,
 		phraseHit,
 	};
 }
@@ -3081,13 +3115,17 @@ async function collectThumbnailTopicImages({
 		if (isLikelyWatermarkedSource(url, source)) return;
 		const match = scoreThumbnailTopicMatch(url, source, criteria);
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
-		const relaxed = minWordMatches && match.wordMatches < minWordMatches;
+		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
+		const relaxed =
+			(minWordMatches && match.wordMatches < minWordMatches) ||
+			(minSubjectMatches && match.subjectMatches < minSubjectMatches);
 		urlCandidates.push({
 			url,
 			source,
 			matchScore: match.score,
 			wordMatches: match.wordMatches,
 			contextMatches: match.contextMatches,
+			subjectMatches: match.subjectMatches,
 			phraseHit: match.phraseHit,
 			sourceScore: scoreSourceAffinity(url, source),
 			priority,
@@ -3123,11 +3161,19 @@ async function collectThumbnailTopicImages({
 			].filter(Boolean),
 			{ limit: 12 }
 		);
+		const questionInfo = extractQuestionSegments(label);
+		const questionSubjectLabel = buildQuestionSubjectLabel(questionInfo, 4);
+		const questionSubjectContextLabel = buildQuestionSubjectContextLabel(
+			questionInfo,
+			5
+		);
 		const mergedTokens = uniqueStrings(
 			[
 				...(contextTokens.length ? contextTokens : []),
 				...extraTokens,
 				...trendHints,
+				questionSubjectLabel,
+				questionSubjectContextLabel,
 			],
 			{ limit: 18 }
 		);
@@ -3202,7 +3248,13 @@ async function collectThumbnailTopicImages({
 			label
 		) {
 			const googleQueries = uniqueStrings(
-				[label, identityLabel, contextQuery].filter(Boolean),
+				[
+					questionSubjectContextLabel,
+					questionSubjectLabel,
+					label,
+					identityLabel,
+					contextQuery,
+				].filter(Boolean),
 				{ limit: GOOGLE_IMAGES_VARIANT_LIMIT }
 			);
 			for (const gQuery of googleQueries) {
