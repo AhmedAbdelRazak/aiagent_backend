@@ -124,8 +124,8 @@ const RUNWAY_VIDEO_MODEL_FALLBACK = "gen4_turbo";
 
 const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
 const SYNC_SO_BASE = "https://api.sync.so";
-// const SYNC_SO_MODEL = "lipsync-2";
-const SYNC_SO_MODEL = "lipsync-2-pro";
+const SYNC_SO_MODEL = "lipsync-2";
+// const SYNC_SO_MODEL = "lipsync-2-pro";
 const SYNC_SO_GENERATE_PATH = "/v2/generate";
 
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
