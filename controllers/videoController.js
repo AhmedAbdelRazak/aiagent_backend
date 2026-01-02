@@ -1030,6 +1030,99 @@ function ensureAnchorInShortsSegments(
 	return updated;
 }
 
+function escapeRegExp(value = "") {
+	return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasInstallmentEvidence(text = "") {
+	const raw = String(text || "");
+	return (
+		/\b(season|episode|part|chapter|volume)\s*\d+\b/i.test(raw) ||
+		/\bs\s*\d+\s*e\s*\d+\b/i.test(raw)
+	);
+}
+
+function stripUnverifiedInstallmentDetails(
+	text,
+	{ anchor = "", allowInstallmentNumbers = false } = {}
+) {
+	if (!text || allowInstallmentNumbers) return text;
+	let updated = String(text);
+	const cleanedAnchor = cleanAnchorCandidate(anchor || "");
+	const hasAnchor = Boolean(cleanedAnchor);
+	if (hasAnchor) {
+		const escaped = escapeRegExp(cleanedAnchor);
+		updated = updated
+			.replace(
+				new RegExp(`\\b${escaped}\\s+\\d+\\s+episode\\s+\\d+\\b`, "gi"),
+				cleanedAnchor
+			)
+			.replace(
+				new RegExp(`\\b${escaped}\\s+episode\\s+\\d+\\b`, "gi"),
+				cleanedAnchor
+			)
+			.replace(
+				new RegExp(`\\b${escaped}\\s+season\\s+\\d+\\b`, "gi"),
+				cleanedAnchor
+			);
+		if (!/\d/.test(cleanedAnchor)) {
+			updated = updated.replace(
+				new RegExp(`\\b${escaped}\\s+\\d+\\b`, "gi"),
+				cleanedAnchor
+			);
+		}
+	}
+	updated = updated
+		.replace(/\bseason\s*\d+\b/gi, "the season")
+		.replace(/\bepisode\s*\d+\b/gi, "the episode")
+		.replace(/\bpart\s*\d+\b/gi, "the part")
+		.replace(/\bchapter\s*\d+\b/gi, "the chapter")
+		.replace(/\bvolume\s*\d+\b/gi, "the volume")
+		.replace(/\bs\s*\d+\s*e\s*\d+\b/gi, "the episode");
+	if (hasAnchor) {
+		const escaped = escapeRegExp(cleanedAnchor);
+		updated = updated.replace(
+			new RegExp(
+				`\\b${escaped}\\s+the\\s+(episode|season|part|chapter|volume)\\b`,
+				"gi"
+			),
+			cleanedAnchor
+		);
+	}
+	return updated
+		.replace(/\s{2,}/g, " ")
+		.replace(/\s+,/g, ",")
+		.trim();
+}
+
+function enforceShortsSpecificityGuards(
+	segments = [],
+	{ topic, trendStory, liveContext, articleText, anchor } = {}
+) {
+	const contextStrings = buildShortsTopicContextStrings({
+		topic,
+		trendStory,
+		liveContext,
+		articleText,
+	});
+	const combined = `${topic || ""} ${contextStrings.join(" ")}`.trim();
+	const allowInstallmentNumbers = hasInstallmentEvidence(combined);
+	const safeAnchor = cleanAnchorCandidate(anchor || topic || "");
+	return (segments || []).map((seg) => {
+		const updatedText = stripUnverifiedInstallmentDetails(seg.scriptText, {
+			anchor: safeAnchor,
+			allowInstallmentNumbers,
+		});
+		const updatedOverlay = stripUnverifiedInstallmentDetails(seg.overlayText, {
+			anchor: safeAnchor,
+			allowInstallmentNumbers,
+		});
+		if (updatedText === seg.scriptText && updatedOverlay === seg.overlayText)
+			return seg;
+		return { ...seg, scriptText: updatedText, overlayText: updatedOverlay };
+	});
+}
+
 function prioritizeTokenMatchedUrls(urls = [], tokens = []) {
 	if (!Array.isArray(urls) || !urls.length || !tokens || !tokens.length)
 		return urls;
@@ -6907,6 +7000,7 @@ Narration rules:
 - For nontragic topics, pacing should feel clear and slightly brisk.
 - For clearly tragic or sensitive stories, slow pacing slightly but keep it clear and respectful.
 - Avoid speculation or hallucinations; if a detail is unconfirmed, state that it's unconfirmed rather than inventing facts.
+- Do NOT invent season/episode/part/chapter numbers. Only mention numbered installments if they appear in the topic label or the provided context; otherwise say "the episode" or "the season" without numbers.
 - Keep pacing human and coherent; do not cram unnatural speed-reading into segments.
 - Keep every segment directly on-topic for "${topic}"; no unrelated tangents.
 ${categoryTone ? `- Tone: ${categoryTone}` : ""}
@@ -7859,6 +7953,15 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 				topicIntent.anchor,
 				topicIntent.domain || "real"
 			);
+		}
+		if (category !== "Top5") {
+			segments = enforceShortsSpecificityGuards(segments, {
+				topic,
+				trendStory,
+				liveContext: liveWebContext,
+				articleText: trendArticleText,
+				anchor: topicIntent?.anchor || topic,
+			});
 		}
 
 		if (segments.length) {
