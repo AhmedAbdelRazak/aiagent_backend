@@ -242,6 +242,37 @@ const IMAGE_DEEMPHASIS_TOKENS = new Set([
 	"suicide",
 	"shooting",
 ]);
+const FAMILY_RELATION_TOKENS = new Set([
+	"daughter",
+	"son",
+	"wife",
+	"husband",
+	"family",
+	"mother",
+	"father",
+	"sister",
+	"brother",
+	"child",
+	"children",
+	"kids",
+]);
+const SENSITIVE_TOPIC_TOKENS = new Set([
+	...IMAGE_DEEMPHASIS_TOKENS,
+	"missing",
+	"found",
+	"unresponsive",
+	"overdose",
+	"coroner",
+	"autopsy",
+	"incident",
+	"hotel",
+	"motel",
+]);
+const SENSITIVE_TOPIC_PHRASES = new Set([
+	"medical examiner",
+	"cause of death",
+	"found unresponsive",
+]);
 const THUMBNAIL_CLOUDINARY_FOLDER = "aivideomatic/long_thumbnails";
 const THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX = "long_thumb";
 const ACCENT_PALETTE = {
@@ -749,6 +780,74 @@ function filterImageSearchTokens(tokens = []) {
 function filterQuestionSubjectTokens(tokens = []) {
 	const filtered = filterImageSearchTokens(filterSpecificTopicTokens(tokens));
 	return filtered.length ? filtered : filterImageSearchTokens(tokens);
+}
+
+function hasSensitiveTopicTokens(texts = []) {
+	const hay = (Array.isArray(texts) ? texts : [])
+		.filter(Boolean)
+		.join(" ")
+		.toLowerCase();
+	if (!hay) return false;
+	for (const phrase of SENSITIVE_TOPIC_PHRASES) {
+		if (phrase && hay.includes(phrase)) return true;
+	}
+	for (const tok of SENSITIVE_TOPIC_TOKENS) {
+		if (tok && hay.includes(tok)) return true;
+	}
+	return false;
+}
+
+function stripFamilyRelationTokens(tokens = []) {
+	return (Array.isArray(tokens) ? tokens : []).filter(
+		(t) => !FAMILY_RELATION_TOKENS.has(String(t || "").toLowerCase())
+	);
+}
+
+function stripFamilyRelationFromText(text = "") {
+	const tokens = stripFamilyRelationTokens(tokenizeLabel(text || ""));
+	return tokens.join(" ").trim();
+}
+
+function filterSensitiveHints(hints = []) {
+	const list = Array.isArray(hints) ? hints : [];
+	const filtered = [];
+	for (const hint of list) {
+		const raw = String(hint || "").trim();
+		if (!raw) continue;
+		if (hasSensitiveTopicTokens([raw])) continue;
+		const tokens = tokenizeLabel(raw);
+		if (tokens.some((t) => FAMILY_RELATION_TOKENS.has(t))) continue;
+		filtered.push(raw);
+	}
+	return filtered;
+}
+
+function inferCompanionLabel(primaryLabel = "", hints = []) {
+	const primaryTokens = tokenizeLabel(primaryLabel);
+	if (primaryTokens.length < 2) return "";
+	const primarySet = new Set(primaryTokens);
+	const stopSet = new Set([
+		...TOPIC_STOP_WORDS,
+		...GENERIC_TOPIC_TOKENS,
+		...CONTEXT_STOP_TOKENS,
+		...FAMILY_RELATION_TOKENS,
+	]);
+	for (const hint of Array.isArray(hints) ? hints : []) {
+		const raw = String(hint || "").trim();
+		if (!raw) continue;
+		const tokenMatch = topicMatchInfo(primaryTokens, [raw]).count;
+		if (tokenMatch < Math.min(2, primaryTokens.length)) continue;
+		const hintTokens = tokenizeLabel(raw);
+		const remainder = hintTokens.filter(
+			(tok) => !primarySet.has(tok) && !stopSet.has(tok)
+		);
+		if (remainder.length < 2 || remainder.length > 4) continue;
+		const candidate = remainder.slice(0, 3).join(" ");
+		if (!candidate) continue;
+		if (!isLikelyPersonTopic(candidate, [raw])) continue;
+		return titleCaseIfLower(candidate);
+	}
+	return "";
 }
 
 function buildQuestionSubjectLabel(questionInfo, maxWords = 4) {
@@ -3268,6 +3367,7 @@ async function fetchCseImages(topic, extraTokens = [], options = {}) {
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
 		: [];
 	const preferNews = Boolean(options.preferNews);
+	const preferPortrait = Boolean(options.preferPortrait);
 	const newsHints = Array.isArray(options.newsHints) ? options.newsHints : [];
 	const portraitHints = Array.isArray(options.portraitHints)
 		? options.portraitHints
@@ -3286,6 +3386,9 @@ async function fetchCseImages(topic, extraTokens = [], options = {}) {
 		`${searchLabel} news photo`,
 		`${searchLabel} photo`,
 	];
+	if (preferPortrait && !preferNews) {
+		queries.unshift(`${searchLabel} portrait`, `${searchLabel} headshot`);
+	}
 	if (preferNews) {
 		const newsQueries = buildNewsImageQueries(
 			searchLabel,
@@ -3316,6 +3419,8 @@ async function fetchCseImages(topic, extraTokens = [], options = {}) {
 				`${searchLabel} headshot`,
 				`${searchLabel} press conference`
 			);
+		} else if (preferPortrait) {
+			queries.unshift(`${searchLabel} headshot`, `${searchLabel} portrait`);
 		} else {
 			queries.unshift(
 				`${searchLabel} red carpet`,
@@ -3341,6 +3446,11 @@ async function fetchCseImages(topic, extraTokens = [], options = {}) {
 			portraitHints
 		);
 		fallbackQueries = [...newsFallback, ...fallbackQueries];
+	} else if (preferPortrait) {
+		fallbackQueries.unshift(
+			`${searchLabel} portrait`,
+			`${searchLabel} headshot`
+		);
 	}
 	const keyPhrase = searchTokens.slice(0, 2).join(" ");
 	if (keyPhrase) {
@@ -3565,6 +3675,17 @@ async function collectThumbnailTopicImages({
 		const newsAvoidPenalty = criteria?.preferNews
 			? scoreNewsAvoidPenalty({ url, source, title })
 			: 0;
+		const companionTokens = Array.isArray(criteria?.companionTokens)
+			? criteria.companionTokens
+			: [];
+		const pairMinMatches = Number.isFinite(criteria?.pairMinMatches)
+			? criteria.pairMinMatches
+			: 0;
+		const pairInfo = companionTokens.length
+			? topicMatchInfo(companionTokens, [url, source, title])
+			: { count: 0 };
+		const pairMatch =
+			pairMinMatches > 0 ? pairInfo.count >= pairMinMatches : false;
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
 		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
 		const relaxed =
@@ -3581,6 +3702,8 @@ async function collectThumbnailTopicImages({
 			sourceScore: scoreSourceAffinity(url, source),
 			newsScore,
 			newsAvoidPenalty,
+			pairMatch,
+			pairMatches: pairInfo.count,
 			preferNews: Boolean(criteria?.preferNews),
 			merchPenalty,
 			priority,
@@ -3605,13 +3728,9 @@ async function collectThumbnailTopicImages({
 			],
 			{ limit: 10 }
 		);
-		const contextQuery = sanitizeOverlayQuery(
-			sanitizeThumbnailContext(
-				[label, ...relatedQueries].filter(Boolean).join(" ")
-			)
-		);
-		const contextTokens =
-			contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
+		const articleTitles = Array.isArray(t?.trendStory?.articles)
+			? t.trendStory.articles.map((a) => a?.title).filter(Boolean)
+			: [];
 		const trendHints = uniqueStrings(
 			[
 				...(Array.isArray(t?.trendStory?.searchPhrases)
@@ -3621,9 +3740,7 @@ async function collectThumbnailTopicImages({
 					? t.trendStory.entityNames
 					: []),
 				...relatedQueries,
-				...(Array.isArray(t?.trendStory?.articles)
-					? t.trendStory.articles.map((a) => a?.title)
-					: []),
+				...articleTitles,
 				t?.trendStory?.imageComment,
 				...(Array.isArray(t?.trendStory?.viralImageBriefs)
 					? t.trendStory.viralImageBriefs.map((b) =>
@@ -3635,20 +3752,48 @@ async function collectThumbnailTopicImages({
 			].filter(Boolean),
 			{ limit: 12 }
 		);
-		const preferNewsImage = shouldPreferNewsImage({
-			label,
-			trendHints,
-			relatedQueries,
-			title,
-			shortTitle,
-			seoTitle,
-			topics: [t],
-		});
-		const trendHintsFiltered = preferNewsImage
+		const hintPool = uniqueStrings(
+			[...trendHints, ...relatedQueries, ...articleTitles],
+			{ limit: 16 }
+		);
+		const sensitiveTopic = hasSensitiveTopicTokens([label, ...hintPool]);
+		const companionLabel = inferCompanionLabel(label, hintPool);
+		const companionTokens = companionLabel ? tokenizeLabel(companionLabel) : [];
+		const contextSource = [label, ...relatedQueries].filter(Boolean).join(" ");
+		const contextClean = sanitizeThumbnailContext(contextSource);
+		const contextSafe = sensitiveTopic
+			? stripFamilyRelationFromText(contextClean)
+			: contextClean;
+		const contextQuery = sanitizeOverlayQuery(contextSafe);
+		const contextTokens =
+			contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
+		const safeExtraTokens = sensitiveTopic
+			? stripFamilyRelationTokens(extraTokens)
+			: extraTokens;
+		const preferNewsImage =
+			!sensitiveTopic &&
+			shouldPreferNewsImage({
+				label,
+				trendHints,
+				relatedQueries,
+				title,
+				shortTitle,
+				seoTitle,
+				topics: [t],
+			});
+		const baseTrendHints = preferNewsImage
 			? filterNewsAvoidHints(trendHints)
 			: trendHints;
+		const safeTrendHints = sensitiveTopic
+			? filterSensitiveHints(baseTrendHints)
+			: baseTrendHints;
+		const trendHintsFiltered = safeTrendHints.length
+			? safeTrendHints
+			: baseTrendHints;
+		const isPersonTopic = isLikelyPersonTopic(label, trendHintsFiltered);
+		const preferPortrait = !preferNewsImage && sensitiveTopic && isPersonTopic;
 		const portraitHints =
-			preferNewsImage && isLikelyPersonTopic(label, trendHintsFiltered)
+			(preferNewsImage || preferPortrait) && isPersonTopic
 				? NEWS_PORTRAIT_HINTS
 				: [];
 		const newsHints = preferNewsImage
@@ -3667,8 +3812,9 @@ async function collectThumbnailTopicImages({
 		const mergedTokens = uniqueStrings(
 			[
 				...(contextTokens.length ? contextTokens : []),
-				...extraTokens,
+				...safeExtraTokens,
 				...trendHintsFiltered,
+				companionLabel,
 				questionSubjectLabel,
 				questionSubjectContextLabel,
 				...newsHints,
@@ -3678,18 +3824,24 @@ async function collectThumbnailTopicImages({
 		);
 		const criteria = buildImageMatchCriteria(label, mergedTokens);
 		criteria.preferNews = preferNewsImage;
+		criteria.preferPortrait = preferPortrait;
 		criteria.newsTokens = buildNewsContextTokens([
 			...newsHints,
 			...portraitHints,
 		]);
+		criteria.companionTokens = companionTokens;
+		criteria.pairMinMatches =
+			companionTokens.length >= 2 ? 2 : companionTokens.length ? 1 : 0;
 		const identityLabel = buildTopicIdentityLabel(label, mergedTokens);
+		const seedArticleImages =
+			!sensitiveTopic && Array.isArray(t?.trendStory?.articles)
+				? t.trendStory.articles.map((a) => a?.image)
+				: [];
 		const seedUrls = uniqueStrings(
 			[
 				t?.trendStory?.image,
 				...(Array.isArray(t?.trendStory?.images) ? t.trendStory.images : []),
-				...(Array.isArray(t?.trendStory?.articles)
-					? t.trendStory.articles.map((a) => a?.image)
-					: []),
+				...seedArticleImages,
 			].filter(Boolean),
 			{ limit: 8 }
 		);
@@ -3710,13 +3862,25 @@ async function collectThumbnailTopicImages({
 		const searchLabel = preferNewsImage
 			? `${searchLabelBase} news`
 			: searchLabelBase;
+		const pairSearchLabelBase = companionLabel
+			? `${label} ${companionLabel}`
+			: "";
+		const pairSearchLabel = pairSearchLabelBase
+			? preferNewsImage
+				? `${pairSearchLabelBase} news`
+				: pairSearchLabelBase
+			: "";
 		if (log)
 			log("thumbnail topic image search plan", {
 				topic: label,
 				searchLabel,
+				pairSearchLabel,
 				identityLabel,
 				contextQuery,
 				preferNewsImage,
+				preferPortrait,
+				sensitiveTopic,
+				companionLabel,
 				newsHintSample: newsHints.slice(0, 4),
 				trendHintSample: trendHintsFiltered.slice(0, 6),
 				mergedTokenSample: mergedTokens.slice(0, 8),
@@ -3724,10 +3888,34 @@ async function collectThumbnailTopicImages({
 		let hits = hasCSE
 			? await fetchCseImages(searchLabel, mergedTokens, {
 					preferNews: preferNewsImage,
+					preferPortrait,
 					newsHints,
 					portraitHints,
 			  })
 			: [];
+		const canPairSearch =
+			pairSearchLabel &&
+			pairSearchLabel.toLowerCase() !== searchLabel.toLowerCase();
+		let pairHits = canPairSearch
+			? await fetchCseImages(pairSearchLabel, mergedTokens, {
+					preferNews: preferNewsImage,
+					preferPortrait,
+					newsHints,
+					portraitHints,
+			  })
+			: [];
+		if (pairHits.length) {
+			for (const hit of pairHits) {
+				const url = typeof hit === "string" ? hit : hit?.url;
+				if (!url) continue;
+				pushCandidate(url, {
+					source: hit?.source || "",
+					title: hit?.title || "",
+					priority: 0.65,
+					criteria,
+				});
+			}
+		}
 		if (hits.length) {
 			for (const hit of hits) {
 				const url = typeof hit === "string" ? hit : hit?.url;
@@ -3741,7 +3929,7 @@ async function collectThumbnailTopicImages({
 			}
 		}
 
-		if (!hits.length && hasCSE) {
+		if (!hits.length && !pairHits.length && hasCSE && !sensitiveTopic) {
 			const ctxItems = await fetchCseContext(searchLabel, mergedTokens);
 			const articleUrls = uniqueStrings(
 				[
@@ -3786,11 +3974,17 @@ async function collectThumbnailTopicImages({
 			const newsQueries = preferNewsImage
 				? buildNewsImageQueries(searchLabelBase, newsHints, portraitHints)
 				: [];
+			const portraitQueries = preferPortrait
+				? [`${searchLabelBase} portrait`, `${searchLabelBase} headshot`]
+				: [];
+			const pairQueries = pairSearchLabelBase ? [pairSearchLabelBase] : [];
 			const googleLimit = preferNewsImage
 				? Math.max(GOOGLE_IMAGES_VARIANT_LIMIT, 4)
 				: GOOGLE_IMAGES_VARIANT_LIMIT;
 			const googleQueries = uniqueStrings(
 				[
+					...pairQueries,
+					...portraitQueries,
 					...newsQueries,
 					questionSubjectContextLabel,
 					questionSubjectLabel,
@@ -3884,7 +4078,8 @@ async function collectThumbnailTopicImages({
 				(c.merchPenalty || 0) -
 				(c.relaxed ? 0.6 : 0) +
 				(c.preferNews ? (c.newsScore || 0) * 0.6 : 0) -
-				(c.preferNews ? c.newsAvoidPenalty || 0 : 0),
+				(c.preferNews ? c.newsAvoidPenalty || 0 : 0) +
+				(c.pairMatch ? 0.45 : 0),
 		}))
 		.sort((a, b) => b.relevanceScore - a.relevanceScore);
 	const downloadCount = Math.min(ranked.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
@@ -3918,6 +4113,8 @@ async function collectThumbnailTopicImages({
 					width: dims.width || 0,
 					height: dims.height || 0,
 					tone,
+					pairMatch: candidate.pairMatch,
+					pairMatches: candidate.pairMatches,
 					newsScore: candidate.newsScore,
 					newsAvoidPenalty: candidate.newsAvoidPenalty,
 					score: scoreTopicImageCandidate({
@@ -3938,6 +4135,8 @@ async function collectThumbnailTopicImages({
 				tone,
 				matchScore: candidate.matchScore,
 				sourceScore: candidate.sourceScore,
+				pairMatch: candidate.pairMatch,
+				pairMatches: candidate.pairMatches,
 				newsScore: candidate.newsScore,
 				newsAvoidPenalty: candidate.newsAvoidPenalty,
 				url,
@@ -3993,7 +4192,16 @@ async function collectThumbnailTopicImages({
 		const bPixels = (b.width || 0) * (b.height || 0);
 		return bPixels - aPixels;
 	});
-	const selectedCandidates = pickPool.slice(0, target);
+	let selectedCandidates = pickPool.slice(0, target);
+	if (target > 0 && pickPool.length) {
+		const pairPick = pickPool.find((c) => c.pairMatch);
+		if (pairPick && !selectedCandidates.includes(pairPick)) {
+			selectedCandidates = [
+				pairPick,
+				...selectedCandidates.filter((c) => c !== pairPick),
+			].slice(0, target);
+		}
+	}
 	const selected = [];
 	for (let i = 0; i < selectedCandidates.length; i++) {
 		const candidate = selectedCandidates[i];
