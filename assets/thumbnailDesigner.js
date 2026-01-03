@@ -75,8 +75,8 @@ const QA_LUMA_MIN = 0.34;
 const QA_LUMA_LEFT_MIN = 0.33;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
-const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
-const THUMBNAIL_TEXT_BOX_BORDER_PCT = 0.38;
+const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.16;
+const THUMBNAIL_TEXT_BOX_BORDER_PCT = 0.32;
 const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.141;
 const THUMBNAIL_BADGE_FONT_PCT = 0.045;
 const THUMBNAIL_BADGE_X_PCT = 0.05;
@@ -155,6 +155,14 @@ const NEWS_SIGNAL_TOKENS = new Set([
 	"press",
 	"conference",
 ]);
+const NEWS_AVOID_TOKENS = [
+	"red carpet",
+	"premiere",
+	"gala",
+	"award",
+	"festival",
+	"after party",
+];
 const NEWS_IMAGE_HINTS_BASE = [
 	"news report",
 	"news headline",
@@ -883,6 +891,14 @@ function scoreNewsContext({
 	}
 	if (!hits) return 0;
 	return clampNumber(hits / Math.max(3, tokens.length), 0, 1);
+}
+
+function scoreNewsAvoidPenalty({ url = "", source = "", title = "" } = {}) {
+	const hay = `${url} ${source} ${title}`.toLowerCase();
+	for (const tok of NEWS_AVOID_TOKENS) {
+		if (tok && hay.includes(tok)) return 0.35;
+	}
+	return 0;
 }
 
 function scoreThumbnailTopicMatch(url = "", contextLink = "", criteria = null) {
@@ -2282,6 +2298,9 @@ function scoreTopicImageCandidate(candidate) {
 	const newsScore = Number.isFinite(candidate?.newsScore)
 		? clampNumber(candidate.newsScore, 0, 1)
 		: 0;
+	const newsAvoidPenalty = Number.isFinite(candidate?.newsAvoidPenalty)
+		? clampNumber(candidate.newsAvoidPenalty, 0, 1)
+		: 0;
 	return (
 		sizeScore * 0.35 +
 		lumaScore * 0.2 +
@@ -2289,7 +2308,8 @@ function scoreTopicImageCandidate(candidate) {
 		matchScore * 0.3 +
 		sourceScore * 0.05 +
 		newsScore * 0.08 -
-		warmPenalty
+		warmPenalty -
+		newsAvoidPenalty
 	);
 }
 
@@ -2583,7 +2603,7 @@ async function composeThumbnailBase({
 				? panelMargin
 				: Math.max(0, Math.round(panelMargin + topPad));
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = hasSinglePanel ? "(ih-oh)*0.18" : "(ih-oh)*0.35";
+		const panelCropY = hasSinglePanel ? "(ih-oh)*0.12" : "(ih-oh)*0.35";
 		if (hasSinglePanel) {
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
@@ -2592,8 +2612,8 @@ async function composeThumbnailBase({
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-					`${panelFitPad},` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
 					`eq=contrast=${THUMBNAIL_PANEL_FG_CONTRAST}:saturation=${THUMBNAIL_PANEL_FG_SATURATION}:brightness=${THUMBNAIL_PANEL_FG_BRIGHTNESS}:gamma=${THUMBNAIL_PANEL_FG_GAMMA},` +
 					`unsharp=${THUMBNAIL_PANEL_FG_UNSHARP},format=rgba[panel1fg]`
 			);
@@ -3064,9 +3084,12 @@ async function renderThumbnailOverlay({
 	const fontFile = THUMBNAIL_FONT_FILE
 		? `:fontfile='${escapeDrawtext(THUMBNAIL_FONT_FILE)}'`
 		: "";
+	const textScale = hasBadge ? 0.94 : 1;
 	const fontSize = Math.max(
 		42,
-		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
+		Math.round(
+			THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale * textScale
+		)
 	);
 	const boxBorder = Math.round(fontSize * THUMBNAIL_TEXT_BOX_BORDER_PCT);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
@@ -3146,9 +3169,10 @@ async function renderThumbnailOverlay({
 		`vignette=${vignetteStrength.toFixed(2)}`
 	);
 	if (hasBadge) {
+		const badgeScale = hasText ? 0.92 : 1;
 		const badgeFontSize = Math.max(
 			18,
-			Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_FONT_PCT)
+			Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_FONT_PCT * badgeScale)
 		);
 		const badgeBorder = Math.round(badgeFontSize * 0.55);
 		filters.push(
@@ -3527,6 +3551,9 @@ async function collectThumbnailTopicImages({
 					tokens: criteria?.newsTokens || [],
 			  })
 			: 0;
+		const newsAvoidPenalty = criteria?.preferNews
+			? scoreNewsAvoidPenalty({ url, source, title })
+			: 0;
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
 		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
 		const relaxed =
@@ -3542,6 +3569,7 @@ async function collectThumbnailTopicImages({
 			phraseHit: match.phraseHit,
 			sourceScore: scoreSourceAffinity(url, source),
 			newsScore,
+			newsAvoidPenalty,
 			preferNews: Boolean(criteria?.preferNews),
 			merchPenalty,
 			priority,
@@ -3837,7 +3865,8 @@ async function collectThumbnailTopicImages({
 				(c.priority || 0) -
 				(c.merchPenalty || 0) -
 				(c.relaxed ? 0.6 : 0) +
-				(c.preferNews ? (c.newsScore || 0) * 0.6 : 0),
+				(c.preferNews ? (c.newsScore || 0) * 0.6 : 0) -
+				(c.preferNews ? c.newsAvoidPenalty || 0 : 0),
 		}))
 		.sort((a, b) => b.relevanceScore - a.relevanceScore);
 	const downloadCount = Math.min(ranked.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
@@ -3872,11 +3901,13 @@ async function collectThumbnailTopicImages({
 					height: dims.height || 0,
 					tone,
 					newsScore: candidate.newsScore,
+					newsAvoidPenalty: candidate.newsAvoidPenalty,
 					score: scoreTopicImageCandidate({
 						width: dims.width || 0,
 						height: dims.height || 0,
 						tone,
 						newsScore: candidate.newsScore,
+						newsAvoidPenalty: candidate.newsAvoidPenalty,
 					}),
 				});
 				continue;
@@ -3890,6 +3921,7 @@ async function collectThumbnailTopicImages({
 				matchScore: candidate.matchScore,
 				sourceScore: candidate.sourceScore,
 				newsScore: candidate.newsScore,
+				newsAvoidPenalty: candidate.newsAvoidPenalty,
 				url,
 				source: candidate.source,
 				score: scoreTopicImageCandidate({
@@ -3899,6 +3931,7 @@ async function collectThumbnailTopicImages({
 					matchScore: candidate.matchScore,
 					sourceScore: candidate.sourceScore,
 					newsScore: candidate.newsScore,
+					newsAvoidPenalty: candidate.newsAvoidPenalty,
 				}),
 			});
 		} catch {
