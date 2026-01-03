@@ -2723,6 +2723,19 @@ function titleCaseIfLower(text = "") {
 	return cleaned.replace(/\b[a-z]/g, (m) => m.toUpperCase());
 }
 
+function titleCaseForDisplay(text = "") {
+	const cleaned = String(text || "").trim();
+	if (!cleaned) return "";
+	const parts = cleaned.split(/\s+/).filter(Boolean);
+	return parts
+		.map((word) => {
+			if (!/[a-z]/.test(word)) return word;
+			if (/[A-Z]/.test(word)) return word;
+			return word.replace(/^[a-z]/, (m) => m.toUpperCase());
+		})
+		.join(" ");
+}
+
 function shouldAppendQuestionMark(text = "") {
 	const info = extractQuestionSegments(text);
 	return Boolean(info && (info.questionWord || info.hasQuestionMark));
@@ -2743,7 +2756,7 @@ function buildThumbnailText(
 ) {
 	const cleaned = cleanThumbnailText(title);
 	if (!cleaned) return { text: "", fontScale: 1 };
-	const pretty = titleCaseIfLower(cleaned);
+	const pretty = titleCaseForDisplay(cleaned);
 	const words = pretty.split(" ").filter(Boolean);
 	const trimmedWords = words.slice(0, Math.max(1, maxWords));
 	const wantsQuestionMark = shouldAppendQuestionMark(title);
@@ -3231,15 +3244,6 @@ async function collectThumbnailTopicImages({
 	const topicList = Array.isArray(topics) ? topics : [];
 	if (!topicList.length) return [];
 
-	const combinedContext = `${title || ""} ${shortTitle || ""} ${
-		seoTitle || ""
-	}`.trim();
-	const contextQuery = sanitizeOverlayQuery(
-		sanitizeThumbnailContext(combinedContext)
-	);
-	const contextTokens =
-		contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
-
 	const urlCandidates = [];
 	const seen = new Set();
 	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
@@ -3281,6 +3285,24 @@ async function collectThumbnailTopicImages({
 		const label = t?.displayTopic || t?.topic || "";
 		if (!label) continue;
 		const extraTokens = Array.isArray(t?.keywords) ? t.keywords : [];
+		const relatedQueries = uniqueStrings(
+			[
+				...(Array.isArray(t?.trendStory?.relatedQueries?.rising)
+					? t.trendStory.relatedQueries.rising
+					: []),
+				...(Array.isArray(t?.trendStory?.relatedQueries?.top)
+					? t.trendStory.relatedQueries.top
+					: []),
+			],
+			{ limit: 10 }
+		);
+		const contextQuery = sanitizeOverlayQuery(
+			sanitizeThumbnailContext(
+				[label, ...relatedQueries].filter(Boolean).join(" ")
+			)
+		);
+		const contextTokens =
+			contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
 		const trendHints = uniqueStrings(
 			[
 				...(Array.isArray(t?.trendStory?.searchPhrases)
@@ -3289,6 +3311,7 @@ async function collectThumbnailTopicImages({
 				...(Array.isArray(t?.trendStory?.entityNames)
 					? t.trendStory.entityNames
 					: []),
+				...relatedQueries,
 				...(Array.isArray(t?.trendStory?.articles)
 					? t.trendStory.articles.map((a) => a?.title)
 					: []),
@@ -3342,6 +3365,15 @@ async function collectThumbnailTopicImages({
 
 		const searchLabel =
 			questionSubjectContextLabel || questionSubjectLabel || label;
+		if (log)
+			log("thumbnail topic image search plan", {
+				topic: label,
+				searchLabel,
+				identityLabel,
+				contextQuery,
+				trendHintSample: trendHints.slice(0, 6),
+				mergedTokenSample: mergedTokens.slice(0, 8),
+			});
 		let hits = hasCSE ? await fetchCseImages(searchLabel, mergedTokens) : [];
 		if (hits.length) {
 			for (const hit of hits) {
@@ -3745,6 +3777,34 @@ function deriveQuestionHeadlinePlan({
 	return null;
 }
 
+function buildPrimaryTopicBadge(topics = []) {
+	const list = Array.isArray(topics) ? topics : [];
+	const primary = list[0]?.displayTopic || list[0]?.topic || "";
+	if (!primary) return "";
+	const words = selectHeadlineWords(primary, 4);
+	if (!words.length) return "";
+	return titleCaseForDisplay(words.join(" "));
+}
+
+function stripTopicFromHeadline(headline = "", topicLabel = "") {
+	const cleanedHeadline = cleanThumbnailText(headline);
+	const cleanedTopic = cleanThumbnailText(topicLabel);
+	if (!cleanedHeadline || !cleanedTopic) return headline;
+	const topicTokens = new Set(
+		cleanedTopic
+			.split(" ")
+			.map((t) => t.toLowerCase())
+			.filter(Boolean)
+	);
+	if (!topicTokens.size) return headline;
+	const headTokens = cleanedHeadline.split(" ").filter(Boolean);
+	const kept = headTokens.filter(
+		(w) => !topicTokens.has(String(w || "").toLowerCase())
+	);
+	if (!kept.length) return headline;
+	return kept.join(" ");
+}
+
 function buildTopicPhrase(topics = [], maxWords = 3) {
 	const list = Array.isArray(topics) ? topics : [];
 	const primary = list[0]?.displayTopic || list[0]?.topic || "";
@@ -3911,7 +3971,7 @@ async function generateThumbnailPackage({
 		maxWords: THUMBNAIL_TEXT_MAX_WORDS,
 		punchyMaxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
 	});
-	const thumbTitle =
+	let thumbTitle =
 		questionPlan?.headline ||
 		selectThumbnailTitle({
 			title,
@@ -3919,7 +3979,7 @@ async function generateThumbnailPackage({
 			seoTitle,
 			topics,
 		});
-	const punchyTitle =
+	let punchyTitle =
 		questionPlan?.punchy ||
 		buildShortHookTitle({
 			title,
@@ -3928,10 +3988,34 @@ async function generateThumbnailPackage({
 			topics,
 		});
 	const topicCount = Array.isArray(topics) ? topics.length : 0;
-	const badgeText =
+	let badgeText =
 		topicCount > 1
 			? `${Math.min(topicCount, 9)} STORIES`
 			: questionPlan?.badgeText || "";
+	if (!badgeText && topicCount === 1) {
+		badgeText = buildPrimaryTopicBadge(topics);
+	}
+	if (badgeText && topicCount === 1) {
+		const stripped = stripTopicFromHeadline(thumbTitle, badgeText);
+		if (stripped && stripped !== thumbTitle) thumbTitle = stripped;
+		const strippedPunchy = stripTopicFromHeadline(punchyTitle, badgeText);
+		if (strippedPunchy && strippedPunchy !== punchyTitle)
+			punchyTitle = strippedPunchy;
+	}
+	if (log)
+		log("thumbnail text plan", {
+			thumbTitle,
+			punchyTitle,
+			badgeText,
+			topicCount,
+			questionPlan: questionPlan
+				? {
+						headline: questionPlan.headline,
+						punchy: questionPlan.punchy,
+						badgeText: questionPlan.badgeText || "",
+				  }
+				: null,
+		});
 
 	const topicImagePaths = await collectThumbnailTopicImages({
 		topics,

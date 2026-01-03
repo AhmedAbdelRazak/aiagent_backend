@@ -3897,6 +3897,44 @@ const FICTIONAL_CONTEXT_WEAK_TOKENS = [
 	"apple tv",
 ];
 
+const REAL_PERSON_CONTEXT_TOKENS = [
+	"actor",
+	"actress",
+	"singer",
+	"rapper",
+	"musician",
+	"comedian",
+	"director",
+	"producer",
+	"influencer",
+	"model",
+	"celebrity",
+	"born",
+	"birth",
+	"age",
+	"daughter",
+	"son",
+	"wife",
+	"husband",
+	"family",
+	"parent",
+	"parents",
+	"child",
+	"children",
+	"police",
+	"court",
+	"trial",
+	"arrest",
+	"charged",
+	"lawsuit",
+	"hospital",
+	"overdose",
+	"coroner",
+	"autopsy",
+	"obituary",
+	"investigation",
+];
+
 const TOPIC_DOMAIN_TOKENS = [
 	{
 		domain: "sports",
@@ -3994,6 +4032,10 @@ function detectFictionalContext(text = "") {
 		hay.includes(tok)
 	);
 	if (hasStrong) return true;
+	const hasPersonCue = REAL_PERSON_CONTEXT_TOKENS.some((tok) =>
+		hay.includes(tok)
+	);
+	if (hasPersonCue) return false;
 	const hasWeak = FICTIONAL_CONTEXT_WEAK_TOKENS.some((tok) =>
 		hay.includes(tok)
 	);
@@ -5219,6 +5261,12 @@ async function generateScript({
 					...(Array.isArray(t.keywords) ? t.keywords : []),
 					...(t.trendStory?.searchPhrases || []),
 					...(t.trendStory?.entityNames || []),
+					...(Array.isArray(t.trendStory?.relatedQueries?.rising)
+						? t.trendStory.relatedQueries.rising
+						: []),
+					...(Array.isArray(t.trendStory?.relatedQueries?.top)
+						? t.trendStory.relatedQueries.top
+						: []),
 				],
 				{ limit: 8 }
 			);
@@ -5231,6 +5279,7 @@ async function generateScript({
 			}\n- Articles: ${articles.length ? articles.join(" | ") : "(none)"}`;
 		})
 		.join("\n\n");
+	const trendSignalLines = buildTrendSignalLines(safeTopics);
 
 	const topicIntents = safeTopics.map((t, idx) => {
 		const contextItems = Array.isArray(topicContexts)
@@ -5356,6 +5405,9 @@ ${topicContextGuide}
 
 Topic notes:
 ${topicHintLines}
+
+Trending signals (address the #1 rising reason early if present):
+${trendSignalLines}
 
 Topic intent resolution (MUST follow; do NOT invent beyond this):
 ${topicIntentLines}
@@ -5566,6 +5618,76 @@ Return JSON ONLY:
 	};
 }
 
+function buildTrendSignalLines(topics = []) {
+	const list = Array.isArray(topics) ? topics : [];
+	if (!list.length) return "- (none)";
+	return list
+		.map((t, idx) => {
+			const label =
+				String(t?.displayTopic || t?.topic || "").trim() || `Topic ${idx + 1}`;
+			const related = normalizeRelatedQueries(t?.trendStory?.relatedQueries);
+			const interest = normalizeInterestOverTime(
+				t?.trendStory?.interestOverTime
+			);
+			const rising = related.rising.slice(0, 4);
+			const top = related.top.slice(0, 4);
+			const interestLine =
+				interest.points > 0
+					? `interest(avg=${interest.avg}, latest=${interest.latest}, peak=${interest.peak})`
+					: "";
+			return `- Topic ${idx + 1} (${label}): rising=${
+				rising.length ? rising.join(", ") : "(none)"
+			}; top=${top.length ? top.join(", ") : "(none)"}${
+				interestLine ? ` | ${interestLine}` : ""
+			}`;
+		})
+		.join("\n");
+}
+
+function extractTrendSignalTokens(relatedQueries = null) {
+	const related = normalizeRelatedQueries(relatedQueries);
+	const list = uniqueStrings(
+		[...related.rising, ...related.top].filter(Boolean),
+		{ limit: 12 }
+	);
+	if (!list.length) return [];
+	const tokens = list.flatMap((q) => tokenizeQaText(q));
+	return uniqueStrings(tokens, { limit: 12 });
+}
+
+function assessTrendSignalCoverage(script = {}, topics = []) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length || !Array.isArray(topics) || !topics.length) {
+		return { missingTopics: [], coverage: [] };
+	}
+	const byTopic = new Map();
+	for (const seg of segments) {
+		const topicIndex =
+			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+				? Number(seg.topicIndex)
+				: 0;
+		const prev = byTopic.get(topicIndex) || "";
+		byTopic.set(topicIndex, `${prev} ${seg.text || ""}`.trim());
+	}
+	const coverage = [];
+	const missingTopics = [];
+	for (let i = 0; i < topics.length; i++) {
+		const topic = topics[i] || {};
+		const tokens = extractTrendSignalTokens(topic?.trendStory?.relatedQueries);
+		if (!tokens.length) continue;
+		const text = String(byTopic.get(i) || "").toLowerCase();
+		const hits = tokens.filter((tok) => text.includes(tok));
+		const ok = hits.length > 0;
+		coverage.push({
+			topicIndex: i,
+			tokens: tokens.slice(0, 6),
+			hits: hits.slice(0, 6),
+		});
+		if (!ok) missingTopics.push(i);
+	}
+	return { missingTopics, coverage };
+}
+
 function analyzeScriptQuality({
 	script,
 	topics = [],
@@ -5637,8 +5759,14 @@ function analyzeScriptQuality({
 	if (missingAttributionTopics.length)
 		warnings.push("missing_attribution_by_topic");
 
+	const trendCoverage = assessTrendSignalCoverage(script, topics);
+	if (trendCoverage.missingTopics.length)
+		warnings.push("missing_trend_signal_coverage");
+
 	const needsRewrite =
-		duplicatePairs.length > 0 || missingAttributionTopics.length > 0;
+		duplicatePairs.length > 0 ||
+		missingAttributionTopics.length > 0 ||
+		trendCoverage.missingTopics.length > 0;
 	const hasCritical = issues.length > 0;
 
 	return {
@@ -5652,6 +5780,7 @@ function analyzeScriptQuality({
 			duplicatePairs,
 			shortSegments: shortSegments.map((s) => s.index),
 			missingAttributionTopics,
+			missingTrendSignalTopics: trendCoverage.missingTopics,
 		},
 	};
 }
@@ -5708,6 +5837,107 @@ function summarizeScriptEngagement(script = {}) {
 	};
 }
 
+function formatSourceLabel(host = "") {
+	const cleaned = String(host || "")
+		.replace(/^www\./i, "")
+		.trim();
+	if (!cleaned) return "";
+	const base = cleaned.replace(
+		/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
+		""
+	);
+	const words = base
+		.replace(/[^a-z0-9]+/gi, " ")
+		.split(/\s+/)
+		.filter(Boolean);
+	if (!words.length) return cleaned;
+	return words
+		.map((w) =>
+			w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)
+		)
+		.join(" ");
+}
+
+function buildSourceTokensFromHosts(hosts = []) {
+	const tokens = new Set();
+	for (const host of Array.isArray(hosts) ? hosts : []) {
+		const lowered = String(host || "")
+			.toLowerCase()
+			.trim();
+		if (!lowered) continue;
+		tokens.add(lowered);
+		const base = lowered.replace(
+			/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
+			""
+		);
+		const cleaned = base.replace(/[^a-z0-9]+/g, " ").trim();
+		if (cleaned) tokens.add(cleaned);
+	}
+	return Array.from(tokens);
+}
+
+function pickTopicSourceHosts(topic, topicContext = []) {
+	const ctx = Array.isArray(topicContext) ? topicContext : [];
+	const ctxHosts = ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean);
+	const articleHosts = Array.isArray(topic?.trendStory?.articles)
+		? topic.trendStory.articles
+				.map((a) => getUrlHost(a?.url || ""))
+				.filter(Boolean)
+		: [];
+	return uniqueStrings([...ctxHosts, ...articleHosts], { limit: 6 });
+}
+
+function ensureTopicAttributions({
+	script,
+	topics = [],
+	topicContexts = [],
+	wordCaps = [],
+	log,
+} = {}) {
+	const segments = Array.isArray(script?.segments)
+		? script.segments.map((s) => ({ ...s }))
+		: [];
+	if (!segments.length) return { segments, didInsert: false, inserted: [] };
+
+	const inserted = [];
+	for (let i = 0; i < (topics || []).length; i++) {
+		const ctx = Array.isArray(topicContexts?.[i]?.context)
+			? topicContexts[i].context
+			: [];
+		const sourceHosts = pickTopicSourceHosts(topics[i], ctx);
+		if (!sourceHosts.length) continue;
+		let sourceTokens = extractSourceTokensFromContext(ctx);
+		if (!sourceTokens.length)
+			sourceTokens = buildSourceTokensFromHosts(sourceHosts);
+		const topicSegments = segments.filter((s) => Number(s.topicIndex) === i);
+		const hasAttribution = topicSegments.some((s) =>
+			segmentHasAttribution(s.text || "", sourceTokens)
+		);
+		if (hasAttribution) continue;
+
+		const targetIndex = segments.findIndex((s) => Number(s.topicIndex) === i);
+		if (targetIndex < 0) continue;
+		const sourceLabel = formatSourceLabel(sourceHosts[0]);
+		if (!sourceLabel) continue;
+		const prefix = `According to ${sourceLabel}, `;
+		const baseText = String(segments[targetIndex].text || "").trim();
+		let updated = baseText.startsWith(prefix)
+			? baseText
+			: `${prefix}${baseText}`;
+		const cap =
+			Array.isArray(wordCaps) && Number.isFinite(Number(wordCaps[targetIndex]))
+				? Number(wordCaps[targetIndex])
+				: null;
+		if (cap) updated = trimSegmentToCap(updated, cap);
+		updated = sanitizeSegmentText(updated);
+		segments[targetIndex] = { ...segments[targetIndex], text: updated };
+		inserted.push({ topicIndex: i, segmentIndex: targetIndex, sourceLabel });
+	}
+
+	if (log && inserted.length) log("script attribution inserted", { inserted });
+	return { segments, didInsert: inserted.length > 0, inserted };
+}
+
 async function rewriteSegmentsForQuality({
 	jobId,
 	script,
@@ -5747,6 +5977,7 @@ async function rewriteSegmentsForQuality({
 				})`
 		)
 		.join(", ");
+	const trendSignalLines = buildTrendSignalLines(topics);
 
 	const rewritePrompt = `
 Improve this script for clarity, interesting facts, and attribution.
@@ -5754,6 +5985,9 @@ Target narration duration: ~${Number(narrationTargetSec || 0).toFixed(1)}s
 Mood: ${mood}
 Topic summaries:
 ${topicSummaries.join("\n")}
+
+Trending signals (address the #1 rising reason early if present):
+${trendSignalLines}
 
 Topic assignment by segment (do NOT change):
 ${topicLine}
@@ -8713,6 +8947,26 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			throw new Error(
 				`script_qa_failed:${qaResult.issues.join("|") || "unknown"}`
 			);
+		}
+
+		const attributionFix = ensureTopicAttributions({
+			script,
+			topics: topicPicks,
+			topicContexts,
+			wordCaps,
+			log: (message, payload) => logJob(jobId, message, payload),
+		});
+		if (attributionFix.didInsert) {
+			qaResult = analyzeScriptQuality({
+				script,
+				topics: topicPicks,
+				topicContexts,
+				wordCaps,
+			});
+			logJob(jobId, "script qa attribution fix", {
+				inserted: attributionFix.inserted,
+				qa: qaResult,
+			});
 		}
 
 		const scriptEngagement = summarizeScriptEngagement(script);
