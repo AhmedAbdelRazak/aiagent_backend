@@ -4698,6 +4698,43 @@ function sanitizeSegmentText(text = "") {
 	return cleaned || "Quick update.";
 }
 
+const REAL_WORLD_FICTIONAL_REWRITE_RULES = [
+	{ regex: /(^|[.!?]\s+)in[-\s]?universe[:,]?\s+/gi, replace: "$1" },
+	{ regex: /\bin[-\s]?universe\b/gi, replace: "" },
+	{ regex: /\bfictional\b/gi, replace: "" },
+	{ regex: /\bplotline\b/gi, replace: "story" },
+	{ regex: /\bstoryline\b/gi, replace: "story" },
+	{ regex: /\bcharacter arc\b/gi, replace: "story" },
+	{ regex: /\bcanon\b/gi, replace: "record" },
+	{ regex: /\blore\b/gi, replace: "background" },
+];
+
+function stripFictionalFraming(text = "") {
+	let updated = String(text || "");
+	for (const rule of REAL_WORLD_FICTIONAL_REWRITE_RULES) {
+		updated = updated.replace(rule.regex, rule.replace);
+	}
+	updated = cleanupSpeechText(updated);
+	return updated || String(text || "").trim();
+}
+
+function enforceRealWorldFraming(segments = [], topicContextFlags = []) {
+	if (!Array.isArray(segments) || !segments.length) return segments;
+	if (!Array.isArray(topicContextFlags) || !topicContextFlags.length)
+		return segments;
+	return segments.map((seg) => {
+		const topicIndex =
+			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+				? Number(seg.topicIndex)
+				: 0;
+		const isFictional = Boolean(topicContextFlags?.[topicIndex]?.isFictional);
+		if (isFictional) return seg;
+		const cleaned = stripFictionalFraming(seg.text || "");
+		if (!cleaned || cleaned === seg.text) return seg;
+		return { ...seg, text: cleaned };
+	});
+}
+
 const INTRO_TEMPLATES = {
 	neutral: [
 		"Hi there, this is Amad, and today I will cover {topic}.",
@@ -5320,7 +5357,7 @@ async function generateScript({
 						}
 						return `- Topic ${
 							idx + 1
-						} (${label}): Real-world coverage. Keep it factual and grounded.`;
+						} (${label}): Real-world coverage. Keep it factual and grounded. Avoid any in-universe or fictional framing.`;
 					})
 					.join("\n")
 			: "- (none)";
@@ -5456,8 +5493,9 @@ Style rules (IMPORTANT):
 - For each segment, include "expression" from: neutral, warm, serious, excited, thoughtful.
 - Default to neutral for most segments. Use warm/thoughtful sparingly (1-2 middle segments max) and keep it subtle.
 - If the topic is sad or serious, use neutral (no exaggerated sadness).
-- If a topic is about a TV show, film, or fictional character, frame it as plot/character discussion, not real-life tragedy.
-- If a topic is marked as Fictional/Story, keep it in-universe and avoid real-world mourning language.
+- ONLY if a topic is about a TV show, film, or fictional character, frame it as plot/character discussion, not real-life tragedy.
+- ONLY if a topic is marked as Fictional/Story, keep it in-universe and avoid real-world mourning language.
+- If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
 - Avoid phrasing like "sad news" unless it is a real-world tragedy.
 - Use the topic anchor phrase in the FIRST segment of each topic.
 - If a topic's evidence is "(none)", keep statements high-level and avoid specific claims; say it's trending and frame it as an open question.
@@ -5558,6 +5596,7 @@ Return JSON ONLY:
 		topicContexts,
 		topicIntents
 	);
+	segments = enforceRealWorldFraming(segments, topicContextFlags);
 
 	// Enforce caps softly (avoid mid-sentence cutoffs; allow longer if needed).
 	segments = segments.map((s, i) => {
@@ -5943,6 +5982,7 @@ async function rewriteSegmentsForQuality({
 	script,
 	topics = [],
 	topicContexts = [],
+	topicContextFlags = [],
 	wordCaps = [],
 	tonePlan,
 	narrationTargetSec,
@@ -5957,13 +5997,15 @@ async function rewriteSegmentsForQuality({
 			? topicContexts[idx].context
 			: [];
 		const intent = buildTopicIntentSummary(t, ctx);
+		const isFictional = Boolean(topicContextFlags?.[idx]?.isFictional);
+		const contextLabel = isFictional ? "fictional" : "real-world";
 		const sources = uniqueStrings(
 			ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean),
 			{ limit: 6 }
 		);
 		return `Topic ${idx + 1} (${
 			intent.label || t?.topic || "topic"
-		}): anchor="${intent.anchor || ""}" | evidence="${
+		}): context=${contextLabel} | anchor="${intent.anchor || ""}" | evidence="${
 			intent.evidence || ""
 		}" | sources=${sources.length ? sources.join(", ") : "(none)"}`;
 	});
@@ -6000,6 +6042,7 @@ Rules:
 - No redundancy: each segment adds a new detail or angle with concrete, interesting facts.
 - Add at least one short attribution per topic when sources are available (e.g., "According to Variety...").
 - If you mention rumors or estimates, label them clearly as unconfirmed.
+- If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
 - Keep it conversational and clear; no filler words.
 - End the last segment of each topic with a short engagement question.
 - Do NOT add like/subscribe CTAs.
@@ -6048,6 +6091,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		topicContexts,
 		topicIntents
 	);
+	updated = enforceRealWorldFraming(updated, topicContextFlags);
 	updated = ensureTopicEngagementQuestions(updated, topics, mood, wordCaps);
 	updated = enforceSegmentCompleteness(updated, mood, {
 		includeCta: !includeOutro,
@@ -8916,6 +8960,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					script,
 					topics: topicPicks,
 					topicContexts,
+					topicContextFlags,
 					wordCaps,
 					tonePlan,
 					narrationTargetSec,

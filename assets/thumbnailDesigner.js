@@ -2339,6 +2339,7 @@ async function composeThumbnailBase({
 	const panelBorder = Math.max(4, Math.round(W * 0.004));
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
+	const panelFitPad = `pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
 	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
 
 	const inputs = [baseImagePath, presenterImagePath, ...topics];
@@ -2379,8 +2380,8 @@ async function composeThumbnailBase({
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+					`${panelFitPad},` +
 					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
 					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
@@ -2388,10 +2389,17 @@ async function composeThumbnailBase({
 		} else {
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
-					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
-					`unsharp=3:3:0.35[panel1i]`
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
+					`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
+					`format=rgba[panel1bg]`
 			);
+			filters.push(
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+					`${panelFitPad},` +
+					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+					`unsharp=3:3:0.35,format=rgba[panel1fg]`
+			);
+			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
 		}
 		filters.push(
 			`[panel1i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel1]`
@@ -2407,10 +2415,17 @@ async function composeThumbnailBase({
 		const panelCropY = "(ih-oh)*0.35";
 		filters.push(
 			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
-				`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
-				`unsharp=3:3:0.35[panel2i]`
+				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
+				`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
+				`format=rgba[panel2bg]`
 		);
+		filters.push(
+			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+				`${panelFitPad},` +
+				`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+				`unsharp=3:3:0.35,format=rgba[panel2fg]`
+		);
+		filters.push("[panel2bg][panel2fg]overlay=0:0[panel2i]");
 		filters.push(
 			`[panel2i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel2]`
 		);
