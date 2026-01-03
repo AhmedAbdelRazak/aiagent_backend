@@ -37,7 +37,7 @@ const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
 const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.5;
 const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.1;
 const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.22;
-const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.45;
+const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.32;
 const THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS = 3;
 const THUMBNAIL_VARIANT_B_CONTRAST = 1.12;
 const THUMBNAIL_VARIANT_B_BASE_CHARS = 10;
@@ -675,6 +675,17 @@ function buildNewsImageHints({
 	return uniqueStrings(hints, { limit: 8 });
 }
 
+function filterNewsAvoidHints(hints = []) {
+	if (!Array.isArray(hints) || !hints.length) return [];
+	return hints.filter((hint) => {
+		const lower = String(hint || "").toLowerCase();
+		for (const tok of NEWS_AVOID_TOKENS) {
+			if (tok && lower.includes(tok)) return false;
+		}
+		return true;
+	});
+}
+
 function buildNewsContextTokens(hints = []) {
 	const tokens = Array.isArray(hints)
 		? hints.flatMap((hint) => tokenizeLabel(hint))
@@ -896,7 +907,7 @@ function scoreNewsContext({
 function scoreNewsAvoidPenalty({ url = "", source = "", title = "" } = {}) {
 	const hay = `${url} ${source} ${title}`.toLowerCase();
 	for (const tok of NEWS_AVOID_TOKENS) {
-		if (tok && hay.includes(tok)) return 0.35;
+		if (tok && hay.includes(tok)) return 0.45;
 	}
 	return 0;
 }
@@ -3052,7 +3063,7 @@ async function renderThumbnailOverlay({
 		: 0;
 	const textBoxOpacity = Number.isFinite(Number(overlayOptions.textBoxOpacity))
 		? Number(overlayOptions.textBoxOpacity)
-		: 0.34;
+		: 0.28;
 	const vignetteStrength = Number.isFinite(Number(overlayOptions.vignette))
 		? Number(overlayOptions.vignette)
 		: 0.04;
@@ -3633,12 +3644,19 @@ async function collectThumbnailTopicImages({
 			seoTitle,
 			topics: [t],
 		});
+		const trendHintsFiltered = preferNewsImage
+			? filterNewsAvoidHints(trendHints)
+			: trendHints;
 		const portraitHints =
-			preferNewsImage && isLikelyPersonTopic(label, trendHints)
+			preferNewsImage && isLikelyPersonTopic(label, trendHintsFiltered)
 				? NEWS_PORTRAIT_HINTS
 				: [];
 		const newsHints = preferNewsImage
-			? buildNewsImageHints({ label, trendHints, relatedQueries })
+			? buildNewsImageHints({
+					label,
+					trendHints: trendHintsFiltered,
+					relatedQueries,
+			  })
 			: [];
 		const questionInfo = extractQuestionSegments(label);
 		const questionSubjectLabel = buildQuestionSubjectLabel(questionInfo, 4);
@@ -3650,7 +3668,7 @@ async function collectThumbnailTopicImages({
 			[
 				...(contextTokens.length ? contextTokens : []),
 				...extraTokens,
-				...trendHints,
+				...trendHintsFiltered,
 				questionSubjectLabel,
 				questionSubjectContextLabel,
 				...newsHints,
@@ -3700,7 +3718,7 @@ async function collectThumbnailTopicImages({
 				contextQuery,
 				preferNewsImage,
 				newsHintSample: newsHints.slice(0, 4),
-				trendHintSample: trendHints.slice(0, 6),
+				trendHintSample: trendHintsFiltered.slice(0, 6),
 				mergedTokenSample: mergedTokens.slice(0, 8),
 			});
 		let hits = hasCSE
@@ -4479,7 +4497,7 @@ async function generateThumbnailPackage({
 				saturation: 1.15,
 				vignette: 0.03,
 				leftLift: 0.08,
-				textBoxOpacity: 0.36,
+				textBoxOpacity: 0.3,
 			},
 		},
 	];

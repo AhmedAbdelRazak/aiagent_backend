@@ -6037,6 +6037,35 @@ function formatSourceLabel(host = "") {
 		.join(" ");
 }
 
+const SOURCE_HOST_DEPRIORITY = new Set([
+	"wikipedia.org",
+	"imdb.com",
+	"fandom.com",
+	"wikia.com",
+	"twitter.com",
+	"x.com",
+	"facebook.com",
+	"instagram.com",
+	"tiktok.com",
+	"youtube.com",
+]);
+
+function normalizeSourceHost(host = "") {
+	return String(host || "")
+		.toLowerCase()
+		.replace(/^www\./i, "")
+		.trim();
+}
+
+function isDeprioritizedSourceHost(host = "") {
+	const normalized = normalizeSourceHost(host);
+	if (!normalized) return false;
+	for (const entry of SOURCE_HOST_DEPRIORITY) {
+		if (normalized === entry || normalized.endsWith(`.${entry}`)) return true;
+	}
+	return false;
+}
+
 function buildSourceTokensFromHosts(hosts = []) {
 	const tokens = new Set();
 	for (const host of Array.isArray(hosts) ? hosts : []) {
@@ -6055,7 +6084,11 @@ function buildSourceTokensFromHosts(hosts = []) {
 	return Array.from(tokens);
 }
 
-function pickTopicSourceHosts(topic, topicContext = []) {
+function pickTopicSourceHosts(
+	topic,
+	topicContext = [],
+	{ preferArticles = false } = {}
+) {
 	const ctx = Array.isArray(topicContext) ? topicContext : [];
 	const ctxHosts = ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean);
 	const articleHosts = Array.isArray(topic?.trendStory?.articles)
@@ -6063,13 +6096,23 @@ function pickTopicSourceHosts(topic, topicContext = []) {
 				.map((a) => getUrlHost(a?.url || ""))
 				.filter(Boolean)
 		: [];
-	return uniqueStrings([...ctxHosts, ...articleHosts], { limit: 6 });
+	if (!preferArticles) {
+		return uniqueStrings([...ctxHosts, ...articleHosts], { limit: 6 });
+	}
+	const prioritizedCtxHosts = articleHosts.length
+		? [
+				...ctxHosts.filter((host) => !isDeprioritizedSourceHost(host)),
+				...ctxHosts.filter((host) => isDeprioritizedSourceHost(host)),
+		  ]
+		: ctxHosts;
+	return uniqueStrings([...articleHosts, ...prioritizedCtxHosts], { limit: 6 });
 }
 
 function ensureTopicAttributions({
 	script,
 	topics = [],
 	topicContexts = [],
+	topicContextFlags,
 	wordCaps = [],
 	log,
 } = {}) {
@@ -6083,7 +6126,17 @@ function ensureTopicAttributions({
 		const ctx = Array.isArray(topicContexts?.[i]?.context)
 			? topicContexts[i].context
 			: [];
-		const sourceHosts = pickTopicSourceHosts(topics[i], ctx);
+		const contentType = String(
+			topicContextFlags?.contentType || ""
+		).toLowerCase();
+		const topicFlag = Array.isArray(topicContextFlags?.topics)
+			? topicContextFlags.topics[i]
+			: null;
+		const preferArticles =
+			contentType === "real" || topicFlag?.isFictional === false;
+		const sourceHosts = pickTopicSourceHosts(topics[i], ctx, {
+			preferArticles,
+		});
 		if (!sourceHosts.length) continue;
 		let sourceTokens = extractSourceTokensFromContext(ctx);
 		if (!sourceTokens.length)
@@ -9137,6 +9190,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			script,
 			topics: topicPicks,
 			topicContexts,
+			topicContextFlags,
 			wordCaps,
 			log: (message, payload) => logJob(jobId, message, payload),
 		});

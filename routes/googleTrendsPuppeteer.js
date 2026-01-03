@@ -39,6 +39,8 @@ const TRENDS_SIGNAL_WINDOW_HOURS = 48;
 const TRENDS_SIGNAL_FALLBACK_HOURS = 168;
 const TRENDS_SIGNAL_MAX_STORIES = 8;
 const TRENDS_SIGNAL_TIMEOUT_MS = 9000;
+const TRENDS_SIGNAL_RETRY_DELAY_MS = 350;
+const TRENDS_SIGNAL_TIME_FALLBACKS = ["now 7-d", "today 1-m"];
 const RELATED_QUERIES_LIMIT = 12;
 
 function tmpFile(tag, ext = "") {
@@ -193,6 +195,19 @@ function safeParseTrendsJson(raw = "") {
 	}
 }
 
+function normalizeTrendKeyword(keyword = "") {
+	return String(keyword || "")
+		.replace(/[\u2018\u2019\u201c\u201d"'`]/g, "")
+		.replace(/[^a-z0-9\s-]/gi, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function buildTrendKeywordVariants(keyword = "") {
+	const normalized = normalizeTrendKeyword(keyword);
+	return uniqueStrings([keyword, normalized], { limit: 3 }).filter(Boolean);
+}
+
 function withTimeout(promise, timeoutMs) {
 	let timeoutId;
 	const timeout = new Promise((_, reject) => {
@@ -266,7 +281,7 @@ function hasTrendSignalData(signals) {
 }
 
 async function fetchTrendSignalsWithOpts(opts) {
-	const [relatedRaw, interestRaw] = await Promise.all([
+	let [relatedRaw, interestRaw] = await Promise.all([
 		withTimeout(
 			googleTrends.relatedQueries(opts),
 			TRENDS_SIGNAL_TIMEOUT_MS
@@ -276,6 +291,19 @@ async function fetchTrendSignalsWithOpts(opts) {
 			TRENDS_SIGNAL_TIMEOUT_MS
 		).catch(() => null),
 	]);
+	if (!relatedRaw && !interestRaw) {
+		await delay(TRENDS_SIGNAL_RETRY_DELAY_MS);
+		[relatedRaw, interestRaw] = await Promise.all([
+			withTimeout(
+				googleTrends.relatedQueries(opts),
+				TRENDS_SIGNAL_TIMEOUT_MS
+			).catch(() => null),
+			withTimeout(
+				googleTrends.interestOverTime(opts),
+				TRENDS_SIGNAL_TIMEOUT_MS
+			).catch(() => null),
+		]);
+	}
 
 	const related = parseRelatedQueries(safeParseTrendsJson(relatedRaw) || {});
 	const interest = parseInterestOverTime(
@@ -290,45 +318,76 @@ async function fetchTrendSignalsForKeyword(keyword, { geo, hours } = {}) {
 	const windowHours = clampInt(hours || TRENDS_SIGNAL_WINDOW_HOURS, 12, 168);
 	const endTime = new Date();
 	const startTime = new Date(endTime.getTime() - windowHours * 60 * 60 * 1000);
-	const opts = { keyword: safeKeyword, startTime, endTime, geo };
+	const keywordVariants = buildTrendKeywordVariants(safeKeyword);
+	let lastSignals = null;
 
-	const primary = await fetchTrendSignalsWithOpts(opts);
-	if (hasTrendSignalData(primary)) return primary;
-
-	const fallbackHours = clampInt(
-		Math.max(windowHours, TRENDS_SIGNAL_FALLBACK_HOURS),
-		12,
-		168
-	);
-	if (fallbackHours > windowHours) {
-		const fallbackStart = new Date(
-			endTime.getTime() - fallbackHours * 60 * 60 * 1000
-		);
-		const fallbackSignals = await fetchTrendSignalsWithOpts({
-			keyword: safeKeyword,
-			startTime: fallbackStart,
+	for (const variant of keywordVariants) {
+		const primary = await fetchTrendSignalsWithOpts({
+			keyword: variant,
+			startTime,
 			endTime,
 			geo,
 		});
-		if (hasTrendSignalData(fallbackSignals)) {
-			log("Trends API signals fallback window", {
-				term: safeKeyword,
-				hours: fallbackHours,
+		if (!lastSignals) lastSignals = primary;
+		if (hasTrendSignalData(primary)) return primary;
+
+		const fallbackHours = clampInt(
+			Math.max(windowHours, TRENDS_SIGNAL_FALLBACK_HOURS),
+			12,
+			168
+		);
+		if (fallbackHours > windowHours) {
+			const fallbackStart = new Date(
+				endTime.getTime() - fallbackHours * 60 * 60 * 1000
+			);
+			const fallbackSignals = await fetchTrendSignalsWithOpts({
+				keyword: variant,
+				startTime: fallbackStart,
+				endTime,
+				geo,
 			});
-			return fallbackSignals;
+			if (hasTrendSignalData(fallbackSignals)) {
+				log("Trends API signals fallback window", {
+					term: variant,
+					hours: fallbackHours,
+				});
+				return fallbackSignals;
+			}
+		}
+
+		const defaultSignals = await fetchTrendSignalsWithOpts({
+			keyword: variant,
+			geo,
+		});
+		if (hasTrendSignalData(defaultSignals)) {
+			log("Trends API signals fallback default window", { term: variant });
+			return defaultSignals;
+		}
+
+		for (const time of TRENDS_SIGNAL_TIME_FALLBACKS) {
+			const timeSignals = await fetchTrendSignalsWithOpts({
+				keyword: variant,
+				geo,
+				time,
+			});
+			if (hasTrendSignalData(timeSignals)) {
+				log("Trends API signals fallback time", { term: variant, time });
+				return timeSignals;
+			}
+		}
+
+		if (geo) {
+			const globalSignals = await fetchTrendSignalsWithOpts({
+				keyword: variant,
+			});
+			if (hasTrendSignalData(globalSignals)) {
+				log("Trends API signals fallback global", { term: variant });
+				return globalSignals;
+			}
 		}
 	}
 
-	const defaultSignals = await fetchTrendSignalsWithOpts({
-		keyword: safeKeyword,
-		geo,
-	});
-	if (hasTrendSignalData(defaultSignals)) {
-		log("Trends API signals fallback default window", { term: safeKeyword });
-		return defaultSignals;
-	}
-
-	return primary;
+	return lastSignals;
 }
 
 async function enrichStoriesWithTrendSignals(stories, { geo, hours } = {}) {
