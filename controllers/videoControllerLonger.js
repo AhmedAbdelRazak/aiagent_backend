@@ -1125,6 +1125,79 @@ function scoreTrendingCandidate(item) {
 	return score;
 }
 
+function normalizeRelatedQueries(raw = null) {
+	const obj = raw && typeof raw === "object" ? raw : {};
+	const top = uniqueStrings(Array.isArray(obj.top) ? obj.top : [], {
+		limit: 10,
+	});
+	const rising = uniqueStrings(Array.isArray(obj.rising) ? obj.rising : [], {
+		limit: 10,
+	});
+	return { top, rising };
+}
+
+function normalizeInterestOverTime(raw = null) {
+	const obj = raw && typeof raw === "object" ? raw : {};
+	const points = clampNumber(Number(obj.points) || 0, 0, 500);
+	const avg = clampNumber(Number(obj.avg) || 0, 0, 100);
+	const latest = clampNumber(Number(obj.latest) || 0, 0, 100);
+	const peak = clampNumber(Number(obj.peak) || 0, 0, 100);
+	const slope = clampNumber(Number(obj.slope) || 0, -100, 100);
+	return { points, avg, latest, peak, slope };
+}
+
+function scoreTrendStoryForYouTube(story) {
+	if (!story) return 0;
+	const title = String(
+		story.topic || story.rawTitle || story.title || ""
+	).trim();
+	const snippet = (story.searchPhrases || []).join(" ");
+	let score = scoreTrendingCandidate({ title, snippet });
+
+	const articlesCount = Array.isArray(story.articles)
+		? story.articles.length
+		: 0;
+	score += Math.min(articlesCount, 6) * 1.2;
+
+	const related = normalizeRelatedQueries(story.relatedQueries);
+	score += Math.min(related.top.length, 10) * 0.6;
+	score += Math.min(related.rising.length, 10) * 1.1;
+
+	const interest = normalizeInterestOverTime(story.interestOverTime);
+	score += interest.peak / 25; // 0-4
+	score += interest.latest / 33; // 0-3
+	if (interest.slope > 0) score += Math.min(interest.slope, 50) / 10;
+
+	if (story.image || (Array.isArray(story.images) && story.images.length))
+		score += 1;
+
+	return Number(score.toFixed(2));
+}
+
+function rankTrendStoriesForYouTube(stories = []) {
+	if (!Array.isArray(stories) || !stories.length) return stories;
+	const hasSignals = stories.some(
+		(s) =>
+			(s.relatedQueries &&
+				((Array.isArray(s.relatedQueries.top) &&
+					s.relatedQueries.top.length > 0) ||
+					(Array.isArray(s.relatedQueries.rising) &&
+						s.relatedQueries.rising.length > 0))) ||
+			(s.interestOverTime && Number(s.interestOverTime.points) > 0)
+	);
+	if (!hasSignals) return stories;
+	const scored = stories.map((s, idx) => ({
+		...s,
+		trendScore: scoreTrendStoryForYouTube(s),
+		_rankIdx: idx,
+	}));
+	scored.sort((a, b) => {
+		const diff = (b.trendScore || 0) - (a.trendScore || 0);
+		return diff !== 0 ? diff : a._rankIdx - b._rankIdx;
+	});
+	return scored.map(({ _rankIdx, ...rest }) => rest);
+}
+
 function inferEntertainmentCategory(tokens = []) {
 	const set = new Set(tokens.map((t) => t.toLowerCase()));
 	if (
@@ -1224,9 +1297,25 @@ function normalizeTrendStory(raw = {}) {
 	).trim();
 	const topic = cleanTopicCandidate(baseTitle);
 	const rawTitle = String(raw.rawTitle || raw.title || baseTitle || "").trim();
+	const relatedQueries = normalizeRelatedQueries(
+		raw.relatedQueries || raw.trendSignals?.relatedQueries || null
+	);
+	const interestOverTime = normalizeInterestOverTime(
+		raw.interestOverTime || raw.trendSignals?.interestOverTime || null
+	);
+	const relatedPhrases = uniqueStrings(
+		[...relatedQueries.rising, ...relatedQueries.top],
+		{ limit: 8 }
+	);
 	const searchPhrases = uniqueStrings(
-		[topic, rawTitle, ...(raw.searchPhrases || []), ...(raw.entityNames || [])],
-		{ limit: 10 }
+		[
+			topic,
+			rawTitle,
+			...relatedPhrases,
+			...(raw.searchPhrases || []),
+			...(raw.entityNames || []),
+		],
+		{ limit: 12 }
 	);
 	const articles = Array.isArray(raw.articles)
 		? raw.articles
@@ -1247,7 +1336,12 @@ function normalizeTrendStory(raw = {}) {
 		{ limit: 10 }
 	).filter((u) => isHttpUrl(u));
 	const keywords = uniqueStrings(
-		[...searchPhrases, ...articles.slice(0, 4).map((a) => a.title), topic],
+		[
+			...searchPhrases,
+			...relatedPhrases,
+			...articles.slice(0, 4).map((a) => a.title),
+			topic,
+		],
 		{ limit: 12 }
 	);
 	return {
@@ -1264,6 +1358,9 @@ function normalizeTrendStory(raw = {}) {
 		viralImageBriefs: Array.isArray(raw.viralImageBriefs)
 			? raw.viralImageBriefs
 			: [],
+		relatedQueries,
+		interestOverTime,
+		trendScore: Number(raw.trendScore) || 0,
 		image,
 		images,
 		articles,
@@ -1672,11 +1769,14 @@ async function selectTopics({
 		baseUrl,
 	});
 
-	for (const story of trendStories) {
+	const rankedTrendStories = rankTrendStoriesForYouTube(trendStories);
+
+	for (const story of rankedTrendStories) {
 		if (topics.length >= desired) break;
 		if (!story?.topic) continue;
 		if (isDuplicateTopic(story.topic, topics, usedSet)) continue;
 		const displayTopic = cleanTopicLabel(story.topic) || story.topic;
+		const relatedQueries = normalizeRelatedQueries(story.relatedQueries);
 		topics.push({
 			topic: story.topic,
 			displayTopic,
@@ -1684,6 +1784,8 @@ async function selectTopics({
 			reason: "Google Trends",
 			keywords: topicTokensFromTitle(story.topic)
 				.concat(topicTokensFromTitle(story.rawTitle || ""))
+				.concat(relatedQueries.rising.flatMap((q) => topicTokensFromTitle(q)))
+				.concat(relatedQueries.top.flatMap((q) => topicTokensFromTitle(q)))
 				.slice(0, 10),
 			trendStory: story,
 		});
@@ -8328,6 +8430,12 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						: []),
 					...(Array.isArray(t.trendStory?.entityNames)
 						? t.trendStory.entityNames
+						: []),
+					...(Array.isArray(t.trendStory?.relatedQueries?.rising)
+						? t.trendStory.relatedQueries.rising
+						: []),
+					...(Array.isArray(t.trendStory?.relatedQueries?.top)
+						? t.trendStory.relatedQueries.top
 						: []),
 					...(Array.isArray(t.trendStory?.articles)
 						? t.trendStory.articles.map((a) => a?.title)

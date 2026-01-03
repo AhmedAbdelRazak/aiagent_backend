@@ -12,6 +12,7 @@ const axios = require("axios");
 const puppeteer = require("puppeteer-extra");
 const Stealth = require("puppeteer-extra-plugin-stealth");
 const OpenAI = require("openai");
+const googleTrends = require("google-trends-api");
 
 puppeteer.use(Stealth());
 
@@ -34,6 +35,10 @@ const GOOGLE_IMAGES_MAX_RESULTS = 80;
 const GOOGLE_IMAGES_SCROLLS = 7;
 const GOOGLE_IMAGES_SCROLL_DELAY_MS = 650;
 const GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS = 15000;
+const TRENDS_SIGNAL_WINDOW_HOURS = 48;
+const TRENDS_SIGNAL_MAX_STORIES = 8;
+const TRENDS_SIGNAL_TIMEOUT_MS = 9000;
+const RELATED_QUERIES_LIMIT = 12;
 
 function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
@@ -168,6 +173,139 @@ function safeParseOpenAiJson(raw = "") {
 		}
 	}
 	return null;
+}
+
+function safeParseTrendsJson(raw = "") {
+	const trimmed = String(raw || "").trim();
+	if (!trimmed) return null;
+	try {
+		return JSON.parse(trimmed);
+	} catch {
+		return null;
+	}
+}
+
+function withTimeout(promise, timeoutMs) {
+	let timeoutId;
+	const timeout = new Promise((_, reject) => {
+		timeoutId = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+	});
+	return Promise.race([promise, timeout]).finally(() => {
+		if (timeoutId) clearTimeout(timeoutId);
+	});
+}
+
+function parseRelatedQueries(payload, limit = RELATED_QUERIES_LIMIT) {
+	const ranked = Array.isArray(payload?.default?.rankedList)
+		? payload.default.rankedList
+		: [];
+	const topRaw = Array.isArray(ranked?.[0]?.rankedKeyword)
+		? ranked[0].rankedKeyword
+		: [];
+	const risingRaw = Array.isArray(ranked?.[1]?.rankedKeyword)
+		? ranked[1].rankedKeyword
+		: [];
+	const toQueries = (list) =>
+		uniqueStrings(
+			(list || [])
+				.map((it) => it?.query || it?.topic?.title || "")
+				.filter(Boolean),
+			{ limit: clampInt(limit, 4, 20) }
+		);
+	return {
+		top: toQueries(topRaw),
+		rising: toQueries(risingRaw),
+	};
+}
+
+function parseInterestOverTime(payload) {
+	const timeline = Array.isArray(payload?.default?.timelineData)
+		? payload.default.timelineData
+		: [];
+	const values = timeline
+		.map((t) =>
+			Number(
+				Array.isArray(t?.value) ? t.value[0] : t?.value ?? t?.formattedValue
+			)
+		)
+		.filter((n) => Number.isFinite(n));
+	if (!values.length) {
+		return { points: 0, avg: 0, latest: 0, peak: 0, slope: 0 };
+	}
+	const sum = values.reduce((a, b) => a + b, 0);
+	const avg = sum / values.length;
+	const latest = values[values.length - 1];
+	const peak = Math.max(...values);
+	const slope = latest - values[0];
+	return {
+		points: values.length,
+		avg: Number(avg.toFixed(1)),
+		latest,
+		peak,
+		slope: Number(slope.toFixed(1)),
+	};
+}
+
+async function fetchTrendSignalsForKeyword(keyword, { geo, hours } = {}) {
+	const safeKeyword = String(keyword || "").trim();
+	if (!safeKeyword) return null;
+	const windowHours = clampInt(
+		hours || TRENDS_SIGNAL_WINDOW_HOURS,
+		12,
+		168
+	);
+	const endTime = new Date();
+	const startTime = new Date(
+		endTime.getTime() - windowHours * 60 * 60 * 1000
+	);
+	const opts = { keyword: safeKeyword, startTime, endTime, geo };
+
+	const [relatedRaw, interestRaw] = await Promise.all([
+		withTimeout(googleTrends.relatedQueries(opts), TRENDS_SIGNAL_TIMEOUT_MS).catch(
+			() => null
+		),
+		withTimeout(
+			googleTrends.interestOverTime(opts),
+			TRENDS_SIGNAL_TIMEOUT_MS
+		).catch(() => null),
+	]);
+
+	const related = parseRelatedQueries(safeParseTrendsJson(relatedRaw) || {});
+	const interest = parseInterestOverTime(safeParseTrendsJson(interestRaw) || {});
+	return { relatedQueries: related, interestOverTime: interest };
+}
+
+async function enrichStoriesWithTrendSignals(
+	stories,
+	{ geo, hours } = {}
+) {
+	if (!Array.isArray(stories) || !stories.length) return stories;
+	const limit = clampInt(TRENDS_SIGNAL_MAX_STORIES, 1, stories.length);
+	const out = [];
+
+	for (let i = 0; i < stories.length; i++) {
+		const story = stories[i];
+		if (i >= limit) {
+			out.push(story);
+			continue;
+		}
+		const keyword =
+			story?.title ||
+			story?.rawTitle ||
+			story?.trendSearchTerm ||
+			story?.term ||
+			"";
+		try {
+			const signals = await fetchTrendSignalsForKeyword(keyword, { geo, hours });
+			if (signals) out.push({ ...story, ...signals });
+			else out.push(story);
+		} catch (err) {
+			log("Trends API signals failed:", keyword, err.message || String(err));
+			out.push(story);
+		}
+	}
+
+	return out;
 }
 /**
  * Use GPTâ€‘5.1 to generate SEOâ€‘optimized blog + Shorts titles per story.
@@ -814,6 +952,11 @@ router.get("/google-trends", async (req, res) => {
 			geo,
 			hours,
 			category,
+		});
+
+		stories = await enrichStoriesWithTrendSignals(stories, {
+			geo,
+			hours: TRENDS_SIGNAL_WINDOW_HOURS,
 		});
 
 		if (includeImages) {
