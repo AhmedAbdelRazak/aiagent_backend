@@ -50,6 +50,9 @@ const THUMBNAIL_PANEL_FG_BRIGHTNESS = 0.045;
 const THUMBNAIL_PANEL_FG_GAMMA = 0.96;
 const THUMBNAIL_PANEL_FG_UNSHARP = "3:3:0.4";
 const THUMBNAIL_PANEL_TOP_PAD_PCT = 0.04;
+const THUMBNAIL_TOPIC_QA_MIN_BPP = 0.035;
+const THUMBNAIL_TOPIC_QA_MIN_ASPECT = 0.6;
+const THUMBNAIL_TOPIC_QA_MAX_ASPECT = 1.8;
 const THUMBNAIL_PRESENTER_CUTOUT_DIR = path.resolve(
 	__dirname,
 	"../uploads/presenter_cutouts"
@@ -332,6 +335,9 @@ const WATERMARK_URL_TOKENS = [
 	"newscom",
 	"pixelsquid",
 	"watermark",
+	"orangebuddha",
+	"orange buddha",
+	"orange-buddha",
 ];
 const THUMBNAIL_MERCH_DISALLOWED_TOKENS = [
 	"funko",
@@ -1241,8 +1247,8 @@ async function fetchCseItems(
 	return results;
 }
 
-function isLikelyWatermarkedSource(url = "", contextLink = "") {
-	const hay = `${url} ${contextLink}`.toLowerCase();
+function isLikelyWatermarkedSource(url = "", contextLink = "", title = "") {
+	const hay = `${url} ${contextLink} ${title}`.toLowerCase();
 	return WATERMARK_URL_TOKENS.some((token) => hay.includes(token));
 }
 
@@ -1355,7 +1361,14 @@ async function fetchWikipediaPageImageUrl(topic = "") {
 				continue;
 			const imageUrl = page.original?.source || page.thumbnail?.source || "";
 			if (!imageUrl) continue;
-			if (isLikelyWatermarkedSource(imageUrl, page.fullurl || "")) continue;
+			if (
+				isLikelyWatermarkedSource(
+					imageUrl,
+					page.fullurl || "",
+					page.title || ""
+				)
+			)
+				continue;
 			return imageUrl;
 		} catch {
 			// ignore and try next
@@ -1408,7 +1421,7 @@ async function fetchWikimediaImageCandidates(
 			if (!url) continue;
 			const mime = String(info?.mime || "").toLowerCase();
 			if (mime && !mime.startsWith("image/")) continue;
-			if (isLikelyWatermarkedSource(url, "")) continue;
+			if (isLikelyWatermarkedSource(url, "", img.title || "")) continue;
 			items.push({
 				url,
 				title,
@@ -2431,6 +2444,66 @@ function shouldNeutralizeTopicImage(tone) {
 	return tone.bRatio < 0.23 && tone.rgOverB > 1.7;
 }
 
+function evaluateTopicImageQuality(candidate = {}, { log, label } = {}) {
+	const reasons = [];
+	const width = Number(candidate.width || 0);
+	const height = Number(candidate.height || 0);
+	const size = Number(candidate.size || 0);
+	const minEdge = width && height ? Math.min(width, height) : 0;
+	const aspect = width && height ? width / height : 0;
+	const bpp = width && height ? size / (width * height) : 0;
+
+	if (minEdge && minEdge < THUMBNAIL_TOPIC_MIN_EDGE) reasons.push("min_edge");
+	if (size && size < THUMBNAIL_TOPIC_MIN_BYTES) reasons.push("min_bytes");
+	if (
+		aspect &&
+		(aspect < THUMBNAIL_TOPIC_QA_MIN_ASPECT ||
+			aspect > THUMBNAIL_TOPIC_QA_MAX_ASPECT)
+	)
+		reasons.push("aspect_ratio");
+	if (bpp && bpp < THUMBNAIL_TOPIC_QA_MIN_BPP) reasons.push("low_bpp");
+	if (
+		Number.isFinite(candidate.wordMatches) &&
+		Number.isFinite(candidate.minWordMatches) &&
+		candidate.wordMatches < candidate.minWordMatches
+	)
+		reasons.push("topic_match");
+	if (
+		candidate.pairMatchRequired &&
+		!candidate.pairMatch &&
+		Number.isFinite(candidate.pairMatches)
+	)
+		reasons.push("pair_match");
+	if (
+		isLikelyWatermarkedSource(
+			candidate.url || "",
+			candidate.source || "",
+			candidate.title || ""
+		)
+	)
+		reasons.push("watermark_token");
+
+	const pass = reasons.length === 0;
+	if (log) {
+		log("thumbnail topic image qa", {
+			label,
+			pass,
+			reasons,
+			width,
+			height,
+			sizeKB: size ? Math.round(size / 1024) : 0,
+			aspect: aspect ? Number(aspect.toFixed(2)) : 0,
+			bpp: bpp ? Number(bpp.toFixed(4)) : 0,
+			wordMatches: candidate.wordMatches || 0,
+			minWordMatches: candidate.minWordMatches || 0,
+			pairMatch: Boolean(candidate.pairMatch),
+			url: candidate.url || "",
+			source: candidate.source || "",
+		});
+	}
+	return { pass, reasons };
+}
+
 async function normalizeTopicImageIfNeeded({
 	inputPath,
 	tone,
@@ -3039,6 +3112,10 @@ function wrapText(text = "", maxCharsPerLine = 36, maxLines = 2) {
 	};
 }
 
+function normalizeHeadlineKey(text = "") {
+	return cleanThumbnailText(text).toLowerCase();
+}
+
 function fitHeadlineText(
 	text = "",
 	{ baseMaxChars = 36, preferLines = 1, maxLines = 1 } = {}
@@ -3512,6 +3589,14 @@ async function fetchCseImages(topic, extraTokens = [], options = {}) {
 			})
 		)
 			return;
+		if (
+			isLikelyWatermarkedSource(
+				url,
+				it.image?.contextLink || it.displayLink || "",
+				it.title || ""
+			)
+		)
+			return;
 		const info = topicMatchInfo(matchTokens, [
 			it.title,
 			it.snippet,
@@ -3662,7 +3747,7 @@ async function collectThumbnailTopicImages({
 		const key = normalizeImageUrlKey(url);
 		if (seen.has(key)) return;
 		if (isLikelyThumbnailUrl(url)) return;
-		if (isLikelyWatermarkedSource(url, source)) return;
+		if (isLikelyWatermarkedSource(url, source, title)) return;
 		if (isMerchDisallowedCandidate({ url, source, title })) return;
 		const merchPenalty = merchPenaltyScore({ url, source, title });
 		const match = scoreThumbnailTopicMatch(url, source, criteria);
@@ -3690,22 +3775,29 @@ async function collectThumbnailTopicImages({
 			pairMinMatches > 0 ? pairInfo.count >= pairMinMatches : false;
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
 		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
+		const pairMatchRequired = Boolean(
+			Number.isFinite(criteria?.pairMinMatches) && criteria.pairMinMatches > 0
+		);
 		const relaxed =
 			(minWordMatches && match.wordMatches < minWordMatches) ||
 			(minSubjectMatches && match.subjectMatches < minSubjectMatches);
 		urlCandidates.push({
 			url,
 			source,
+			title,
 			matchScore: match.score,
 			wordMatches: match.wordMatches,
 			contextMatches: match.contextMatches,
 			subjectMatches: match.subjectMatches,
 			phraseHit: match.phraseHit,
 			sourceScore: scoreSourceAffinity(url, source),
+			minWordMatches,
+			minSubjectMatches,
 			newsScore,
 			newsAvoidPenalty,
 			pairMatch,
 			pairMatches: pairInfo.count,
+			pairMatchRequired,
 			preferNews: Boolean(criteria?.preferNews),
 			merchPenalty,
 			priority,
@@ -4121,8 +4213,12 @@ async function collectThumbnailTopicImages({
 					width: dims.width || 0,
 					height: dims.height || 0,
 					tone,
+					title: candidate.title || "",
 					pairMatch: candidate.pairMatch,
 					pairMatches: candidate.pairMatches,
+					pairMatchRequired: candidate.pairMatchRequired,
+					wordMatches: candidate.wordMatches,
+					minWordMatches: candidate.minWordMatches,
 					newsScore: candidate.newsScore,
 					newsAvoidPenalty: candidate.newsAvoidPenalty,
 					score: scoreTopicImageCandidate({
@@ -4143,8 +4239,12 @@ async function collectThumbnailTopicImages({
 				tone,
 				matchScore: candidate.matchScore,
 				sourceScore: candidate.sourceScore,
+				title: candidate.title || "",
 				pairMatch: candidate.pairMatch,
 				pairMatches: candidate.pairMatches,
+				pairMatchRequired: candidate.pairMatchRequired,
+				wordMatches: candidate.wordMatches,
+				minWordMatches: candidate.minWordMatches,
 				newsScore: candidate.newsScore,
 				newsAvoidPenalty: candidate.newsAvoidPenalty,
 				url,
@@ -4183,14 +4283,32 @@ async function collectThumbnailTopicImages({
 		return [];
 	}
 
-	const preferred = usableCandidates.filter((c) => {
+	const qaPassed = [];
+	for (const candidate of usableCandidates) {
+		const qa = evaluateTopicImageQuality(candidate, {
+			log,
+			label: topicList[0]?.displayTopic || topicList[0]?.topic || "",
+		});
+		if (qa.pass) qaPassed.push(candidate);
+	}
+	const qaPool = qaPassed.length ? qaPassed : usableCandidates;
+	if (log) {
+		log("thumbnail topic image qa summary", {
+			total: usableCandidates.length,
+			passed: qaPassed.length,
+			using: qaPool.length,
+			fallback: qaPassed.length === 0,
+		});
+	}
+
+	const preferred = qaPool.filter((c) => {
 		const minEdge = Math.min(c.width || 0, c.height || 0);
 		if (!minEdge) return false;
 		if (minEdge && minEdge < THUMBNAIL_TOPIC_MIN_EDGE) return false;
 		return c.size >= THUMBNAIL_TOPIC_MIN_BYTES;
 	});
 
-	const pickPool = preferred.length ? preferred : usableCandidates;
+	const pickPool = preferred.length ? preferred : qaPool;
 	pickPool.sort((a, b) => {
 		if (Number.isFinite(a.score) && Number.isFinite(b.score)) {
 			if (b.score !== a.score) return b.score - a.score;
@@ -4619,6 +4737,32 @@ async function generateThumbnailPackage({
 		const strippedPunchy = stripTopicFromHeadline(punchyTitle, badgeText);
 		if (strippedPunchy && strippedPunchy !== punchyTitle)
 			punchyTitle = strippedPunchy;
+	}
+	const hookBadge = extractHookWord([shortTitle, seoTitle, title]);
+	const badgeKey = normalizeHeadlineKey(badgeText);
+	const titleKey = normalizeHeadlineKey(thumbTitle);
+	const punchyKey = normalizeHeadlineKey(punchyTitle);
+	if (badgeKey && (badgeKey === titleKey || badgeKey === punchyKey)) {
+		if (hookBadge && normalizeHeadlineKey(hookBadge) !== badgeKey) {
+			badgeText = hookBadge;
+			if (log)
+				log("thumbnail badge adjusted", {
+					reason: "badge_matches_headline",
+					badgeText,
+				});
+		} else {
+			badgeText = "";
+			if (log)
+				log("thumbnail badge removed", { reason: "badge_matches_headline" });
+		}
+	}
+	if (titleKey && badgeKey && titleKey === badgeKey && hookBadge) {
+		thumbTitle = hookBadge;
+		if (log)
+			log("thumbnail headline adjusted", {
+				reason: "headline_matches_badge",
+				thumbTitle,
+			});
 	}
 	const unconfirmed = isUnconfirmedTopic({
 		title,
