@@ -36,6 +36,7 @@ const GOOGLE_IMAGES_SCROLLS = 7;
 const GOOGLE_IMAGES_SCROLL_DELAY_MS = 650;
 const GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS = 15000;
 const TRENDS_SIGNAL_WINDOW_HOURS = 48;
+const TRENDS_SIGNAL_FALLBACK_HOURS = 168;
 const TRENDS_SIGNAL_MAX_STORIES = 8;
 const TRENDS_SIGNAL_TIMEOUT_MS = 9000;
 const RELATED_QUERIES_LIMIT = 12;
@@ -253,14 +254,18 @@ function parseInterestOverTime(payload) {
 	};
 }
 
-async function fetchTrendSignalsForKeyword(keyword, { geo, hours } = {}) {
-	const safeKeyword = String(keyword || "").trim();
-	if (!safeKeyword) return null;
-	const windowHours = clampInt(hours || TRENDS_SIGNAL_WINDOW_HOURS, 12, 168);
-	const endTime = new Date();
-	const startTime = new Date(endTime.getTime() - windowHours * 60 * 60 * 1000);
-	const opts = { keyword: safeKeyword, startTime, endTime, geo };
+function hasTrendSignalData(signals) {
+	if (!signals) return false;
+	const related = signals.relatedQueries || {};
+	const interest = signals.interestOverTime || {};
+	return Boolean(
+		(Array.isArray(related.top) && related.top.length) ||
+			(Array.isArray(related.rising) && related.rising.length) ||
+			Number(interest.points) > 0
+	);
+}
 
+async function fetchTrendSignalsWithOpts(opts) {
 	const [relatedRaw, interestRaw] = await Promise.all([
 		withTimeout(
 			googleTrends.relatedQueries(opts),
@@ -277,6 +282,53 @@ async function fetchTrendSignalsForKeyword(keyword, { geo, hours } = {}) {
 		safeParseTrendsJson(interestRaw) || {}
 	);
 	return { relatedQueries: related, interestOverTime: interest };
+}
+
+async function fetchTrendSignalsForKeyword(keyword, { geo, hours } = {}) {
+	const safeKeyword = String(keyword || "").trim();
+	if (!safeKeyword) return null;
+	const windowHours = clampInt(hours || TRENDS_SIGNAL_WINDOW_HOURS, 12, 168);
+	const endTime = new Date();
+	const startTime = new Date(endTime.getTime() - windowHours * 60 * 60 * 1000);
+	const opts = { keyword: safeKeyword, startTime, endTime, geo };
+
+	const primary = await fetchTrendSignalsWithOpts(opts);
+	if (hasTrendSignalData(primary)) return primary;
+
+	const fallbackHours = clampInt(
+		Math.max(windowHours, TRENDS_SIGNAL_FALLBACK_HOURS),
+		12,
+		168
+	);
+	if (fallbackHours > windowHours) {
+		const fallbackStart = new Date(
+			endTime.getTime() - fallbackHours * 60 * 60 * 1000
+		);
+		const fallbackSignals = await fetchTrendSignalsWithOpts({
+			keyword: safeKeyword,
+			startTime: fallbackStart,
+			endTime,
+			geo,
+		});
+		if (hasTrendSignalData(fallbackSignals)) {
+			log("Trends API signals fallback window", {
+				term: safeKeyword,
+				hours: fallbackHours,
+			});
+			return fallbackSignals;
+		}
+	}
+
+	const defaultSignals = await fetchTrendSignalsWithOpts({
+		keyword: safeKeyword,
+		geo,
+	});
+	if (hasTrendSignalData(defaultSignals)) {
+		log("Trends API signals fallback default window", { term: safeKeyword });
+		return defaultSignals;
+	}
+
+	return primary;
 }
 
 async function enrichStoriesWithTrendSignals(stories, { geo, hours } = {}) {
@@ -297,10 +349,11 @@ async function enrichStoriesWithTrendSignals(stories, { geo, hours } = {}) {
 			continue;
 		}
 		const keyword =
-			story?.title ||
 			story?.rawTitle ||
 			story?.trendSearchTerm ||
 			story?.term ||
+			story?.trendDialogTitle ||
+			story?.title ||
 			"";
 		try {
 			const signals = await fetchTrendSignalsForKeyword(keyword, {

@@ -288,8 +288,8 @@ const FINAL_FADE_OUT_SEC = clampNumber(0.5, 0, 1.2);
 
 // Script pacing
 const SCRIPT_VOICE_WPS = 2.75; // used only for word caps
-// Slightly faster default pacing (~10-12% more words).
-const SCRIPT_PACE_BIAS = clampNumber(1.12, 0.85, 1.35);
+// Slightly faster default pacing (~5% more words).
+const SCRIPT_PACE_BIAS = clampNumber(1.05, 0.85, 1.35);
 const SEGMENT_TARGET_SEC = 8;
 const MAX_SEGMENTS = 45;
 const SCRIPT_TOLERANCE_SEC = clampNumber(4.5, 2, 5);
@@ -9685,9 +9685,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				ratioDelta <= REWRITE_CLOSE_RATIO_DELTA ||
 				driftSec <= toleranceSec * REWRITE_CLOSE_DRIFT_MULT;
 			const shouldTimeStretch =
-				!voiceoverUrl &&
-				!allowOverage &&
-				(ratioDelta >= 0.04 || driftSec > toleranceSec);
+				!voiceoverUrl && (ratioDelta >= 0.04 || driftSec > toleranceSec);
 			globalAtempo = shouldTimeStretch
 				? clampNumber(rawAtempo, GLOBAL_ATEMPO_MIN, GLOBAL_ATEMPO_MAX)
 				: 1;

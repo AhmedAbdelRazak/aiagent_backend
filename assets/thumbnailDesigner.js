@@ -2382,8 +2382,8 @@ async function composeThumbnailBase({
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-					`${panelFitPad},` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
 					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
 					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
