@@ -5656,6 +5656,58 @@ function analyzeScriptQuality({
 	};
 }
 
+function buildScriptLogText(script = {}) {
+	const title = String(script?.title || "").trim();
+	const shortTitle = String(script?.shortTitle || "").trim();
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	const lines = [];
+	if (title) lines.push(`TITLE: ${title}`);
+	if (shortTitle) lines.push(`SHORT: ${shortTitle}`);
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i] || {};
+		const idx = Number.isFinite(Number(seg.index)) ? Number(seg.index) : i;
+		const topicLabel = String(seg.topicLabel || "").trim();
+		const expr = String(seg.expression || "").trim();
+		const headerParts = [`#${idx}`];
+		if (topicLabel) headerParts.push(`topic=${topicLabel}`);
+		if (expr) headerParts.push(`expr=${expr}`);
+		const text = String(seg.text || "").trim();
+		lines.push(`${headerParts.join(" | ")}: ${text}`);
+	}
+	return lines.join("\n");
+}
+
+function summarizeScriptEngagement(script = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	const totalWords = segments.reduce((sum, s) => sum + countWords(s.text), 0);
+	const avgWords =
+		segments.length > 0 ? totalWords / segments.length : totalWords;
+	const questionSegments = segments.filter((s) =>
+		/\?/.test(String(s.text || ""))
+	).length;
+	const fullText = segments
+		.map((s) => String(s.text || "").toLowerCase())
+		.join(" ");
+	const countTokenHits = (tokens = []) =>
+		(tokens || []).reduce(
+			(count, tok) =>
+				fullText.includes(String(tok || "").toLowerCase()) ? count + 1 : count,
+			0
+		);
+	return {
+		segmentCount: segments.length,
+		totalWords,
+		avgWords: Number(avgWords.toFixed(1)),
+		questionSegments,
+		questionRatio: Number(
+			(segments.length ? questionSegments / segments.length : 0).toFixed(2)
+		),
+		trendTokenHits: countTokenHits(TREND_SIGNAL_TOKENS),
+		excitedTokenHits: countTokenHits(EXCITED_TONE_TOKENS),
+		entertainmentTokenHits: countTokenHits(ENTERTAINMENT_KEYWORDS),
+	};
+}
+
 async function rewriteSegmentsForQuality({
 	jobId,
 	script,
@@ -8297,9 +8349,11 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let thumbnailPath = "";
 		let thumbnailUrl = "";
 		let thumbnailPublicId = "";
+		let topicSourceSummary = [];
 
 		logJob(jobId, "job started", {
 			dryRun,
+			requestedTargetSec: Number(targetDurationSec || 0),
 			contentTargetSec,
 			category: categoryLabel,
 			introSec: introDurationSec,
@@ -8381,6 +8435,40 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			category: categoryLabel,
 			usedTopicsCount: usedTopics.size,
 		});
+		const topicChoiceDetails = topicPicks.map((t, idx) => {
+			const story = t.trendStory || {};
+			const related = normalizeRelatedQueries(story.relatedQueries);
+			const interest = normalizeInterestOverTime(story.interestOverTime);
+			const articleUrls = uniqueStrings(
+				(Array.isArray(story.articles) ? story.articles : [])
+					.map((a) => a?.url)
+					.filter((u) => isHttpUrl(u)),
+				{ limit: 6 }
+			);
+			const articleHosts = uniqueStrings(
+				articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
+				{ limit: 6 }
+			);
+			return {
+				index: idx,
+				topic: t.topic,
+				displayTopic: t.displayTopic || t.topic,
+				reason: t.reason || "",
+				angle: t.angle || "",
+				trendScore: Number(story.trendScore) || 0,
+				interestOverTime: interest,
+				relatedQueries: {
+					topCount: related.top.length,
+					risingCount: related.rising.length,
+					topSample: related.top.slice(0, 5),
+					risingSample: related.rising.slice(0, 5),
+				},
+				articleHosts,
+				articleUrls,
+				keywords: Array.isArray(t.keywords) ? t.keywords.slice(0, 10) : [],
+			};
+		});
+		logJob(jobId, "topics chosen (detail)", { topics: topicChoiceDetails });
 		updateJob(jobId, {
 			progressPct: 8,
 			topic: topicSummary,
@@ -8459,6 +8547,44 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			})),
 		});
 		logJob(jobId, "cse images", { count: cseImages.length });
+		topicSourceSummary = topicContexts.map((tc, idx) => {
+			const contextItems = Array.isArray(tc.context) ? tc.context : [];
+			const cseLinks = uniqueStrings(
+				contextItems.map((c) => c?.link).filter((u) => isHttpUrl(u)),
+				{ limit: 6 }
+			);
+			const cseHosts = uniqueStrings(
+				cseLinks.map((u) => getUrlHost(u)).filter(Boolean),
+				{ limit: 6 }
+			);
+			const story = topicPicks[idx]?.trendStory || {};
+			const articleUrls = uniqueStrings(
+				(Array.isArray(story.articles) ? story.articles : [])
+					.map((a) => a?.url)
+					.filter((u) => isHttpUrl(u)),
+				{ limit: 6 }
+			);
+			const articleHosts = uniqueStrings(
+				articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
+				{ limit: 6 }
+			);
+			const related = normalizeRelatedQueries(story.relatedQueries);
+			const interest = normalizeInterestOverTime(story.interestOverTime);
+			return {
+				topic: tc.topic,
+				contextCount: contextItems.length,
+				cseHosts,
+				cseLinks,
+				articleHosts,
+				articleUrls,
+				relatedQueries: {
+					topSample: related.top.slice(0, 5),
+					risingSample: related.rising.slice(0, 5),
+				},
+				interestOverTime: interest,
+			};
+		});
+		logJob(jobId, "topic sources", { topics: topicSourceSummary });
 		const topicContextFlags = topicContexts.map((tc) => {
 			const items = Array.isArray(tc.context) ? tc.context : [];
 			const contextText = [tc.topic]
@@ -8588,6 +8714,14 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				`script_qa_failed:${qaResult.issues.join("|") || "unknown"}`
 			);
 		}
+
+		const scriptEngagement = summarizeScriptEngagement(script);
+		logJob(jobId, "script qa summary", {
+			qa: qaResult,
+			engagement: scriptEngagement,
+			sources: topicSourceSummary,
+		});
+		logJob(jobId, `script text (post QA)\n${buildScriptLogText(script)}`);
 
 		updateJob(jobId, {
 			progressPct: 18,
@@ -9381,6 +9515,20 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
 		}));
 		script.segments = finalScriptSegments;
+		const finalQa = analyzeScriptQuality({
+			script,
+			topics: topicPicks,
+			topicContexts,
+			wordCaps,
+		});
+		const finalEngagement = summarizeScriptEngagement(script);
+		logJob(jobId, "final script summary", {
+			qa: finalQa,
+			engagement: finalEngagement,
+			narrationTargetSec: Number(narrationTargetSec || 0),
+			segmentCount: finalScriptSegments.length,
+		});
+		logJob(jobId, `final script text\n${buildScriptLogText(script)}`);
 		updateJob(jobId, {
 			meta: {
 				...JOBS.get(jobId)?.meta,
@@ -9436,6 +9584,40 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				});
 			}
 		}
+
+		const narrationActualSec = segmentAudio.reduce(
+			(sum, a) => sum + (Number(a.dur) || 0),
+			0
+		);
+		const totalPlannedSec =
+			Number(introDurationSec || 0) +
+			Number(narrationTargetSec || 0) +
+			Number(outroDurationSec || 0);
+		const totalActualSec =
+			Number(introDurationSec || 0) +
+			Number(narrationActualSec || 0) +
+			Number(outroDurationSec || 0);
+		logJob(jobId, "final narration timing", {
+			requestedTargetSec: Number(contentTargetSec || 0),
+			plannedNarrationSec: Number(narrationTargetSec || 0),
+			narrationActualSec: Number(narrationActualSec.toFixed(3)),
+			introSec: Number((introDurationSec || 0).toFixed(3)),
+			outroSec: Number((outroDurationSec || 0).toFixed(3)),
+			totalPlannedSec: Number(totalPlannedSec.toFixed(3)),
+			totalActualSec: Number(totalActualSec.toFixed(3)),
+			outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC || 0),
+		});
+		logJob(jobId, "final segment durations", {
+			segments: timeline.map((seg) => ({
+				index: seg.index,
+				topicLabel: seg.topicLabel,
+				startSec: seg.startSec,
+				endSec: seg.endSec,
+				durationSec: Number(
+					Math.max(0, Number(seg.endSec) - Number(seg.startSec)).toFixed(3)
+				),
+			})),
+		});
 
 		updateJob(jobId, {
 			progressPct: 40,

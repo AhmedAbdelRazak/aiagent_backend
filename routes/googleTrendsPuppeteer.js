@@ -249,21 +249,16 @@ function parseInterestOverTime(payload) {
 async function fetchTrendSignalsForKeyword(keyword, { geo, hours } = {}) {
 	const safeKeyword = String(keyword || "").trim();
 	if (!safeKeyword) return null;
-	const windowHours = clampInt(
-		hours || TRENDS_SIGNAL_WINDOW_HOURS,
-		12,
-		168
-	);
+	const windowHours = clampInt(hours || TRENDS_SIGNAL_WINDOW_HOURS, 12, 168);
 	const endTime = new Date();
-	const startTime = new Date(
-		endTime.getTime() - windowHours * 60 * 60 * 1000
-	);
+	const startTime = new Date(endTime.getTime() - windowHours * 60 * 60 * 1000);
 	const opts = { keyword: safeKeyword, startTime, endTime, geo };
 
 	const [relatedRaw, interestRaw] = await Promise.all([
-		withTimeout(googleTrends.relatedQueries(opts), TRENDS_SIGNAL_TIMEOUT_MS).catch(
-			() => null
-		),
+		withTimeout(
+			googleTrends.relatedQueries(opts),
+			TRENDS_SIGNAL_TIMEOUT_MS
+		).catch(() => null),
 		withTimeout(
 			googleTrends.interestOverTime(opts),
 			TRENDS_SIGNAL_TIMEOUT_MS
@@ -271,16 +266,21 @@ async function fetchTrendSignalsForKeyword(keyword, { geo, hours } = {}) {
 	]);
 
 	const related = parseRelatedQueries(safeParseTrendsJson(relatedRaw) || {});
-	const interest = parseInterestOverTime(safeParseTrendsJson(interestRaw) || {});
+	const interest = parseInterestOverTime(
+		safeParseTrendsJson(interestRaw) || {}
+	);
 	return { relatedQueries: related, interestOverTime: interest };
 }
 
-async function enrichStoriesWithTrendSignals(
-	stories,
-	{ geo, hours } = {}
-) {
+async function enrichStoriesWithTrendSignals(stories, { geo, hours } = {}) {
 	if (!Array.isArray(stories) || !stories.length) return stories;
 	const limit = clampInt(TRENDS_SIGNAL_MAX_STORIES, 1, stories.length);
+	const windowHours = clampInt(hours || TRENDS_SIGNAL_WINDOW_HOURS, 12, 168);
+	log("Trends API enrichment start", {
+		stories: stories.length,
+		enrichCount: limit,
+		hours: windowHours,
+	});
 	const out = [];
 
 	for (let i = 0; i < stories.length; i++) {
@@ -296,11 +296,27 @@ async function enrichStoriesWithTrendSignals(
 			story?.term ||
 			"";
 		try {
-			const signals = await fetchTrendSignalsForKeyword(keyword, { geo, hours });
-			if (signals) out.push({ ...story, ...signals });
-			else out.push(story);
+			const signals = await fetchTrendSignalsForKeyword(keyword, {
+				geo,
+				hours: windowHours,
+			});
+			if (signals) {
+				log("Trends API signals", {
+					term: keyword,
+					relatedTop: signals.relatedQueries?.top?.length || 0,
+					relatedRising: signals.relatedQueries?.rising?.length || 0,
+					interest: signals.interestOverTime || {},
+				});
+				out.push({ ...story, ...signals });
+			} else {
+				log("Trends API signals empty", { term: keyword });
+				out.push(story);
+			}
 		} catch (err) {
-			log("Trends API signals failed:", keyword, err.message || String(err));
+			log("Trends API signals failed", {
+				term: keyword,
+				error: err.message || String(err),
+			});
 			out.push(story);
 		}
 	}
