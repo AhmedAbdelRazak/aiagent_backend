@@ -41,6 +41,14 @@ const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.45;
 const THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS = 3;
 const THUMBNAIL_VARIANT_B_CONTRAST = 1.12;
 const THUMBNAIL_VARIANT_B_BASE_CHARS = 10;
+const THUMBNAIL_PANEL_BG_CONTRAST = 1.03;
+const THUMBNAIL_PANEL_BG_SATURATION = 1.03;
+const THUMBNAIL_PANEL_BG_BRIGHTNESS = 0.02;
+const THUMBNAIL_PANEL_FG_CONTRAST = 1.08;
+const THUMBNAIL_PANEL_FG_SATURATION = 1.07;
+const THUMBNAIL_PANEL_FG_BRIGHTNESS = 0.045;
+const THUMBNAIL_PANEL_FG_GAMMA = 0.96;
+const THUMBNAIL_PANEL_FG_UNSHARP = "3:3:0.4";
 const THUMBNAIL_PRESENTER_CUTOUT_DIR = path.resolve(
 	__dirname,
 	"../uploads/presenter_cutouts"
@@ -68,6 +76,7 @@ const QA_LUMA_LEFT_MIN = 0.33;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
+const THUMBNAIL_TEXT_BOX_BORDER_PCT = 0.38;
 const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.141;
 const THUMBNAIL_BADGE_FONT_PCT = 0.045;
 const THUMBNAIL_BADGE_X_PCT = 0.05;
@@ -116,6 +125,44 @@ const UNCERTAINTY_TOKENS = new Set([
 	"investigation",
 	"controversy",
 ]);
+const NEWS_SIGNAL_TOKENS = new Set([
+	"investigation",
+	"investigators",
+	"police",
+	"sheriff",
+	"authorities",
+	"official",
+	"statement",
+	"breaking",
+	"case",
+	"court",
+	"trial",
+	"lawsuit",
+	"charged",
+	"arrest",
+	"custody",
+	"hotel",
+	"motel",
+	"courthouse",
+	"coroner",
+	"medical examiner",
+	"overdose",
+	"found",
+	"missing",
+	"incident",
+	"headline",
+	"newsroom",
+	"press",
+	"conference",
+]);
+const NEWS_IMAGE_HINTS_BASE = [
+	"news report",
+	"news headline",
+	"official statement",
+	"press conference",
+	"newsroom",
+];
+const NEWS_PORTRAIT_HINTS = ["headshot", "portrait", "close up"];
 const QUESTION_START_TOKENS = new Set([
 	"did",
 	"does",
@@ -535,6 +582,119 @@ function inferEntertainmentCategory(tokens = []) {
 	return "general";
 }
 
+function isLikelyPersonTopic(label = "", extraHints = []) {
+	const tokens = tokenizeLabel(label);
+	if (tokens.length < 2 || tokens.length > 5) return false;
+	if (tokens.some((t) => /^\d+$/.test(t))) return false;
+	const block = new Set([
+		"season",
+		"episode",
+		"trailer",
+		"tour",
+		"album",
+		"song",
+		"series",
+		"movie",
+		"film",
+		"show",
+		"game",
+		"ending",
+		"explained",
+		"recap",
+		"review",
+		"release",
+		"update",
+	]);
+	const extra = Array.isArray(extraHints)
+		? extraHints.flatMap((t) => tokenizeLabel(t))
+		: [];
+	const combined = new Set([...tokens, ...extra]);
+	for (const tok of block) {
+		if (combined.has(tok)) return false;
+	}
+	return true;
+}
+
+function shouldPreferNewsImage({
+	label = "",
+	trendHints = [],
+	relatedQueries = [],
+	title,
+	shortTitle,
+	seoTitle,
+	topics = [],
+} = {}) {
+	if (isUnconfirmedTopic({ title, shortTitle, seoTitle, topics })) return true;
+	const hay = [label, ...trendHints, ...relatedQueries]
+		.filter(Boolean)
+		.join(" ")
+		.toLowerCase();
+	if (!hay) return false;
+	for (const tok of NEWS_SIGNAL_TOKENS) {
+		if (hay.includes(tok)) return true;
+	}
+	return false;
+}
+
+function buildNewsImageHints({
+	label = "",
+	trendHints = [],
+	relatedQueries = [],
+} = {}) {
+	const hay = [label, ...trendHints, ...relatedQueries]
+		.filter(Boolean)
+		.join(" ")
+		.toLowerCase();
+	const hints = [...NEWS_IMAGE_HINTS_BASE];
+	if (hay.includes("hotel") || hay.includes("motel"))
+		hints.push("hotel exterior");
+	if (
+		hay.includes("courthouse") ||
+		hay.includes("court") ||
+		hay.includes("trial") ||
+		hay.includes("lawsuit")
+	)
+		hints.push("courthouse exterior");
+	if (
+		hay.includes("police") ||
+		hay.includes("sheriff") ||
+		hay.includes("investigation")
+	)
+		hints.push("police tape");
+	if (hay.includes("coroner") || hay.includes("medical examiner"))
+		hints.push("medical examiner building");
+	if (hay.includes("hospital")) hints.push("hospital exterior");
+	return uniqueStrings(hints, { limit: 8 });
+}
+
+function buildNewsContextTokens(hints = []) {
+	const tokens = Array.isArray(hints)
+		? hints.flatMap((hint) => tokenizeLabel(hint))
+		: [];
+	return normalizeTopicTokens(tokens).slice(0, 8);
+}
+
+function buildNewsImageQueries(
+	searchLabel = "",
+	newsHints = [],
+	portraitHints = []
+) {
+	const base = String(searchLabel || "").trim();
+	if (!base) return [];
+	const queries = [];
+	const push = (suffix) => {
+		const trimmed = String(suffix || "").trim();
+		if (!trimmed) return;
+		queries.push(`${base} ${trimmed}`);
+	};
+	newsHints.slice(0, 2).forEach((hint) => push(hint));
+	portraitHints.slice(0, 1).forEach((hint) => push(hint));
+	push("news photo");
+	push("official statement");
+	push("press conference");
+	return uniqueStrings(queries, { limit: 6 });
+}
+
 function extractQuestionSegments(rawText = "") {
 	const raw = String(rawText || "").trim();
 	if (!raw) return null;
@@ -686,6 +846,19 @@ const THUMBNAIL_PREFERRED_SOURCE_TOKENS = [
 	"hollywoodreporter",
 	"deadline",
 	"rollingstone",
+	"abc7",
+	"nbc",
+	"nbcnews",
+	"nbcbayarea",
+	"livenowfox",
+	"foxnews",
+	"cbsnews",
+	"apnews",
+	"usatoday",
+	"people",
+	"tmz",
+	"theguardian",
+	"ndtv",
 ];
 
 function scoreSourceAffinity(url = "", contextLink = "") {
@@ -694,6 +867,22 @@ function scoreSourceAffinity(url = "", contextLink = "") {
 		if (hay.includes(token)) return 0.35;
 	}
 	return 0;
+}
+
+function scoreNewsContext({
+	url = "",
+	source = "",
+	title = "",
+	tokens = [],
+} = {}) {
+	if (!tokens || !tokens.length) return 0;
+	const hay = `${url} ${source} ${title}`.toLowerCase();
+	let hits = 0;
+	for (const tok of tokens) {
+		if (tok && hay.includes(tok)) hits += 1;
+	}
+	if (!hits) return 0;
+	return clampNumber(hits / Math.max(3, tokens.length), 0, 1);
 }
 
 function scoreThumbnailTopicMatch(url = "", contextLink = "", criteria = null) {
@@ -2090,12 +2279,16 @@ function scoreTopicImageCandidate(candidate) {
 	const sourceScore = Number.isFinite(candidate?.sourceScore)
 		? clampNumber(candidate.sourceScore, 0, 1)
 		: 0;
+	const newsScore = Number.isFinite(candidate?.newsScore)
+		? clampNumber(candidate.newsScore, 0, 1)
+		: 0;
 	return (
 		sizeScore * 0.35 +
 		lumaScore * 0.2 +
 		colorScore * 0.1 +
 		matchScore * 0.3 +
-		sourceScore * 0.05 -
+		sourceScore * 0.05 +
+		newsScore * 0.08 -
 		warmPenalty
 	);
 }
@@ -2395,28 +2588,28 @@ async function composeThumbnailBase({
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
 					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
-					`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
+					`eq=contrast=${THUMBNAIL_PANEL_BG_CONTRAST}:saturation=${THUMBNAIL_PANEL_BG_SATURATION}:brightness=${THUMBNAIL_PANEL_BG_BRIGHTNESS},` +
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
 					`${panelFitPad},` +
-					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
-					`unsharp=3:3:0.35,format=rgba[panel1fg]`
+					`eq=contrast=${THUMBNAIL_PANEL_FG_CONTRAST}:saturation=${THUMBNAIL_PANEL_FG_SATURATION}:brightness=${THUMBNAIL_PANEL_FG_BRIGHTNESS}:gamma=${THUMBNAIL_PANEL_FG_GAMMA},` +
+					`unsharp=${THUMBNAIL_PANEL_FG_UNSHARP},format=rgba[panel1fg]`
 			);
 			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
 		} else {
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
 					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
-					`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
+					`eq=contrast=${THUMBNAIL_PANEL_BG_CONTRAST}:saturation=${THUMBNAIL_PANEL_BG_SATURATION}:brightness=${THUMBNAIL_PANEL_BG_BRIGHTNESS},` +
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
 					`${panelFitPad},` +
-					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
-					`unsharp=3:3:0.35,format=rgba[panel1fg]`
+					`eq=contrast=${THUMBNAIL_PANEL_FG_CONTRAST}:saturation=${THUMBNAIL_PANEL_FG_SATURATION}:brightness=${THUMBNAIL_PANEL_FG_BRIGHTNESS}:gamma=${THUMBNAIL_PANEL_FG_GAMMA},` +
+					`unsharp=${THUMBNAIL_PANEL_FG_UNSHARP},format=rgba[panel1fg]`
 			);
 			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
 		}
@@ -2435,14 +2628,14 @@ async function composeThumbnailBase({
 		filters.push(
 			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
 				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
-				`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
+				`eq=contrast=${THUMBNAIL_PANEL_BG_CONTRAST}:saturation=${THUMBNAIL_PANEL_BG_SATURATION}:brightness=${THUMBNAIL_PANEL_BG_BRIGHTNESS},` +
 				`format=rgba[panel2bg]`
 		);
 		filters.push(
 			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
 				`${panelFitPad},` +
-				`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
-				`unsharp=3:3:0.35,format=rgba[panel2fg]`
+				`eq=contrast=${THUMBNAIL_PANEL_FG_CONTRAST}:saturation=${THUMBNAIL_PANEL_FG_SATURATION}:brightness=${THUMBNAIL_PANEL_FG_BRIGHTNESS}:gamma=${THUMBNAIL_PANEL_FG_GAMMA},` +
+				`unsharp=${THUMBNAIL_PANEL_FG_UNSHARP},format=rgba[panel2fg]`
 		);
 		filters.push("[panel2bg][panel2fg]overlay=0:0[panel2i]");
 		filters.push(
@@ -2875,7 +3068,7 @@ async function renderThumbnailOverlay({
 		42,
 		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
 	);
-	const boxBorder = Math.round(fontSize * 0.45);
+	const boxBorder = Math.round(fontSize * THUMBNAIL_TEXT_BOX_BORDER_PCT);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
 	const textFilePath = hasText
 		? path.join(
@@ -3034,10 +3227,15 @@ async function fetchCseContext(topic, extraTokens = []) {
 		.slice(0, 6);
 }
 
-async function fetchCseImages(topic, extraTokens = []) {
+async function fetchCseImages(topic, extraTokens = [], options = {}) {
 	if (!topic || !GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
 	const extra = Array.isArray(extraTokens)
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
+		: [];
+	const preferNews = Boolean(options.preferNews);
+	const newsHints = Array.isArray(options.newsHints) ? options.newsHints : [];
+	const portraitHints = Array.isArray(options.portraitHints)
+		? options.portraitHints
 		: [];
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
@@ -3048,11 +3246,19 @@ async function fetchCseImages(topic, extraTokens = []) {
 	const searchTokens = buildSearchLabelTokens(topic, extraTokens);
 	const searchLabel = searchTokens.slice(0, 4).join(" ") || topic;
 
-	const queries = [
+	let queries = [
 		`${searchLabel} press photo`,
 		`${searchLabel} news photo`,
 		`${searchLabel} photo`,
 	];
+	if (preferNews) {
+		const newsQueries = buildNewsImageQueries(
+			searchLabel,
+			newsHints,
+			portraitHints
+		);
+		queries = [...newsQueries, ...queries];
+	}
 	if (category === "film") {
 		queries.unshift(
 			`${searchLabel} official still`,
@@ -3070,23 +3276,43 @@ async function fetchCseImages(topic, extraTokens = []) {
 			`${searchLabel} stage photo`
 		);
 	} else if (category === "celebrity") {
-		queries.unshift(
-			`${searchLabel} red carpet`,
-			`${searchLabel} interview photo`
-		);
+		if (preferNews) {
+			queries.unshift(
+				`${searchLabel} headshot`,
+				`${searchLabel} press conference`
+			);
+		} else {
+			queries.unshift(
+				`${searchLabel} red carpet`,
+				`${searchLabel} interview photo`
+			);
+		}
 	}
 
-	const fallbackQueries = [
+	let fallbackQueries = [
 		`${searchLabel} photo`,
 		`${searchLabel} press`,
 		`${searchLabel} red carpet`,
 		`${searchLabel} still`,
 		`${searchLabel} interview`,
 	];
+	if (preferNews) {
+		fallbackQueries = fallbackQueries.filter(
+			(q) => !q.toLowerCase().includes("red carpet")
+		);
+		const newsFallback = buildNewsImageQueries(
+			searchLabel,
+			newsHints,
+			portraitHints
+		);
+		fallbackQueries = [...newsFallback, ...fallbackQueries];
+	}
 	const keyPhrase = searchTokens.slice(0, 2).join(" ");
 	if (keyPhrase) {
 		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
 	}
+	queries = uniqueStrings(queries, { limit: 10 });
+	fallbackQueries = uniqueStrings(fallbackQueries, { limit: 10 });
 
 	let items = await fetchCseItems(queries, {
 		num: 10,
@@ -3293,6 +3519,14 @@ async function collectThumbnailTopicImages({
 		if (isMerchDisallowedCandidate({ url, source, title })) return;
 		const merchPenalty = merchPenaltyScore({ url, source, title });
 		const match = scoreThumbnailTopicMatch(url, source, criteria);
+		const newsScore = criteria?.preferNews
+			? scoreNewsContext({
+					url,
+					source,
+					title,
+					tokens: criteria?.newsTokens || [],
+			  })
+			: 0;
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
 		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
 		const relaxed =
@@ -3307,6 +3541,8 @@ async function collectThumbnailTopicImages({
 			subjectMatches: match.subjectMatches,
 			phraseHit: match.phraseHit,
 			sourceScore: scoreSourceAffinity(url, source),
+			newsScore,
+			preferNews: Boolean(criteria?.preferNews),
 			merchPenalty,
 			priority,
 			relaxed: relaxed || merchPenalty >= 0.6,
@@ -3360,6 +3596,22 @@ async function collectThumbnailTopicImages({
 			].filter(Boolean),
 			{ limit: 12 }
 		);
+		const preferNewsImage = shouldPreferNewsImage({
+			label,
+			trendHints,
+			relatedQueries,
+			title,
+			shortTitle,
+			seoTitle,
+			topics: [t],
+		});
+		const portraitHints =
+			preferNewsImage && isLikelyPersonTopic(label, trendHints)
+				? NEWS_PORTRAIT_HINTS
+				: [];
+		const newsHints = preferNewsImage
+			? buildNewsImageHints({ label, trendHints, relatedQueries })
+			: [];
 		const questionInfo = extractQuestionSegments(label);
 		const questionSubjectLabel = buildQuestionSubjectLabel(questionInfo, 4);
 		const questionSubjectContextLabel = buildQuestionSubjectContextLabel(
@@ -3373,10 +3625,17 @@ async function collectThumbnailTopicImages({
 				...trendHints,
 				questionSubjectLabel,
 				questionSubjectContextLabel,
+				...newsHints,
+				...portraitHints,
 			],
-			{ limit: 18 }
+			{ limit: 22 }
 		);
 		const criteria = buildImageMatchCriteria(label, mergedTokens);
+		criteria.preferNews = preferNewsImage;
+		criteria.newsTokens = buildNewsContextTokens([
+			...newsHints,
+			...portraitHints,
+		]);
 		const identityLabel = buildTopicIdentityLabel(label, mergedTokens);
 		const seedUrls = uniqueStrings(
 			[
@@ -3397,18 +3656,32 @@ async function collectThumbnailTopicImages({
 			});
 		}
 
-		const searchLabel =
-			questionSubjectContextLabel || questionSubjectLabel || label;
+		const searchLabelBase =
+			questionSubjectContextLabel ||
+			questionSubjectLabel ||
+			identityLabel ||
+			label;
+		const searchLabel = preferNewsImage
+			? `${searchLabelBase} news`
+			: searchLabelBase;
 		if (log)
 			log("thumbnail topic image search plan", {
 				topic: label,
 				searchLabel,
 				identityLabel,
 				contextQuery,
+				preferNewsImage,
+				newsHintSample: newsHints.slice(0, 4),
 				trendHintSample: trendHints.slice(0, 6),
 				mergedTokenSample: mergedTokens.slice(0, 8),
 			});
-		let hits = hasCSE ? await fetchCseImages(searchLabel, mergedTokens) : [];
+		let hits = hasCSE
+			? await fetchCseImages(searchLabel, mergedTokens, {
+					preferNews: preferNewsImage,
+					newsHints,
+					portraitHints,
+			  })
+			: [];
 		if (hits.length) {
 			for (const hit of hits) {
 				const url = typeof hit === "string" ? hit : hit?.url;
@@ -3464,15 +3737,22 @@ async function collectThumbnailTopicImages({
 			urlCandidates.length < maxUrls &&
 			label
 		) {
+			const newsQueries = preferNewsImage
+				? buildNewsImageQueries(searchLabelBase, newsHints, portraitHints)
+				: [];
+			const googleLimit = preferNewsImage
+				? Math.max(GOOGLE_IMAGES_VARIANT_LIMIT, 4)
+				: GOOGLE_IMAGES_VARIANT_LIMIT;
 			const googleQueries = uniqueStrings(
 				[
+					...newsQueries,
 					questionSubjectContextLabel,
 					questionSubjectLabel,
 					label,
 					identityLabel,
 					contextQuery,
 				].filter(Boolean),
-				{ limit: GOOGLE_IMAGES_VARIANT_LIMIT }
+				{ limit: googleLimit }
 			);
 			for (const gQuery of googleQueries) {
 				const googleUrls = await fetchGoogleImagesFromService(gQuery, {
@@ -3556,7 +3836,8 @@ async function collectThumbnailTopicImages({
 				(c.sourceScore || 0) +
 				(c.priority || 0) -
 				(c.merchPenalty || 0) -
-				(c.relaxed ? 0.6 : 0),
+				(c.relaxed ? 0.6 : 0) +
+				(c.preferNews ? (c.newsScore || 0) * 0.6 : 0),
 		}))
 		.sort((a, b) => b.relevanceScore - a.relevanceScore);
 	const downloadCount = Math.min(ranked.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
@@ -3590,10 +3871,12 @@ async function collectThumbnailTopicImages({
 					width: dims.width || 0,
 					height: dims.height || 0,
 					tone,
+					newsScore: candidate.newsScore,
 					score: scoreTopicImageCandidate({
 						width: dims.width || 0,
 						height: dims.height || 0,
 						tone,
+						newsScore: candidate.newsScore,
 					}),
 				});
 				continue;
@@ -3606,6 +3889,7 @@ async function collectThumbnailTopicImages({
 				tone,
 				matchScore: candidate.matchScore,
 				sourceScore: candidate.sourceScore,
+				newsScore: candidate.newsScore,
 				url,
 				source: candidate.source,
 				score: scoreTopicImageCandidate({
@@ -3614,6 +3898,7 @@ async function collectThumbnailTopicImages({
 					tone,
 					matchScore: candidate.matchScore,
 					sourceScore: candidate.sourceScore,
+					newsScore: candidate.newsScore,
 				}),
 			});
 		} catch {
