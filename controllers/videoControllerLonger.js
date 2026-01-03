@@ -3935,6 +3935,47 @@ const REAL_PERSON_CONTEXT_TOKENS = [
 	"investigation",
 ];
 
+const REAL_WORLD_OVERRIDE_TOKENS = [
+	"daughter",
+	"son",
+	"wife",
+	"husband",
+	"family",
+	"parents",
+	"child",
+	"children",
+	"police",
+	"court",
+	"trial",
+	"arrest",
+	"charged",
+	"lawsuit",
+	"hospital",
+	"overdose",
+	"coroner",
+	"autopsy",
+	"obituary",
+	"investigation",
+	"found dead",
+	"cause of death",
+];
+
+const ANCHOR_NOISE_TOKENS = new Set([
+	"latest",
+	"trending",
+	"trend",
+	"news",
+	"update",
+	"updates",
+	"explained",
+	"report",
+	"reports",
+	"reporting",
+	"breaking",
+	"official",
+	"video",
+]);
+
 const TOPIC_DOMAIN_TOKENS = [
 	{
 		domain: "sports",
@@ -4031,6 +4072,10 @@ function detectFictionalContext(text = "") {
 	const hasStrong = FICTIONAL_CONTEXT_STRONG_TOKENS.some((tok) =>
 		hay.includes(tok)
 	);
+	const hasRealWorldOverride = REAL_WORLD_OVERRIDE_TOKENS.some((tok) =>
+		hay.includes(tok)
+	);
+	if (hasStrong && hasRealWorldOverride) return false;
 	if (hasStrong) return true;
 	const hasPersonCue = REAL_PERSON_CONTEXT_TOKENS.some((tok) =>
 		hay.includes(tok)
@@ -4127,6 +4172,7 @@ function scoreAnchorCandidate(candidate = "", baseTokens = []) {
 	const tokens = tokenizeLabel(cleaned);
 	if (!tokens.length) return -999;
 	const matchCount = baseTokens.filter((t) => lower.includes(t)).length;
+	const noiseHits = tokens.filter((t) => ANCHOR_NOISE_TOKENS.has(t)).length;
 	const capWords = (candidate.match(/\b[A-Z][a-z]+\b/g) || []).length;
 	const wordCount = tokens.length;
 	let score =
@@ -4134,6 +4180,7 @@ function scoreAnchorCandidate(candidate = "", baseTokens = []) {
 		capWords * 0.6 +
 		Math.min(wordCount, 6) * 0.25 -
 		Math.max(0, wordCount - 8) * 0.4;
+	if (noiseHits) score -= Math.min(1.4, noiseHits * 0.7);
 	if (
 		/^(did|does|do|is|are|was|were|will|can|could|should|would|has|have|had)\b/i.test(
 			cleaned
@@ -4180,7 +4227,8 @@ function pickTopicAnchorLabel(topicLabel = "", contextStrings = []) {
 
 	if (!best) return shortTopicLabel(baseLabel || topicLabel, 5);
 	const anchor = shortTopicLabel(best, 5);
-	return anchor || shortTopicLabel(baseLabel || topicLabel, 5);
+	const cleanedAnchor = stripAnchorNoise(anchor);
+	return cleanedAnchor || anchor || shortTopicLabel(baseLabel || topicLabel, 5);
 }
 
 function pickIntentEvidenceLine(
@@ -4428,6 +4476,23 @@ function cleanTopicLabel(text = "") {
 		.replace(/\s+/g, " ")
 		.replace(/[.!?]+$/g, "")
 		.trim();
+}
+
+function stripAnchorNoise(label = "") {
+	const tokens = cleanTopicLabel(label)
+		.split(/\s+/)
+		.filter(Boolean)
+		.filter((t) => /[a-z0-9]/i.test(t));
+	while (tokens.length && ANCHOR_NOISE_TOKENS.has(tokens[0].toLowerCase())) {
+		tokens.shift();
+	}
+	while (
+		tokens.length &&
+		ANCHOR_NOISE_TOKENS.has(tokens[tokens.length - 1].toLowerCase())
+	) {
+		tokens.pop();
+	}
+	return tokens.join(" ");
 }
 
 function looksLikeQuestionTopic(text = "") {
