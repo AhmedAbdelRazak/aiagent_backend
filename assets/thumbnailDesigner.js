@@ -49,6 +49,7 @@ const THUMBNAIL_PANEL_FG_SATURATION = 1.07;
 const THUMBNAIL_PANEL_FG_BRIGHTNESS = 0.045;
 const THUMBNAIL_PANEL_FG_GAMMA = 0.96;
 const THUMBNAIL_PANEL_FG_UNSHARP = "3:3:0.4";
+const THUMBNAIL_PANEL_TOP_PAD_PCT = 0.04;
 const THUMBNAIL_PRESENTER_CUTOUT_DIR = path.resolve(
 	__dirname,
 	"../uploads/presenter_cutouts"
@@ -2650,6 +2651,9 @@ async function composeThumbnailBase({
 	const marginPct = Number.isFinite(Number(layout.panelMarginPct))
 		? Number(layout.panelMarginPct)
 		: PANEL_MARGIN_PCT;
+	const topPadPct = Number.isFinite(Number(layout.panelTopPadPct))
+		? Number(layout.panelTopPadPct)
+		: THUMBNAIL_PANEL_TOP_PAD_PCT;
 	const overlapPct = Number.isFinite(Number(layout.presenterOverlapPct))
 		? Number(layout.presenterOverlapPct)
 		: PRESENTER_OVERLAP_PCT;
@@ -2667,9 +2671,7 @@ async function composeThumbnailBase({
 	const hasSinglePanel = panelCount === 1;
 	const panelMargin = hasSinglePanel ? 0 : margin;
 	const topPad = hasSinglePanel
-		? 0
-		: panelCount === 1
-		? Math.round(H * 0.22)
+		? Math.round(H * clampNumber(topPadPct, 0, 0.2))
 		: 0;
 	const panelW = makeEven(Math.max(2, leftW - panelMargin * 2));
 	const panelH =
@@ -3757,9 +3759,15 @@ async function collectThumbnailTopicImages({
 			{ limit: 16 }
 		);
 		const sensitiveTopic = hasSensitiveTopicTokens([label, ...hintPool]);
-		const companionLabel = inferCompanionLabel(label, hintPool);
+		const relatedQueriesForSearch = sensitiveTopic ? [] : relatedQueries;
+		const trendHintsForSearch = sensitiveTopic ? [] : trendHints;
+		const companionLabel = sensitiveTopic
+			? ""
+			: inferCompanionLabel(label, hintPool);
 		const companionTokens = companionLabel ? tokenizeLabel(companionLabel) : [];
-		const contextSource = [label, ...relatedQueries].filter(Boolean).join(" ");
+		const contextSource = [label, ...relatedQueriesForSearch]
+			.filter(Boolean)
+			.join(" ");
 		const contextClean = sanitizeThumbnailContext(contextSource);
 		const contextSafe = sensitiveTopic
 			? stripFamilyRelationFromText(contextClean)
@@ -3774,16 +3782,16 @@ async function collectThumbnailTopicImages({
 			!sensitiveTopic &&
 			shouldPreferNewsImage({
 				label,
-				trendHints,
-				relatedQueries,
+				trendHints: trendHintsForSearch,
+				relatedQueries: relatedQueriesForSearch,
 				title,
 				shortTitle,
 				seoTitle,
 				topics: [t],
 			});
 		const baseTrendHints = preferNewsImage
-			? filterNewsAvoidHints(trendHints)
-			: trendHints;
+			? filterNewsAvoidHints(trendHintsForSearch)
+			: trendHintsForSearch;
 		const safeTrendHints = sensitiveTopic
 			? filterSensitiveHints(baseTrendHints)
 			: baseTrendHints;
@@ -3800,7 +3808,7 @@ async function collectThumbnailTopicImages({
 			? buildNewsImageHints({
 					label,
 					trendHints: trendHintsFiltered,
-					relatedQueries,
+					relatedQueries: relatedQueriesForSearch,
 			  })
 			: [];
 		const questionInfo = extractQuestionSegments(label);
