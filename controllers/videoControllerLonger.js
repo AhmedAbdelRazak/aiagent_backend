@@ -1768,6 +1768,32 @@ async function selectTopics({
 		language,
 		baseUrl,
 	});
+	const primaryTrendStory = Array.isArray(trendStories)
+		? trendStories[0]
+		: null;
+	if (
+		primaryTrendStory?.topic &&
+		!isDuplicateTopic(primaryTrendStory.topic, topics, usedSet)
+	) {
+		const displayTopic =
+			cleanTopicLabel(primaryTrendStory.topic) || primaryTrendStory.topic;
+		const relatedQueries = normalizeRelatedQueries(
+			primaryTrendStory.relatedQueries
+		);
+		topics.push({
+			topic: primaryTrendStory.topic,
+			displayTopic,
+			angle: "",
+			reason: "Google Trends (first)",
+			keywords: topicTokensFromTitle(primaryTrendStory.topic)
+				.concat(topicTokensFromTitle(primaryTrendStory.rawTitle || ""))
+				.concat(relatedQueries.rising.flatMap((q) => topicTokensFromTitle(q)))
+				.concat(relatedQueries.top.flatMap((q) => topicTokensFromTitle(q)))
+				.slice(0, 10),
+			trendStory: primaryTrendStory,
+		});
+		addUsedTopicVariants(usedSet, primaryTrendStory.topic);
+	}
 
 	const rankedTrendStories = rankTrendStoriesForYouTube(trendStories);
 
@@ -3909,6 +3935,19 @@ const REAL_PERSON_CONTEXT_TOKENS = [
 	"influencer",
 	"model",
 	"celebrity",
+	"instagram",
+	"tiktok",
+	"onlyfans",
+	"youtube",
+	"twitter",
+	"x.com",
+	"facebook",
+	"snapchat",
+	"podcast",
+	"interview",
+	"net worth",
+	"paparazzi",
+	"viral",
 	"born",
 	"birth",
 	"age",
@@ -3958,6 +3997,11 @@ const REAL_WORLD_OVERRIDE_TOKENS = [
 	"investigation",
 	"found dead",
 	"cause of death",
+	"instagram",
+	"tiktok",
+	"onlyfans",
+	"net worth",
+	"paparazzi",
 ];
 
 const ANCHOR_NOISE_TOKENS = new Set([
@@ -4067,7 +4111,8 @@ const TOPIC_DOMAIN_TOKENS = [
 ];
 
 function detectFictionalContext(text = "") {
-	const hay = String(text || "").toLowerCase();
+	const raw = String(text || "");
+	const hay = raw.toLowerCase();
 	if (!hay) return false;
 	const hasStrong = FICTIONAL_CONTEXT_STRONG_TOKENS.some((tok) =>
 		hay.includes(tok)
@@ -4075,12 +4120,15 @@ function detectFictionalContext(text = "") {
 	const hasRealWorldOverride = REAL_WORLD_OVERRIDE_TOKENS.some((tok) =>
 		hay.includes(tok)
 	);
-	if (hasStrong && hasRealWorldOverride) return false;
-	if (hasStrong) return true;
 	const hasPersonCue = REAL_PERSON_CONTEXT_TOKENS.some((tok) =>
 		hay.includes(tok)
 	);
+	const hasNamePattern =
+		/\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b/.test(raw);
+	if (hasStrong && (hasRealWorldOverride || hasPersonCue)) return false;
+	if (hasStrong) return true;
 	if (hasPersonCue) return false;
+	if (hasNamePattern && hasRealWorldOverride) return false;
 	const hasWeak = FICTIONAL_CONTEXT_WEAK_TOKENS.some((tok) =>
 		hay.includes(tok)
 	);
@@ -4143,14 +4191,35 @@ function buildTopicContextStrings(topicObj, contextItems = []) {
 	if (topicObj?.youtubeShortTitle)
 		list.push(String(topicObj.youtubeShortTitle));
 
-	const story = topicObj?.trendStory || {};
+	const story = topicObj?.trendStory || topicObj || {};
 	const phrases = Array.isArray(story.searchPhrases) ? story.searchPhrases : [];
 	const entities = Array.isArray(story.entityNames) ? story.entityNames : [];
 	const articles = Array.isArray(story.articles) ? story.articles : [];
 	const articleTitles = articles.map((a) => a?.title).filter(Boolean);
 	const imageComment = story.imageComment || "";
+	const related = normalizeRelatedQueries(
+		story.relatedQueries || topicObj?.relatedQueries || null
+	);
+	const articleUrls = uniqueStrings(
+		[
+			...(Array.isArray(story.articleUrls) ? story.articleUrls : []),
+			...articles.map((a) => a?.url).filter(Boolean),
+		],
+		{ limit: 8 }
+	);
+	const articleHosts = uniqueStrings(
+		articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
+		{ limit: 8 }
+	);
 
-	list.push(...phrases, ...entities, ...articleTitles);
+	list.push(
+		...phrases,
+		...entities,
+		...articleTitles,
+		...articleHosts,
+		...related.rising,
+		...related.top
+	);
 	if (imageComment) list.push(String(imageComment));
 
 	for (const item of Array.isArray(contextItems) ? contextItems : []) {
@@ -4802,17 +4871,17 @@ function enforceRealWorldFraming(segments = [], topicContextFlags = []) {
 
 const INTRO_TEMPLATES = {
 	neutral: [
-		"Hi there, this is Amad, and today I will cover {topic}.",
-		"Hi there, this is Amad, and we have a very interesting topic regarding {topic}.",
-		"Hi there, this is Amad, and today we're covering {topic}.",
+		"Hi, I'm Amad. Today: {topic}.",
+		"Hi, I'm Amad. Covering {topic}.",
+		"Hi, it's Amad. Here's {topic}.",
 	],
 	excited: [
-		"Hi there, this is Amad, and I'm thrilled to cover {topic}.",
-		"Hi there, this is Amad, and I'm excited to cover {topic}.",
+		"Hi, I'm Amad. Big update on {topic}.",
+		"Hi, I'm Amad. Let's get into {topic}.",
 	],
 	serious: [
-		"Hi there, this is Amad, and today we're covering a serious update about {topic}.",
-		"Hi there, this is Amad, and we're breaking down the latest developments on {topic}.",
+		"Hi, I'm Amad. A quick update on {topic}.",
+		"Hi, I'm Amad. The latest on {topic}.",
 	],
 };
 
@@ -4911,8 +4980,14 @@ function buildOutroLine({
 		if (countWords(line) > 14) {
 			line = `${question} Thank you for watching.`;
 		}
-	} else if (countWords(line) > 12) {
-		line = "Thank you for watching. See you next time.";
+	} else {
+		if (countWords(line) > 12) {
+			line = "Thank you for watching. See you next time.";
+		}
+		if (countWords(line) < 12) {
+			line =
+				"Thank you for watching. We appreciate you, and we'll see you next time.";
+		}
 	}
 	return sanitizeIntroOutroLine(line);
 }
@@ -8928,15 +9003,11 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			};
 		});
 		logJob(jobId, "topic sources", { topics: topicSourceSummary });
-		const topicContextFlags = topicContexts.map((tc) => {
+		const topicContextFlags = topicContexts.map((tc, idx) => {
 			const items = Array.isArray(tc.context) ? tc.context : [];
-			const contextText = [tc.topic]
-				.concat(
-					items.map((c) =>
-						typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`
-					)
-				)
-				.join(" ");
+			const topicObj = Array.isArray(topicPicks) ? topicPicks[idx] : null;
+			const contextStrings = buildTopicContextStrings(topicObj || tc, items);
+			const contextText = contextStrings.join(" ");
 			return {
 				topic: tc.topic,
 				isFictional: detectFictionalContext(contextText),
@@ -9350,9 +9421,14 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let introAtempo = 1;
 		let introRawAtempo = 1;
 		if (introDurationSec < INTRO_MIN_SEC || introDurationSec > INTRO_MAX_SEC) {
+			const introTargetSec = clampNumber(
+				introDurationSec,
+				INTRO_MIN_SEC,
+				INTRO_MAX_SEC
+			);
 			const introFit = await fitWavToTargetDuration({
 				wavPath: introAudioPath,
-				targetSec: introDurationSec,
+				targetSec: introTargetSec,
 				minAtempo: INTRO_ATEMPO_MIN,
 				maxAtempo: INTRO_ATEMPO_MAX,
 				tmpDir,
@@ -9412,9 +9488,14 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let outroAtempo = 1;
 		let outroRawAtempo = 1;
 		if (outroDurationSec < OUTRO_MIN_SEC || outroDurationSec > OUTRO_MAX_SEC) {
+			const outroTargetSec = clampNumber(
+				outroDurationSec,
+				OUTRO_MIN_SEC,
+				OUTRO_MAX_SEC
+			);
 			const outroFit = await fitWavToTargetDuration({
 				wavPath: outroAudioPath,
-				targetSec: outroDurationSec,
+				targetSec: outroTargetSec,
 				minAtempo: OUTRO_ATEMPO_MIN,
 				maxAtempo: OUTRO_ATEMPO_MAX,
 				tmpDir,

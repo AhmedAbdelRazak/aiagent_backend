@@ -99,6 +99,23 @@ const THUMBNAIL_HOOK_WORDS = [
 	"album",
 	"single",
 ];
+const UNCERTAINTY_TOKENS = new Set([
+	"alleged",
+	"allegedly",
+	"rumor",
+	"rumour",
+	"unconfirmed",
+	"unverified",
+	"reported",
+	"reportedly",
+	"suspected",
+	"claim",
+	"claims",
+	"leak",
+	"leaked",
+	"investigation",
+	"controversy",
+]);
 const QUESTION_START_TOKENS = new Set([
 	"did",
 	"does",
@@ -2382,8 +2399,8 @@ async function composeThumbnailBase({
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+					`${panelFitPad},` +
 					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
 					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
@@ -3794,6 +3811,38 @@ function deriveQuestionHeadlinePlan({
 	return null;
 }
 
+function isUnconfirmedTopic({ title, shortTitle, seoTitle, topics } = {}) {
+	const list = [];
+	if (title) list.push(title);
+	if (shortTitle) list.push(shortTitle);
+	if (seoTitle) list.push(seoTitle);
+	const primary = Array.isArray(topics) ? topics[0] : null;
+	if (primary) {
+		list.push(primary.displayTopic, primary.topic);
+		const story = primary.trendStory || primary;
+		if (Array.isArray(story.searchPhrases)) list.push(...story.searchPhrases);
+		if (Array.isArray(story.entityNames)) list.push(...story.entityNames);
+		if (Array.isArray(story.articles))
+			list.push(...story.articles.map((a) => a?.title).filter(Boolean));
+		if (Array.isArray(story.relatedQueries?.top))
+			list.push(...story.relatedQueries.top);
+		if (Array.isArray(story.relatedQueries?.rising))
+			list.push(...story.relatedQueries.rising);
+	}
+	const hay = list.filter(Boolean).join(" ").toLowerCase();
+	if (!hay) return false;
+	for (const tok of UNCERTAINTY_TOKENS) {
+		if (hay.includes(tok)) return true;
+	}
+	return false;
+}
+
+function replaceConfirmedCopy(text = "", replacement = "UNCONFIRMED") {
+	const raw = String(text || "").trim();
+	if (!raw) return raw;
+	return raw.replace(/\bconfirmed\b/gi, replacement);
+}
+
 function buildPrimaryTopicBadge(topics = []) {
 	const list = Array.isArray(topics) ? topics : [];
 	const primary = list[0]?.displayTopic || list[0]?.topic || "";
@@ -4018,6 +4067,22 @@ async function generateThumbnailPackage({
 		const strippedPunchy = stripTopicFromHeadline(punchyTitle, badgeText);
 		if (strippedPunchy && strippedPunchy !== punchyTitle)
 			punchyTitle = strippedPunchy;
+	}
+	const unconfirmed = isUnconfirmedTopic({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+	});
+	if (unconfirmed) {
+		thumbTitle = replaceConfirmedCopy(thumbTitle, "UNCONFIRMED");
+		punchyTitle = replaceConfirmedCopy(punchyTitle, "ALLEGED");
+		if (
+			topicCount === 1 &&
+			!/\b(ALLEGED|UNCONFIRMED)\b/i.test(String(badgeText || ""))
+		) {
+			badgeText = "UNCONFIRMED";
+		}
 	}
 	if (log)
 		log("thumbnail text plan", {
