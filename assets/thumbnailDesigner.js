@@ -6,7 +6,7 @@ const child_process = require("child_process");
 const crypto = require("crypto");
 const axios = require("axios");
 const cloudinary = require("cloudinary").v2;
-const { TOPIC_STOP_WORDS, GENERIC_TOPIC_TOKENS } = require("./utils");
+const { TOPIC_STOP_WORDS, GENERIC_TOPIC_TOKENS } = require("../assets/utils");
 
 let ffmpegPath = "";
 try {
@@ -25,7 +25,7 @@ const RUNWAY_THUMBNAIL_RATIO = "1920:1080";
 const MAX_INPUT_IMAGES = 4;
 const DEFAULT_CANVAS_WIDTH = 1280;
 const DEFAULT_CANVAS_HEIGHT = 720;
-const LEFT_PANEL_PCT = 0.5;
+const LEFT_PANEL_PCT = 0.48;
 const PANEL_MARGIN_PCT = 0.035;
 const PRESENTER_OVERLAP_PCT = 0.06;
 
@@ -34,25 +34,13 @@ const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
 const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
-const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.5;
+const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.42;
 const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.1;
-const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.22;
-const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.32;
+const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.18;
+const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.38;
 const THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS = 3;
 const THUMBNAIL_VARIANT_B_CONTRAST = 1.12;
 const THUMBNAIL_VARIANT_B_BASE_CHARS = 10;
-const THUMBNAIL_PANEL_BG_CONTRAST = 1.03;
-const THUMBNAIL_PANEL_BG_SATURATION = 1.03;
-const THUMBNAIL_PANEL_BG_BRIGHTNESS = 0.02;
-const THUMBNAIL_PANEL_FG_CONTRAST = 1.08;
-const THUMBNAIL_PANEL_FG_SATURATION = 1.07;
-const THUMBNAIL_PANEL_FG_BRIGHTNESS = 0.045;
-const THUMBNAIL_PANEL_FG_GAMMA = 0.96;
-const THUMBNAIL_PANEL_FG_UNSHARP = "3:3:0.4";
-const THUMBNAIL_PANEL_TOP_PAD_PCT = 0.04;
-const THUMBNAIL_TOPIC_QA_MIN_BPP = 0.06;
-const THUMBNAIL_TOPIC_QA_MIN_ASPECT = 0.6;
-const THUMBNAIL_TOPIC_QA_MAX_ASPECT = 1.8;
 const THUMBNAIL_PRESENTER_CUTOUT_DIR = path.resolve(
 	__dirname,
 	"../uploads/presenter_cutouts"
@@ -79,9 +67,8 @@ const QA_LUMA_MIN = 0.34;
 const QA_LUMA_LEFT_MIN = 0.33;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
-const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.16;
-const THUMBNAIL_TEXT_BOX_BORDER_PCT = 0.32;
-const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.141;
+const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
+const THUMBNAIL_TEXT_Y_OFFSET_PCT = 0.12;
 const THUMBNAIL_BADGE_FONT_PCT = 0.045;
 const THUMBNAIL_BADGE_X_PCT = 0.05;
 const THUMBNAIL_BADGE_Y_PCT = 0.05;
@@ -89,7 +76,7 @@ const THUMBNAIL_BADGE_MAX_CHARS = 18;
 const THUMBNAIL_TOPIC_MAX_IMAGES = 1;
 const THUMBNAIL_TOPIC_MIN_EDGE = 900;
 const THUMBNAIL_TOPIC_MIN_BYTES = 60000;
-const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 12;
+const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 8;
 const THUMBNAIL_MIN_BYTES = 12000;
 const THUMBNAIL_HOOK_WORDS = [
 	"trailer",
@@ -112,69 +99,6 @@ const THUMBNAIL_HOOK_WORDS = [
 	"album",
 	"single",
 ];
-const UNCERTAINTY_TOKENS = new Set([
-	"alleged",
-	"allegedly",
-	"rumor",
-	"rumour",
-	"unconfirmed",
-	"unverified",
-	"reported",
-	"reportedly",
-	"suspected",
-	"claim",
-	"claims",
-	"leak",
-	"leaked",
-	"investigation",
-	"controversy",
-]);
-const NEWS_SIGNAL_TOKENS = new Set([
-	"investigation",
-	"investigators",
-	"police",
-	"sheriff",
-	"authorities",
-	"official",
-	"statement",
-	"breaking",
-	"case",
-	"court",
-	"trial",
-	"lawsuit",
-	"charged",
-	"arrest",
-	"custody",
-	"hotel",
-	"motel",
-	"courthouse",
-	"coroner",
-	"medical examiner",
-	"overdose",
-	"found",
-	"missing",
-	"incident",
-	"headline",
-	"newsroom",
-	"press",
-	"conference",
-]);
-const NEWS_AVOID_TOKENS = [
-	"red carpet",
-	"premiere",
-	"gala",
-	"award",
-	"festival",
-	"after party",
-];
-const NEWS_IMAGE_HINTS_BASE = [
-	"news report",
-	"news headline",
-	"official statement",
-	"press conference",
-	"newsroom",
-];
-const NEWS_PORTRAIT_HINTS = ["headshot", "portrait", "close up"];
 const QUESTION_START_TOKENS = new Set([
 	"did",
 	"does",
@@ -216,22 +140,6 @@ const QUESTION_CONTEXT_SPLIT_TOKENS = new Set([
 	"vs",
 	"vs.",
 ]);
-const QUESTION_PUNCHY_DEATH_TOKENS = new Set([
-	"die",
-	"dies",
-	"died",
-	"dead",
-	"death",
-]);
-const QUESTION_PUNCHY_RETURN_TOKENS = new Set([
-	"return",
-	"returns",
-	"returned",
-	"returning",
-	"comeback",
-	"back",
-]);
-const QUESTION_PUNCHY_ALLOWED_CATEGORIES = new Set(["tv", "film", "celebrity"]);
 const IMAGE_DEEMPHASIS_TOKENS = new Set([
 	"die",
 	"dies",
@@ -245,58 +153,6 @@ const IMAGE_DEEMPHASIS_TOKENS = new Set([
 	"murder",
 	"suicide",
 	"shooting",
-]);
-const FAMILY_RELATION_TOKENS = new Set([
-	"daughter",
-	"son",
-	"wife",
-	"husband",
-	"family",
-	"mother",
-	"father",
-	"sister",
-	"brother",
-	"child",
-	"children",
-	"kids",
-]);
-const SENSITIVE_TOPIC_TOKENS = new Set([
-	...IMAGE_DEEMPHASIS_TOKENS,
-	"missing",
-	"found",
-	"unresponsive",
-	"overdose",
-	"coroner",
-	"autopsy",
-	"incident",
-	"hotel",
-	"motel",
-]);
-const SENSITIVE_TOPIC_PHRASES = new Set([
-	"medical examiner",
-	"cause of death",
-	"found unresponsive",
-]);
-const SENSITIVE_BADGE_DISALLOWED_TOKENS = new Set([
-	"confirmed",
-	"unconfirmed",
-	"alleged",
-	"death",
-	"dead",
-	"died",
-	"killed",
-	"murder",
-	"suicide",
-	"overdose",
-	"missing",
-	"found",
-]);
-const SENSITIVE_BADGE_FALLBACK = "UPDATE";
-const SENSITIVE_TITLE_DISALLOWED_TOKENS = new Set([
-	...SENSITIVE_TOPIC_TOKENS,
-	"confirmed",
-	"unconfirmed",
-	"alleged",
 ]);
 const THUMBNAIL_CLOUDINARY_FOLDER = "aivideomatic/long_thumbnails";
 const THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX = "long_thumb";
@@ -356,9 +212,6 @@ const WATERMARK_URL_TOKENS = [
 	"newscom",
 	"pixelsquid",
 	"watermark",
-	"orangebuddha",
-	"orange buddha",
-	"orange-buddha",
 ];
 const THUMBNAIL_MERCH_DISALLOWED_TOKENS = [
 	"funko",
@@ -392,12 +245,6 @@ const THUMBNAIL_MERCH_PENALTY_TOKENS = [
 	"keyart",
 	"concept art",
 	"illustration",
-	"painting",
-	"sketch",
-	"caricature",
-	"cartoon",
-	"drawing",
-	"artwork",
 	"vector",
 	"collage",
 	"render",
@@ -422,46 +269,6 @@ const THUMBNAIL_MERCH_DISALLOWED_HOSTS = [
 	"hottopic.com",
 	"entertainmentearth.com",
 	"bigbadtoystore.com",
-	"redbubble.com",
-	"commarts.com",
-	"society6.com",
-	"fineartamerica.com",
-	"artstation.com",
-	"deviantart.com",
-];
-const THUMBNAIL_SENSITIVE_REQUIRE_TRUSTED_SOURCES = true;
-const THUMBNAIL_SENSITIVE_ALLOWED_HOSTS = [
-	"wikipedia.org",
-	"wikimedia.org",
-	"imdb.com",
-	"people.com",
-	"abc7.com",
-	"nbcbayarea.com",
-	"nbcnews.com",
-	"apnews.com",
-	"reuters.com",
-	"bbc.co.uk",
-	"bbc.com",
-	"cnn.com",
-	"variety.com",
-	"hollywoodreporter.com",
-	"deadline.com",
-	"nytimes.com",
-	"washingtonpost.com",
-	"latimes.com",
-	"usatoday.com",
-	"cbsnews.com",
-	"foxnews.com",
-	"theguardian.com",
-];
-const THUMBNAIL_SENSITIVE_CDN_HOSTS = [
-	"s.yimg.com",
-	"media.zenfs.com",
-	"cloudfront.net",
-	"static01.nyt.com",
-	"ichef.bbci.co.uk",
-	"media2.s-nbcnews.com",
-	"cdn.cnn.com",
 ];
 
 const RUNWAY_PROMPT_CHAR_LIMIT = 520;
@@ -695,130 +502,6 @@ function inferEntertainmentCategory(tokens = []) {
 	return "general";
 }
 
-function isLikelyPersonTopic(label = "", extraHints = []) {
-	const tokens = tokenizeLabel(label);
-	if (tokens.length < 2 || tokens.length > 5) return false;
-	if (tokens.some((t) => /^\d+$/.test(t))) return false;
-	const block = new Set([
-		"season",
-		"episode",
-		"trailer",
-		"tour",
-		"album",
-		"song",
-		"series",
-		"movie",
-		"film",
-		"show",
-		"game",
-		"ending",
-		"explained",
-		"recap",
-		"review",
-		"release",
-		"update",
-	]);
-	const extra = Array.isArray(extraHints)
-		? extraHints.flatMap((t) => tokenizeLabel(t))
-		: [];
-	const combined = new Set([...tokens, ...extra]);
-	for (const tok of block) {
-		if (combined.has(tok)) return false;
-	}
-	return true;
-}
-
-function shouldPreferNewsImage({
-	label = "",
-	trendHints = [],
-	relatedQueries = [],
-	title,
-	shortTitle,
-	seoTitle,
-	topics = [],
-} = {}) {
-	if (isUnconfirmedTopic({ title, shortTitle, seoTitle, topics })) return true;
-	const hay = [label, ...trendHints, ...relatedQueries]
-		.filter(Boolean)
-		.join(" ")
-		.toLowerCase();
-	if (!hay) return false;
-	for (const tok of NEWS_SIGNAL_TOKENS) {
-		if (hay.includes(tok)) return true;
-	}
-	return false;
-}
-
-function buildNewsImageHints({
-	label = "",
-	trendHints = [],
-	relatedQueries = [],
-} = {}) {
-	const hay = [label, ...trendHints, ...relatedQueries]
-		.filter(Boolean)
-		.join(" ")
-		.toLowerCase();
-	const hints = [...NEWS_IMAGE_HINTS_BASE];
-	if (hay.includes("hotel") || hay.includes("motel"))
-		hints.push("hotel exterior");
-	if (
-		hay.includes("courthouse") ||
-		hay.includes("court") ||
-		hay.includes("trial") ||
-		hay.includes("lawsuit")
-	)
-		hints.push("courthouse exterior");
-	if (
-		hay.includes("police") ||
-		hay.includes("sheriff") ||
-		hay.includes("investigation")
-	)
-		hints.push("police tape");
-	if (hay.includes("coroner") || hay.includes("medical examiner"))
-		hints.push("medical examiner building");
-	if (hay.includes("hospital")) hints.push("hospital exterior");
-	return uniqueStrings(hints, { limit: 8 });
-}
-
-function filterNewsAvoidHints(hints = []) {
-	if (!Array.isArray(hints) || !hints.length) return [];
-	return hints.filter((hint) => {
-		const lower = String(hint || "").toLowerCase();
-		for (const tok of NEWS_AVOID_TOKENS) {
-			if (tok && lower.includes(tok)) return false;
-		}
-		return true;
-	});
-}
-
-function buildNewsContextTokens(hints = []) {
-	const tokens = Array.isArray(hints)
-		? hints.flatMap((hint) => tokenizeLabel(hint))
-		: [];
-	return normalizeTopicTokens(tokens).slice(0, 8);
-}
-
-function buildNewsImageQueries(
-	searchLabel = "",
-	newsHints = [],
-	portraitHints = []
-) {
-	const base = String(searchLabel || "").trim();
-	if (!base) return [];
-	const queries = [];
-	const push = (suffix) => {
-		const trimmed = String(suffix || "").trim();
-		if (!trimmed) return;
-		queries.push(`${base} ${trimmed}`);
-	};
-	newsHints.slice(0, 2).forEach((hint) => push(hint));
-	portraitHints.slice(0, 1).forEach((hint) => push(hint));
-	push("news photo");
-	push("official statement");
-	push("press conference");
-	return uniqueStrings(queries, { limit: 6 });
-}
-
 function extractQuestionSegments(rawText = "") {
 	const raw = String(rawText || "").trim();
 	if (!raw) return null;
@@ -854,120 +537,6 @@ function filterImageSearchTokens(tokens = []) {
 function filterQuestionSubjectTokens(tokens = []) {
 	const filtered = filterImageSearchTokens(filterSpecificTopicTokens(tokens));
 	return filtered.length ? filtered : filterImageSearchTokens(tokens);
-}
-
-function hasSensitiveTopicTokens(texts = []) {
-	const hay = (Array.isArray(texts) ? texts : [])
-		.filter(Boolean)
-		.join(" ")
-		.toLowerCase();
-	if (!hay) return false;
-	for (const phrase of SENSITIVE_TOPIC_PHRASES) {
-		if (phrase && hay.includes(phrase)) return true;
-	}
-	for (const tok of SENSITIVE_TOPIC_TOKENS) {
-		if (tok && hay.includes(tok)) return true;
-	}
-	for (const tok of FAMILY_RELATION_TOKENS) {
-		if (tok && hay.includes(tok)) return true;
-	}
-	return false;
-}
-
-function stripFamilyRelationTokens(tokens = []) {
-	return (Array.isArray(tokens) ? tokens : []).filter(
-		(t) => !FAMILY_RELATION_TOKENS.has(String(t || "").toLowerCase())
-	);
-}
-
-function stripFamilyRelationFromText(text = "") {
-	const tokens = stripFamilyRelationTokens(tokenizeLabel(text || ""));
-	return tokens.join(" ").trim();
-}
-
-function filterSensitiveHints(hints = []) {
-	const list = Array.isArray(hints) ? hints : [];
-	const filtered = [];
-	for (const hint of list) {
-		const raw = String(hint || "").trim();
-		if (!raw) continue;
-		if (hasSensitiveTopicTokens([raw])) continue;
-		const tokens = tokenizeLabel(raw);
-		if (tokens.some((t) => FAMILY_RELATION_TOKENS.has(t))) continue;
-		filtered.push(raw);
-	}
-	return filtered;
-}
-
-function inferCompanionLabel(primaryLabel = "", hints = []) {
-	const primaryTokens = tokenizeLabel(primaryLabel);
-	if (primaryTokens.length < 2) return "";
-	const primarySet = new Set(primaryTokens);
-	const stopSet = new Set([
-		...TOPIC_STOP_WORDS,
-		...GENERIC_TOPIC_TOKENS,
-		...CONTEXT_STOP_TOKENS,
-		...FAMILY_RELATION_TOKENS,
-	]);
-	for (const hint of Array.isArray(hints) ? hints : []) {
-		const raw = String(hint || "").trim();
-		if (!raw) continue;
-		const tokenMatch = topicMatchInfo(primaryTokens, [raw]).count;
-		if (tokenMatch < Math.min(2, primaryTokens.length)) continue;
-		const hintTokens = tokenizeLabel(raw);
-		const remainder = hintTokens.filter(
-			(tok) => !primarySet.has(tok) && !stopSet.has(tok)
-		);
-		if (remainder.length < 2 || remainder.length > 4) continue;
-		const candidate = remainder.slice(0, 3).join(" ");
-		if (!candidate) continue;
-		if (!isLikelyPersonTopic(candidate, [raw])) continue;
-		return titleCaseIfLower(candidate);
-	}
-	return "";
-}
-
-function inferSensitiveCompanionLabel(
-	primaryLabel = "",
-	relatedQueries = [],
-	articleTitles = []
-) {
-	const primaryTokens = tokenizeLabel(primaryLabel);
-	if (primaryTokens.length < 2) return "";
-	const lastName = primaryTokens[primaryTokens.length - 1];
-	const stopSet = new Set([
-		...TOPIC_STOP_WORDS,
-		...GENERIC_TOPIC_TOKENS,
-		...CONTEXT_STOP_TOKENS,
-		...FAMILY_RELATION_TOKENS,
-		...SENSITIVE_TOPIC_TOKENS,
-	]);
-	const candidates = uniqueStrings(
-		[...relatedQueries, ...articleTitles].filter(Boolean),
-		{ limit: 12 }
-	);
-	let best = "";
-	for (const raw of candidates) {
-		if (!raw) continue;
-		const tokens = tokenizeLabel(raw);
-		if (tokens.length < 2) continue;
-		const primaryMatch =
-			tokens.includes(lastName) ||
-			topicMatchInfo(primaryTokens, [raw]).count >= 1;
-		if (!primaryMatch) continue;
-		const cleaned = tokens.filter((tok) => !stopSet.has(tok));
-		if (!cleaned.length) continue;
-		const nameTokens = cleaned.filter(
-			(tok) => tok !== lastName && !primaryTokens.includes(tok)
-		);
-		if (!nameTokens.length) continue;
-		const firstNames = nameTokens.slice(0, 2).join(" ");
-		const candidate = `${firstNames} ${lastName}`.trim();
-		if (!candidate) continue;
-		if (!isLikelyPersonTopic(candidate, [raw])) continue;
-		if (candidate.length > best.length) best = candidate;
-	}
-	return best ? titleCaseIfLower(best) : "";
 }
 
 function buildQuestionSubjectLabel(questionInfo, maxWords = 4) {
@@ -1084,49 +653,12 @@ const THUMBNAIL_PREFERRED_SOURCE_TOKENS = [
 	"hollywoodreporter",
 	"deadline",
 	"rollingstone",
-	"abc7",
-	"nbc",
-	"nbcnews",
-	"nbcbayarea",
-	"livenowfox",
-	"foxnews",
-	"cbsnews",
-	"apnews",
-	"usatoday",
-	"people",
-	"tmz",
-	"theguardian",
-	"ndtv",
 ];
 
 function scoreSourceAffinity(url = "", contextLink = "") {
 	const hay = `${url} ${contextLink}`.toLowerCase();
 	for (const token of THUMBNAIL_PREFERRED_SOURCE_TOKENS) {
 		if (hay.includes(token)) return 0.35;
-	}
-	return 0;
-}
-
-function scoreNewsContext({
-	url = "",
-	source = "",
-	title = "",
-	tokens = [],
-} = {}) {
-	if (!tokens || !tokens.length) return 0;
-	const hay = `${url} ${source} ${title}`.toLowerCase();
-	let hits = 0;
-	for (const tok of tokens) {
-		if (tok && hay.includes(tok)) hits += 1;
-	}
-	if (!hits) return 0;
-	return clampNumber(hits / Math.max(3, tokens.length), 0, 1);
-}
-
-function scoreNewsAvoidPenalty({ url = "", source = "", title = "" } = {}) {
-	const hay = `${url} ${source} ${title}`.toLowerCase();
-	for (const tok of NEWS_AVOID_TOKENS) {
-		if (tok && hay.includes(tok)) return 0.45;
 	}
 	return 0;
 }
@@ -1360,8 +892,8 @@ async function fetchCseItems(
 	return results;
 }
 
-function isLikelyWatermarkedSource(url = "", contextLink = "", title = "") {
-	const hay = `${url} ${contextLink} ${title}`.toLowerCase();
+function isLikelyWatermarkedSource(url = "", contextLink = "") {
+	const hay = `${url} ${contextLink}`.toLowerCase();
 	return WATERMARK_URL_TOKENS.some((token) => hay.includes(token));
 }
 
@@ -1416,33 +948,6 @@ function normalizeImageUrlKey(url = "") {
 			.split("#")[0]
 			.toLowerCase();
 	}
-}
-
-function extractHostname(raw = "") {
-	try {
-		return new URL(String(raw || "")).hostname.toLowerCase();
-	} catch {
-		return "";
-	}
-}
-
-function hostMatchesList(host = "", list = []) {
-	if (!host) return false;
-	return list.some((h) => host === h || host.endsWith(`.${h}`));
-}
-
-function isSensitiveHostAllowed({ url = "", source = "" } = {}) {
-	const urlHost = extractHostname(url);
-	const sourceHost = extractHostname(source);
-	const sourceAllowed = hostMatchesList(
-		sourceHost,
-		THUMBNAIL_SENSITIVE_ALLOWED_HOSTS
-	);
-	if (sourceAllowed) return true;
-	if (hostMatchesList(urlHost, THUMBNAIL_SENSITIVE_ALLOWED_HOSTS)) return true;
-	if (hostMatchesList(urlHost, THUMBNAIL_SENSITIVE_CDN_HOSTS) && sourceAllowed)
-		return true;
-	return false;
 }
 
 async function headContentType(url, timeoutMs = 8000) {
@@ -1501,14 +1006,7 @@ async function fetchWikipediaPageImageUrl(topic = "") {
 				continue;
 			const imageUrl = page.original?.source || page.thumbnail?.source || "";
 			if (!imageUrl) continue;
-			if (
-				isLikelyWatermarkedSource(
-					imageUrl,
-					page.fullurl || "",
-					page.title || ""
-				)
-			)
-				continue;
+			if (isLikelyWatermarkedSource(imageUrl, page.fullurl || "")) continue;
 			return imageUrl;
 		} catch {
 			// ignore and try next
@@ -1561,7 +1059,7 @@ async function fetchWikimediaImageCandidates(
 			if (!url) continue;
 			const mime = String(info?.mime || "").toLowerCase();
 			if (mime && !mime.startsWith("image/")) continue;
-			if (isLikelyWatermarkedSource(url, "", img.title || "")) continue;
+			if (isLikelyWatermarkedSource(url, "")) continue;
 			items.push({
 				url,
 				title,
@@ -2032,10 +1530,9 @@ function ffprobeDimensions(filePath) {
 			.toString()
 			.trim();
 		const [w, h] = out.split("x").map((n) => Number(n) || 0);
-		if (w && h) return { width: w, height: h };
-		return probeImageDimensions(filePath);
+		return { width: w || 0, height: h || 0 };
 	} catch {
-		return probeImageDimensions(filePath);
+		return { width: 0, height: 0 };
 	}
 }
 
@@ -2560,21 +2057,13 @@ function scoreTopicImageCandidate(candidate) {
 	const sourceScore = Number.isFinite(candidate?.sourceScore)
 		? clampNumber(candidate.sourceScore, 0, 1)
 		: 0;
-	const newsScore = Number.isFinite(candidate?.newsScore)
-		? clampNumber(candidate.newsScore, 0, 1)
-		: 0;
-	const newsAvoidPenalty = Number.isFinite(candidate?.newsAvoidPenalty)
-		? clampNumber(candidate.newsAvoidPenalty, 0, 1)
-		: 0;
 	return (
 		sizeScore * 0.35 +
 		lumaScore * 0.2 +
 		colorScore * 0.1 +
 		matchScore * 0.3 +
-		sourceScore * 0.05 +
-		newsScore * 0.08 -
-		warmPenalty -
-		newsAvoidPenalty
+		sourceScore * 0.05 -
+		warmPenalty
 	);
 }
 
@@ -2583,74 +2072,6 @@ function shouldNeutralizeTopicImage(tone) {
 	if (!Number.isFinite(tone.bRatio) || !Number.isFinite(tone.rgOverB))
 		return false;
 	return tone.bRatio < 0.23 && tone.rgOverB > 1.7;
-}
-
-function evaluateTopicImageQuality(candidate = {}, { log, label } = {}) {
-	const reasons = [];
-	const width = Number(candidate.width || 0);
-	const height = Number(candidate.height || 0);
-	const size = Number(candidate.size || 0);
-	const minEdge = width && height ? Math.min(width, height) : 0;
-	const aspect = width && height ? width / height : 0;
-	const bpp = width && height ? size / (width * height) : 0;
-
-	if (!width || !height) reasons.push("missing_dims");
-	if (minEdge && minEdge < THUMBNAIL_TOPIC_MIN_EDGE) reasons.push("min_edge");
-	if (size && size < THUMBNAIL_TOPIC_MIN_BYTES) reasons.push("min_bytes");
-	if (
-		aspect &&
-		(aspect < THUMBNAIL_TOPIC_QA_MIN_ASPECT ||
-			aspect > THUMBNAIL_TOPIC_QA_MAX_ASPECT)
-	)
-		reasons.push("aspect_ratio");
-	if (bpp && bpp < THUMBNAIL_TOPIC_QA_MIN_BPP) reasons.push("low_bpp");
-	if (
-		Number.isFinite(candidate.wordMatches) &&
-		Number.isFinite(candidate.minWordMatches) &&
-		candidate.wordMatches < candidate.minWordMatches
-	)
-		reasons.push("topic_match");
-	if (
-		candidate.pairMatchRequired &&
-		!candidate.pairMatch &&
-		Number.isFinite(candidate.pairMatches)
-	)
-		reasons.push("pair_match");
-	if (candidate.hostAllowed === false) reasons.push("host_not_allowed");
-	if (Number(candidate.merchPenalty || 0) >= 0.6) reasons.push("merch_source");
-	if (
-		isLikelyWatermarkedSource(
-			candidate.url || "",
-			candidate.source || "",
-			candidate.title || ""
-		)
-	)
-		reasons.push("watermark_token");
-
-	const pass = reasons.length === 0;
-	if (log) {
-		log("thumbnail topic image qa", {
-			label,
-			pass,
-			reasons,
-			width,
-			height,
-			sizeKB: size ? Math.round(size / 1024) : 0,
-			aspect: aspect ? Number(aspect.toFixed(2)) : 0,
-			bpp: bpp ? Number(bpp.toFixed(4)) : 0,
-			wordMatches: candidate.wordMatches || 0,
-			minWordMatches: candidate.minWordMatches || 0,
-			pairMatch: Boolean(candidate.pairMatch),
-			hostAllowed:
-				typeof candidate.hostAllowed === "boolean"
-					? candidate.hostAllowed
-					: null,
-			merchPenalty: Number(candidate.merchPenalty || 0),
-			url: candidate.url || "",
-			source: candidate.source || "",
-		});
-	}
-	return { pass, reasons };
 }
 
 async function normalizeTopicImageIfNeeded({
@@ -2873,9 +2294,6 @@ async function composeThumbnailBase({
 	const marginPct = Number.isFinite(Number(layout.panelMarginPct))
 		? Number(layout.panelMarginPct)
 		: PANEL_MARGIN_PCT;
-	const topPadPct = Number.isFinite(Number(layout.panelTopPadPct))
-		? Number(layout.panelTopPadPct)
-		: THUMBNAIL_PANEL_TOP_PAD_PCT;
 	const overlapPct = Number.isFinite(Number(layout.presenterOverlapPct))
 		? Number(layout.presenterOverlapPct)
 		: PRESENTER_OVERLAP_PCT;
@@ -2893,7 +2311,9 @@ async function composeThumbnailBase({
 	const hasSinglePanel = panelCount === 1;
 	const panelMargin = hasSinglePanel ? 0 : margin;
 	const topPad = hasSinglePanel
-		? Math.round(H * clampNumber(topPadPct, 0, 0.2))
+		? 0
+		: panelCount === 1
+		? Math.round(H * 0.22)
 		: 0;
 	const panelW = makeEven(Math.max(2, leftW - panelMargin * 2));
 	const panelH =
@@ -2903,9 +2323,6 @@ async function composeThumbnailBase({
 	const panelBorder = Math.max(4, Math.round(W * 0.004));
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
-	const panelFitPadSingle = `pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
-	const panelFitPadSplit = `pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
-	const panelFitPad = hasSinglePanel ? panelFitPadSingle : panelFitPadSplit;
 	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
 
 	const inputs = [baseImagePath, presenterImagePath, ...topics];
@@ -2937,38 +2354,28 @@ async function composeThumbnailBase({
 				? panelMargin
 				: Math.max(0, Math.round(panelMargin + topPad));
 		const panelCropX = "(iw-ow)/2";
-		const singleCropOffset = clampNumber(0.12 - topPadPct, 0.02, 0.12);
-		const panelCropY = hasSinglePanel
-			? `(ih-oh)*${singleCropOffset.toFixed(2)}`
-			: "(ih-oh)*0.35";
+		const panelCropY = hasSinglePanel ? "(ih-oh)*0.22" : "(ih-oh)*0.35";
 		if (hasSinglePanel) {
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
 					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
-					`eq=contrast=${THUMBNAIL_PANEL_BG_CONTRAST}:saturation=${THUMBNAIL_PANEL_BG_SATURATION}:brightness=${THUMBNAIL_PANEL_BG_BRIGHTNESS},` +
+					`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
 					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
-					`eq=contrast=${THUMBNAIL_PANEL_FG_CONTRAST}:saturation=${THUMBNAIL_PANEL_FG_SATURATION}:brightness=${THUMBNAIL_PANEL_FG_BRIGHTNESS}:gamma=${THUMBNAIL_PANEL_FG_GAMMA},` +
-					`unsharp=${THUMBNAIL_PANEL_FG_UNSHARP},format=rgba[panel1fg]`
+					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
 			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
 		} else {
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
-					`eq=contrast=${THUMBNAIL_PANEL_BG_CONTRAST}:saturation=${THUMBNAIL_PANEL_BG_SATURATION}:brightness=${THUMBNAIL_PANEL_BG_BRIGHTNESS},` +
-					`format=rgba[panel1bg]`
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+					`unsharp=3:3:0.35[panel1i]`
 			);
-			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-					`${panelFitPad},` +
-					`eq=contrast=${THUMBNAIL_PANEL_FG_CONTRAST}:saturation=${THUMBNAIL_PANEL_FG_SATURATION}:brightness=${THUMBNAIL_PANEL_FG_BRIGHTNESS}:gamma=${THUMBNAIL_PANEL_FG_GAMMA},` +
-					`unsharp=${THUMBNAIL_PANEL_FG_UNSHARP},format=rgba[panel1fg]`
-			);
-			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
 		}
 		filters.push(
 			`[panel1i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel1]`
@@ -2984,17 +2391,10 @@ async function composeThumbnailBase({
 		const panelCropY = "(ih-oh)*0.35";
 		filters.push(
 			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
-				`eq=contrast=${THUMBNAIL_PANEL_BG_CONTRAST}:saturation=${THUMBNAIL_PANEL_BG_SATURATION}:brightness=${THUMBNAIL_PANEL_BG_BRIGHTNESS},` +
-				`format=rgba[panel2bg]`
+				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+				`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+				`unsharp=3:3:0.35[panel2i]`
 		);
-		filters.push(
-			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-				`${panelFitPad},` +
-				`eq=contrast=${THUMBNAIL_PANEL_FG_CONTRAST}:saturation=${THUMBNAIL_PANEL_FG_SATURATION}:brightness=${THUMBNAIL_PANEL_FG_BRIGHTNESS}:gamma=${THUMBNAIL_PANEL_FG_GAMMA},` +
-				`unsharp=${THUMBNAIL_PANEL_FG_UNSHARP},format=rgba[panel2fg]`
-		);
-		filters.push("[panel2bg][panel2fg]overlay=0:0[panel2i]");
 		filters.push(
 			`[panel2i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel2]`
 		);
@@ -3264,76 +2664,6 @@ function wrapText(text = "", maxCharsPerLine = 36, maxLines = 2) {
 	};
 }
 
-function normalizeHeadlineKey(text = "") {
-	return cleanThumbnailText(text).toLowerCase();
-}
-
-function countThumbnailWords(text = "") {
-	const cleaned = cleanThumbnailText(text);
-	if (!cleaned) return 0;
-	return cleaned.split(" ").filter(Boolean).length;
-}
-
-function containsDisallowedToken(text = "", disallowedTokens = null) {
-	const hay = cleanThumbnailText(text).toLowerCase();
-	if (!hay) return false;
-	const tokens = disallowedTokens
-		? Array.from(disallowedTokens)
-		: Array.from(SENSITIVE_BADGE_DISALLOWED_TOKENS);
-	return tokens.some((tok) => tok && hay.includes(tok));
-}
-
-function evaluateThumbnailTextPlan(
-	{
-		thumbTitle = "",
-		punchyTitle = "",
-		badgeText = "",
-		sensitiveTopic = false,
-	} = {},
-	{ log } = {}
-) {
-	const reasons = [];
-	const titleWords = countThumbnailWords(thumbTitle);
-	const punchyWords = countThumbnailWords(punchyTitle);
-	const badgeLen = String(badgeText || "").trim().length;
-	const titleKey = normalizeHeadlineKey(thumbTitle);
-	const punchyKey = normalizeHeadlineKey(punchyTitle);
-	const badgeKey = normalizeHeadlineKey(badgeText);
-
-	if (!thumbTitle) reasons.push("missing_title");
-	if (!punchyTitle) reasons.push("missing_punchy");
-	if (titleWords > THUMBNAIL_TEXT_MAX_WORDS) reasons.push("title_too_long");
-	if (punchyWords > THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS)
-		reasons.push("punchy_too_long");
-	if (badgeLen > THUMBNAIL_BADGE_MAX_CHARS) reasons.push("badge_too_long");
-	if (badgeKey && badgeKey === titleKey) reasons.push("badge_matches_title");
-	if (badgeKey && badgeKey === punchyKey) reasons.push("badge_matches_punchy");
-	if (sensitiveTopic && containsDisallowedToken(badgeText))
-		reasons.push("badge_sensitive");
-	if (
-		sensitiveTopic &&
-		(containsDisallowedToken(thumbTitle, SENSITIVE_TITLE_DISALLOWED_TOKENS) ||
-			containsDisallowedToken(punchyTitle, SENSITIVE_TITLE_DISALLOWED_TOKENS))
-	)
-		reasons.push("headline_sensitive");
-
-	const pass = reasons.length === 0;
-	if (log) {
-		log("thumbnail text qa", {
-			pass,
-			reasons,
-			titleWords,
-			punchyWords,
-			badgeLen,
-			sensitiveTopic,
-			thumbTitle,
-			punchyTitle,
-			badgeText,
-		});
-	}
-	return { pass, reasons };
-}
-
 function fitHeadlineText(
 	text = "",
 	{ baseMaxChars = 36, preferLines = 1, maxLines = 1 } = {}
@@ -3377,19 +2707,6 @@ function titleCaseIfLower(text = "") {
 	return cleaned.replace(/\b[a-z]/g, (m) => m.toUpperCase());
 }
 
-function titleCaseForDisplay(text = "") {
-	const cleaned = String(text || "").trim();
-	if (!cleaned) return "";
-	const parts = cleaned.split(/\s+/).filter(Boolean);
-	return parts
-		.map((word) => {
-			if (!/[a-z]/.test(word)) return word;
-			if (/[A-Z]/.test(word)) return word;
-			return word.replace(/^[a-z]/, (m) => m.toUpperCase());
-		})
-		.join(" ");
-}
-
 function shouldAppendQuestionMark(text = "") {
 	const info = extractQuestionSegments(text);
 	return Boolean(info && (info.questionWord || info.hasQuestionMark));
@@ -3410,7 +2727,7 @@ function buildThumbnailText(
 ) {
 	const cleaned = cleanThumbnailText(title);
 	if (!cleaned) return { text: "", fontScale: 1 };
-	const pretty = titleCaseForDisplay(cleaned);
+	const pretty = titleCaseIfLower(cleaned);
 	const words = pretty.split(" ").filter(Boolean);
 	const trimmedWords = words.slice(0, Math.max(1, maxWords));
 	const wantsQuestionMark = shouldAppendQuestionMark(title);
@@ -3491,14 +2808,11 @@ async function renderThumbnailOverlay({
 	const fontFile = THUMBNAIL_FONT_FILE
 		? `:fontfile='${escapeDrawtext(THUMBNAIL_FONT_FILE)}'`
 		: "";
-	const textScale = hasBadge ? 0.94 : 1;
 	const fontSize = Math.max(
 		42,
-		Math.round(
-			THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale * textScale
-		)
+		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
 	);
-	const boxBorder = Math.round(fontSize * THUMBNAIL_TEXT_BOX_BORDER_PCT);
+	const boxBorder = Math.round(fontSize * 0.45);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
 	const textFilePath = hasText
 		? path.join(
@@ -3576,10 +2890,9 @@ async function renderThumbnailOverlay({
 		`vignette=${vignetteStrength.toFixed(2)}`
 	);
 	if (hasBadge) {
-		const badgeScale = hasText ? 0.92 : 1;
 		const badgeFontSize = Math.max(
 			18,
-			Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_FONT_PCT * badgeScale)
+			Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_FONT_PCT)
 		);
 		const badgeBorder = Math.round(badgeFontSize * 0.55);
 		filters.push(
@@ -3592,9 +2905,9 @@ async function renderThumbnailOverlay({
 		filters.push(
 			`drawtext=textfile='${escapeDrawtext(
 				textFilePath
-			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=4:bordercolor=black@0.6:box=1:boxcolor=black@${textBoxOpacity.toFixed(
+			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:box=1:boxcolor=black@${textBoxOpacity.toFixed(
 				2
-			)}:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=3:shadowy=3:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*${THUMBNAIL_TEXT_Y_OFFSET_PCT}`
+			)}:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*${THUMBNAIL_TEXT_Y_OFFSET_PCT}`
 		);
 	}
 
@@ -3658,16 +2971,10 @@ async function fetchCseContext(topic, extraTokens = []) {
 		.slice(0, 6);
 }
 
-async function fetchCseImages(topic, extraTokens = [], options = {}) {
+async function fetchCseImages(topic, extraTokens = []) {
 	if (!topic || !GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
 	const extra = Array.isArray(extraTokens)
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
-		: [];
-	const preferNews = Boolean(options.preferNews);
-	const preferPortrait = Boolean(options.preferPortrait);
-	const newsHints = Array.isArray(options.newsHints) ? options.newsHints : [];
-	const portraitHints = Array.isArray(options.portraitHints)
-		? options.portraitHints
 		: [];
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
@@ -3678,22 +2985,11 @@ async function fetchCseImages(topic, extraTokens = [], options = {}) {
 	const searchTokens = buildSearchLabelTokens(topic, extraTokens);
 	const searchLabel = searchTokens.slice(0, 4).join(" ") || topic;
 
-	let queries = [
+	const queries = [
 		`${searchLabel} press photo`,
 		`${searchLabel} news photo`,
 		`${searchLabel} photo`,
 	];
-	if (preferPortrait && !preferNews) {
-		queries.unshift(`${searchLabel} portrait`, `${searchLabel} headshot`);
-	}
-	if (preferNews) {
-		const newsQueries = buildNewsImageQueries(
-			searchLabel,
-			newsHints,
-			portraitHints
-		);
-		queries = [...newsQueries, ...queries];
-	}
 	if (category === "film") {
 		queries.unshift(
 			`${searchLabel} official still`,
@@ -3711,50 +3007,23 @@ async function fetchCseImages(topic, extraTokens = [], options = {}) {
 			`${searchLabel} stage photo`
 		);
 	} else if (category === "celebrity") {
-		if (preferNews) {
-			queries.unshift(
-				`${searchLabel} headshot`,
-				`${searchLabel} press conference`
-			);
-		} else if (preferPortrait) {
-			queries.unshift(`${searchLabel} headshot`, `${searchLabel} portrait`);
-		} else {
-			queries.unshift(
-				`${searchLabel} red carpet`,
-				`${searchLabel} interview photo`
-			);
-		}
+		queries.unshift(
+			`${searchLabel} red carpet`,
+			`${searchLabel} interview photo`
+		);
 	}
 
-	let fallbackQueries = [
+	const fallbackQueries = [
 		`${searchLabel} photo`,
 		`${searchLabel} press`,
 		`${searchLabel} red carpet`,
 		`${searchLabel} still`,
 		`${searchLabel} interview`,
 	];
-	if (preferNews) {
-		fallbackQueries = fallbackQueries.filter(
-			(q) => !q.toLowerCase().includes("red carpet")
-		);
-		const newsFallback = buildNewsImageQueries(
-			searchLabel,
-			newsHints,
-			portraitHints
-		);
-		fallbackQueries = [...newsFallback, ...fallbackQueries];
-	} else if (preferPortrait) {
-		fallbackQueries.unshift(
-			`${searchLabel} portrait`,
-			`${searchLabel} headshot`
-		);
-	}
 	const keyPhrase = searchTokens.slice(0, 2).join(" ");
 	if (keyPhrase) {
 		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
 	}
-	queries = uniqueStrings(queries, { limit: 10 });
-	fallbackQueries = uniqueStrings(fallbackQueries, { limit: 10 });
 
 	let items = await fetchCseItems(queries, {
 		num: 10,
@@ -3805,14 +3074,6 @@ async function fetchCseImages(topic, extraTokens = [], options = {}) {
 				source: it.image?.contextLink || it.displayLink || "",
 				title: it.title || "",
 			})
-		)
-			return;
-		if (
-			isLikelyWatermarkedSource(
-				url,
-				it.image?.contextLink || it.displayLink || "",
-				it.title || ""
-			)
 		)
 			return;
 		const info = topicMatchInfo(matchTokens, [
@@ -3954,12 +3215,18 @@ async function collectThumbnailTopicImages({
 	const topicList = Array.isArray(topics) ? topics : [];
 	if (!topicList.length) return [];
 
+	const combinedContext = `${title || ""} ${shortTitle || ""} ${
+		seoTitle || ""
+	}`.trim();
+	const contextQuery = sanitizeOverlayQuery(
+		sanitizeThumbnailContext(combinedContext)
+	);
+	const contextTokens =
+		contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
+
 	const urlCandidates = [];
 	const seen = new Set();
 	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
-	let isSensitiveTopic = false;
-	let companionRequired = false;
-	let companionLabelUsed = "";
 	const pushCandidate = (
 		url,
 		{ source = "", title = "", priority = 0, criteria } = {}
@@ -3968,63 +3235,24 @@ async function collectThumbnailTopicImages({
 		const key = normalizeImageUrlKey(url);
 		if (seen.has(key)) return;
 		if (isLikelyThumbnailUrl(url)) return;
-		if (isLikelyWatermarkedSource(url, source, title)) return;
+		if (isLikelyWatermarkedSource(url, source)) return;
 		if (isMerchDisallowedCandidate({ url, source, title })) return;
 		const merchPenalty = merchPenaltyScore({ url, source, title });
 		const match = scoreThumbnailTopicMatch(url, source, criteria);
-		const newsScore = criteria?.preferNews
-			? scoreNewsContext({
-					url,
-					source,
-					title,
-					tokens: criteria?.newsTokens || [],
-			  })
-			: 0;
-		const newsAvoidPenalty = criteria?.preferNews
-			? scoreNewsAvoidPenalty({ url, source, title })
-			: 0;
-		const hostAllowed =
-			criteria?.sensitiveTopic && criteria?.requireTrustedSources
-				? isSensitiveHostAllowed({ url, source })
-				: true;
-		const companionTokens = Array.isArray(criteria?.companionTokens)
-			? criteria.companionTokens
-			: [];
-		const pairMinMatches = Number.isFinite(criteria?.pairMinMatches)
-			? criteria.pairMinMatches
-			: 0;
-		const pairInfo = companionTokens.length
-			? topicMatchInfo(companionTokens, [url, source, title])
-			: { count: 0 };
-		const pairMatch =
-			pairMinMatches > 0 ? pairInfo.count >= pairMinMatches : false;
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
 		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
-		const pairMatchRequired = Boolean(
-			Number.isFinite(criteria?.pairMinMatches) && criteria.pairMinMatches > 0
-		);
 		const relaxed =
 			(minWordMatches && match.wordMatches < minWordMatches) ||
 			(minSubjectMatches && match.subjectMatches < minSubjectMatches);
 		urlCandidates.push({
 			url,
 			source,
-			title,
 			matchScore: match.score,
 			wordMatches: match.wordMatches,
 			contextMatches: match.contextMatches,
 			subjectMatches: match.subjectMatches,
 			phraseHit: match.phraseHit,
 			sourceScore: scoreSourceAffinity(url, source),
-			minWordMatches,
-			minSubjectMatches,
-			newsScore,
-			newsAvoidPenalty,
-			pairMatch,
-			pairMatches: pairInfo.count,
-			pairMatchRequired,
-			preferNews: Boolean(criteria?.preferNews),
-			hostAllowed,
 			merchPenalty,
 			priority,
 			relaxed: relaxed || merchPenalty >= 0.6,
@@ -4037,38 +3265,6 @@ async function collectThumbnailTopicImages({
 		const label = t?.displayTopic || t?.topic || "";
 		if (!label) continue;
 		const extraTokens = Array.isArray(t?.keywords) ? t.keywords : [];
-		const relatedQueries = uniqueStrings(
-			[
-				...(Array.isArray(t?.trendStory?.relatedQueries?.rising)
-					? t.trendStory.relatedQueries.rising
-					: []),
-				...(Array.isArray(t?.trendStory?.relatedQueries?.top)
-					? t.trendStory.relatedQueries.top
-					: []),
-				...(Array.isArray(t?.trendStory?.relatedQueries?.risingSample)
-					? t.trendStory.relatedQueries.risingSample
-					: []),
-				...(Array.isArray(t?.trendStory?.relatedQueries?.topSample)
-					? t.trendStory.relatedQueries.topSample
-					: []),
-				...(Array.isArray(t?.relatedQueries?.rising)
-					? t.relatedQueries.rising
-					: []),
-				...(Array.isArray(t?.relatedQueries?.top) ? t.relatedQueries.top : []),
-				...(Array.isArray(t?.relatedQueries?.risingSample)
-					? t.relatedQueries.risingSample
-					: []),
-				...(Array.isArray(t?.relatedQueries?.topSample)
-					? t.relatedQueries.topSample
-					: []),
-			],
-			{ limit: 12 }
-		);
-		const articleTitles = Array.isArray(t?.trendStory?.articles)
-			? t.trendStory.articles.map((a) => a?.title).filter(Boolean)
-			: Array.isArray(t?.articles)
-			? t.articles.map((a) => a?.title).filter(Boolean)
-			: [];
 		const trendHints = uniqueStrings(
 			[
 				...(Array.isArray(t?.trendStory?.searchPhrases)
@@ -4077,8 +3273,9 @@ async function collectThumbnailTopicImages({
 				...(Array.isArray(t?.trendStory?.entityNames)
 					? t.trendStory.entityNames
 					: []),
-				...relatedQueries,
-				...articleTitles,
+				...(Array.isArray(t?.trendStory?.articles)
+					? t.trendStory.articles.map((a) => a?.title)
+					: []),
 				t?.trendStory?.imageComment,
 				...(Array.isArray(t?.trendStory?.viralImageBriefs)
 					? t.trendStory.viralImageBriefs.map((b) =>
@@ -4090,79 +3287,6 @@ async function collectThumbnailTopicImages({
 			].filter(Boolean),
 			{ limit: 12 }
 		);
-		const hintPool = uniqueStrings(
-			[...trendHints, ...relatedQueries, ...articleTitles],
-			{ limit: 16 }
-		);
-		const sensitiveTopic = hasSensitiveTopicTokens([label, ...hintPool]);
-		if (sensitiveTopic) isSensitiveTopic = true;
-		const companionLabel = sensitiveTopic
-			? inferSensitiveCompanionLabel(label, relatedQueries, articleTitles)
-			: inferCompanionLabel(label, hintPool);
-		if (companionLabel && !companionLabelUsed)
-			companionLabelUsed = companionLabel;
-		if (companionLabel) companionRequired = true;
-		if (log && sensitiveTopic && !companionLabel) {
-			log("thumbnail companion missing", {
-				topic: label,
-				relatedSample: relatedQueries.slice(0, 6),
-				articleSample: articleTitles.slice(0, 4),
-			});
-		}
-		const relatedQueriesForSearch = sensitiveTopic
-			? companionLabel
-				? [companionLabel]
-				: []
-			: relatedQueries;
-		const trendHintsForSearch = sensitiveTopic ? [] : trendHints;
-		const companionTokens = companionLabel ? tokenizeLabel(companionLabel) : [];
-		const contextSource = [label, ...relatedQueriesForSearch]
-			.filter(Boolean)
-			.join(" ");
-		const contextClean = sanitizeThumbnailContext(contextSource);
-		const contextSafe = sensitiveTopic
-			? stripFamilyRelationFromText(contextClean)
-			: contextClean;
-		const contextQuery = sanitizeOverlayQuery(contextSafe);
-		const contextTokens =
-			contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
-		const safeExtraTokens = sensitiveTopic
-			? stripFamilyRelationTokens(extraTokens)
-			: extraTokens;
-		const preferNewsImage =
-			!sensitiveTopic &&
-			shouldPreferNewsImage({
-				label,
-				trendHints: trendHintsForSearch,
-				relatedQueries: relatedQueriesForSearch,
-				title,
-				shortTitle,
-				seoTitle,
-				topics: [t],
-			});
-		const baseTrendHints = preferNewsImage
-			? filterNewsAvoidHints(trendHintsForSearch)
-			: trendHintsForSearch;
-		const safeTrendHints = sensitiveTopic
-			? filterSensitiveHints(baseTrendHints)
-			: baseTrendHints;
-		const trendHintsFiltered = safeTrendHints.length
-			? safeTrendHints
-			: baseTrendHints;
-		const isPersonTopic = isLikelyPersonTopic(label, trendHintsFiltered);
-		const preferPortrait =
-			!preferNewsImage && sensitiveTopic && isPersonTopic && !companionLabel;
-		const portraitHints =
-			(preferNewsImage || preferPortrait) && isPersonTopic
-				? NEWS_PORTRAIT_HINTS
-				: [];
-		const newsHints = preferNewsImage
-			? buildNewsImageHints({
-					label,
-					trendHints: trendHintsFiltered,
-					relatedQueries: relatedQueriesForSearch,
-			  })
-			: [];
 		const questionInfo = extractQuestionSegments(label);
 		const questionSubjectLabel = buildQuestionSubjectLabel(questionInfo, 4);
 		const questionSubjectContextLabel = buildQuestionSubjectContextLabel(
@@ -4172,39 +3296,22 @@ async function collectThumbnailTopicImages({
 		const mergedTokens = uniqueStrings(
 			[
 				...(contextTokens.length ? contextTokens : []),
-				...safeExtraTokens,
-				...trendHintsFiltered,
-				companionLabel,
+				...extraTokens,
+				...trendHints,
 				questionSubjectLabel,
 				questionSubjectContextLabel,
-				...newsHints,
-				...portraitHints,
 			],
-			{ limit: 22 }
+			{ limit: 18 }
 		);
 		const criteria = buildImageMatchCriteria(label, mergedTokens);
-		criteria.preferNews = preferNewsImage;
-		criteria.preferPortrait = preferPortrait;
-		criteria.sensitiveTopic = sensitiveTopic;
-		criteria.requireTrustedSources =
-			THUMBNAIL_SENSITIVE_REQUIRE_TRUSTED_SOURCES;
-		criteria.newsTokens = buildNewsContextTokens([
-			...newsHints,
-			...portraitHints,
-		]);
-		criteria.companionTokens = companionTokens;
-		criteria.pairMinMatches =
-			companionTokens.length >= 2 ? 2 : companionTokens.length ? 1 : 0;
 		const identityLabel = buildTopicIdentityLabel(label, mergedTokens);
-		const seedArticleImages =
-			!sensitiveTopic && Array.isArray(t?.trendStory?.articles)
-				? t.trendStory.articles.map((a) => a?.image)
-				: [];
 		const seedUrls = uniqueStrings(
 			[
 				t?.trendStory?.image,
 				...(Array.isArray(t?.trendStory?.images) ? t.trendStory.images : []),
-				...seedArticleImages,
+				...(Array.isArray(t?.trendStory?.articles)
+					? t.trendStory.articles.map((a) => a?.image)
+					: []),
 			].filter(Boolean),
 			{ limit: 8 }
 		);
@@ -4217,68 +3324,9 @@ async function collectThumbnailTopicImages({
 			});
 		}
 
-		const searchLabelBase =
-			questionSubjectContextLabel ||
-			questionSubjectLabel ||
-			identityLabel ||
-			label;
-		const searchLabel = preferNewsImage
-			? `${searchLabelBase} news`
-			: searchLabelBase;
-		const pairSearchLabelBase = companionLabel
-			? `${label} ${companionLabel}`
-			: "";
-		const pairSearchLabel = pairSearchLabelBase
-			? preferNewsImage
-				? `${pairSearchLabelBase} news`
-				: pairSearchLabelBase
-			: "";
-		if (log)
-			log("thumbnail topic image search plan", {
-				topic: label,
-				searchLabel,
-				pairSearchLabel,
-				identityLabel,
-				contextQuery,
-				preferNewsImage,
-				preferPortrait,
-				sensitiveTopic,
-				companionLabel,
-				newsHintSample: newsHints.slice(0, 4),
-				trendHintSample: trendHintsFiltered.slice(0, 6),
-				mergedTokenSample: mergedTokens.slice(0, 8),
-			});
-		let hits = hasCSE
-			? await fetchCseImages(searchLabel, mergedTokens, {
-					preferNews: preferNewsImage,
-					preferPortrait,
-					newsHints,
-					portraitHints,
-			  })
-			: [];
-		const canPairSearch =
-			pairSearchLabel &&
-			pairSearchLabel.toLowerCase() !== searchLabel.toLowerCase();
-		let pairHits = canPairSearch
-			? await fetchCseImages(pairSearchLabel, mergedTokens, {
-					preferNews: preferNewsImage,
-					preferPortrait,
-					newsHints,
-					portraitHints,
-			  })
-			: [];
-		if (pairHits.length) {
-			for (const hit of pairHits) {
-				const url = typeof hit === "string" ? hit : hit?.url;
-				if (!url) continue;
-				pushCandidate(url, {
-					source: hit?.source || "",
-					title: hit?.title || "",
-					priority: 0.65,
-					criteria,
-				});
-			}
-		}
+		const searchLabel =
+			questionSubjectContextLabel || questionSubjectLabel || label;
+		let hits = hasCSE ? await fetchCseImages(searchLabel, mergedTokens) : [];
 		if (hits.length) {
 			for (const hit of hits) {
 				const url = typeof hit === "string" ? hit : hit?.url;
@@ -4292,7 +3340,7 @@ async function collectThumbnailTopicImages({
 			}
 		}
 
-		if (!hits.length && !pairHits.length && hasCSE && !sensitiveTopic) {
+		if (!hits.length && hasCSE) {
 			const ctxItems = await fetchCseContext(searchLabel, mergedTokens);
 			const articleUrls = uniqueStrings(
 				[
@@ -4334,28 +3382,15 @@ async function collectThumbnailTopicImages({
 			urlCandidates.length < maxUrls &&
 			label
 		) {
-			const newsQueries = preferNewsImage
-				? buildNewsImageQueries(searchLabelBase, newsHints, portraitHints)
-				: [];
-			const portraitQueries = preferPortrait
-				? [`${searchLabelBase} portrait`, `${searchLabelBase} headshot`]
-				: [];
-			const pairQueries = pairSearchLabelBase ? [pairSearchLabelBase] : [];
-			const googleLimit = preferNewsImage
-				? Math.max(GOOGLE_IMAGES_VARIANT_LIMIT, 4)
-				: GOOGLE_IMAGES_VARIANT_LIMIT;
 			const googleQueries = uniqueStrings(
 				[
-					...pairQueries,
-					...portraitQueries,
-					...newsQueries,
 					questionSubjectContextLabel,
 					questionSubjectLabel,
 					label,
 					identityLabel,
 					contextQuery,
 				].filter(Boolean),
-				{ limit: googleLimit }
+				{ limit: GOOGLE_IMAGES_VARIANT_LIMIT }
 			);
 			for (const gQuery of googleQueries) {
 				const googleUrls = await fetchGoogleImagesFromService(gQuery, {
@@ -4439,10 +3474,7 @@ async function collectThumbnailTopicImages({
 				(c.sourceScore || 0) +
 				(c.priority || 0) -
 				(c.merchPenalty || 0) -
-				(c.relaxed ? 0.6 : 0) +
-				(c.preferNews ? (c.newsScore || 0) * 0.6 : 0) -
-				(c.preferNews ? c.newsAvoidPenalty || 0 : 0) +
-				(c.pairMatch ? 0.45 : 0),
+				(c.relaxed ? 0.6 : 0),
 		}))
 		.sort((a, b) => b.relevanceScore - a.relevanceScore);
 	const downloadCount = Math.min(ranked.length, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
@@ -4456,84 +3488,42 @@ async function collectThumbnailTopicImages({
 		const out = path.join(tmpDir, `thumb_topic_${jobId}_${i}${ext}`);
 		try {
 			await downloadToFile(url, out, 25000, 1);
-			let finalPath = out;
-			let detected = detectFileType(out);
+			const detected = detectFileType(out);
 			if (!detected || detected.kind !== "image") {
-				safeUnlink(finalPath);
+				safeUnlink(out);
 				continue;
 			}
-			if (detected.ext === "webp" || detected.ext === "gif") {
-				if (ffmpegPath) {
-					const converted = path.join(
-						tmpDir,
-						`thumb_topic_${jobId}_${i}_conv.jpg`
-					);
-					try {
-						await runFfmpeg(
-							["-i", finalPath, "-frames:v", "1", "-q:v", "2", "-y", converted],
-							"thumbnail_topic_convert"
-						);
-						safeUnlink(finalPath);
-						finalPath = converted;
-						detected = detectFileType(finalPath);
-					} catch {
-						// keep original if conversion fails
-					}
-				}
-			}
-			const st = fs.statSync(finalPath);
+			const st = fs.statSync(out);
 			if (!st?.size || st.size < 4096) {
-				safeUnlink(finalPath);
+				safeUnlink(out);
 				continue;
 			}
-			const dims = ffprobeDimensions(finalPath);
-			const tone = analyzeImageTone(finalPath);
+			const dims = ffprobeDimensions(out);
+			const tone = analyzeImageTone(out);
 			const minEdge = Math.min(dims.width || 0, dims.height || 0);
 			if (minEdge && minEdge < CSE_MIN_IMAGE_SHORT_EDGE) {
 				smallCandidates.push({
-					path: finalPath,
+					path: out,
 					size: st.size,
 					width: dims.width || 0,
 					height: dims.height || 0,
 					tone,
-					title: candidate.title || "",
-					pairMatch: candidate.pairMatch,
-					pairMatches: candidate.pairMatches,
-					pairMatchRequired: candidate.pairMatchRequired,
-					wordMatches: candidate.wordMatches,
-					minWordMatches: candidate.minWordMatches,
-					hostAllowed: candidate.hostAllowed,
-					merchPenalty: candidate.merchPenalty,
-					newsScore: candidate.newsScore,
-					newsAvoidPenalty: candidate.newsAvoidPenalty,
 					score: scoreTopicImageCandidate({
 						width: dims.width || 0,
 						height: dims.height || 0,
 						tone,
-						newsScore: candidate.newsScore,
-						newsAvoidPenalty: candidate.newsAvoidPenalty,
 					}),
 				});
 				continue;
 			}
 			candidates.push({
-				path: finalPath,
+				path: out,
 				size: st.size,
 				width: dims.width || 0,
 				height: dims.height || 0,
 				tone,
 				matchScore: candidate.matchScore,
 				sourceScore: candidate.sourceScore,
-				title: candidate.title || "",
-				pairMatch: candidate.pairMatch,
-				pairMatches: candidate.pairMatches,
-				pairMatchRequired: candidate.pairMatchRequired,
-				wordMatches: candidate.wordMatches,
-				minWordMatches: candidate.minWordMatches,
-				hostAllowed: candidate.hostAllowed,
-				merchPenalty: candidate.merchPenalty,
-				newsScore: candidate.newsScore,
-				newsAvoidPenalty: candidate.newsAvoidPenalty,
 				url,
 				source: candidate.source,
 				score: scoreTopicImageCandidate({
@@ -4542,8 +3532,6 @@ async function collectThumbnailTopicImages({
 					tone,
 					matchScore: candidate.matchScore,
 					sourceScore: candidate.sourceScore,
-					newsScore: candidate.newsScore,
-					newsAvoidPenalty: candidate.newsAvoidPenalty,
 				}),
 			});
 		} catch {
@@ -4570,50 +3558,14 @@ async function collectThumbnailTopicImages({
 		return [];
 	}
 
-	const qaPassed = [];
-	for (const candidate of usableCandidates) {
-		const qa = evaluateTopicImageQuality(candidate, {
-			log,
-			label: topicList[0]?.displayTopic || topicList[0]?.topic || "",
-		});
-		if (qa.pass) qaPassed.push(candidate);
-	}
-	const hostAllowedCandidates = usableCandidates.filter(
-		(c) => c.hostAllowed !== false
-	);
-	const fallbackPool =
-		isSensitiveTopic && hostAllowedCandidates.length
-			? hostAllowedCandidates
-			: usableCandidates;
-	const qaPool = qaPassed.length ? qaPassed : fallbackPool;
-	if (log) {
-		log("thumbnail topic image qa summary", {
-			total: usableCandidates.length,
-			passed: qaPassed.length,
-			using: qaPool.length,
-			hostAllowed: hostAllowedCandidates.length,
-			fallback: qaPassed.length === 0,
-			fallbackTrustedOnly:
-				qaPassed.length === 0 &&
-				isSensitiveTopic &&
-				hostAllowedCandidates.length > 0,
-		});
-	}
-	if (log && companionRequired && qaPassed.length === 0) {
-		log("thumbnail companion fallback", {
-			companionLabel: companionLabelUsed || null,
-			reason: "no_pair_match",
-		});
-	}
-
-	const preferred = qaPool.filter((c) => {
+	const preferred = usableCandidates.filter((c) => {
 		const minEdge = Math.min(c.width || 0, c.height || 0);
 		if (!minEdge) return false;
 		if (minEdge && minEdge < THUMBNAIL_TOPIC_MIN_EDGE) return false;
 		return c.size >= THUMBNAIL_TOPIC_MIN_BYTES;
 	});
 
-	const pickPool = preferred.length ? preferred : qaPool;
+	const pickPool = preferred.length ? preferred : usableCandidates;
 	pickPool.sort((a, b) => {
 		if (Number.isFinite(a.score) && Number.isFinite(b.score)) {
 			if (b.score !== a.score) return b.score - a.score;
@@ -4623,36 +3575,10 @@ async function collectThumbnailTopicImages({
 		const bPixels = (b.width || 0) * (b.height || 0);
 		return bPixels - aPixels;
 	});
-	let selectedCandidates = pickPool.slice(0, target);
-	if (target > 0 && pickPool.length) {
-		const pairPick = pickPool.find((c) => c.pairMatch);
-		if (pairPick && !selectedCandidates.includes(pairPick)) {
-			selectedCandidates = [
-				pairPick,
-				...selectedCandidates.filter((c) => c !== pairPick),
-			].slice(0, target);
-		}
-	}
+	const selectedCandidates = pickPool.slice(0, target);
 	const selected = [];
 	for (let i = 0; i < selectedCandidates.length; i++) {
 		const candidate = selectedCandidates[i];
-		if (log)
-			log("thumbnail topic image picked", {
-				index: i,
-				url: candidate.url || "",
-				source: candidate.source || "",
-				width: candidate.width || 0,
-				height: candidate.height || 0,
-				sizeKB: candidate.size ? Math.round(candidate.size / 1024) : 0,
-				score: Number(candidate.score || 0),
-				pairMatch: Boolean(candidate.pairMatch),
-				pairMatchRequired: Boolean(candidate.pairMatchRequired),
-				hostAllowed:
-					typeof candidate.hostAllowed === "boolean"
-						? candidate.hostAllowed
-						: null,
-				merchPenalty: Number(candidate.merchPenalty || 0),
-			});
 		const normalized = await normalizeTopicImageIfNeeded({
 			inputPath: candidate.path,
 			tone: candidate.tone,
@@ -4724,33 +3650,6 @@ function buildQuestionHeadline(questionInfo, maxWords = 4) {
 	return headline;
 }
 
-function buildPunchyQuestionHeadline(
-	questionInfo,
-	maxWords = 3,
-	categoryHint = "general"
-) {
-	if (!questionInfo) return "";
-	const base = buildQuestionHeadline(questionInfo, maxWords);
-	const rawTokens = (questionInfo.subjectTokens || []).map((t) =>
-		String(t || "").toLowerCase()
-	);
-	const category = String(categoryHint || "").toLowerCase();
-	const canPunch = QUESTION_PUNCHY_ALLOWED_CATEGORIES.has(category);
-	const subjectTokens = filterQuestionSubjectTokens(
-		questionInfo.subjectTokens || []
-	);
-	const subjectCore = subjectTokens.slice(0, Math.max(1, maxWords - 1));
-	if (canPunch && subjectCore.length) {
-		if (rawTokens.some((t) => QUESTION_PUNCHY_DEATH_TOKENS.has(t))) {
-			return `${subjectCore.join(" ").toUpperCase()} DEAD?`;
-		}
-		if (rawTokens.some((t) => QUESTION_PUNCHY_RETURN_TOKENS.has(t))) {
-			return `${subjectCore.join(" ").toUpperCase()} BACK?`;
-		}
-	}
-	return base;
-}
-
 function buildQuestionBadge(questionInfo) {
 	if (!questionInfo?.contextTokens?.length) return "";
 	const hookSet = new Set(THUMBNAIL_HOOK_WORDS);
@@ -4786,107 +3685,16 @@ function deriveQuestionHeadlinePlan({
 	]
 		.map((s) => String(s || "").trim())
 		.filter(Boolean);
-	const categoryHint = inferEntertainmentCategory(
-		tokenizeLabel(sources.join(" "))
-	);
 	for (const src of sources) {
 		const info = extractQuestionSegments(src);
 		if (!info) continue;
 		const headline = buildQuestionHeadline(info, maxWords);
 		if (!headline) continue;
-		const punchy =
-			buildPunchyQuestionHeadline(info, punchyMaxWords, categoryHint) ||
-			headline;
+		const punchy = buildQuestionHeadline(info, punchyMaxWords) || headline;
 		const badgeText = buildQuestionBadge(info);
 		return { headline, punchy, badgeText };
 	}
 	return null;
-}
-
-function isUnconfirmedTopic({ title, shortTitle, seoTitle, topics } = {}) {
-	const list = [];
-	if (title) list.push(title);
-	if (shortTitle) list.push(shortTitle);
-	if (seoTitle) list.push(seoTitle);
-	const primary = Array.isArray(topics) ? topics[0] : null;
-	if (primary) {
-		list.push(primary.displayTopic, primary.topic);
-		const story = primary.trendStory || primary;
-		if (Array.isArray(story.searchPhrases)) list.push(...story.searchPhrases);
-		if (Array.isArray(story.entityNames)) list.push(...story.entityNames);
-		if (Array.isArray(story.articles))
-			list.push(...story.articles.map((a) => a?.title).filter(Boolean));
-		if (Array.isArray(story.relatedQueries?.top))
-			list.push(...story.relatedQueries.top);
-		if (Array.isArray(story.relatedQueries?.rising))
-			list.push(...story.relatedQueries.rising);
-	}
-	const hay = list.filter(Boolean).join(" ").toLowerCase();
-	if (!hay) return false;
-	for (const tok of UNCERTAINTY_TOKENS) {
-		if (hay.includes(tok)) return true;
-	}
-	return false;
-}
-
-function isSensitiveThumbnailTopic({
-	title,
-	shortTitle,
-	seoTitle,
-	topics,
-} = {}) {
-	const list = [];
-	if (title) list.push(title);
-	if (shortTitle) list.push(shortTitle);
-	if (seoTitle) list.push(seoTitle);
-	const primary = Array.isArray(topics) ? topics[0] : null;
-	if (primary) {
-		list.push(primary.displayTopic, primary.topic);
-		const story = primary.trendStory || primary;
-		if (Array.isArray(story.searchPhrases)) list.push(...story.searchPhrases);
-		if (Array.isArray(story.entityNames)) list.push(...story.entityNames);
-		if (Array.isArray(story.articles))
-			list.push(...story.articles.map((a) => a?.title).filter(Boolean));
-		if (Array.isArray(story.relatedQueries?.top))
-			list.push(...story.relatedQueries.top);
-		if (Array.isArray(story.relatedQueries?.rising))
-			list.push(...story.relatedQueries.rising);
-	}
-	return hasSensitiveTopicTokens(list);
-}
-
-function replaceConfirmedCopy(text = "", replacement = "UNCONFIRMED") {
-	const raw = String(text || "").trim();
-	if (!raw) return raw;
-	return raw.replace(/\bconfirmed\b/gi, replacement);
-}
-
-function buildPrimaryTopicBadge(topics = []) {
-	const list = Array.isArray(topics) ? topics : [];
-	const primary = list[0]?.displayTopic || list[0]?.topic || "";
-	if (!primary) return "";
-	const words = selectHeadlineWords(primary, 4);
-	if (!words.length) return "";
-	return titleCaseForDisplay(words.join(" "));
-}
-
-function stripTopicFromHeadline(headline = "", topicLabel = "") {
-	const cleanedHeadline = cleanThumbnailText(headline);
-	const cleanedTopic = cleanThumbnailText(topicLabel);
-	if (!cleanedHeadline || !cleanedTopic) return headline;
-	const topicTokens = new Set(
-		cleanedTopic
-			.split(" ")
-			.map((t) => t.toLowerCase())
-			.filter(Boolean)
-	);
-	if (!topicTokens.size) return headline;
-	const headTokens = cleanedHeadline.split(" ").filter(Boolean);
-	const kept = headTokens.filter(
-		(w) => !topicTokens.has(String(w || "").toLowerCase())
-	);
-	if (!kept.length) return headline;
-	return kept.join(" ");
 }
 
 function buildTopicPhrase(topics = [], maxWords = 3) {
@@ -5046,13 +3854,6 @@ async function generateThumbnailPackage({
 			ext: chosenDetected.ext || null,
 		});
 	}
-	if (log) {
-		log("thumbnail layout plan", {
-			leftPanelPct: LEFT_PANEL_PCT,
-			panelTopPadPct: THUMBNAIL_PANEL_TOP_PAD_PCT,
-			textYOffsetPct: THUMBNAIL_TEXT_Y_OFFSET_PCT,
-		});
-	}
 
 	const questionPlan = deriveQuestionHeadlinePlan({
 		title,
@@ -5062,13 +3863,7 @@ async function generateThumbnailPackage({
 		maxWords: THUMBNAIL_TEXT_MAX_WORDS,
 		punchyMaxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
 	});
-	const sensitiveTopic = isSensitiveThumbnailTopic({
-		title,
-		shortTitle,
-		seoTitle,
-		topics,
-	});
-	let thumbTitle =
+	const thumbTitle =
 		questionPlan?.headline ||
 		selectThumbnailTitle({
 			title,
@@ -5076,7 +3871,7 @@ async function generateThumbnailPackage({
 			seoTitle,
 			topics,
 		});
-	let punchyTitle =
+	const punchyTitle =
 		questionPlan?.punchy ||
 		buildShortHookTitle({
 			title,
@@ -5085,107 +3880,10 @@ async function generateThumbnailPackage({
 			topics,
 		});
 	const topicCount = Array.isArray(topics) ? topics.length : 0;
-	let badgeText =
+	const badgeText =
 		topicCount > 1
 			? `${Math.min(topicCount, 9)} STORIES`
 			: questionPlan?.badgeText || "";
-	if (!badgeText && topicCount === 1) {
-		badgeText = buildPrimaryTopicBadge(topics);
-	}
-	if (badgeText && topicCount === 1) {
-		const stripped = stripTopicFromHeadline(thumbTitle, badgeText);
-		if (stripped && stripped !== thumbTitle) thumbTitle = stripped;
-		const strippedPunchy = stripTopicFromHeadline(punchyTitle, badgeText);
-		if (strippedPunchy && strippedPunchy !== punchyTitle)
-			punchyTitle = strippedPunchy;
-	}
-	const unconfirmed = isUnconfirmedTopic({
-		title,
-		shortTitle,
-		seoTitle,
-		topics,
-	});
-	if (unconfirmed) {
-		thumbTitle = replaceConfirmedCopy(thumbTitle, "UNCONFIRMED");
-		punchyTitle = replaceConfirmedCopy(punchyTitle, "ALLEGED");
-		if (
-			topicCount === 1 &&
-			!/\b(ALLEGED|UNCONFIRMED)\b/i.test(String(badgeText || ""))
-		) {
-			badgeText = "UNCONFIRMED";
-		}
-	}
-	if (sensitiveTopic) {
-		const safeTopic =
-			buildTopicPhrase(topics, 3) ||
-			buildPrimaryTopicBadge(topics) ||
-			"Quick Update";
-		if (
-			!thumbTitle ||
-			containsDisallowedToken(thumbTitle, SENSITIVE_TITLE_DISALLOWED_TOKENS)
-		) {
-			thumbTitle = safeTopic;
-		}
-		if (
-			!punchyTitle ||
-			containsDisallowedToken(punchyTitle, SENSITIVE_TITLE_DISALLOWED_TOKENS)
-		) {
-			punchyTitle = safeTopic;
-		}
-		thumbTitle = replaceConfirmedCopy(thumbTitle, SENSITIVE_BADGE_FALLBACK);
-		punchyTitle = replaceConfirmedCopy(punchyTitle, SENSITIVE_BADGE_FALLBACK);
-		if (!badgeText || containsDisallowedToken(badgeText)) {
-			badgeText = SENSITIVE_BADGE_FALLBACK;
-		}
-	}
-	const hookBadge = sensitiveTopic
-		? ""
-		: extractHookWord([shortTitle, seoTitle, title]);
-	const badgeKey = normalizeHeadlineKey(badgeText);
-	const titleKey = normalizeHeadlineKey(thumbTitle);
-	const punchyKey = normalizeHeadlineKey(punchyTitle);
-	if (badgeKey && (badgeKey === titleKey || badgeKey === punchyKey)) {
-		if (hookBadge && normalizeHeadlineKey(hookBadge) !== badgeKey) {
-			badgeText = hookBadge;
-			if (log)
-				log("thumbnail badge adjusted", {
-					reason: "badge_matches_headline",
-					badgeText,
-				});
-		} else {
-			badgeText = "";
-			if (log)
-				log("thumbnail badge removed", { reason: "badge_matches_headline" });
-		}
-	}
-	if (titleKey && badgeKey && titleKey === badgeKey && hookBadge) {
-		thumbTitle = hookBadge;
-		if (log)
-			log("thumbnail headline adjusted", {
-				reason: "headline_matches_badge",
-				thumbTitle,
-			});
-	}
-	if (log)
-		log("thumbnail text plan", {
-			thumbTitle,
-			punchyTitle,
-			badgeText,
-			topicCount,
-			sensitiveTopic,
-			unconfirmed,
-			questionPlan: questionPlan
-				? {
-						headline: questionPlan.headline,
-						punchy: questionPlan.punchy,
-						badgeText: questionPlan.badgeText || "",
-				  }
-				: null,
-		});
-	evaluateThumbnailTextPlan(
-		{ thumbTitle, punchyTitle, badgeText, sensitiveTopic },
-		{ log }
-	);
 
 	const topicImagePaths = await collectThumbnailTopicImages({
 		topics,
@@ -5249,7 +3947,7 @@ async function generateThumbnailPackage({
 				saturation: 1.15,
 				vignette: 0.03,
 				leftLift: 0.08,
-				textBoxOpacity: 0.3,
+				textBoxOpacity: 0.26,
 			},
 		},
 	];
