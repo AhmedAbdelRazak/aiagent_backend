@@ -2339,7 +2339,9 @@ async function composeThumbnailBase({
 	const panelBorder = Math.max(4, Math.round(W * 0.004));
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
-	const panelFitPad = `pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
+	const panelFitPadSingle = `pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih):color=0x00000000`;
+	const panelFitPadSplit = `pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
+	const panelFitPad = hasSinglePanel ? panelFitPadSingle : panelFitPadSplit;
 	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
 
 	const inputs = [baseImagePath, presenterImagePath, ...topics];

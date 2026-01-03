@@ -176,10 +176,17 @@ function safeParseOpenAiJson(raw = "") {
 }
 
 function safeParseTrendsJson(raw = "") {
+	if (!raw) return null;
+	if (typeof raw === "object") return raw;
 	const trimmed = String(raw || "").trim();
 	if (!trimmed) return null;
+	const objIdx = trimmed.indexOf("{");
+	const arrIdx = trimmed.indexOf("[");
+	let start = objIdx;
+	if (arrIdx !== -1 && (start === -1 || arrIdx < start)) start = arrIdx;
+	const candidate = start > 0 ? trimmed.slice(start) : trimmed;
 	try {
-		return JSON.parse(trimmed);
+		return JSON.parse(candidate);
 	} catch {
 		return null;
 	}
