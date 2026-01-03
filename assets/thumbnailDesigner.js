@@ -25,7 +25,7 @@ const RUNWAY_THUMBNAIL_RATIO = "1920:1080";
 const MAX_INPUT_IMAGES = 4;
 const DEFAULT_CANVAS_WIDTH = 1280;
 const DEFAULT_CANVAS_HEIGHT = 720;
-const LEFT_PANEL_PCT = 0.45;
+const LEFT_PANEL_PCT = 0.5;
 const PANEL_MARGIN_PCT = 0.035;
 const PRESENTER_OVERLAP_PCT = 0.06;
 
@@ -34,7 +34,7 @@ const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
 const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
-const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.45;
+const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.5;
 const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.1;
 const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.22;
 const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.45;
@@ -2356,7 +2356,7 @@ async function composeThumbnailBase({
 	const panelBorder = Math.max(4, Math.round(W * 0.004));
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
-	const panelFitPadSingle = `pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih):color=0x00000000`;
+	const panelFitPadSingle = `pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
 	const panelFitPadSplit = `pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
 	const panelFitPad = hasSinglePanel ? panelFitPadSingle : panelFitPadSplit;
 	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
@@ -2390,7 +2390,7 @@ async function composeThumbnailBase({
 				? panelMargin
 				: Math.max(0, Math.round(panelMargin + topPad));
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = hasSinglePanel ? "(ih-oh)*0.22" : "(ih-oh)*0.35";
+		const panelCropY = hasSinglePanel ? "(ih-oh)*0.18" : "(ih-oh)*0.35";
 		if (hasSinglePanel) {
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +

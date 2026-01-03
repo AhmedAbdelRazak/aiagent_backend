@@ -312,9 +312,9 @@ const AUDIO_SR = 48000;
 const AUDIO_CHANNELS = 1; // mono voice for stability + smaller sync payload
 const GLOBAL_ATEMPO_MIN = 0.95;
 const GLOBAL_ATEMPO_MAX = 1.07;
-const INTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
+const INTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
 const INTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
-const OUTRO_ATEMPO_MIN = clampNumber(0.97, 0.9, 1.05);
+const OUTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
 const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
 const VOICE_SPEED_BOOST = clampNumber(1.0, 0.98, 1.08);
@@ -6114,6 +6114,9 @@ function ensureTopicAttributions({
 	}
 
 	if (log && inserted.length) log("script attribution inserted", { inserted });
+	if (inserted.length && script && Array.isArray(script.segments)) {
+		script.segments = segments;
+	}
 	return { segments, didInsert: inserted.length > 0, inserted };
 }
 
