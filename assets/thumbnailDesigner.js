@@ -4260,6 +4260,28 @@ function isGenericHeadline(text = "") {
 	return false;
 }
 
+function isShortQuestionHook(text = "") {
+	if (!text || !/\?/.test(text)) return false;
+	const words = cleanThumbnailText(text).split(" ").filter(Boolean);
+	return words.length > 0 && words.length <= 3;
+}
+
+function looksLikePersonTopic(label = "") {
+	const cleaned = cleanThumbnailText(label);
+	const tokens = cleaned.split(" ").filter(Boolean);
+	if (tokens.length < 2 || tokens.length > 3) return false;
+	if (tokens.some((t) => /\d/.test(t))) return false;
+	return tokens.every((t) => !GENERIC_TOPIC_TOKENS.has(t.toLowerCase()));
+}
+
+function buildPersonFallbackHeadline(label = "") {
+	const cleaned = cleanThumbnailText(label);
+	const tokens = cleaned.split(" ").filter(Boolean);
+	if (tokens.length < 2) return "";
+	const last = tokens[tokens.length - 1];
+	return last ? `${last.toUpperCase()} UPDATE` : "";
+}
+
 function deriveSpecificHeadline({ title = "", topics = [] } = {}) {
 	const t0 = topics?.[0] || {};
 	const rqRise = (t0?.relatedQueries?.risingSample || []).join(" ");
@@ -4672,19 +4694,40 @@ async function generateThumbnailPackage({
 			topics,
 			THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS
 		);
-		const boostedHeadline = fallbackSpecific || fallbackTopic;
-		const boostedPunchy = fallbackSpecific || fallbackPunchy;
+		const personFallback = looksLikePersonTopic(primaryTopicLabel)
+			? buildPersonFallbackHeadline(primaryTopicLabel)
+			: "";
+		const boostedHeadline = fallbackSpecific || personFallback || fallbackTopic;
+		const boostedPunchy = fallbackSpecific || personFallback || fallbackPunchy;
+		const keepHeadlineQuestion = isShortQuestionHook(thumbTitle);
+		const keepPunchyQuestion = isShortQuestionHook(punchyTitle);
 		let updated = false;
-		if (boostedHeadline && isGenericHeadline(thumbTitle)) {
+		if (
+			boostedHeadline &&
+			!keepHeadlineQuestion &&
+			isGenericHeadline(thumbTitle)
+		) {
 			thumbTitle = boostedHeadline;
 			updated = true;
 		}
-		if (boostedPunchy && isGenericHeadline(punchyTitle)) {
+		if (
+			boostedPunchy &&
+			!keepPunchyQuestion &&
+			isGenericHeadline(punchyTitle)
+		) {
 			punchyTitle = boostedPunchy;
 			updated = true;
 		}
 		if (updated && log) {
 			log("thumbnail runway fallback headline boosted", {
+				headline: thumbTitle,
+				punchy: punchyTitle,
+			});
+		}
+		if (log) {
+			log("thumbnail runway fallback headline decision", {
+				keptHeadlineQuestion,
+				keptPunchyQuestion,
 				headline: thumbTitle,
 				punchy: punchyTitle,
 			});
