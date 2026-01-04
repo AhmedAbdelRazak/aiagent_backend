@@ -1788,9 +1788,11 @@ async function selectTopics({
 			throw new Error("trends_unavailable");
 		}
 	}
-	const primaryTrendStory = Array.isArray(trendStories)
-		? trendStories[0]
-		: null;
+	const rankedTrendStories = rankTrendStoriesForYouTube(trendStories);
+	const wasRanked = rankedTrendStories !== trendStories;
+	const primaryTrendStory = Array.isArray(rankedTrendStories)
+		? rankedTrendStories[0] || trendStories[0]
+		: trendStories[0] || null;
 	if (
 		primaryTrendStory?.topic &&
 		!isDuplicateTopic(primaryTrendStory.topic, topics, usedSet)
@@ -1804,7 +1806,7 @@ async function selectTopics({
 			topic: primaryTrendStory.topic,
 			displayTopic,
 			angle: "",
-			reason: "Google Trends (first)",
+			reason: wasRanked ? "Google Trends (ranked)" : "Google Trends (first)",
 			keywords: topicTokensFromTitle(primaryTrendStory.topic)
 				.concat(topicTokensFromTitle(primaryTrendStory.rawTitle || ""))
 				.concat(relatedQueries.rising.flatMap((q) => topicTokensFromTitle(q)))
@@ -1814,8 +1816,6 @@ async function selectTopics({
 		});
 		addUsedTopicVariants(usedSet, primaryTrendStory.topic);
 	}
-
-	const rankedTrendStories = rankTrendStoriesForYouTube(trendStories);
 
 	for (const story of rankedTrendStories) {
 		if (topics.length >= desired) break;
