@@ -151,7 +151,10 @@ const WIKIMEDIA_API_BASE = "https://commons.wikimedia.org/w/api.php";
 
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
-const TRENDS_HTTP_TIMEOUT_MS = 60000;
+const TRENDS_HTTP_TIMEOUT_MS = 180000;
+const TRENDS_HTTP_MAX_ATTEMPTS = 2;
+const TRENDS_HTTP_RETRY_DELAY_MS = 5000;
+const LONG_VIDEO_REQUIRE_TRENDS = true;
 const LONG_VIDEO_TRENDS_GEO = "US";
 const LONG_VIDEO_TRENDS_CATEGORY = "Entertainment";
 
@@ -177,6 +180,10 @@ function buildTrendsApiCandidates(baseUrl) {
 	add(TRENDS_API_URL);
 	if (baseUrl) add(`${String(baseUrl).replace(/\/+$/, "")}/api/google-trends`);
 	return Array.from(new Set(list));
+}
+
+function delay(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function deriveTrendsServiceBase(raw) {
@@ -1385,20 +1392,26 @@ async function fetchTrendsStories({
 	const candidates = buildTrendsApiCandidates(baseUrl);
 	for (let i = 0; i < candidates.length; i++) {
 		const url = `${candidates[i]}?${params.toString()}`;
-		try {
-			logJob(null, "trends fetch", { url, attempt: i + 1 });
-			const { data } = await axios.get(url, {
-				timeout: TRENDS_HTTP_TIMEOUT_MS,
-				validateStatus: (s) => s < 500,
-			});
-			const stories = Array.isArray(data?.stories) ? data.stories : [];
-			if (stories.length) {
-				return stories
-					.map((s) => normalizeTrendStory(s))
-					.filter((s) => s.topic);
+		for (let attempt = 1; attempt <= TRENDS_HTTP_MAX_ATTEMPTS; attempt++) {
+			try {
+				logJob(null, "trends fetch", { url, attempt });
+				const { data } = await axios.get(url, {
+					timeout: TRENDS_HTTP_TIMEOUT_MS,
+					validateStatus: (s) => s < 500,
+				});
+				const stories = Array.isArray(data?.stories) ? data.stories : [];
+				if (stories.length) {
+					return stories
+						.map((s) => normalizeTrendStory(s))
+						.filter((s) => s.topic);
+				}
+				logJob(null, "trends fetch empty", { url, attempt });
+			} catch (e) {
+				logJob(null, "trends fetch failed", { error: e.message, url, attempt });
+				if (attempt < TRENDS_HTTP_MAX_ATTEMPTS) {
+					await delay(TRENDS_HTTP_RETRY_DELAY_MS);
+				}
 			}
-		} catch (e) {
-			logJob(null, "trends fetch failed", { error: e.message, url });
 		}
 	}
 	return [];
@@ -1747,7 +1760,9 @@ async function selectTopics({
 	const topics = [];
 	const hint = String(preferredTopicHint || "").trim();
 	if (hint) {
-		if (isDuplicateTopic(hint, topics, usedSet)) {
+		if (LONG_VIDEO_REQUIRE_TRENDS) {
+			logJob(null, "preferred topic hint ignored (trends-only)", { hint });
+		} else if (isDuplicateTopic(hint, topics, usedSet)) {
 			logJob(null, "preferred topic hint skipped (duplicate)", { hint });
 		} else {
 			const displayTopic = cleanTopicLabel(hint) || hint;
@@ -1768,6 +1783,11 @@ async function selectTopics({
 		language,
 		baseUrl,
 	});
+	if (!trendStories.length) {
+		if (LONG_VIDEO_REQUIRE_TRENDS) {
+			throw new Error("trends_unavailable");
+		}
+	}
 	const primaryTrendStory = Array.isArray(trendStories)
 		? trendStories[0]
 		: null;
@@ -1816,6 +1836,19 @@ async function selectTopics({
 			trendStory: story,
 		});
 		addUsedTopicVariants(usedSet, story.topic);
+	}
+
+	if (LONG_VIDEO_REQUIRE_TRENDS) {
+		if (!topics.length) {
+			throw new Error("Unable to pick topics from Google Trends.");
+		}
+		if (topics.length < desired) {
+			logJob(null, "trends-only topic count below desired", {
+				desired,
+				count: topics.length,
+			});
+		}
+		return topics.slice(0, desired);
 	}
 
 	let guard = 0;

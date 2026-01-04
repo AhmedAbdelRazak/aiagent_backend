@@ -42,6 +42,8 @@ const TRENDS_SIGNAL_TIMEOUT_MS = 9000;
 const TRENDS_SIGNAL_RETRY_DELAY_MS = 350;
 const TRENDS_SIGNAL_TIME_FALLBACKS = ["now 7-d", "today 1-m"];
 const RELATED_QUERIES_LIMIT = 12;
+const TRENDS_CACHE_TTL_MS = 5 * 60 * 1000;
+const trendsCache = new Map();
 
 function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
@@ -70,6 +72,26 @@ function clampInt(value, min, max) {
 
 function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildTrendsCacheKey({
+	geo,
+	hours,
+	category,
+	sort,
+	includeImages,
+	skipOpenAI,
+	skipSignals,
+}) {
+	return JSON.stringify({
+		geo,
+		hours,
+		category: category || "",
+		sort: sort || "",
+		includeImages: Boolean(includeImages),
+		skipOpenAI: Boolean(skipOpenAI),
+		skipSignals: Boolean(skipSignals),
+	});
 }
 
 function isLikelyThumbnailUrl(u = "") {
@@ -1078,6 +1100,30 @@ router.get("/google-trends", async (req, res) => {
 	const includeImages = ["1", "true", "yes", "on"].includes(
 		String(req.query.includeImages || "").toLowerCase()
 	);
+	const skipOpenAI = ["1", "true", "yes", "on"].includes(
+		String(req.query.skipOpenAI || "").toLowerCase()
+	);
+	const skipSignals = ["1", "true", "yes", "on"].includes(
+		String(req.query.skipSignals || "").toLowerCase()
+	);
+	const cacheKey = buildTrendsCacheKey({
+		geo,
+		hours,
+		category,
+		sort,
+		includeImages,
+		skipOpenAI,
+		skipSignals,
+	});
+	const now = Date.now();
+	for (const [key, entry] of trendsCache.entries()) {
+		if (!entry || entry.expiresAt <= now) trendsCache.delete(key);
+	}
+	const cached = trendsCache.get(cacheKey);
+	if (cached && cached.expiresAt > now) {
+		log("Trends cache hit", { geo, hours, category, sort });
+		return res.json(cached.payload);
+	}
 
 	try {
 		let stories = await scrape({
@@ -1090,16 +1136,20 @@ router.get("/google-trends", async (req, res) => {
 		// Ask GPTâ€‘5.1 for better blog + YouTube titles.
 		//    This is optional and skipped if CHATGPT_API_TOKEN / OPENAI_API_KEY
 		//    is not configured or the call fails.
-		stories = await enhanceStoriesWithOpenAI(stories, {
-			geo,
-			hours,
-			category,
-		});
+		if (!skipOpenAI) {
+			stories = await enhanceStoriesWithOpenAI(stories, {
+				geo,
+				hours,
+				category,
+			});
+		}
 
-		stories = await enrichStoriesWithTrendSignals(stories, {
-			geo,
-			hours: TRENDS_SIGNAL_WINDOW_HOURS,
-		});
+		if (!skipSignals) {
+			stories = await enrichStoriesWithTrendSignals(stories, {
+				geo,
+				hours: TRENDS_SIGNAL_WINDOW_HOURS,
+			});
+		}
 
 		if (includeImages) {
 			stories = await hydrateArticleImages(stories);
@@ -1127,14 +1177,19 @@ router.get("/google-trends", async (req, res) => {
 			})),
 		}));
 
-		return res.json({
+		const payload = {
 			generatedAt: new Date().toISOString(),
 			requestedGeo: geo,
 			effectiveGeo: geo, // Trends may redirect, but we fix geo
 			hours,
 			category,
 			stories,
+		};
+		trendsCache.set(cacheKey, {
+			expiresAt: Date.now() + TRENDS_CACHE_TTL_MS,
+			payload,
 		});
+		return res.json(payload);
 	} catch (err) {
 		console.error(err);
 		return res.status(500).json({
