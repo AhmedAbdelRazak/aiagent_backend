@@ -457,7 +457,8 @@ async function enhanceStoriesWithOpenAI(
 		hours,
 		category,
 		language,
-		topics: stories.map((s) => ({
+		topics: stories.map((s, idx) => ({
+			id: String(idx),
 			term: s.title,
 			articleTitles: s.articles.map((a) => a.title),
 		})),
@@ -465,7 +466,7 @@ async function enhanceStoriesWithOpenAI(
 
 	try {
 		const response = await openai.responses.create({
-			model: "gpt-5.1",
+			model: "gpt-5.2",
 			instructions:
 				"You are an expert SEO copywriter and YouTube Shorts strategist. " +
 				"Given trending search topics and their news article titles, " +
@@ -478,6 +479,7 @@ async function enhanceStoriesWithOpenAI(
 				'   - "emotion": the main emotion the image should evoke\n' +
 				'   - "rationale": a short note for the video orchestrator about why this hook works for that aspect ratio\n' +
 				"4) One short 'imageComment' that plainly describes what the recommended hero shot should look like so downstream video generation can pick the right image for Runway (mention subject + setting, no extra fluff).\n\n" +
+				"Each topic MUST include the original id field provided.\n" +
 				`ALL text must be in ${language}, even if the country/geo differs. No other languages or scripts are allowed.\n` +
 				"Your entire reply MUST be valid JSON, no extra commentary.",
 			input:
@@ -485,7 +487,7 @@ async function enhanceStoriesWithOpenAI(
 				JSON.stringify(payload) +
 				"\n\n" +
 				"Respond with a JSON object of the form:\n" +
-				'{ "topics": [ { "term": string, "blogTitle": string, "youtubeShortTitle": string, "imageComment": string, "imageDirectives": [ { "aspectRatio": "1280:720", "visualHook": string, "emotion": string, "rationale": string }, { "aspectRatio": "720:1280", "visualHook": string, "emotion": string, "rationale": string } ] } ] }',
+				'{ "topics": [ { "id": string, "term": string, "blogTitle": string, "youtubeShortTitle": string, "imageComment": string, "imageDirectives": [ { "aspectRatio": "1280:720", "visualHook": string, "emotion": string, "rationale": string }, { "aspectRatio": "720:1280", "visualHook": string, "emotion": string, "rationale": string } ] } ] }',
 			// We skip response_format to avoid model/version compatibility errors
 			// and just force JSON via instructions.
 		});
@@ -496,17 +498,22 @@ async function enhanceStoriesWithOpenAI(
 			log("Failed to parse OpenAI JSON:", "unable to recover JSON output");
 			return stories;
 		}
+		const byId = new Map();
 		const byTerm = new Map();
 		if (parsed && Array.isArray(parsed.topics)) {
 			for (const t of parsed.topics) {
-				if (!t || typeof t.term !== "string") continue;
-				byTerm.set(t.term.toLowerCase(), t);
+				if (!t) continue;
+				if (typeof t.id === "string" && t.id.trim()) byId.set(t.id.trim(), t);
+				if (typeof t.term === "string" && t.term.trim())
+					byTerm.set(t.term.toLowerCase(), t);
 			}
 		}
 
-		return stories.map((s) => {
+		return stories.map((s, idx) => {
+			const idKey = String(idx);
 			const key = s.title.toLowerCase();
 			const match =
+				byId.get(idKey) ||
 				byTerm.get(key) ||
 				// fallback: GPT sometimes normalizes whitespace/case
 				Array.from(byTerm.values()).find(

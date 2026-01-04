@@ -249,6 +249,15 @@ const THUMBNAIL_MERCH_PENALTY_TOKENS = [
 	"collage",
 	"render",
 ];
+const MULTI_PERSON_PENALTY_TOKENS = [
+	"red carpet",
+	"premiere",
+	"arrivals",
+	"together",
+	"with",
+	"and",
+	"couple",
+];
 const THUMBNAIL_MERCH_DISALLOWED_HOSTS = [
 	"amazon.com",
 	"ebay.com",
@@ -502,6 +511,33 @@ function inferEntertainmentCategory(tokens = []) {
 	return "general";
 }
 
+function inferStoryIntent({ title = "", topics = [] } = {}) {
+	const t0 = topics?.[0] || {};
+	const rqTop = t0?.relatedQueries?.topSample || [];
+	const rqRise = t0?.relatedQueries?.risingSample || [];
+	const kw = t0?.keywords || [];
+
+	const hay = `${title} ${rqTop.join(" ")} ${rqRise.join(" ")} ${kw.join(" ")}`
+		.toLowerCase()
+		.trim();
+
+	if (
+		/(conservatorship|court|filing|legal|judge|records|report|reported)/.test(
+			hay
+		)
+	) {
+		return "legal";
+	}
+
+	if (
+		/(trailer|season|episode|cast|finale|ending|release|premiere)/.test(hay)
+	) {
+		return "entertainment";
+	}
+
+	return "general";
+}
+
 function extractQuestionSegments(rawText = "") {
 	const raw = String(rawText || "").trim();
 	if (!raw) return null;
@@ -661,6 +697,11 @@ function scoreSourceAffinity(url = "", contextLink = "") {
 		if (hay.includes(token)) return 0.35;
 	}
 	return 0;
+}
+
+function multiPersonPenalty({ url = "", source = "", title = "" } = {}) {
+	const hay = `${url} ${source} ${title}`.toLowerCase();
+	return MULTI_PERSON_PENALTY_TOKENS.some((t) => hay.includes(t)) ? 0.35 : 0;
 }
 
 function scoreThumbnailTopicMatch(url = "", contextLink = "", criteria = null) {
@@ -1990,6 +2031,51 @@ function samplePreviewLuma(filePath, region = null) {
 	}
 }
 
+function samplePreviewLumaStats(filePath, region = null) {
+	const w = QA_PREVIEW_WIDTH;
+	const h = QA_PREVIEW_HEIGHT;
+	let crop = "";
+	if (region) {
+		const rx = Math.max(0, Math.round(region.x || 0));
+		const ry = Math.max(0, Math.round(region.y || 0));
+		const rw = Math.max(1, Math.round(region.w || 1));
+		const rh = Math.max(1, Math.round(region.h || 1));
+		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
+	}
+	const filter = `scale=${w}:${h}:flags=area,${crop}format=gray,scale=64:64:flags=area`;
+	const args = [
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-i",
+		filePath,
+		"-vf",
+		filter,
+		"-frames:v",
+		"1",
+		"-f",
+		"rawvideo",
+		"pipe:1",
+	];
+	try {
+		const buf = runFfmpegBuffer(args, "thumbnail_luma_stats");
+		if (!buf || buf.length < 64 * 64) return null;
+		let sum = 0;
+		for (let i = 0; i < buf.length; i++) sum += buf[i];
+		const mean = sum / buf.length;
+		let varSum = 0;
+		for (let i = 0; i < buf.length; i++) {
+			const d = buf[i] - mean;
+			varSum += d * d;
+		}
+		const variance = varSum / buf.length;
+		const std = Math.sqrt(variance);
+		return { mean: mean / 255, std: std / 255 };
+	} catch {
+		return null;
+	}
+}
+
 function samplePreviewRgb(filePath, region = null) {
 	const w = QA_PREVIEW_WIDTH;
 	const h = QA_PREVIEW_HEIGHT;
@@ -2122,6 +2208,15 @@ function getQaLeftSampleRegion() {
 	};
 }
 
+function getHeadlineQaRegion() {
+	return {
+		x: 0,
+		y: 0,
+		w: Math.round(QA_PREVIEW_WIDTH * 0.52),
+		h: Math.round(QA_PREVIEW_HEIGHT * 0.36),
+	};
+}
+
 async function applyThumbnailQaAdjustments(filePath, { log } = {}) {
 	if (!ffmpegPath) return { applied: false };
 	const beforeOverall = samplePreviewLuma(filePath);
@@ -2219,6 +2314,20 @@ function scoreThumbnailLuma({ overall, left }) {
 	return score;
 }
 
+function scoreVariantComposite({
+	lumaScore,
+	hasBadge,
+	headlineWordCount,
+	headlineLen,
+}) {
+	let score = Number.isFinite(lumaScore) ? lumaScore : -Infinity;
+	if (hasBadge) score += 0.05;
+	if (headlineWordCount <= 3) score += 0.04;
+	if (headlineLen <= 14) score += 0.02;
+	if (headlineWordCount >= 4 || headlineLen >= 18) score -= 0.03;
+	return score;
+}
+
 async function generateFallbackBackground({
 	sourcePath,
 	outPath,
@@ -2285,6 +2394,7 @@ async function composeThumbnailBase({
 	height = DEFAULT_CANVAS_HEIGHT,
 	accentColor = ACCENT_PALETTE.default,
 	layout = {},
+	log,
 }) {
 	const W = makeEven(Math.max(2, Math.round(width)));
 	const H = makeEven(Math.max(2, Math.round(height)));
@@ -2325,6 +2435,19 @@ async function composeThumbnailBase({
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
 	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
 
+	if (log)
+		log("thumbnail layout geometry", {
+			W,
+			H,
+			leftPanelPct: leftPct,
+			leftW,
+			presenterW,
+			presenterX,
+			panelCount,
+			panelInnerW,
+			panelInnerH,
+		});
+
 	const inputs = [baseImagePath, presenterImagePath, ...topics];
 	const filters = [];
 	filters.push(
@@ -2363,9 +2486,9 @@ async function composeThumbnailBase({
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
-					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+					`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+					`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
 					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
 			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
@@ -2499,6 +2622,7 @@ async function generateThumbnailCompositeBase({
 		width,
 		height,
 		accentColor,
+		log,
 	});
 }
 
@@ -2746,6 +2870,33 @@ function buildThumbnailText(
 	};
 }
 
+function computeHeadlineBoxRect({
+	leftPanelPct,
+	fontSize,
+	lineSpacing,
+	lines,
+	marginX,
+	yOffset,
+}) {
+	const x = Math.round(THUMBNAIL_WIDTH * marginX);
+	const y =
+		Math.round(THUMBNAIL_HEIGHT * yOffset) - Math.round(fontSize * 0.35);
+	const maxW =
+		Math.round(THUMBNAIL_WIDTH * leftPanelPct) -
+		x -
+		Math.round(THUMBNAIL_WIDTH * 0.02);
+	const h =
+		Math.round(fontSize * (lines + 0.6)) +
+		Math.max(0, lines - 1) * lineSpacing +
+		Math.round(fontSize * 0.35);
+	return {
+		x: Math.max(0, x),
+		y: Math.max(0, y),
+		w: Math.max(10, maxW),
+		h: Math.max(10, h),
+	};
+}
+
 async function renderThumbnailOverlay({
 	inputPath,
 	outputPath,
@@ -2803,6 +2954,7 @@ async function renderThumbnailOverlay({
 		maxWords,
 		baseChars,
 	});
+	const lineCount = text ? text.split("\n").length : 0;
 	const hasText = Boolean(text);
 	const hasBadge = Boolean(badgeText);
 	const fontFile = THUMBNAIL_FONT_FILE
@@ -2812,7 +2964,6 @@ async function renderThumbnailOverlay({
 		42,
 		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
 	);
-	const boxBorder = Math.round(fontSize * 0.45);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
 	const textFilePath = hasText
 		? path.join(
@@ -2902,12 +3053,23 @@ async function renderThumbnailOverlay({
 		);
 	}
 	if (hasText) {
+		const rect = computeHeadlineBoxRect({
+			leftPanelPct,
+			fontSize,
+			lineSpacing,
+			lines: lineCount || 1,
+			marginX: THUMBNAIL_TEXT_MARGIN_PCT,
+			yOffset: THUMBNAIL_TEXT_Y_OFFSET_PCT,
+		});
+		filters.push(
+			`drawbox=x=${rect.x}:y=${rect.y}:w=${rect.w}:h=${
+				rect.h
+			}:color=black@${textBoxOpacity.toFixed(2)}:t=fill`
+		);
 		filters.push(
 			`drawtext=textfile='${escapeDrawtext(
 				textFilePath
-			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:box=1:boxcolor=black@${textBoxOpacity.toFixed(
-				2
-			)}:boxborderw=${boxBorder}:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*${THUMBNAIL_TEXT_Y_OFFSET_PCT}`
+			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*${THUMBNAIL_TEXT_Y_OFFSET_PCT}`
 		);
 	}
 
@@ -2971,7 +3133,11 @@ async function fetchCseContext(topic, extraTokens = []) {
 		.slice(0, 6);
 }
 
-async function fetchCseImages(topic, extraTokens = []) {
+async function fetchCseImages(
+	topic,
+	extraTokens = [],
+	{ intent = "general" } = {}
+) {
 	if (!topic || !GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
 	const extra = Array.isArray(extraTokens)
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
@@ -2985,41 +3151,63 @@ async function fetchCseImages(topic, extraTokens = []) {
 	const searchTokens = buildSearchLabelTokens(topic, extraTokens);
 	const searchLabel = searchTokens.slice(0, 4).join(" ") || topic;
 
-	const queries = [
-		`${searchLabel} press photo`,
-		`${searchLabel} news photo`,
-		`${searchLabel} photo`,
-	];
+	const intentKey = String(intent || "").toLowerCase();
+	const isLegalIntent = intentKey === "legal";
+	const legalQueries = isLegalIntent
+		? [
+				`${searchLabel} headshot`,
+				`${searchLabel} portrait`,
+				`${searchLabel} press photo`,
+				`${searchLabel} interview`,
+		  ]
+		: [];
+	const categoryQueries = [];
 	if (category === "film") {
-		queries.unshift(
+		categoryQueries.push(
 			`${searchLabel} official still`,
 			`${searchLabel} movie still`,
 			`${searchLabel} premiere`
 		);
 	} else if (category === "tv") {
-		queries.unshift(
+		categoryQueries.push(
 			`${searchLabel} episode still`,
 			`${searchLabel} cast photo`
 		);
 	} else if (category === "music") {
-		queries.unshift(
+		categoryQueries.push(
 			`${searchLabel} live performance`,
 			`${searchLabel} stage photo`
 		);
 	} else if (category === "celebrity") {
-		queries.unshift(
-			`${searchLabel} red carpet`,
-			`${searchLabel} interview photo`
-		);
+		if (!isLegalIntent) categoryQueries.push(`${searchLabel} red carpet`);
+		categoryQueries.push(`${searchLabel} interview photo`);
 	}
+	const baseQueries = [
+		`${searchLabel} press photo`,
+		`${searchLabel} news photo`,
+		`${searchLabel} photo`,
+	];
+	const queries = uniqueStrings([
+		...legalQueries,
+		...categoryQueries,
+		...baseQueries,
+	]);
 
-	const fallbackQueries = [
+	let fallbackQueries = uniqueStrings([
+		...(isLegalIntent
+			? [
+					`${searchLabel} headshot`,
+					`${searchLabel} portrait`,
+					`${searchLabel} press`,
+					`${searchLabel} interview`,
+			  ]
+			: []),
 		`${searchLabel} photo`,
 		`${searchLabel} press`,
-		`${searchLabel} red carpet`,
+		...(isLegalIntent ? [] : [`${searchLabel} red carpet`]),
 		`${searchLabel} still`,
 		`${searchLabel} interview`,
-	];
+	]);
 	const keyPhrase = searchTokens.slice(0, 2).join(" ");
 	if (keyPhrase) {
 		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
@@ -3205,6 +3393,8 @@ async function collectThumbnailTopicImages({
 	seoTitle = "",
 	maxImages = THUMBNAIL_TOPIC_MAX_IMAGES,
 	requireTopicImages = REQUIRE_THUMBNAIL_TOPIC_IMAGES,
+	intent,
+	overrideTopicImageQueries,
 	log,
 }) {
 	const target = Math.max(0, Math.floor(maxImages));
@@ -3223,6 +3413,16 @@ async function collectThumbnailTopicImages({
 	);
 	const contextTokens =
 		contextQuery && contextQuery.length >= 4 ? [contextQuery] : [];
+	const resolvedIntent =
+		typeof intent === "string" && intent
+			? intent
+			: inferStoryIntent({ title: title || seoTitle || "", topics });
+	const overrideQueryList = uniqueStrings(
+		(Array.isArray(overrideTopicImageQueries) ? overrideTopicImageQueries : [])
+			.map((q) => sanitizeImageQuery(q))
+			.filter(Boolean),
+		{ limit: 6 }
+	);
 
 	const urlCandidates = [];
 	const seen = new Set();
@@ -3238,6 +3438,7 @@ async function collectThumbnailTopicImages({
 		if (isLikelyWatermarkedSource(url, source)) return;
 		if (isMerchDisallowedCandidate({ url, source, title })) return;
 		const merchPenalty = merchPenaltyScore({ url, source, title });
+		const multiPenalty = multiPersonPenalty({ url, source, title });
 		const match = scoreThumbnailTopicMatch(url, source, criteria);
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
 		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
@@ -3254,14 +3455,16 @@ async function collectThumbnailTopicImages({
 			phraseHit: match.phraseHit,
 			sourceScore: scoreSourceAffinity(url, source),
 			merchPenalty,
+			multiPersonPenalty: multiPenalty,
 			priority,
 			relaxed: relaxed || merchPenalty >= 0.6,
 		});
 		seen.add(key);
 	};
 
-	for (const t of topicList) {
+	for (let topicIndex = 0; topicIndex < topicList.length; topicIndex++) {
 		if (urlCandidates.length >= maxUrls) break;
+		const t = topicList[topicIndex];
 		const label = t?.displayTopic || t?.topic || "";
 		if (!label) continue;
 		const extraTokens = Array.isArray(t?.keywords) ? t.keywords : [];
@@ -3293,6 +3496,11 @@ async function collectThumbnailTopicImages({
 			questionInfo,
 			5
 		);
+		const overrideQueries =
+			topicIndex === 0 ? overrideQueryList.filter(Boolean) : [];
+		const defaultSearchLabel =
+			questionSubjectContextLabel || questionSubjectLabel || label;
+		const searchLabel = overrideQueries[0] || defaultSearchLabel;
 		const mergedTokens = uniqueStrings(
 			[
 				...(contextTokens.length ? contextTokens : []),
@@ -3324,9 +3532,21 @@ async function collectThumbnailTopicImages({
 			});
 		}
 
-		const searchLabel =
-			questionSubjectContextLabel || questionSubjectLabel || label;
-		let hits = hasCSE ? await fetchCseImages(searchLabel, mergedTokens) : [];
+		let hits = hasCSE
+			? await fetchCseImages(searchLabel, mergedTokens, {
+					intent: resolvedIntent,
+			  })
+			: [];
+		if (
+			!hits.length &&
+			overrideQueries.length &&
+			defaultSearchLabel !== searchLabel &&
+			hasCSE
+		) {
+			hits = await fetchCseImages(defaultSearchLabel, mergedTokens, {
+				intent: resolvedIntent,
+			});
+		}
 		if (hits.length) {
 			for (const hit of hits) {
 				const url = typeof hit === "string" ? hit : hit?.url;
@@ -3382,15 +3602,28 @@ async function collectThumbnailTopicImages({
 			urlCandidates.length < maxUrls &&
 			label
 		) {
+			const legalQueries =
+				String(resolvedIntent || "").toLowerCase() === "legal"
+					? [
+							`${searchLabel} headshot`,
+							`${searchLabel} portrait`,
+							`${searchLabel} press photo`,
+							`${searchLabel} interview`,
+					  ]
+					: [];
 			const googleQueries = uniqueStrings(
 				[
+					...overrideQueries,
+					...legalQueries,
 					questionSubjectContextLabel,
 					questionSubjectLabel,
 					label,
 					identityLabel,
 					contextQuery,
 				].filter(Boolean),
-				{ limit: GOOGLE_IMAGES_VARIANT_LIMIT }
+				{
+					limit: Math.max(GOOGLE_IMAGES_VARIANT_LIMIT, overrideQueries.length),
+				}
 			);
 			for (const gQuery of googleQueries) {
 				const googleUrls = await fetchGoogleImagesFromService(gQuery, {
@@ -3474,6 +3707,7 @@ async function collectThumbnailTopicImages({
 				(c.sourceScore || 0) +
 				(c.priority || 0) -
 				(c.merchPenalty || 0) -
+				(c.multiPersonPenalty || 0) -
 				(c.relaxed ? 0.6 : 0),
 		}))
 		.sort((a, b) => b.relevanceScore - a.relevanceScore);
@@ -3599,6 +3833,11 @@ async function collectThumbnailTopicImages({
 			count: selected.length,
 			target,
 		});
+	if (log)
+		log("thumbnail topic image chosen", {
+			count: selected.length,
+			paths: selected.map((p) => path.basename(p)),
+		});
 
 	return selected;
 }
@@ -3695,6 +3934,34 @@ function deriveQuestionHeadlinePlan({
 		return { headline, punchy, badgeText };
 	}
 	return null;
+}
+
+function deriveHeadlineAndBadge({
+	title = "",
+	topics = [],
+	intent = "general",
+} = {}) {
+	const t0 = topics?.[0] || {};
+	const rqRise = (t0?.relatedQueries?.risingSample || [])
+		.join(" ")
+		.toLowerCase();
+	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ").toLowerCase();
+	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
+
+	let headline = "";
+	if (intent === "legal" && /conservatorship/.test(hay))
+		headline = "LEGAL MOVE";
+	else if (intent === "legal" && /(court|filing)/.test(hay))
+		headline = "COURT FILE";
+	else if (/(reports|reported)/.test(hay)) headline = "NEW REPORTS";
+	else headline = "WHAT WE KNOW";
+
+	let badgeText = "";
+	if (intent === "legal") badgeText = "REPORTS";
+	else if (intent === "entertainment") badgeText = "TRENDING";
+	else badgeText = "UPDATE";
+
+	return { headline, badgeText };
 }
 
 function buildTopicPhrase(topics = [], maxWords = 3) {
@@ -3820,6 +4087,10 @@ async function generateThumbnailPackage({
 	expression,
 	log,
 	requireTopicImages = REQUIRE_THUMBNAIL_TOPIC_IMAGES,
+	overrideHeadline,
+	overrideBadgeText,
+	overrideIntent,
+	overrideTopicImageQueries,
 }) {
 	if (!presenterLocalPath)
 		throw new Error("thumbnail_presenter_missing_or_invalid");
@@ -3855,6 +4126,22 @@ async function generateThumbnailPackage({
 		});
 	}
 
+	const resolvedOverrideHeadline =
+		typeof overrideHeadline === "string" ? overrideHeadline.trim() : "";
+	const resolvedOverrideBadgeText =
+		typeof overrideBadgeText === "string" ? overrideBadgeText.trim() : "";
+	const resolvedIntent =
+		typeof overrideIntent === "string" && overrideIntent.trim()
+			? overrideIntent.trim()
+			: inferStoryIntent({
+					title: title || seoTitle || "",
+					topics,
+			  });
+	const hook = deriveHeadlineAndBadge({
+		title: title || seoTitle || "",
+		topics,
+		intent: resolvedIntent,
+	});
 	const questionPlan = deriveQuestionHeadlinePlan({
 		title,
 		shortTitle,
@@ -3864,6 +4151,8 @@ async function generateThumbnailPackage({
 		punchyMaxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
 	});
 	const thumbTitle =
+		resolvedOverrideHeadline ||
+		hook?.headline ||
 		questionPlan?.headline ||
 		selectThumbnailTitle({
 			title,
@@ -3872,6 +4161,8 @@ async function generateThumbnailPackage({
 			topics,
 		});
 	const punchyTitle =
+		resolvedOverrideHeadline ||
+		hook?.headline ||
 		questionPlan?.punchy ||
 		buildShortHookTitle({
 			title,
@@ -3881,9 +4172,19 @@ async function generateThumbnailPackage({
 		});
 	const topicCount = Array.isArray(topics) ? topics.length : 0;
 	const badgeText =
-		topicCount > 1
+		resolvedOverrideBadgeText ||
+		(topicCount > 1
 			? `${Math.min(topicCount, 9)} STORIES`
-			: questionPlan?.badgeText || "";
+			: questionPlan?.badgeText || hook?.badgeText || "UPDATE");
+	if (log)
+		log("thumbnail hook plan", {
+			intent: resolvedIntent,
+			headline: thumbTitle,
+			punchy: punchyTitle,
+			badgeText,
+			overrideHeadline: resolvedOverrideHeadline || null,
+			overrideBadgeText: resolvedOverrideBadgeText || null,
+		});
 
 	const topicImagePaths = await collectThumbnailTopicImages({
 		topics,
@@ -3894,12 +4195,17 @@ async function generateThumbnailPackage({
 		seoTitle,
 		maxImages: THUMBNAIL_TOPIC_MAX_IMAGES,
 		requireTopicImages,
+		intent: resolvedIntent,
+		overrideTopicImageQueries,
 		log,
 	});
+	const backgroundTitle = resolvedOverrideHeadline
+		? title || seoTitle || thumbTitle
+		: thumbTitle;
 	const bg = await resolveThumbnailBackground({
 		jobId,
 		tmpDir,
-		title: thumbTitle,
+		title: backgroundTitle,
 		topics,
 		ratio: THUMBNAIL_RATIO,
 		width: THUMBNAIL_WIDTH,
@@ -3968,6 +4274,7 @@ async function generateThumbnailPackage({
 				height: THUMBNAIL_HEIGHT,
 				accentColor: stylePlan.accent,
 				layout: variant.layout,
+				log,
 			});
 
 			const finalPath = path.join(tmpDir, `thumb_${jobId}_${variant.key}.jpg`);
@@ -3977,14 +4284,52 @@ async function generateThumbnailPackage({
 					? Number(variant.layout.leftPanelPct)
 					: LEFT_PANEL_PCT,
 			};
+			const baseTextBoxOpacity = Number.isFinite(
+				Number(overlayOptions.textBoxOpacity)
+			)
+				? Number(overlayOptions.textBoxOpacity)
+				: 0.28;
+			const headlineStatsBase = samplePreviewLumaStats(
+				baseImage,
+				getHeadlineQaRegion()
+			);
+			let tunedTextBoxOpacity = baseTextBoxOpacity;
+			if (headlineStatsBase && Number.isFinite(headlineStatsBase.std)) {
+				if (headlineStatsBase.std > 0.22) {
+					tunedTextBoxOpacity = clampNumber(
+						baseTextBoxOpacity + 0.06,
+						0.16,
+						0.6
+					);
+				} else if (headlineStatsBase.std < 0.12) {
+					tunedTextBoxOpacity = clampNumber(
+						baseTextBoxOpacity - 0.05,
+						0.1,
+						0.5
+					);
+				}
+			}
+			const tunedOverlayOptions = {
+				...overlayOptions,
+				textBoxOpacity: tunedTextBoxOpacity,
+			};
 			await renderThumbnailOverlay({
 				inputPath: baseImage,
 				outputPath: finalPath,
 				title: variant.title,
 				accentColor: stylePlan.accent,
-				overlayOptions,
+				overlayOptions: tunedOverlayOptions,
 			});
 			ensureThumbnailFile(finalPath);
+			const headlineStats = samplePreviewLumaStats(
+				finalPath,
+				getHeadlineQaRegion()
+			);
+			if (log && headlineStats)
+				log("thumbnail headline stats", {
+					variant: variant.key,
+					...headlineStats,
+				});
 			const qa = await applyThumbnailQaAdjustments(finalPath, { log });
 			if (log) log("thumbnail qa result", { variant: variant.key, ...qa });
 			ensureThumbnailFile(finalPath);
@@ -4057,6 +4402,27 @@ async function generateThumbnailPackage({
 					score: scoreLog,
 				});
 
+			const headline = variant.title || "";
+			const headlineWords = cleanThumbnailText(headline)
+				.split(" ")
+				.filter(Boolean);
+			const compositeScore = scoreVariantComposite({
+				lumaScore,
+				hasBadge: Boolean(tunedOverlayOptions.badgeText),
+				headlineWordCount: headlineWords.length,
+				headlineLen: headline.length,
+			});
+			if (log)
+				log("thumbnail composite score", {
+					variant: variant.key,
+					lumaScore: scoreLog,
+					compositeScore: Number.isFinite(compositeScore)
+						? Number(compositeScore.toFixed(3))
+						: null,
+					headline,
+					badge: tunedOverlayOptions.badgeText || "",
+				});
+
 			variantResults.push({
 				variant: variant.key,
 				localPath: finalPath,
@@ -4065,6 +4431,7 @@ async function generateThumbnailPackage({
 				width: THUMBNAIL_WIDTH,
 				height: THUMBNAIL_HEIGHT,
 				title: variant.title,
+				compositeScore,
 				luma: {
 					overall: overallLuma,
 					left: leftLuma,
@@ -4081,13 +4448,21 @@ async function generateThumbnailPackage({
 	}
 
 	if (!variantResults.length) throw new Error("thumbnail_generation_failed");
-	const scoredVariants = variantResults.filter((v) =>
-		Number.isFinite(v?.luma?.score)
+	const scoredVariants = variantResults.filter(
+		(v) => Number.isFinite(v?.compositeScore) || Number.isFinite(v?.luma?.score)
 	);
 	const preferred =
 		scoredVariants.reduce((best, next) => {
 			if (!best) return next;
-			return next.luma.score > best.luma.score ? next : best;
+			const bestScore = Number.isFinite(best?.compositeScore)
+				? best.compositeScore
+				: best?.luma?.score;
+			const nextScore = Number.isFinite(next?.compositeScore)
+				? next.compositeScore
+				: next?.luma?.score;
+			if (!Number.isFinite(bestScore)) return next;
+			if (!Number.isFinite(nextScore)) return best;
+			return nextScore > bestScore ? next : best;
 		}, null) ||
 		variantResults.find((v) => v.variant === "b") ||
 		variantResults[0];

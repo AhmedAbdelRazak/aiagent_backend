@@ -38,6 +38,8 @@
 		"puppeteer": "^24.10.2",
 		"puppeteer-extra": "^3.3.6",
 		"puppeteer-extra-plugin-stealth": "^2.11.2",
+		"sharp": "^0.34.5",
+		"smartcrop-sharp": "^2.0.8",
 		"socket.io": "^4.8.1",
 		"xml2js": "^0.6.2"
 	}

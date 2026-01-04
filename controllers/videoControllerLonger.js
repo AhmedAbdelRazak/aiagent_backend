@@ -4539,6 +4539,281 @@ function shortTitleFromText(text = "") {
 	return words.slice(0, 5).join(" ");
 }
 
+function normalizeRelatedQueriesAny(rq) {
+	if (!rq || typeof rq !== "object") return { top: [], rising: [] };
+	const top = Array.isArray(rq.top)
+		? rq.top
+		: Array.isArray(rq.topSample)
+		? rq.topSample
+		: [];
+	const rising = Array.isArray(rq.rising)
+		? rq.rising
+		: Array.isArray(rq.risingSample)
+		? rq.risingSample
+		: [];
+	return {
+		top: uniqueStrings(top.map((s) => String(s || "").trim()).filter(Boolean), {
+			limit: 12,
+		}),
+		rising: uniqueStrings(
+			rising.map((s) => String(s || "").trim()).filter(Boolean),
+			{ limit: 12 }
+		),
+	};
+}
+
+function normalizeInterestAny(io) {
+	const safe = (n) => (Number.isFinite(Number(n)) ? Number(n) : 0);
+	return {
+		points: safe(io?.points),
+		avg: safe(io?.avg),
+		latest: safe(io?.latest),
+		peak: safe(io?.peak),
+		slope: safe(io?.slope),
+	};
+}
+
+function extractArticleFacts(story) {
+	const articles = Array.isArray(story?.articles) ? story.articles : [];
+	const titles = articles
+		.map((a) => String(a?.title || "").trim())
+		.filter(Boolean);
+	const urls = articles.map((a) => String(a?.url || "").trim()).filter(Boolean);
+	return { titles, urls };
+}
+
+function buildThumbnailSignalsFromTopicPick(topicPick) {
+	const t = topicPick || {};
+	const story = t.trendStory || t || {};
+	const displayTopic = String(
+		t.displayTopic || t.topic || story.title || story.rawTitle || ""
+	).trim();
+	const keywords = Array.isArray(t.keywords)
+		? t.keywords.map((s) => String(s || "").trim()).filter(Boolean)
+		: [];
+	const relatedQueries = normalizeRelatedQueriesAny(
+		story.relatedQueries || t.relatedQueries
+	);
+	const interestOverTime = normalizeInterestAny(
+		story.interestOverTime || t.interestOverTime
+	);
+	const { titles: articleTitles, urls: articleUrls } =
+		extractArticleFacts(story);
+	const seedImages = Array.isArray(story.images)
+		? story.images
+		: Array.isArray(t.images)
+		? t.images
+		: [];
+	const searchPhrases = Array.isArray(story.searchPhrases)
+		? story.searchPhrases
+		: Array.isArray(t.searchPhrases)
+		? t.searchPhrases
+		: [];
+	const entityNames = Array.isArray(story.entityNames)
+		? story.entityNames
+		: Array.isArray(t.entityNames)
+		? t.entityNames
+		: [];
+
+	return {
+		displayTopic,
+		keywords,
+		relatedQueries,
+		interestOverTime,
+		articleTitles,
+		articleUrls,
+		seedImages: seedImages.map((u) => String(u || "").trim()).filter(Boolean),
+		searchPhrases: searchPhrases
+			.map((s) => String(s || "").trim())
+			.filter(Boolean),
+		entityNames: entityNames.map((s) => String(s || "").trim()).filter(Boolean),
+		imageComment: String(story.imageComment || t.imageComment || "").trim(),
+		angle: String(t.angle || "").trim(),
+		reason: String(t.reason || "").trim(),
+	};
+}
+
+const THUMBNAIL_INTENT_RULES = [
+	{
+		intent: "legal",
+		re: /\b(lawsuit|court|judge|trial|appeal|charges|indict|arrest|police|investigation|filing|custody|conservatorship|bankruptcy)\b/i,
+	},
+	{
+		intent: "finance",
+		re: /\b(stock|shares|ipo|earnings|revenue|sec|market|inflation|interest rate|crypto|bitcoin|ethereum)\b/i,
+	},
+	{
+		intent: "sports",
+		re: /\b(nfl|nba|nhl|mlb|ufc|f1|match|goal|playoffs|draft|trade|transfer)\b/i,
+	},
+	{
+		intent: "entertainment",
+		re: /\b(trailer|season|episode|premiere|cast|box office|album|tour)\b/i,
+	},
+	{
+		intent: "politics",
+		re: /\b(election|vote|president|prime minister|senator|congress|parliament|campaign)\b/i,
+	},
+	{
+		intent: "weather",
+		re: /\b(hurricane|storm|tornado|wildfire|flood|heat wave|snow)\b/i,
+	},
+];
+
+function inferIntentFromSignals({ title, signals }) {
+	const rq = signals.relatedQueries || { top: [], rising: [] };
+	const io = signals.interestOverTime || {};
+	const hay = [
+		title || "",
+		signals.displayTopic || "",
+		signals.angle || "",
+		signals.reason || "",
+		(rq.top || []).join(" "),
+		(rq.rising || []).join(" "),
+		(signals.articleTitles || []).join(" "),
+		(signals.keywords || []).join(" "),
+		signals.imageComment || "",
+	]
+		.join(" ")
+		.toLowerCase();
+
+	for (const rule of THUMBNAIL_INTENT_RULES) {
+		if (rule.re.test(hay)) return rule.intent;
+	}
+
+	if (Number(io.slope) >= 15) return "general_trending";
+	return "general";
+}
+
+function clampHeadline(text) {
+	const t = String(text || "")
+		.trim()
+		.toUpperCase();
+	if (!t) return "";
+	return t.length > 18 ? t.slice(0, 18).trim() : t;
+}
+
+function pickHookFromQueries({
+	rqTop = [],
+	rqRising = [],
+	intent = "general",
+	slope = 0,
+}) {
+	const hay = `${rqTop.join(" ")} ${rqRising.join(" ")}`.toLowerCase();
+
+	if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
+		return { headline: "WHAT HAPPENED", badge: "UPDATE" };
+	if (/\bwhy\b|\bexplained\b|\bmeaning\b/.test(hay))
+		return { headline: "EXPLAINED", badge: "UPDATE" };
+	if (/\breaction\b|\bresigns?\b|\bsteps down\b/.test(hay))
+		return { headline: "BIG REACTION", badge: "UPDATE" };
+
+	if (intent === "legal") return { headline: "LEGAL MOVE", badge: "REPORTS" };
+	if (intent === "finance")
+		return {
+			headline: "MARKET MOVE",
+			badge: slope >= 15 ? "TRENDING" : "UPDATE",
+		};
+	if (intent === "sports") return { headline: "MAJOR NEWS", badge: "UPDATE" };
+	if (intent === "entertainment")
+		return {
+			headline: "NEW DETAILS",
+			badge: slope >= 15 ? "TRENDING" : "UPDATE",
+		};
+	if (intent === "politics") return { headline: "NEW UPDATE", badge: "UPDATE" };
+	if (intent === "weather") return { headline: "STORM UPDATE", badge: "ALERT" };
+
+	return {
+		headline: slope >= 15 ? "TRENDING NOW" : "NEW UPDATE",
+		badge: "UPDATE",
+	};
+}
+
+function buildTopicImageQueries({ signals, intent }) {
+	const topic = signals.displayTopic || "";
+	const entities = (signals.entityNames || []).slice(0, 2);
+	const rqRising = (signals.relatedQueries?.rising || []).slice(0, 4);
+
+	const base = [topic, ...entities, ...rqRising]
+		.map((s) => String(s || "").trim())
+		.filter(Boolean);
+	const core = base[0] || topic;
+
+	if (intent === "legal") {
+		return uniqueStrings(
+			[
+				`${core} headshot`,
+				`${core} portrait`,
+				`${core} press photo`,
+				`${core} interview`,
+			],
+			{ limit: 6 }
+		);
+	}
+
+	if (intent === "finance") {
+		return uniqueStrings(
+			[
+				`${core} CEO headshot`,
+				`${core} logo`,
+				`${core} press photo`,
+				`${core} conference`,
+			],
+			{ limit: 6 }
+		);
+	}
+
+	if (intent === "entertainment") {
+		return uniqueStrings(
+			[
+				`${core} portrait`,
+				`${core} close up`,
+				`${core} interview`,
+				`${core} red carpet`,
+			],
+			{ limit: 6 }
+		);
+	}
+
+	return uniqueStrings(
+		[`${core} portrait`, `${core} close up`, `${core} press photo`],
+		{ limit: 6 }
+	);
+}
+
+function buildThumbnailHookPlan({ title, topicPicks }) {
+	const topics = Array.isArray(topicPicks) ? topicPicks : [];
+	const t0 = topics[0] || {};
+	const signals = buildThumbnailSignalsFromTopicPick(t0);
+	const intent = inferIntentFromSignals({ title, signals });
+	const rq = signals.relatedQueries || { top: [], rising: [] };
+	const slope = Number(signals.interestOverTime?.slope || 0);
+	const { headline, badge } = pickHookFromQueries({
+		rqTop: rq.top,
+		rqRising: rq.rising,
+		intent,
+		slope,
+	});
+
+	if (topics.length > 1) {
+		return {
+			intent: "multi",
+			headline: "TOP STORIES",
+			badgeText: `${Math.min(topics.length, 9)} STORIES`,
+			imageQueries: [],
+		};
+	}
+
+	return {
+		intent,
+		headline: clampHeadline(headline),
+		badgeText: String(badge || "UPDATE")
+			.trim()
+			.toUpperCase(),
+		imageQueries: buildTopicImageQueries({ signals, intent }),
+	};
+}
+
 function cleanTopicLabel(text = "") {
 	return String(text || "")
 		.replace(/["'(){}\[\]]/g, "")
@@ -9306,18 +9581,29 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const thumbExpression =
 				script?.segments?.[0]?.expression || tonePlan?.mood || "warm";
 			const thumbLog = (message, payload) => logJob(jobId, message, payload);
+			const hookPlan = buildThumbnailHookPlan({
+				title: thumbTitle,
+				topicPicks,
+			});
+			if (hookPlan) thumbLog("thumbnail hook plan (computed)", hookPlan);
+			const hookHeadline = String(hookPlan?.headline || "").trim();
+			const resolvedShortTitle = hookHeadline || thumbShortTitle;
 			const thumbResult = await generateThumbnailPackage({
 				jobId,
 				tmpDir,
 				presenterLocalPath: presenterLocal,
 				title: thumbTitle,
-				shortTitle: thumbShortTitle,
+				shortTitle: resolvedShortTitle,
 				seoTitle: "",
 				topics: topicPicks,
 				expression: thumbExpression,
 				openai,
 				log: thumbLog,
 				requireTopicImages: true,
+				overrideHeadline: hookHeadline,
+				overrideBadgeText: hookPlan?.badgeText,
+				overrideIntent: hookPlan?.intent,
+				overrideTopicImageQueries: hookPlan?.imageQueries,
 			});
 			const thumbLocalPath = thumbResult?.localPath || "";
 			const thumbCloudUrl = thumbResult?.url || "";
