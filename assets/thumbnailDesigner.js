@@ -4726,8 +4726,8 @@ async function generateThumbnailPackage({
 		}
 		if (log) {
 			log("thumbnail runway fallback headline decision", {
-				keptHeadlineQuestion,
-				keptPunchyQuestion,
+				keptHeadlineQuestion: keepHeadlineQuestion,
+				keptPunchyQuestion: keepPunchyQuestion,
 				headline: thumbTitle,
 				punchy: punchyTitle,
 			});
