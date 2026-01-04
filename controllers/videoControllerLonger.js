@@ -1736,6 +1736,207 @@ function isDuplicateTopic(topic, existing = [], usedTopics = null) {
 	return false;
 }
 
+const PROMPT_CONTROL_TOKENS = new Set([
+	"recommend",
+	"recommendation",
+	"suggest",
+	"suggestion",
+	"topic",
+	"topics",
+	"idea",
+	"ideas",
+	"video",
+	"videos",
+	"content",
+	"script",
+	"long",
+	"short",
+	"create",
+	"make",
+	"generate",
+	"write",
+	"produce",
+	"build",
+	"craft",
+	"give",
+	"show",
+	"tell",
+	"need",
+	"want",
+	"please",
+	"me",
+	"my",
+	"your",
+	"you",
+	"us",
+	"we",
+	"our",
+	"someone",
+	"anyone",
+	"can",
+	"could",
+	"would",
+	"should",
+	"pick",
+	"choose",
+	"surprise",
+	"anything",
+	"something",
+	"random",
+	"trending",
+	"latest",
+	"update",
+	"updates",
+	"news",
+	"now",
+	"today",
+	"recommendations",
+	"suggestions",
+]);
+
+const PROMPT_QUESTION_TOKENS = new Set([
+	"what",
+	"who",
+	"why",
+	"how",
+	"when",
+	"where",
+	"which",
+]);
+
+const PROMPT_RECOMMENDATION_PATTERNS = [
+	/\b(recommend|suggest|pick|choose|surprise)\b/i,
+	/\b(anything|something)\b/i,
+	/\bwhat('s| is)\s+(trending|hot|popular|new)\b/i,
+	/\bwhat\s+topic\b/i,
+	/\btrending\s+topic\b/i,
+	/\btopic\s+idea\b/i,
+];
+
+const PROMPT_SPLIT_RE = /[|;\n]+/;
+
+function normalizeUrlCandidate(raw = "") {
+	const trimmed = String(raw || "").trim();
+	if (!trimmed) return "";
+	return trimmed.replace(/[),.;]+$/g, "");
+}
+
+function extractUrlsFromText(text = "") {
+	const raw = String(text || "");
+	const urls = [];
+	const httpRe = /\bhttps?:\/\/[^\s<>()]+/gi;
+	const wwwRe = /\bwww\.[^\s<>()]+/gi;
+	let match;
+	while ((match = httpRe.exec(raw))) {
+		const cleaned = normalizeUrlCandidate(match[0]);
+		if (cleaned) urls.push(cleaned);
+	}
+	while ((match = wwwRe.exec(raw))) {
+		const cleaned = normalizeUrlCandidate(`https://${match[0]}`);
+		if (cleaned) urls.push(cleaned);
+	}
+	return uniqueStrings(urls, { limit: 6 });
+}
+
+function stripUrlsFromText(text = "") {
+	return String(text || "")
+		.replace(/\bhttps?:\/\/[^\s<>()]+/gi, " ")
+		.replace(/\bwww\.[^\s<>()]+/gi, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+const PROMPT_PREAMBLE_PATTERNS = [
+	/^(please\s+)?(create|make|generate|write|produce|build|craft|plan)\b[^.?!]{0,80}?\b(video|script|story|content)\b\s*(?:about|on|for|regarding|re:)?\s*/i,
+	/^(please\s+)?(give|show|tell|explain|summarize|break\s*down)\b[^.?!]{0,80}?\b(about|on|for|regarding|re:)\b\s*/i,
+	/^(please\s+)?(i\s*(?:want|need|would\s+like|would\s+love|i'?d\s+like))\b[^.?!]{0,80}?\b(video|topic|content|script)\b\s*(?:about|on|for|regarding|re:)?\s*/i,
+];
+
+function stripPromptPreamble(text = "") {
+	let cleaned = String(text || "").trim();
+	if (!cleaned) return cleaned;
+	for (const re of PROMPT_PREAMBLE_PATTERNS) {
+		const match = cleaned.match(re);
+		if (match) {
+			cleaned = cleaned.slice(match[0].length).trim();
+			break;
+		}
+	}
+	return cleaned.replace(/^[\s:;-]+/g, "").trim();
+}
+
+function looksLikeRecommendationPrompt(text = "") {
+	const raw = String(text || "").trim();
+	if (!raw) return false;
+	return PROMPT_RECOMMENDATION_PATTERNS.some((re) => re.test(raw));
+}
+
+function extractPromptSubjectTokens(text = "") {
+	const tokens = tokenizeLabel(text);
+	return tokens.filter(
+		(t) =>
+			!TOPIC_STOP_WORDS.has(t) &&
+			!GENERIC_TOPIC_TOKENS.has(t) &&
+			!PROMPT_CONTROL_TOKENS.has(t)
+	);
+}
+
+function normalizePromptTopic(text = "") {
+	const stripped = stripPromptPreamble(text);
+	const base = stripped || String(text || "").trim();
+	const cleaned = cleanTopicCandidate(base) || base.trim();
+	return cleaned.replace(/\s+/g, " ").trim();
+}
+
+function splitPromptTopics(text = "") {
+	const raw = String(text || "").trim();
+	if (!raw) return [];
+	const parts = raw
+		.split(PROMPT_SPLIT_RE)
+		.map((chunk) => normalizePromptTopic(chunk))
+		.filter(Boolean);
+	if (parts.length) return parts;
+	const fallback = normalizePromptTopic(raw);
+	return fallback ? [fallback] : [];
+}
+
+function resolvePreferredTopicHint(raw = "") {
+	const original = String(raw || "").trim();
+	if (!original) {
+		return {
+			mode: "none",
+			promptText: "",
+			topicCandidates: [],
+			imageUrls: [],
+		};
+	}
+	const imageUrls = extractUrlsFromText(original).filter(isHttpUrl);
+	const cleanedPrompt = stripUrlsFromText(original);
+	const promptText = String(cleanedPrompt || "").trim();
+	if (!promptText) {
+		return {
+			mode: "none",
+			promptText: "",
+			topicCandidates: [],
+			imageUrls,
+		};
+	}
+	const subjectTokens = extractPromptSubjectTokens(promptText);
+	const wantsRecommendation = looksLikeRecommendationPrompt(promptText);
+	const effectiveTokens = wantsRecommendation
+		? subjectTokens.filter((t) => !PROMPT_QUESTION_TOKENS.has(t))
+		: subjectTokens;
+	const mode = effectiveTokens.length ? "prompt" : "trends";
+	const topicCandidates =
+		mode === "prompt" ? splitPromptTopics(promptText) : [];
+	return {
+		mode,
+		promptText,
+		topicCandidates,
+		imageUrls,
+	};
+}
+
 async function selectTopics({
 	preferredTopicHint,
 	dryRun,
@@ -1763,25 +1964,52 @@ async function selectTopics({
 		];
 	}
 
-	const topics = [];
-	const hint = String(preferredTopicHint || "").trim();
-	if (hint) {
-		if (LONG_VIDEO_REQUIRE_TRENDS) {
-			logJob(null, "preferred topic hint ignored (trends-only)", { hint });
-		} else if (isDuplicateTopic(hint, topics, usedSet)) {
-			logJob(null, "preferred topic hint skipped (duplicate)", { hint });
-		} else {
-			const displayTopic = cleanTopicLabel(hint) || hint;
+	const promptInfo = resolvePreferredTopicHint(preferredTopicHint);
+	if (promptInfo.mode === "prompt") {
+		const topics = [];
+		const seen = new Set();
+		const candidates = promptInfo.topicCandidates.length
+			? promptInfo.topicCandidates
+			: [promptInfo.promptText];
+		for (const candidate of candidates) {
+			if (topics.length >= desired) break;
+			const normalized = normalizePromptTopic(candidate);
+			if (!normalized) continue;
+			const signature = topicSignature(normalized);
+			if (signature && seen.has(signature)) continue;
+			if (signature) seen.add(signature);
+			const displayTopic = cleanTopicLabel(normalized) || normalized;
 			topics.push({
-				topic: hint.slice(0, 120),
+				topic: normalized.slice(0, 120),
 				displayTopic,
 				reason: "preferredTopicHint",
 				angle: "",
-				keywords: topicTokensFromTitle(hint).slice(0, 8),
+				keywords: topicTokensFromTitle(normalized).slice(0, 8),
+				images: topics.length === 0 ? promptInfo.imageUrls : [],
+				source: "user_prompt",
 			});
-			addUsedTopicVariants(usedSet, hint);
+		}
+		if (topics.length) {
+			logJob(null, "preferred topic hint used (prompt mode)", {
+				topics: topics.map((t) => t.displayTopic || t.topic),
+			});
+			if (promptInfo.topicCandidates.length > topics.length) {
+				logJob(null, "preferred topic hint truncated to fit duration", {
+					requested: promptInfo.topicCandidates.length,
+					used: topics.length,
+				});
+			}
+			return topics;
 		}
 	}
+
+	if (promptInfo.mode === "trends" && promptInfo.promptText) {
+		logJob(null, "preferred topic hint treated as recommendation", {
+			hint: promptInfo.promptText.slice(0, 140),
+		});
+	}
+
+	const topics = [];
 
 	const trendStories = await fetchTrendsStories({
 		categoryLabel: categoryLabel || LONG_VIDEO_TRENDS_CATEGORY,
@@ -5839,6 +6067,7 @@ async function generateScript({
 	tonePlan,
 	topicContextFlags = [],
 	includeOutro = false,
+	contentMode = "trends",
 }) {
 	if (!process.env.CHATGPT_API_TOKEN)
 		throw new Error("CHATGPT_API_TOKEN missing");
@@ -5849,6 +6078,18 @@ async function generateScript({
 			: [{ topic: "today's topic" }];
 	const topicCount = safeTopics.length;
 	const topicLabelFor = (t) => String(t?.displayTopic || t?.topic || "").trim();
+	const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
+	const briefLine = isPromptMode
+		? topicCount > 1
+			? "This is a multi-topic brief based on a user request."
+			: "This is a user-requested topic brief."
+		: "This is a multi-topic news brief.";
+	const trendSignalLabel = isPromptMode
+		? "Context signals (use if present; do NOT invent):"
+		: "Trending signals (address the #1 rising reason early if present):";
+	const evidenceLine = isPromptMode
+		? '- If a topic\'s evidence is "(none)", keep statements high-level and avoid specific claims; frame it as an open question.'
+		: "- If a topic's evidence is \"(none)\", keep statements high-level and avoid specific claims; say it's trending and frame it as an open question.";
 	const topicRanges = allocateTopicSegments(segmentCount, safeTopics);
 	const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
 	const mood = tonePlan?.mood || "neutral";
@@ -5999,7 +6240,7 @@ async function generateScript({
 Current date: ${dayjs().format("YYYY-MM-DD")}
 
 Write a YouTube talking-head script for a US audience.
-This is a multi-topic news brief.
+${briefLine}
 Language: ${languageLabel}
 Tone plan: ${mood} (${toneGuide})
 
@@ -6031,7 +6272,7 @@ ${topicContextGuide}
 Topic notes:
 ${topicHintLines}
 
-Trending signals (address the #1 rising reason early if present):
+${trendSignalLabel}
 ${trendSignalLines}
 
 Topic intent resolution (MUST follow; do NOT invent beyond this):
@@ -6086,7 +6327,7 @@ Style rules (IMPORTANT):
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
 - Avoid phrasing like "sad news" unless it is a real-world tragedy.
 - Use the topic anchor phrase in the FIRST segment of each topic.
-- If a topic's evidence is "(none)", keep statements high-level and avoid specific claims; say it's trending and frame it as an open question.
+${evidenceLine}
 - If the line is happy, use a light smile; if very happy, a brief small smile with slight teeth (never a wide grin).
 - Keep expressions coherent across segments; avoid abrupt mood flips and avoid exaggerated expressions.
 - Each segment must include EXACTLY one overlayCues entry with a search query that matches that segment.
@@ -6631,10 +6872,15 @@ async function rewriteSegmentsForQuality({
 	tonePlan,
 	narrationTargetSec,
 	includeOutro = true,
+	contentMode = "trends",
 }) {
 	const segments = Array.isArray(script?.segments) ? script.segments : [];
 	if (!segments.length) return script;
 	const mood = tonePlan?.mood || "neutral";
+	const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
+	const trendSignalLabel = isPromptMode
+		? "Context signals (use if present; do NOT invent):"
+		: "Trending signals (address the #1 rising reason early if present):";
 
 	const topicSummaries = (topics || []).map((t, idx) => {
 		const ctx = Array.isArray(topicContexts?.[idx]?.context)
@@ -6672,7 +6918,7 @@ Mood: ${mood}
 Topic summaries:
 ${topicSummaries.join("\n")}
 
-Trending signals (address the #1 rising reason early if present):
+${trendSignalLabel}
 ${trendSignalLines}
 
 Topic assignment by segment (do NOT change):
@@ -9349,6 +9595,11 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			.map((t) => t.displayTopic || t.topic)
 			.filter(Boolean);
 		const topicSummary = topicTitles.join(" / ");
+		const contentMode = topicPicks.some(
+			(t) => String(t?.source || "").toLowerCase() === "user_prompt"
+		)
+			? "prompt"
+			: "trends";
 		logJob(jobId, "topics selected", {
 			count: topicPicks.length,
 			topicCount,
@@ -9575,6 +9826,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			tonePlan,
 			topicContextFlags,
 			includeOutro: true,
+			contentMode,
 		});
 
 		let qaResult = analyzeScriptQuality({
@@ -9605,6 +9857,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					tonePlan,
 					narrationTargetSec,
 					includeOutro: true,
+					contentMode,
 				});
 			} catch (e) {
 				logJob(jobId, "script qa rewrite failed", {

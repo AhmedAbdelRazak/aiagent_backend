@@ -4084,6 +4084,20 @@ async function collectThumbnailTopicImages({
 		);
 		const criteria = buildImageMatchCriteria(label, mergedTokens);
 		const identityLabel = buildTopicIdentityLabel(label, mergedTokens);
+		const promptSeedUrls = uniqueStrings(
+			Array.isArray(t?.images) ? t.images : [],
+			{ limit: 6 }
+		);
+		for (const url of promptSeedUrls) {
+			pushCandidate(url, {
+				source: label,
+				title: label,
+				priority: 1.15,
+				criteria,
+				isPersonTopic,
+			});
+		}
+
 		const seedUrls = uniqueStrings(
 			[
 				t?.trendStory?.image,
