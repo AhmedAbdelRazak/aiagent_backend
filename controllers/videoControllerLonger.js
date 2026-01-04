@@ -5328,8 +5328,8 @@ const INTRO_TEMPLATES = {
 		"Hi, I'm Amad. Let's get into {topic}.",
 	],
 	serious: [
-		"Hi, I'm Amad. A quick update on {topic}.",
-		"Hi, I'm Amad. The latest on {topic}.",
+		"Hi, I'm Amad, and here's the latest on {topic}.",
+		"Hi, I'm Amad, bringing you the latest on {topic}.",
 	],
 };
 
