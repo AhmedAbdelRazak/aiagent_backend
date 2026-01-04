@@ -82,6 +82,8 @@ const THUMBNAIL_TOPIC_MIN_BYTES = 90000;
 const THUMBNAIL_IMAGE_MIN_BYTES_PER_MPX = 9000;
 const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 8;
 const THUMBNAIL_MIN_BYTES = 12000;
+const THUMBNAIL_TEXT_EDGE_DENSITY_MIN = 0.18;
+const THUMBNAIL_TEXT_EDGE_DENSITY_STRONG = 0.24;
 const THUMBNAIL_HOOK_WORDS = [
 	"trailer",
 	"finale",
@@ -2316,6 +2318,34 @@ function samplePreviewLumaStats(filePath, region = null) {
 	}
 }
 
+function sampleEdgeDensity(filePath) {
+	const filter =
+		"scale=256:256:flags=area,edgedetect=low=0.1:high=0.4,format=gray,scale=32:32:flags=area";
+	const args = [
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-i",
+		filePath,
+		"-vf",
+		filter,
+		"-frames:v",
+		"1",
+		"-f",
+		"rawvideo",
+		"pipe:1",
+	];
+	try {
+		const buf = runFfmpegBuffer(args, "thumbnail_edge_density");
+		if (!buf || !buf.length) return null;
+		let sum = 0;
+		for (let i = 0; i < buf.length; i++) sum += buf[i];
+		return sum / buf.length / 255;
+	} catch {
+		return null;
+	}
+}
+
 function samplePreviewRgb(filePath, region = null) {
 	const w = QA_PREVIEW_WIDTH;
 	const h = QA_PREVIEW_HEIGHT;
@@ -2459,22 +2489,30 @@ async function normalizeTopicImageIfNeeded({
 }) {
 	if (!ffmpegPath) return inputPath;
 	const needsNeutralize = shouldNeutralizeTopicImage(tone);
+	const edgeDensity = sampleEdgeDensity(inputPath);
+	const textLikely =
+		Number.isFinite(edgeDensity) &&
+		edgeDensity >= THUMBNAIL_TEXT_EDGE_DENSITY_MIN;
+	const strongTextLikely =
+		Number.isFinite(edgeDensity) &&
+		edgeDensity >= THUMBNAIL_TEXT_EDGE_DENSITY_STRONG;
 	const needsSoften = shouldSoftenTopicImage({
 		byteSize,
 		width,
 		height,
 		lowQualityPenalty,
-	});
+	}) || textLikely;
 	if (!needsNeutralize && !needsSoften) return inputPath;
 	const outPath = path.join(tmpDir, `thumb_topic_norm_${jobId}_${index}.jpg`);
 	const filters = [];
 	if (needsSoften) {
 		const strongSoften =
-			Number.isFinite(lowQualityPenalty) && lowQualityPenalty >= 0.35;
+			(Number.isFinite(lowQualityPenalty) && lowQualityPenalty >= 0.35) ||
+			strongTextLikely;
 		filters.push(strongSoften ? "boxblur=3:1" : "boxblur=2:1");
 		filters.push(
 			strongSoften
-				? "eq=contrast=1.0:saturation=0.88:brightness=-0.03"
+				? "eq=contrast=0.98:saturation=0.86:brightness=-0.035"
 				: "eq=contrast=1.02:saturation=0.92:brightness=-0.015"
 		);
 	}
@@ -2510,6 +2548,9 @@ async function normalizeTopicImageIfNeeded({
 			path: path.basename(outPath),
 			bytesPerMpx: Number.isFinite(qualityBytes)
 				? Number(qualityBytes.toFixed(1))
+				: null,
+			edgeDensity: Number.isFinite(edgeDensity)
+				? Number(edgeDensity.toFixed(3))
 				: null,
 		});
 	}
@@ -3332,7 +3373,10 @@ async function renderThumbnailOverlay({
 		: "";
 	const badgeScale = Number.isFinite(Number(overlayOptions.badgeScale))
 		? clampNumber(Number(overlayOptions.badgeScale), 0.7, 1.2)
-		: 0.9;
+		: 0.82;
+	const badgeOpacity = Number.isFinite(Number(overlayOptions.badgeOpacity))
+		? clampNumber(Number(overlayOptions.badgeOpacity), 0.55, 0.92)
+		: 0.8;
 	const sublineRaw =
 		typeof overlayOptions.sublineText === "string"
 			? overlayOptions.sublineText.trim()
@@ -3529,7 +3573,9 @@ async function renderThumbnailOverlay({
 		filters.push(
 			`drawtext=textfile='${escapeDrawtext(
 				badgeFilePath
-			)}'${fontFile}:fontsize=${badgeFontSize}:fontcolor=white:box=1:boxcolor=${accentColor}@0.85:boxborderw=${badgeBorder}:shadowcolor=black@0.35:shadowx=1:shadowy=1:x=w*${THUMBNAIL_BADGE_X_PCT}:y=h*${THUMBNAIL_BADGE_Y_PCT}`
+			)}'${fontFile}:fontsize=${badgeFontSize}:fontcolor=white:box=1:boxcolor=${accentColor}@${badgeOpacity.toFixed(
+				2
+			)}:boxborderw=${badgeBorder}:shadowcolor=black@0.35:shadowx=1:shadowy=1:x=w*${THUMBNAIL_BADGE_X_PCT}:y=h*${THUMBNAIL_BADGE_Y_PCT}`
 		);
 	}
 	if (hasText) {
@@ -4984,7 +5030,8 @@ async function generateThumbnailPackage({
 	const variantAOverlayOptions = {
 		maxWords: primaryMaxWords,
 		badgeText,
-		badgeScale: 0.9,
+		badgeScale: 0.82,
+		badgeOpacity: 0.8,
 		focusRing: shouldFocusRing,
 		...sublineOptions,
 	};
@@ -4995,7 +5042,8 @@ async function generateThumbnailPackage({
 		panelOpacity: THUMBNAIL_VARIANT_B_PANEL_PCT,
 		textBoxOpacity: THUMBNAIL_VARIANT_B_TEXT_BOX_PCT,
 		badgeText,
-		badgeScale: 0.9,
+		badgeScale: 0.82,
+		badgeOpacity: 0.8,
 		focusRing: shouldFocusRing,
 		...sublineOptions,
 	};
