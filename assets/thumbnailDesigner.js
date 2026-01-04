@@ -25,7 +25,7 @@ const RUNWAY_THUMBNAIL_RATIO = "1920:1080";
 const MAX_INPUT_IMAGES = 4;
 const DEFAULT_CANVAS_WIDTH = 1280;
 const DEFAULT_CANVAS_HEIGHT = 720;
-const LEFT_PANEL_PCT = 0.48;
+const LEFT_PANEL_PCT = 0.55;
 const PANEL_MARGIN_PCT = 0.035;
 const PRESENTER_OVERLAP_PCT = 0.06;
 
@@ -34,8 +34,8 @@ const THUMBNAIL_WIDTH = 1280;
 const THUMBNAIL_HEIGHT = 720;
 const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
-const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.42;
-const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.1;
+const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.55;
+const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.06;
 const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.18;
 const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.38;
 const THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS = 3;
@@ -82,6 +82,7 @@ const THUMBNAIL_TOPIC_MIN_BYTES = 90000;
 const THUMBNAIL_IMAGE_MIN_BYTES_PER_MPX = 9000;
 const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 8;
 const THUMBNAIL_MIN_BYTES = 12000;
+const THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX = 26;
 const THUMBNAIL_TEXT_EDGE_DENSITY_MIN = 0.18;
 const THUMBNAIL_TEXT_EDGE_DENSITY_STRONG = 0.24;
 const THUMBNAIL_HOOK_WORDS = [
@@ -2318,9 +2319,18 @@ function samplePreviewLumaStats(filePath, region = null) {
 	}
 }
 
-function sampleEdgeDensity(filePath) {
+function sampleEdgeDensity(filePath, region = null) {
+	let crop = "";
+	if (region) {
+		const rx = Math.max(0, Math.round(region.x || 0));
+		const ry = Math.max(0, Math.round(region.y || 0));
+		const rw = Math.max(1, Math.round(region.w || 1));
+		const rh = Math.max(1, Math.round(region.h || 1));
+		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
+	}
 	const filter =
-		"scale=256:256:flags=area,edgedetect=low=0.1:high=0.4,format=gray,scale=32:32:flags=area";
+		`${crop}scale=256:256:flags=area,` +
+		"edgedetect=low=0.1:high=0.4,format=gray,scale=32:32:flags=area";
 	const args = [
 		"-hide_banner",
 		"-loglevel",
@@ -2496,12 +2506,13 @@ async function normalizeTopicImageIfNeeded({
 	const strongTextLikely =
 		Number.isFinite(edgeDensity) &&
 		edgeDensity >= THUMBNAIL_TEXT_EDGE_DENSITY_STRONG;
-	const needsSoften = shouldSoftenTopicImage({
-		byteSize,
-		width,
-		height,
-		lowQualityPenalty,
-	}) || textLikely;
+	const needsSoften =
+		shouldSoftenTopicImage({
+			byteSize,
+			width,
+			height,
+			lowQualityPenalty,
+		}) || textLikely;
 	if (!needsNeutralize && !needsSoften) return inputPath;
 	const outPath = path.join(tmpDir, `thumb_topic_norm_${jobId}_${index}.jpg`);
 	const filters = [];
@@ -2789,11 +2800,12 @@ async function composeThumbnailBase({
 	const panelCount = topics.length;
 	const hasSinglePanel = panelCount === 1;
 	const panelMargin = hasSinglePanel ? 0 : margin;
-	const topPad = hasSinglePanel
-		? 0
-		: panelCount === 1
-		? Math.round(H * 0.22)
-		: 0;
+	const singleTopPad = clampNumber(
+		THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX,
+		18,
+		Math.round(H * 0.06)
+	);
+	const topPad = hasSinglePanel ? Math.round(singleTopPad) : 0;
 	const panelW = makeEven(Math.max(2, leftW - panelMargin * 2));
 	const panelH =
 		panelCount > 1
@@ -3377,6 +3389,16 @@ async function renderThumbnailOverlay({
 	const badgeOpacity = Number.isFinite(Number(overlayOptions.badgeOpacity))
 		? clampNumber(Number(overlayOptions.badgeOpacity), 0.55, 0.92)
 		: 0.8;
+	const textMaskOpacity = Number.isFinite(
+		Number(overlayOptions.textMaskOpacity)
+	)
+		? clampNumber(Number(overlayOptions.textMaskOpacity), 0, 0.6)
+		: 0;
+	const textMaskHeightPct = Number.isFinite(
+		Number(overlayOptions.textMaskHeightPct)
+	)
+		? clampNumber(Number(overlayOptions.textMaskHeightPct), 0.2, 0.7)
+		: 0.45;
 	const sublineRaw =
 		typeof overlayOptions.sublineText === "string"
 			? overlayOptions.sublineText.trim()
@@ -3538,6 +3560,15 @@ async function renderThumbnailOverlay({
 				)}:h=ih*${liftHeight}:color=white@${featherAlpha.toFixed(3)}:t=fill`
 			);
 		}
+	}
+	if (textMaskOpacity > 0) {
+		filters.push(
+			`drawbox=x=0:y=0:w=iw*${leftPanelPct.toFixed(
+				3
+			)}:h=ih*${textMaskHeightPct.toFixed(
+				3
+			)}:color=black@${textMaskOpacity.toFixed(2)}:t=fill`
+		);
 	}
 	filters.push(
 		`drawbox=x=0:y=0:w=iw*0.2:h=ih:color=${accentColor}@0.012:t=fill`,
@@ -5153,12 +5184,44 @@ async function generateThumbnailPackage({
 				textBoxOpacity: tunedTextBoxOpacity,
 				panelOpacity: tunedPanelOpacity,
 			};
+			const textMaskHeightPct = 0.46;
+			const edgeRegion = {
+				x: 0,
+				y: 0,
+				w: Math.round(THUMBNAIL_WIDTH * tunedOverlayOptions.leftPanelPct),
+				h: Math.round(THUMBNAIL_HEIGHT * textMaskHeightPct),
+			};
+			const edgeDensity = sampleEdgeDensity(baseImage, edgeRegion);
+			let textMaskOpacity = 0;
+			if (
+				Number.isFinite(edgeDensity) &&
+				edgeDensity >= THUMBNAIL_TEXT_EDGE_DENSITY_STRONG
+			) {
+				textMaskOpacity = 0.26;
+			} else if (
+				Number.isFinite(edgeDensity) &&
+				edgeDensity >= THUMBNAIL_TEXT_EDGE_DENSITY_MIN
+			) {
+				textMaskOpacity = 0.2;
+			}
+			if (textMaskOpacity > 0 && log) {
+				log("thumbnail text mask applied", {
+					variant: variant.key,
+					edgeDensity: Number(edgeDensity.toFixed(3)),
+					opacity: textMaskOpacity,
+				});
+			}
+			const finalOverlayOptions = {
+				...tunedOverlayOptions,
+				textMaskOpacity,
+				textMaskHeightPct,
+			};
 			await renderThumbnailOverlay({
 				inputPath: baseImage,
 				outputPath: finalPath,
 				title: variant.title,
 				accentColor: stylePlan.accent,
-				overlayOptions: tunedOverlayOptions,
+				overlayOptions: finalOverlayOptions,
 			});
 			ensureThumbnailFile(finalPath);
 			const headlineStats = samplePreviewLumaStats(
