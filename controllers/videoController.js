@@ -4781,6 +4781,356 @@ async function fetchHighQualityImagesForTopic({
 	return sliced;
 }
 
+function shortPhrase(text = "", maxWords = 6) {
+	const cleaned = cleanAnchorCandidate(text);
+	if (!cleaned) return "";
+	const words = cleaned.split(/\s+/).filter(Boolean);
+	const limit = Math.max(1, Number(maxWords) || 1);
+	return words.slice(0, limit).join(" ");
+}
+
+function extractSegmentImageTokens({
+	segmentText = "",
+	overlayText = "",
+	topicTokens = [],
+	maxTokens = 4,
+} = {}) {
+	const limit = Math.max(1, Number(maxTokens) || 1);
+	const baseTokens = tokenizeLabel(`${overlayText} ${segmentText}`);
+	const topicSet = new Set(normalizeTopicTokens(topicTokens));
+	const filtered = baseTokens.filter(
+		(t) => !TOPIC_STOP_WORDS.has(t) && !GENERIC_TOPIC_TOKENS.has(t)
+	);
+	const specific = filtered.filter((t) => !topicSet.has(t));
+	const picked = uniqueStrings(specific.length ? specific : filtered, {
+		limit,
+	});
+	if (picked.length) return picked;
+	return filterSpecificTopicTokens(topicTokens).slice(0, limit);
+}
+
+function buildSegmentAnchorPhrases({
+	segmentText = "",
+	overlayText = "",
+	anchor = "",
+	maxPhrases = 6,
+} = {}) {
+	const phrases = [];
+	const overlay = cleanAnchorCandidate(overlayText);
+	if (overlay) phrases.push(overlay);
+	const scriptPhrase = shortPhrase(segmentText, 6);
+	if (scriptPhrase) phrases.push(scriptPhrase);
+	const anchorPhrase = cleanAnchorCandidate(anchor);
+	if (anchorPhrase) phrases.push(anchorPhrase);
+	const limit = Math.max(1, Number(maxPhrases) || 1);
+	return normalizeAnchorPhrases(phrases, limit);
+}
+
+function buildSegmentImageQueryVariants({
+	segmentText = "",
+	overlayText = "",
+	topic = "",
+	anchor = "",
+	segmentTokens = [],
+	maxVariants = 4,
+} = {}) {
+	const limit = Math.max(1, Number(maxVariants) || 1);
+	const variants = [];
+	const push = (raw) => {
+		const cleaned = sanitizeImageQuery(raw);
+		if (cleaned) variants.push(cleaned);
+	};
+	const anchorText = cleanAnchorCandidate(anchor || topic || "");
+	const tokenPhrase =
+		Array.isArray(segmentTokens) && segmentTokens.length
+			? segmentTokens.join(" ")
+			: "";
+	const overlayPhrase = shortPhrase(overlayText, 6);
+	const scriptPhrase = shortPhrase(segmentText, 6);
+
+	if (anchorText && tokenPhrase) push(`${anchorText} ${tokenPhrase}`);
+	if (anchorText && overlayPhrase) push(`${anchorText} ${overlayPhrase}`);
+	if (anchorText && !overlayPhrase && scriptPhrase)
+		push(`${anchorText} ${scriptPhrase}`);
+	if (topic && topic !== anchorText && tokenPhrase)
+		push(`${topic} ${tokenPhrase}`);
+	if (topic && topic !== anchorText && (overlayPhrase || scriptPhrase))
+		push(`${topic} ${overlayPhrase || scriptPhrase}`);
+	if (!variants.length && anchorText) push(anchorText);
+	if (!variants.length && topic) push(topic);
+
+	return uniqueStrings(variants, { limit });
+}
+
+function pickSegmentImageUrl(
+	candidates = [],
+	usedUrlKeys = new Set(),
+	usedHosts = new Set()
+) {
+	if (!Array.isArray(candidates) || !candidates.length) return "";
+
+	const pick = (skipHosts) => {
+		for (const url of candidates) {
+			if (!url || typeof url !== "string") continue;
+			const key = normalizeImageKey(url);
+			if (usedUrlKeys && usedUrlKeys.has(key)) continue;
+			if (skipHosts && usedHosts) {
+				try {
+					const host = new URL(url).hostname
+						.toLowerCase()
+						.replace(/^www\./, "");
+					if (host && usedHosts.has(host)) continue;
+				} catch {
+					// ignore host parse failures
+				}
+			}
+			return url;
+		}
+		return "";
+	};
+
+	return pick(true) || pick(false) || candidates[0] || "";
+}
+
+async function prepareSegmentImagePairsForShorts({
+	segments = [],
+	topic = "",
+	trendStory = null,
+	ratio,
+	trendImagePairs = [],
+	topicIntent = null,
+	allowRunwaySegments = false,
+	hadPlanImages = false,
+} = {}) {
+	if (!Array.isArray(segments) || !segments.length)
+		return { segments, trendImagePairs };
+
+	const safeSegments = segments.map((s) => ({ ...s }));
+	const hasCse = canUseGoogleSearch();
+	const googleImagesFallback = buildGoogleImagesApiCandidates().length > 0;
+	console.log("[Shorts] segment image refinement start", {
+		segments: safeSegments.length,
+		hasCse,
+		googleImagesFallback,
+		hadPlanImages,
+		allowRunwaySegments,
+	});
+	const pairs = Array.isArray(trendImagePairs) ? trendImagePairs.slice() : [];
+	const urlToIndex = new Map();
+	const usedUrlKeys = new Set();
+	const usedHosts = new Set();
+
+	const addUsed = (url) => {
+		if (!url || typeof url !== "string") return;
+		const key = normalizeImageKey(url);
+		usedUrlKeys.add(key);
+		try {
+			const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+			if (host) usedHosts.add(host);
+		} catch {
+			// ignore host parse failures
+		}
+	};
+
+	pairs.forEach((p, idx) => {
+		const raw = p?.originalUrl || p?.cloudinaryUrl || "";
+		if (!raw) return;
+		const key = normalizeImageKey(raw);
+		if (!urlToIndex.has(key)) urlToIndex.set(key, idx);
+		addUsed(raw);
+	});
+
+	const storyTokens = collectStoryTokens(topic, trendStory);
+	const filteredTokens = filterSpecificTopicTokens(storyTokens);
+	const topicTokens = filteredTokens.length ? filteredTokens : storyTokens;
+	const anchor = cleanAnchorCandidate(
+		topicIntent?.anchor ||
+			trendStory?.trendSearchTerm ||
+			trendStory?.title ||
+			topic ||
+			""
+	);
+	const articleLinks = Array.isArray(trendStory?.articles)
+		? trendStory.articles.map((a) => a.url).filter(Boolean)
+		: [];
+	const negativeTitleRe =
+		/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i;
+	const queryCache = new Map();
+	const maxNewPairs = Math.min(safeSegments.length, 10);
+	let addedPairs = 0;
+	const skipRunwaySegments = allowRunwaySegments && hadPlanImages;
+	const forceStaticOnRunwaySegments = allowRunwaySegments && !hadPlanImages;
+	const stats = {
+		segmentsTotal: safeSegments.length,
+		segmentsEvaluated: 0,
+		skippedRunwaySegments: 0,
+		forcedStaticSegments: 0,
+		reusedPairs: 0,
+		newUploads: 0,
+		noCandidates: 0,
+		noPick: 0,
+	};
+
+	for (let i = 0; i < safeSegments.length; i++) {
+		if (skipRunwaySegments && i < 2) {
+			stats.skippedRunwaySegments += 1;
+			continue;
+		}
+		const seg = safeSegments[i];
+		if (forceStaticOnRunwaySegments && i < 2) {
+			seg.forceStatic = true;
+			stats.forcedStaticSegments += 1;
+		}
+
+		stats.segmentsEvaluated += 1;
+		const segmentTokens = extractSegmentImageTokens({
+			segmentText: seg.scriptText || "",
+			overlayText: seg.overlayText || "",
+			topicTokens,
+			maxTokens: 4,
+		});
+		const segmentAnchors = buildSegmentAnchorPhrases({
+			segmentText: seg.scriptText || "",
+			overlayText: seg.overlayText || "",
+			anchor,
+			maxPhrases: 6,
+		});
+		const queryVariants = buildSegmentImageQueryVariants({
+			segmentText: seg.scriptText || "",
+			overlayText: seg.overlayText || "",
+			topic,
+			anchor,
+			segmentTokens,
+			maxVariants: 4,
+		});
+
+		if (!queryVariants.length) continue;
+		console.log("[Shorts] segment image search", {
+			segment: seg.index || i + 1,
+			queries: queryVariants.slice(0, 3),
+			queryCount: queryVariants.length,
+			segmentTokens,
+		});
+
+		let candidates = [];
+		for (const q of queryVariants) {
+			const cacheKey = q.toLowerCase();
+			let urls = queryCache.get(cacheKey);
+			if (!urls) {
+				urls = await fetchHighQualityImagesForTopic({
+					topic: q,
+					ratio,
+					articleLinks,
+					desiredCount: 6,
+					limit: 14,
+					topicTokens,
+					requireAnyToken: topicTokens.length > 0,
+					negativeTitleRe,
+					strictTopicMatch: topicTokens.length > 0,
+					phraseAnchors: segmentAnchors,
+					requireAnchorPhrase: false,
+				});
+				queryCache.set(cacheKey, urls);
+			}
+			candidates.push(...(urls || []));
+		}
+
+		candidates = dedupeImageUrls(candidates, 18);
+		if (segmentTokens.length) {
+			candidates = prioritizeTokenMatchedUrls(candidates, segmentTokens);
+		}
+		if (!candidates.length) {
+			stats.noCandidates += 1;
+			console.log("[Shorts] segment image candidates empty", {
+				segment: seg.index || i + 1,
+			});
+			continue;
+		}
+		console.log("[Shorts] segment image candidates", {
+			segment: seg.index || i + 1,
+			total: candidates.length,
+		});
+
+		let assignedIndex = null;
+		for (const url of candidates) {
+			const key = normalizeImageKey(url);
+			if (urlToIndex.has(key)) {
+				assignedIndex = urlToIndex.get(key);
+				seg.imageIndex = assignedIndex;
+				seg.referenceImageUrl = pairs[assignedIndex]?.originalUrl || url;
+				addUsed(url);
+				stats.reusedPairs += 1;
+				console.log("[Shorts] segment image reuse", {
+					segment: seg.index || i + 1,
+					imageIndex: assignedIndex,
+				});
+				break;
+			}
+		}
+		if (assignedIndex !== null) continue;
+
+		const picked = pickSegmentImageUrl(candidates, usedUrlKeys, usedHosts);
+		if (!picked || addedPairs >= maxNewPairs) {
+			stats.noPick += 1;
+			if (!picked) {
+				console.log("[Shorts] segment image pick failed", {
+					segment: seg.index || i + 1,
+				});
+			}
+			continue;
+		}
+
+		try {
+			const up = await uploadTrendImageToCloudinary(
+				picked,
+				ratio,
+				`aivideomatic/trend_seeds/${safeSlug(topic || "shorts", 32)}_seg_${
+					seg.index || i + 1
+				}`
+			);
+			pairs.push({ originalUrl: picked, cloudinaryUrl: up.url });
+			const newIdx = pairs.length - 1;
+			urlToIndex.set(normalizeImageKey(picked), newIdx);
+			seg.imageIndex = newIdx;
+			seg.referenceImageUrl = picked;
+			addUsed(picked);
+			addedPairs += 1;
+			stats.newUploads += 1;
+			console.log("[Shorts] segment image attached", {
+				segment: seg.index || i + 1,
+				query: queryVariants[0] || "",
+			});
+		} catch (e) {
+			console.warn("[Shorts] segment image upload failed", {
+				segment: seg.index || i + 1,
+				error: e.message,
+			});
+		}
+	}
+
+	if (pairs.length) {
+		let rr = 0;
+		for (let i = 0; i < safeSegments.length; i++) {
+			const seg = safeSegments[i];
+			const hasValid =
+				Number.isInteger(seg.imageIndex) &&
+				seg.imageIndex >= 0 &&
+				seg.imageIndex < pairs.length;
+			if (hasValid) continue;
+			if (skipRunwaySegments && i < 2 && hadPlanImages) continue;
+			seg.imageIndex = rr % pairs.length;
+			rr += 1;
+		}
+	}
+
+	console.log("[Shorts] segment image refinement summary", {
+		...stats,
+		finalPairs: pairs.length,
+	});
+
+	return { segments: safeSegments, trendImagePairs: pairs };
+}
+
 async function fetchTop5ImagePool(outline = [], topic = "", ratio = null) {
 	if (!canUseGoogleSearch()) {
 		console.warn(
@@ -7834,6 +8184,7 @@ exports.createVideo = async (req, res) => {
 		}
 
 		let hasTrendImages = trendImagePairs.length > 0;
+		const hadPlanImages = hasTrendImages;
 		if (requireScheduledTrends && !hasTrendImages) {
 			throw new Error(
 				"Scheduled run requires topic images; none were found or uploadable"
@@ -7962,6 +8313,21 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 				articleText: trendArticleText,
 				anchor: topicIntent?.anchor || topic,
 			});
+		}
+		if (category !== "Top5" && allowTrendsImageSearch) {
+			const refined = await prepareSegmentImagePairsForShorts({
+				segments,
+				topic,
+				trendStory,
+				ratio,
+				trendImagePairs,
+				topicIntent,
+				allowRunwaySegments: useSora && !forceStaticVisuals,
+				hadPlanImages,
+			});
+			segments = refined.segments;
+			trendImagePairs = refined.trendImagePairs;
+			hasTrendImages = trendImagePairs.length > 0;
 		}
 
 		if (segments.length) {
@@ -8497,7 +8863,8 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 				allowRunway &&
 				hasTrendImages &&
 				seg.imageIndex !== null &&
-				(category === "Top5" || i < 2);
+				(category === "Top5" || i < 2) &&
+				!seg.forceStatic;
 
 			console.log(
 				`[Seg ${segIndex}/${segCnt}] targetDuration=${d.toFixed(
