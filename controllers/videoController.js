@@ -609,6 +609,133 @@ const TOPIC_STOP_WORDS = new Set([
 	"5",
 ]);
 
+const SEGMENT_STOP_WORDS = new Set([
+	"a",
+	"an",
+	"the",
+	"and",
+	"or",
+	"but",
+	"if",
+	"so",
+	"because",
+	"as",
+	"at",
+	"by",
+	"for",
+	"from",
+	"in",
+	"into",
+	"like",
+	"near",
+	"of",
+	"on",
+	"onto",
+	"over",
+	"per",
+	"to",
+	"up",
+	"with",
+	"without",
+	"i",
+	"me",
+	"my",
+	"mine",
+	"we",
+	"us",
+	"our",
+	"ours",
+	"you",
+	"your",
+	"yours",
+	"he",
+	"him",
+	"his",
+	"she",
+	"her",
+	"hers",
+	"they",
+	"them",
+	"their",
+	"theirs",
+	"it",
+	"its",
+	"this",
+	"that",
+	"these",
+	"those",
+	"is",
+	"are",
+	"was",
+	"were",
+	"be",
+	"been",
+	"being",
+	"am",
+	"do",
+	"does",
+	"did",
+	"doing",
+	"done",
+	"have",
+	"has",
+	"had",
+	"having",
+	"will",
+	"would",
+	"can",
+	"could",
+	"should",
+	"may",
+	"might",
+	"must",
+	"now",
+	"today",
+	"tonight",
+	"here",
+	"there",
+	"really",
+	"very",
+	"just",
+	"still",
+	"even",
+	"only",
+	"almost",
+	"about",
+	"around",
+	"more",
+	"most",
+	"big",
+	"huge",
+	"massive",
+	"wild",
+	"crazy",
+	"insane",
+	"see",
+	"seen",
+	"sees",
+	"look",
+	"looks",
+	"looking",
+	"feel",
+	"feels",
+	"felt",
+	"say",
+	"says",
+	"said",
+	"tell",
+	"tells",
+	"told",
+	"watch",
+	"watching",
+	"know",
+	"knows",
+	"known",
+	"think",
+	"thinks",
+	"thought",
+]);
+
 const GENERIC_TOPIC_TOKENS = new Set([
 	"celebrity",
 	"celeb",
@@ -4418,39 +4545,223 @@ async function fetchTop5LiveContext(outline = [], topic = "") {
 	return ctx;
 }
 
-async function fetchLiveContextForTopic(topic = "", limit = 3) {
-	if (!canUseGoogleSearch() || !topic) return [];
-	const max = Math.max(1, Math.min(Number(limit) || 3, 5));
+const LIVE_CONTEXT_DATE_RESTRICTS = ["d1", "d3", "d7", null];
+const LIVE_CONTEXT_MAX_REQUESTS = 6;
+const LIVE_CONTEXT_QUERY_LIMIT = 4;
+
+function parseDateCandidate(value = "") {
+	const raw = String(value || "").trim();
+	if (!raw) return null;
+	const ts = Date.parse(raw);
+	return Number.isFinite(ts) ? ts : null;
+}
+
+function formatRecencyLabel(ts) {
+	if (!ts || !Number.isFinite(ts)) return "";
+	const now = Date.now();
+	const diffMs = Math.max(0, now - ts);
+	const diffMin = Math.floor(diffMs / 60000);
+	if (diffMin < 1) return "just now";
+	if (diffMin < 60) return `${diffMin} min ago`;
+	const diffHours = Math.floor(diffMin / 60);
+	if (diffHours < 24) return `${diffHours} hours ago`;
+	const diffDays = Math.floor(diffHours / 24);
+	if (diffDays < 7) return `${diffDays} days ago`;
+	return dayjs(ts).format("MMM D, YYYY");
+}
+
+function extractRecencyFromSnippet(text = "") {
+	const raw = String(text || "").toLowerCase();
+	if (!raw) return null;
+	const now = Date.now();
+	if (raw.includes("just now")) {
+		return { ts: now, label: "just now" };
+	}
+	if (raw.includes("today")) {
+		return { ts: now - 2 * 60 * 60 * 1000, label: "today" };
+	}
+	if (raw.includes("yesterday")) {
+		return { ts: now - 24 * 60 * 60 * 1000, label: "yesterday" };
+	}
+	const match =
+		raw.match(
+			/(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|day|days|week|weeks|month|months|year|years)\s+ago/
+		) || [];
+	if (!match.length) return null;
+	const count = Number(match[1] || 0);
+	if (!count) return null;
+	const unit = match[2] || "";
+	const unitMap = {
+		minute: 60 * 1000,
+		minutes: 60 * 1000,
+		min: 60 * 1000,
+		mins: 60 * 1000,
+		hour: 60 * 60 * 1000,
+		hours: 60 * 60 * 1000,
+		hr: 60 * 60 * 1000,
+		hrs: 60 * 60 * 1000,
+		day: 24 * 60 * 60 * 1000,
+		days: 24 * 60 * 60 * 1000,
+		week: 7 * 24 * 60 * 60 * 1000,
+		weeks: 7 * 24 * 60 * 60 * 1000,
+		month: 30 * 24 * 60 * 60 * 1000,
+		months: 30 * 24 * 60 * 60 * 1000,
+		year: 365 * 24 * 60 * 60 * 1000,
+		years: 365 * 24 * 60 * 60 * 1000,
+	};
+	const ms = unitMap[unit] || 0;
+	if (!ms) return null;
+	const ts = now - count * ms;
+	const label = `${count} ${unit.replace(/s$/, "")}${
+		count === 1 ? "" : "s"
+	} ago`;
+	return { ts, label };
+}
+
+function extractRecencyFromItem(item = {}) {
+	const meta =
+		Array.isArray(item?.pagemap?.metatags) && item.pagemap.metatags.length
+			? item.pagemap.metatags[0]
+			: {};
+	const metaCandidates = [
+		meta["article:published_time"],
+		meta["article:modified_time"],
+		meta["og:updated_time"],
+		meta["og:published_time"],
+		meta.date,
+		meta.pubdate,
+		meta.publishdate,
+		meta.timestamp,
+		meta["dc.date"],
+		meta["dc.date.issued"],
+		meta["dc.date.created"],
+	];
+	for (const cand of metaCandidates) {
+		const ts = parseDateCandidate(cand);
+		if (ts) {
+			return { ts, label: formatRecencyLabel(ts) };
+		}
+	}
+	const snippet = `${item?.snippet || ""} ${item?.title || ""}`.trim();
+	return extractRecencyFromSnippet(snippet);
+}
+
+function buildLiveContextQueries(
+	topic = "",
+	{ category = "", trendStory = null } = {}
+) {
 	const year = dayjs().format("YYYY");
-	const q = `${topic} latest news ${year}`;
+	const isSports = isSportsTopic(topic, category, trendStory);
+	const isMatchup = /\bvs\.?\b/i.test(topic);
+	const base = [
+		`${topic} latest news ${year}`,
+		`${topic} update ${year}`,
+		`${topic} today`,
+	];
+	if (isSports || isMatchup) {
+		base.unshift(`${topic} final score`, `${topic} result`, `${topic} recap`);
+	}
+	return uniqueStrings(base, { limit: LIVE_CONTEXT_QUERY_LIMIT });
+}
+
+async function fetchLiveCseItems(
+	query,
+	{ limit = 3, dateRestrict = null } = {}
+) {
+	const num = Math.max(1, Math.min(Number(limit) || 3, 10));
 	try {
+		const params = {
+			key: GOOGLE_CSE_KEY,
+			cx: GOOGLE_CSE_ID,
+			q: query,
+			num,
+			safe: "active",
+		};
+		if (dateRestrict) params.dateRestrict = dateRestrict;
 		const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
-			params: {
-				key: GOOGLE_CSE_KEY,
-				cx: GOOGLE_CSE_ID,
-				q,
-				num: max,
-				safe: "active",
-			},
+			params,
 			timeout: GOOGLE_CSE_TIMEOUT_MS,
 		});
-		const items = Array.isArray(data?.items) ? data.items : [];
-		return items
-			.slice(0, max)
-			.map((it) => ({
-				title: String(it.title || "").slice(0, 180),
-				snippet: String(it.snippet || "").slice(0, 260),
-				link: it.link || it.formattedUrl || "",
-			}))
-			.filter((it) => it.title || it.snippet || it.link);
+		return Array.isArray(data?.items) ? data.items : [];
 	} catch (e) {
 		console.warn("[LiveContext] search failed", {
-			topic,
+			query,
 			message: e.message,
 			status: e.response?.status,
 		});
 		return [];
 	}
+}
+
+async function fetchLiveContextForTopic(
+	topic = "",
+	limit = 3,
+	{ category = "", trendStory = null } = {}
+) {
+	if (!canUseGoogleSearch() || !topic) return [];
+	const max = Math.max(1, Math.min(Number(limit) || 3, 5));
+	const queries = buildLiveContextQueries(topic, { category, trendStory });
+	const collected = [];
+	let requestCount = 0;
+
+	for (const q of queries) {
+		for (const dateRestrict of LIVE_CONTEXT_DATE_RESTRICTS) {
+			if (requestCount >= LIVE_CONTEXT_MAX_REQUESTS) break;
+			requestCount += 1;
+			const items = await fetchLiveCseItems(q, {
+				limit: Math.min(6, max + 1),
+				dateRestrict,
+			});
+			if (!items.length) continue;
+			for (const it of items) {
+				const title = String(it.title || "").slice(0, 180);
+				const snippet = String(it.snippet || "").slice(0, 260);
+				const link = it.link || it.formattedUrl || "";
+				if (!title && !snippet && !link) continue;
+				const recency = extractRecencyFromItem(it);
+				collected.push({
+					title,
+					snippet,
+					link,
+					publishedAt: recency?.label || "",
+					recencyTs: recency?.ts || 0,
+					idx: collected.length,
+				});
+			}
+			if (collected.length >= max * 2) break;
+		}
+		if (collected.length >= max * 2) break;
+	}
+
+	if (!collected.length) return [];
+
+	const deduped = new Map();
+	for (const item of collected) {
+		const key = item.link || `${item.title}::${item.snippet}`;
+		if (!key) continue;
+		const existing = deduped.get(key);
+		if (!existing) {
+			deduped.set(key, item);
+			continue;
+		}
+		if ((item.recencyTs || 0) > (existing.recencyTs || 0)) {
+			deduped.set(key, item);
+		}
+	}
+
+	const ranked = Array.from(deduped.values()).sort((a, b) => {
+		if ((b.recencyTs || 0) !== (a.recencyTs || 0)) {
+			return (b.recencyTs || 0) - (a.recencyTs || 0);
+		}
+		return a.idx - b.idx;
+	});
+
+	return ranked.slice(0, max).map((it) => ({
+		title: it.title,
+		snippet: it.snippet,
+		link: it.link,
+		publishedAt: it.publishedAt || "",
+	}));
 }
 
 async function fetchOgImage(url) {
@@ -4603,6 +4914,8 @@ async function fetchHighQualityImagesForTopic({
 		};
 	};
 
+	let cseRateLimited = false;
+
 	// 1) OG images from article links
 	for (const link of articleLinks.slice(0, 8)) {
 		const og = await fetchOgImage(link);
@@ -4625,7 +4938,9 @@ async function fetchHighQualityImagesForTopic({
 		const pages = [1, 11, 21];
 
 		for (const q of queries) {
+			if (cseRateLimited) break;
 			for (const start of pages) {
+				if (cseRateLimited) break;
 				try {
 					const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
 						params: {
@@ -4678,17 +4993,31 @@ async function fetchHighQualityImagesForTopic({
 						dedupeSet.add(url);
 					}
 				} catch (e) {
+					const status = e?.response?.status;
+					if (status === 429) {
+						cseRateLimited = true;
+						console.warn("[ImageSearch] CSE throttled; stopping CSE loop", {
+							query: q,
+							start,
+						});
+						await new Promise((r) => setTimeout(r, 1200));
+						break;
+					}
 					console.warn("[ImageSearch] CSE failed", {
 						query: q,
 						start,
 						msg: e.message,
-						status: e.response?.status,
+						status,
 					});
 				}
 			}
 		}
 	} else {
 		console.warn("[ImageSearch] Google CSE disabled (missing key/cx)");
+	}
+
+	if (cseRateLimited) {
+		console.warn("[ImageSearch] CSE throttled; using fallback pools only");
 	}
 
 	if (
@@ -4789,33 +5118,78 @@ function shortPhrase(text = "", maxWords = 6) {
 	return words.slice(0, limit).join(" ");
 }
 
+function filterSegmentTokens(tokens = [], topicTokens = []) {
+	const seen = new Set();
+	const out = [];
+	const topicSet = new Set(normalizeTopicTokens(topicTokens));
+	for (const raw of Array.isArray(tokens) ? tokens : []) {
+		const tok = String(raw || "")
+			.toLowerCase()
+			.trim();
+		if (!tok || tok.length < 3) continue;
+		if (SEGMENT_STOP_WORDS.has(tok)) continue;
+		if (TOPIC_STOP_WORDS.has(tok)) continue;
+		if (GENERIC_TOPIC_TOKENS.has(tok)) continue;
+		if (seen.has(tok)) continue;
+		seen.add(tok);
+		out.push(tok);
+	}
+	const specific = out.filter((t) => !topicSet.has(t));
+	return specific.length ? specific : out;
+}
+
+function buildSegmentPrimaryPhrase({
+	segmentText = "",
+	overlayText = "",
+	visualCue = "",
+} = {}) {
+	const cue = cleanAnchorCandidate(visualCue);
+	if (cue) return cue;
+	const overlay = cleanAnchorCandidate(overlayText);
+	if (overlay) return overlay;
+	return shortPhrase(segmentText, 7);
+}
+
+function buildCategoryDisambiguator({ category = "", topicTokens = [] } = {}) {
+	const cat = String(category || "")
+		.trim()
+		.toLowerCase();
+	if (cat !== "sports") return "";
+	const tokens = normalizeTopicTokens(topicTokens);
+	if (tokens.length <= 1) return "football nfl game";
+	return "";
+}
+
 function extractSegmentImageTokens({
 	segmentText = "",
 	overlayText = "",
+	visualCue = "",
 	topicTokens = [],
 	maxTokens = 4,
+	allowTopicFallback = true,
 } = {}) {
 	const limit = Math.max(1, Number(maxTokens) || 1);
-	const baseTokens = tokenizeLabel(`${overlayText} ${segmentText}`);
-	const topicSet = new Set(normalizeTopicTokens(topicTokens));
-	const filtered = baseTokens.filter(
-		(t) => !TOPIC_STOP_WORDS.has(t) && !GENERIC_TOPIC_TOKENS.has(t)
-	);
-	const specific = filtered.filter((t) => !topicSet.has(t));
-	const picked = uniqueStrings(specific.length ? specific : filtered, {
-		limit,
-	});
-	if (picked.length) return picked;
-	return filterSpecificTopicTokens(topicTokens).slice(0, limit);
+	const ordered = [];
+	[visualCue, overlayText, segmentText]
+		.filter(Boolean)
+		.forEach((src) => ordered.push(...tokenizeLabel(src)));
+	let tokens = filterSegmentTokens(ordered, topicTokens);
+	if (!tokens.length && allowTopicFallback) {
+		tokens = filterSpecificTopicTokens(topicTokens);
+	}
+	return tokens.slice(0, limit);
 }
 
 function buildSegmentAnchorPhrases({
 	segmentText = "",
 	overlayText = "",
+	visualCue = "",
 	anchor = "",
 	maxPhrases = 6,
 } = {}) {
 	const phrases = [];
+	const cue = cleanAnchorCandidate(visualCue);
+	if (cue) phrases.push(cue);
 	const overlay = cleanAnchorCandidate(overlayText);
 	if (overlay) phrases.push(overlay);
 	const scriptPhrase = shortPhrase(segmentText, 6);
@@ -4829,9 +5203,12 @@ function buildSegmentAnchorPhrases({
 function buildSegmentImageQueryVariants({
 	segmentText = "",
 	overlayText = "",
+	visualCue = "",
 	topic = "",
 	anchor = "",
 	segmentTokens = [],
+	category = "",
+	topicTokens = [],
 	maxVariants = 4,
 } = {}) {
 	const limit = Math.max(1, Number(maxVariants) || 1);
@@ -4841,23 +5218,31 @@ function buildSegmentImageQueryVariants({
 		if (cleaned) variants.push(cleaned);
 	};
 	const anchorText = cleanAnchorCandidate(anchor || topic || "");
+	const topicText = cleanAnchorCandidate(topic || "");
+	const primaryPhrase = buildSegmentPrimaryPhrase({
+		segmentText,
+		overlayText,
+		visualCue,
+	});
 	const tokenPhrase =
 		Array.isArray(segmentTokens) && segmentTokens.length
-			? segmentTokens.join(" ")
+			? segmentTokens.slice(0, 2).join(" ")
 			: "";
-	const overlayPhrase = shortPhrase(overlayText, 6);
-	const scriptPhrase = shortPhrase(segmentText, 6);
+	const disambiguator = buildCategoryDisambiguator({ category, topicTokens });
+	const anchorWithHint =
+		anchorText && disambiguator ? `${anchorText} ${disambiguator}` : anchorText;
+	const topicWithHint =
+		topicText && disambiguator ? `${topicText} ${disambiguator}` : topicText;
 
-	if (anchorText && tokenPhrase) push(`${anchorText} ${tokenPhrase}`);
-	if (anchorText && overlayPhrase) push(`${anchorText} ${overlayPhrase}`);
-	if (anchorText && !overlayPhrase && scriptPhrase)
-		push(`${anchorText} ${scriptPhrase}`);
-	if (topic && topic !== anchorText && tokenPhrase)
-		push(`${topic} ${tokenPhrase}`);
-	if (topic && topic !== anchorText && (overlayPhrase || scriptPhrase))
-		push(`${topic} ${overlayPhrase || scriptPhrase}`);
-	if (!variants.length && anchorText) push(anchorText);
-	if (!variants.length && topic) push(topic);
+	if (anchorWithHint && primaryPhrase)
+		push(`${anchorWithHint} ${primaryPhrase}`);
+	if (anchorWithHint && tokenPhrase) push(`${anchorWithHint} ${tokenPhrase}`);
+	if (topicWithHint && primaryPhrase && topicWithHint !== anchorWithHint)
+		push(`${topicWithHint} ${primaryPhrase}`);
+	if (topicWithHint && tokenPhrase && topicWithHint !== anchorWithHint)
+		push(`${topicWithHint} ${tokenPhrase}`);
+	if (!variants.length && anchorWithHint) push(anchorWithHint);
+	if (!variants.length && topicWithHint) push(topicWithHint);
 
 	return uniqueStrings(variants, { limit });
 }
@@ -4895,6 +5280,7 @@ function pickSegmentImageUrl(
 async function prepareSegmentImagePairsForShorts({
 	segments = [],
 	topic = "",
+	category = "",
 	trendStory = null,
 	ratio,
 	trendImagePairs = [],
@@ -4919,6 +5305,17 @@ async function prepareSegmentImagePairsForShorts({
 	const urlToIndex = new Map();
 	const usedUrlKeys = new Set();
 	const usedHosts = new Set();
+	const usedIndexes = new Set();
+
+	for (const seg of safeSegments) {
+		if (
+			Number.isInteger(seg?.imageIndex) &&
+			seg.imageIndex >= 0 &&
+			seg.imageIndex < pairs.length
+		) {
+			usedIndexes.add(seg.imageIndex);
+		}
+	}
 
 	const addUsed = (url) => {
 		if (!url || typeof url !== "string") return;
@@ -4969,6 +5366,7 @@ async function prepareSegmentImagePairsForShorts({
 		newUploads: 0,
 		noCandidates: 0,
 		noPick: 0,
+		guardFiltered: 0,
 	};
 
 	for (let i = 0; i < safeSegments.length; i++) {
@@ -4986,21 +5384,34 @@ async function prepareSegmentImagePairsForShorts({
 		const segmentTokens = extractSegmentImageTokens({
 			segmentText: seg.scriptText || "",
 			overlayText: seg.overlayText || "",
+			visualCue: seg.visualCue || "",
 			topicTokens,
 			maxTokens: 4,
+		});
+		const segmentGuardTokens = extractSegmentImageTokens({
+			segmentText: seg.scriptText || "",
+			overlayText: seg.overlayText || "",
+			visualCue: seg.visualCue || "",
+			topicTokens,
+			maxTokens: 3,
+			allowTopicFallback: false,
 		});
 		const segmentAnchors = buildSegmentAnchorPhrases({
 			segmentText: seg.scriptText || "",
 			overlayText: seg.overlayText || "",
+			visualCue: seg.visualCue || "",
 			anchor,
 			maxPhrases: 6,
 		});
 		const queryVariants = buildSegmentImageQueryVariants({
 			segmentText: seg.scriptText || "",
 			overlayText: seg.overlayText || "",
+			visualCue: seg.visualCue || "",
 			topic,
 			anchor,
 			segmentTokens,
+			category,
+			topicTokens,
 			maxVariants: 4,
 		});
 
@@ -5010,6 +5421,7 @@ async function prepareSegmentImagePairsForShorts({
 			queries: queryVariants.slice(0, 3),
 			queryCount: queryVariants.length,
 			segmentTokens,
+			visualCue: seg.visualCue || "",
 		});
 
 		let candidates = [];
@@ -5039,6 +5451,21 @@ async function prepareSegmentImagePairsForShorts({
 		if (segmentTokens.length) {
 			candidates = prioritizeTokenMatchedUrls(candidates, segmentTokens);
 		}
+		if (segmentGuardTokens.length >= 2) {
+			const gated = candidates.filter((url) => {
+				const fields = [url];
+				try {
+					fields.push(decodeURIComponent(url));
+				} catch {
+					// ignore decode errors
+				}
+				return topicMatchInfo(segmentGuardTokens, fields).count >= 1;
+			});
+			if (gated.length >= 3) {
+				candidates = gated;
+				stats.guardFiltered += 1;
+			}
+		}
 		if (!candidates.length) {
 			stats.noCandidates += 1;
 			console.log("[Shorts] segment image candidates empty", {
@@ -5052,20 +5479,38 @@ async function prepareSegmentImagePairsForShorts({
 		});
 
 		let assignedIndex = null;
+		let assignedUrl = "";
+		let fallbackIndex = null;
+		let fallbackUrl = "";
 		for (const url of candidates) {
 			const key = normalizeImageKey(url);
 			if (urlToIndex.has(key)) {
-				assignedIndex = urlToIndex.get(key);
-				seg.imageIndex = assignedIndex;
-				seg.referenceImageUrl = pairs[assignedIndex]?.originalUrl || url;
-				addUsed(url);
-				stats.reusedPairs += 1;
-				console.log("[Shorts] segment image reuse", {
-					segment: seg.index || i + 1,
-					imageIndex: assignedIndex,
-				});
-				break;
+				const idx = urlToIndex.get(key);
+				if (!usedIndexes.has(idx)) {
+					assignedIndex = idx;
+					assignedUrl = url;
+					break;
+				}
+				if (fallbackIndex === null) {
+					fallbackIndex = idx;
+					fallbackUrl = url;
+				}
 			}
+		}
+		if (assignedIndex === null && fallbackIndex !== null) {
+			assignedIndex = fallbackIndex;
+			assignedUrl = fallbackUrl;
+		}
+		if (assignedIndex !== null) {
+			seg.imageIndex = assignedIndex;
+			seg.referenceImageUrl = pairs[assignedIndex]?.originalUrl || assignedUrl;
+			addUsed(assignedUrl);
+			usedIndexes.add(assignedIndex);
+			stats.reusedPairs += 1;
+			console.log("[Shorts] segment image reuse", {
+				segment: seg.index || i + 1,
+				imageIndex: assignedIndex,
+			});
 		}
 		if (assignedIndex !== null) continue;
 
@@ -5094,6 +5539,7 @@ async function prepareSegmentImagePairsForShorts({
 			seg.imageIndex = newIdx;
 			seg.referenceImageUrl = picked;
 			addUsed(picked);
+			usedIndexes.add(newIdx);
 			addedPairs += 1;
 			stats.newUploads += 1;
 			console.log("[Shorts] segment image attached", {
@@ -5110,6 +5556,10 @@ async function prepareSegmentImagePairsForShorts({
 
 	if (pairs.length) {
 		let rr = 0;
+		const available = Array.from(
+			{ length: pairs.length },
+			(_, idx) => idx
+		).filter((idx) => !usedIndexes.has(idx));
 		for (let i = 0; i < safeSegments.length; i++) {
 			const seg = safeSegments[i];
 			const hasValid =
@@ -5118,7 +5568,9 @@ async function prepareSegmentImagePairsForShorts({
 				seg.imageIndex < pairs.length;
 			if (hasValid) continue;
 			if (skipRunwaySegments && i < 2 && hadPlanImages) continue;
-			seg.imageIndex = rr % pairs.length;
+			const pick = available.length > 0 ? available.shift() : rr % pairs.length;
+			seg.imageIndex = pick;
+			usedIndexes.add(pick);
 			rr += 1;
 		}
 	}
@@ -7250,6 +7702,24 @@ async function buildVideoPlanWithGPT({
 	const top5Context = Array.isArray(top5LiveContext) ? top5LiveContext : [];
 	const liveImages = Array.isArray(top5ImagePool) ? top5ImagePool : [];
 	const liveTopicContext = Array.isArray(liveWebContext) ? liveWebContext : [];
+	const formatLiveContextLine = (item) => {
+		const title = String(item?.title || "").slice(0, 160);
+		const snippet = String(item?.snippet || "").slice(0, 200);
+		const publishedAt = String(
+			item?.publishedAt || item?.timeLabel || item?.published || ""
+		).trim();
+		const timeSuffix = publishedAt ? ` (${publishedAt})` : "";
+		if (title && snippet) return `- ${title} - ${snippet}${timeSuffix}`;
+		if (title) return `- ${title}${timeSuffix}`;
+		if (snippet) return `- ${snippet}${timeSuffix}`;
+		return "";
+	};
+	const liveContextLines = liveTopicContext.length
+		? liveTopicContext
+				.map((item) => formatLiveContextLine(item))
+				.filter(Boolean)
+				.join("\n")
+		: "- (no live context available)";
 	const topicIntent = buildShortsTopicIntentSummary({
 		topic,
 		trendStory,
@@ -7332,6 +7802,7 @@ Narration rules:
 - All core narration (intro + content) must fit inside the requested ${duration}s; outro sits on top with a tiny buffer so it never truncates mid-sentence.
 - Use the provided article headlines/snippets as your source of truth; if something is unconfirmed, state that instead of inventing details. Stay timely to the trend.
 - If live web context is provided below, prioritize it for the freshest details; if it conflicts with other sources, note it as unconfirmed.
+- If live context shows the event already happened or a result is known, use past tense and state the outcome; do NOT predict outcomes that already happened.
 - Give each segment one concrete, visual detail or comparison that makes the scene easy to picture.
 - Stay accurate; do NOT invent fake scores, injuries, or quotes.
 - No "In this video" filler; keep like/subscribe wording ONLY in the final engagement segment.
@@ -7387,20 +7858,7 @@ Article text snippet (may be truncated):
 ${snippet || "(no article text available)"}
 
 Latest live web context (use for the freshest details; if it conflicts, call it unconfirmed):
-${
-	liveTopicContext.length
-		? liveTopicContext
-				.map(
-					(item) =>
-						`- ${String(item.title || "").slice(0, 160)}${
-							item.snippet
-								? " - " + String(item.snippet || "").slice(0, 200)
-								: ""
-						}`
-				)
-				.join("\n")
-		: "- (no live context available)"
-}
+${liveContextLines}
 
 Image notes for the orchestrator:
 - General comment about what the lead image depicts: ${
@@ -7431,13 +7889,14 @@ but it is still the same real shot and real people.
 Your job:
 1) Write the voice-over script for each segment.
 2) Decide which imageIndex to animate for each segment.
-3) ${
+3) For each segment, provide a short "visualCue" (4-8 words) describing the most visible subject/action for image search; it can include proper names or team names if that improves matching.
+4) ${
 			forceStaticVisuals
 				? "We will only use static photos with gentle camera movement (no AI video generation)."
 				: 'For each segment, write one concise "runwayPrompt" telling a video model how to animate THAT exact real photo.'
 		}
-4) For each segment, also write a "negativePrompt" listing visual problems the video model must avoid.
-5) ${runwayAnimationNote}
+5) For each segment, also write a "negativePrompt" listing visual problems the video model must avoid.
+6) ${runwayAnimationNote}
 
 Critical visual rules:
 - The model ALREADY SEES the real Google Trends photo. "runwayPrompt" describes motion and subtle, realistic changes.
@@ -7475,6 +7934,7 @@ Return JSON:
     {
       "index": 1,
       "scriptText": "spoken narration",
+      "visualCue": "short visual search phrase",
       "imageIndex": 0,
       "runwayPrompt": "how to animate that attached photo",
       "negativePrompt": "comma-separated list of defects to avoid"
@@ -7592,24 +8052,12 @@ ${baseIntro}
 No reliable Google Trends images are available.
 
 Latest live web context (use for the freshest details; if it conflicts, call it unconfirmed):
-${
-	liveTopicContext.length
-		? liveTopicContext
-				.map(
-					(item) =>
-						`- ${String(item.title || "").slice(0, 160)}${
-							item.snippet
-								? " - " + String(item.snippet || "").slice(0, 200)
-								: ""
-						}`
-				)
-				.join("\n")
-		: "- (no live context available)"
-}
+${liveContextLines}
 
 You must imagine the visuals from scratch. For each segment output:
 - "index"
 - "scriptText"
+- "visualCue": 4-8 word search phrase describing the main visual (can include proper names/teams if helpful)
 - "runwayPrompt"
 - "negativePrompt"
 - ${runwayAnimationNote}
@@ -7631,7 +8079,7 @@ Visual rules:
 Return JSON:
 {
   "segments": [
-    { "index": 1, "scriptText": "...", "runwayPrompt": "...", "negativePrompt": "..." },
+    { "index": 1, "scriptText": "...", "visualCue": "...", "runwayPrompt": "...", "negativePrompt": "..." },
     ...
   ]
 }
@@ -7676,6 +8124,9 @@ Return JSON:
 		return {
 			index: typeof s.index === "number" ? s.index : idx + 1,
 			scriptText: String(s.scriptText || "").trim(),
+			visualCue: String(
+				s.visualCue || s.imageCue || s.visual || s.cue || ""
+			).trim(),
 			runwayPrompt,
 			runwayNegativePrompt: negativePromptRaw,
 			overlayText: String(s.overlayText || s.overlay || "").trim(),
@@ -7973,7 +8424,10 @@ exports.createVideo = async (req, res) => {
 			);
 		}
 		if (category !== "Top5" && topic && canUseGoogleSearch()) {
-			liveWebContext = await fetchLiveContextForTopic(topic, 3);
+			liveWebContext = await fetchLiveContextForTopic(topic, 3, {
+				category,
+				trendStory,
+			});
 		}
 
 		/* 2. Segment timing */
@@ -8318,6 +8772,7 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 			const refined = await prepareSegmentImagePairsForShorts({
 				segments,
 				topic,
+				category,
 				trendStory,
 				ratio,
 				trendImagePairs,
