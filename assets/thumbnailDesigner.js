@@ -73,9 +73,13 @@ const THUMBNAIL_BADGE_FONT_PCT = 0.045;
 const THUMBNAIL_BADGE_X_PCT = 0.05;
 const THUMBNAIL_BADGE_Y_PCT = 0.05;
 const THUMBNAIL_BADGE_MAX_CHARS = 18;
+const THUMBNAIL_PANEL_OPACITY = 0.06;
+const THUMBNAIL_FOCUS_RING_OPACITY = 0.34;
+const THUMBNAIL_FOCUS_RING_THICKNESS_PCT = 0.005;
 const THUMBNAIL_TOPIC_MAX_IMAGES = 1;
-const THUMBNAIL_TOPIC_MIN_EDGE = 900;
-const THUMBNAIL_TOPIC_MIN_BYTES = 60000;
+const THUMBNAIL_TOPIC_MIN_EDGE = 1000;
+const THUMBNAIL_TOPIC_MIN_BYTES = 90000;
+const THUMBNAIL_IMAGE_MIN_BYTES_PER_MPX = 9000;
 const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 8;
 const THUMBNAIL_MIN_BYTES = 12000;
 const THUMBNAIL_HOOK_WORDS = [
@@ -153,6 +157,27 @@ const IMAGE_DEEMPHASIS_TOKENS = new Set([
 	"murder",
 	"suicide",
 	"shooting",
+	"shot",
+	"accident",
+	"crash",
+	"injury",
+	"injured",
+	"injuries",
+	"concussion",
+	"tbi",
+	"blood",
+	"bleeding",
+	"bruise",
+	"bruised",
+	"wound",
+	"wounded",
+	"hospital",
+	"emergency",
+	"assault",
+	"abuse",
+	"violent",
+	"violence",
+	"trauma",
 ]);
 const THUMBNAIL_CLOUDINARY_FOLDER = "aivideomatic/long_thumbnails";
 const THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX = "long_thumb";
@@ -258,6 +283,110 @@ const MULTI_PERSON_PENALTY_TOKENS = [
 	"and",
 	"couple",
 ];
+const INJURY_VISUAL_TOKENS = [
+	"blood",
+	"bleeding",
+	"bruise",
+	"bruised",
+	"injury",
+	"injured",
+	"injuries",
+	"concussion",
+	"tbi",
+	"brain damage",
+	"hospital",
+	"emergency",
+	"trauma",
+	"wound",
+	"wounded",
+	"black eye",
+	"fracture",
+	"broken",
+	"bandage",
+	"bandaged",
+	"stitches",
+	"assault",
+	"abuse",
+	"violent",
+	"violence",
+];
+const INJURY_QUERY_TOKENS = [
+	"blood",
+	"bleeding",
+	"bruise",
+	"bruised",
+	"injury",
+	"injured",
+	"injuries",
+	"concussion",
+	"tbi",
+	"brain damage",
+	"hospital",
+	"emergency",
+	"trauma",
+	"wound",
+	"wounded",
+	"black eye",
+	"fracture",
+	"broken",
+	"bandage",
+	"bandaged",
+	"stitches",
+	"assault",
+	"abuse",
+	"violent",
+	"violence",
+];
+const LOW_QUALITY_IMAGE_TOKENS = [
+	"screenshot",
+	"screen-shot",
+	"screen shot",
+	"screen capture",
+	"screencap",
+	"framegrab",
+	"frame grab",
+	"camrip",
+	"cam rip",
+	"lowres",
+	"low-res",
+	"pixelated",
+	"blurry",
+	"thumbnail",
+	"preview",
+];
+const GENERIC_HEADLINE_PHRASES = new Set([
+	"TRENDING NOW",
+	"TOP STORIES",
+	"TOP STORY",
+	"QUICK UPDATE",
+	"UPDATE",
+	"NEW UPDATE",
+	"BREAKING",
+	"WHAT WE KNOW",
+]);
+const GENERIC_HEADLINE_TOKENS = new Set([
+	"TRENDING",
+	"NOW",
+	"TOP",
+	"STORY",
+	"STORIES",
+	"UPDATE",
+	"NEW",
+	"BREAKING",
+	"DETAILS",
+	"WHAT",
+	"WE",
+	"KNOW",
+]);
+const SPECIFIC_HEADLINE_PHRASES = new Set([
+	"WHAT HAPPENED",
+	"NEW DETAILS",
+	"LEAKED",
+	"CONFIRMED",
+	"BIG UPDATE",
+	"SHOCKING TURN",
+	"EXPLAINED",
+]);
 const THUMBNAIL_MERCH_DISALLOWED_HOSTS = [
 	"amazon.com",
 	"ebay.com",
@@ -292,6 +421,10 @@ function cleanThumbnailText(text = "") {
 		.trim();
 }
 
+function escapeRegExp(text = "") {
+	return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function sanitizeThumbnailContext(text = "") {
 	const banned = [
 		"death",
@@ -300,6 +433,7 @@ function sanitizeThumbnailContext(text = "") {
 		"dies",
 		"killed",
 		"shooting",
+		"shot",
 		"murder",
 		"suicide",
 		"funeral",
@@ -308,19 +442,44 @@ function sanitizeThumbnailContext(text = "") {
 		"memorial",
 		"accident",
 		"crash",
+		"injury",
+		"injured",
+		"injuries",
+		"concussion",
+		"tbi",
+		"brain damage",
+		"bleed",
+		"bleeding",
+		"blood",
+		"bruise",
+		"bruised",
+		"wound",
+		"wounded",
+		"black eye",
+		"fracture",
+		"broken",
+		"bandage",
+		"bandaged",
+		"stitches",
+		"trauma",
 		"assault",
 		"abuse",
+		"violent",
+		"violence",
 		"lawsuit",
 		"arrest",
 		"charged",
 		"trial",
 		"court",
-		"injury",
 		"hospital",
+		"emergency",
 	];
-	let cleaned = String(text || "");
+	let cleaned = String(text || "").replace(/[^a-z0-9\s]/gi, " ");
 	for (const word of banned) {
-		cleaned = cleaned.replace(new RegExp(`\\b${word}\\b`, "gi"), "");
+		cleaned = cleaned.replace(
+			new RegExp(`\\b${escapeRegExp(word)}\\b`, "gi"),
+			""
+		);
 	}
 	return cleaned.replace(/\s+/g, " ").trim();
 }
@@ -413,6 +572,16 @@ const CONTEXT_STOP_TOKENS = new Set([
 	"reports",
 	"report",
 	"reported",
+	"injury",
+	"injured",
+	"injuries",
+	"concussion",
+	"tbi",
+	"bleeding",
+	"blood",
+	"bruise",
+	"bruised",
+	"hospital",
 	"dies",
 	"died",
 	"death",
@@ -704,6 +873,16 @@ function multiPersonPenalty({ url = "", source = "", title = "" } = {}) {
 	return MULTI_PERSON_PENALTY_TOKENS.some((t) => hay.includes(t)) ? 0.35 : 0;
 }
 
+function injuryVisualPenalty({ url = "", source = "", title = "" } = {}) {
+	const hay = `${url} ${source} ${title}`.toLowerCase();
+	return INJURY_VISUAL_TOKENS.some((t) => hay.includes(t)) ? 0.45 : 0;
+}
+
+function lowQualityTextPenalty({ url = "", source = "", title = "" } = {}) {
+	const hay = `${url} ${source} ${title}`.toLowerCase();
+	return LOW_QUALITY_IMAGE_TOKENS.some((t) => hay.includes(t)) ? 0.25 : 0;
+}
+
 function scoreThumbnailTopicMatch(url = "", contextLink = "", criteria = null) {
 	if (!criteria)
 		return { score: 0, wordMatches: 0, contextMatches: 0, subjectMatches: 0 };
@@ -768,12 +947,25 @@ function buildGoogleImagesApiCandidates() {
 	return Array.from(new Set(list));
 }
 
+function stripSensitiveImageTerms(query = "") {
+	let cleaned = String(query || "");
+	if (!cleaned) return "";
+	for (const token of INJURY_QUERY_TOKENS) {
+		if (!token) continue;
+		const re = new RegExp(`\\b${escapeRegExp(token)}\\b`, "gi");
+		cleaned = cleaned.replace(re, "");
+	}
+	return cleaned.replace(/\s+/g, " ").trim();
+}
+
 function sanitizeImageQuery(query = "") {
-	return String(query || "")
+	const cleaned = String(query || "")
 		.replace(/[^a-z0-9\s]/gi, " ")
 		.replace(/\s+/g, " ")
-		.trim()
-		.slice(0, 100);
+		.trim();
+	const stripped = stripSensitiveImageTerms(cleaned);
+	const finalText = stripped || cleaned;
+	return finalText.slice(0, 100);
 }
 
 function isLikelyThumbnailUrl(u = "") {
@@ -1754,19 +1946,34 @@ function fileHash(p) {
 
 function poseFromExpression(expression = "", text = "") {
 	const expr = String(expression || "").toLowerCase();
-	if (expr === "thoughtful") return "thoughtful";
-	if (expr === "serious" || expr === "neutral") return "neutral";
-	if (expr === "warm" || expr === "excited") return "smile";
 	const lower = String(text || "").toLowerCase();
 	const hasNegative =
-		/(death|died|dead|killed|suicide|murder|arrest|charged|trial|lawsuit|injury|accident|crash|sad|tragic|funeral|hospital|scandal)/.test(
+		/(death|died|dead|killed|suicide|murder|arrest|charged|trial|lawsuit|injury|injured|concussion|accident|crash|sad|tragic|funeral|hospital|scandal|abuse|assault|violence)/.test(
+			lower
+		);
+	const hasUrgent =
+		/(breaking|trending|update|new details|big update|latest|just in|alert|confirmed|reports|reported)/.test(
+			lower
+		);
+	const hasSurprise =
+		/(shocking|leaked|leak|exposed|what happened|major twist|surprise|revealed)/.test(
 			lower
 		);
 	const hasPositive =
 		/(returns|revival|win|wins|won|success|smile|happy|laugh|funny|hilarious|amazing|great|best|top|comeback|surprise)/.test(
 			lower
 		);
+	if (expr === "thoughtful") return "thoughtful";
+	if (expr === "warm" || expr === "excited") return "smile";
+	if (expr === "serious" || expr === "neutral") {
+		if (hasNegative) return "neutral";
+		if (hasSurprise) return "surprised";
+		if (hasUrgent) return "thoughtful";
+		return "neutral";
+	}
 	if (hasNegative) return "neutral";
+	if (hasSurprise) return "surprised";
+	if (hasUrgent) return "thoughtful";
 	if (hasPositive) return "smile";
 	return "smile";
 }
@@ -2121,6 +2328,15 @@ function analyzeImageTone(filePath) {
 	return { rgb, luma, bRatio, rgOverB };
 }
 
+function bytesPerMegaPixel(byteSize, width, height) {
+	const w = Number(width) || 0;
+	const h = Number(height) || 0;
+	if (!Number.isFinite(byteSize) || !w || !h) return null;
+	const mpx = (w * h) / 1_000_000;
+	if (!mpx) return null;
+	return byteSize / mpx;
+}
+
 function scoreTopicImageCandidate(candidate) {
 	const minEdge = Math.min(candidate.width || 0, candidate.height || 0);
 	const sizeScore = clampNumber(minEdge / 1200, 0, 1);
@@ -2136,6 +2352,20 @@ function scoreTopicImageCandidate(candidate) {
 	}
 	const rgOverB = candidate?.tone?.rgOverB;
 	const warmPenalty = Number.isFinite(rgOverB) && rgOverB > 1.7 ? 0.2 : 0;
+	const qualityBytes = bytesPerMegaPixel(
+		candidate?.byteSize,
+		candidate?.width,
+		candidate?.height
+	);
+	let compressionPenalty = 0;
+	if (Number.isFinite(qualityBytes)) {
+		if (qualityBytes < THUMBNAIL_IMAGE_MIN_BYTES_PER_MPX * 0.7)
+			compressionPenalty = 0.35;
+		else if (qualityBytes < THUMBNAIL_IMAGE_MIN_BYTES_PER_MPX * 0.85)
+			compressionPenalty = 0.22;
+		else if (qualityBytes < THUMBNAIL_IMAGE_MIN_BYTES_PER_MPX)
+			compressionPenalty = 0.12;
+	}
 	const matchScoreRaw = Number.isFinite(candidate?.matchScore)
 		? candidate.matchScore
 		: 0.6;
@@ -2143,13 +2373,22 @@ function scoreTopicImageCandidate(candidate) {
 	const sourceScore = Number.isFinite(candidate?.sourceScore)
 		? clampNumber(candidate.sourceScore, 0, 1)
 		: 0;
+	const injuryPenalty = Number.isFinite(candidate?.injuryPenalty)
+		? clampNumber(candidate.injuryPenalty, 0, 0.7)
+		: 0;
+	const lowQualityPenalty = Number.isFinite(candidate?.lowQualityPenalty)
+		? clampNumber(candidate.lowQualityPenalty, 0, 0.6)
+		: 0;
 	return (
 		sizeScore * 0.35 +
 		lumaScore * 0.2 +
 		colorScore * 0.1 +
 		matchScore * 0.3 +
 		sourceScore * 0.05 -
-		warmPenalty
+		warmPenalty -
+		compressionPenalty -
+		lowQualityPenalty -
+		injuryPenalty
 	);
 }
 
@@ -2160,26 +2399,56 @@ function shouldNeutralizeTopicImage(tone) {
 	return tone.bRatio < 0.23 && tone.rgOverB > 1.7;
 }
 
+function shouldSoftenTopicImage({
+	byteSize,
+	width,
+	height,
+	lowQualityPenalty,
+} = {}) {
+	const qualityBytes = bytesPerMegaPixel(byteSize, width, height);
+	if (Number.isFinite(lowQualityPenalty) && lowQualityPenalty >= 0.22)
+		return true;
+	if (!Number.isFinite(qualityBytes)) return false;
+	return qualityBytes < THUMBNAIL_IMAGE_MIN_BYTES_PER_MPX;
+}
+
 async function normalizeTopicImageIfNeeded({
 	inputPath,
 	tone,
 	tmpDir,
 	jobId,
 	index = 0,
+	byteSize,
+	width,
+	height,
+	lowQualityPenalty,
 	log,
 }) {
 	if (!ffmpegPath) return inputPath;
-	if (!shouldNeutralizeTopicImage(tone)) return inputPath;
+	const needsNeutralize = shouldNeutralizeTopicImage(tone);
+	const needsSoften = shouldSoftenTopicImage({
+		byteSize,
+		width,
+		height,
+		lowQualityPenalty,
+	});
+	if (!needsNeutralize && !needsSoften) return inputPath;
 	const outPath = path.join(tmpDir, `thumb_topic_norm_${jobId}_${index}.jpg`);
-	const filter =
-		"colorchannelmixer=rr=0.95:gg=0.97:bb=1.10," +
-		"eq=contrast=1.02:saturation=0.95:brightness=0.02";
+	const filters = [];
+	if (needsSoften) {
+		filters.push("boxblur=2:1");
+		filters.push("eq=contrast=1.02:saturation=0.92:brightness=-0.015");
+	}
+	if (needsNeutralize) {
+		filters.push("colorchannelmixer=rr=0.95:gg=0.97:bb=1.10");
+		filters.push("eq=contrast=1.02:saturation=0.95:brightness=0.02");
+	}
 	await runFfmpeg(
 		[
 			"-i",
 			inputPath,
 			"-vf",
-			filter,
+			filters.join(","),
 			"-frames:v",
 			"1",
 			"-q:v",
@@ -2190,12 +2459,21 @@ async function normalizeTopicImageIfNeeded({
 		"thumbnail_topic_colorfix"
 	);
 	safeUnlink(inputPath);
-	if (log)
+	if (log && needsNeutralize)
 		log("thumbnail topic image neutralized", {
 			path: path.basename(outPath),
 			bRatio: Number(tone.bRatio.toFixed(3)),
 			rgOverB: Number(tone.rgOverB.toFixed(2)),
 		});
+	if (log && needsSoften) {
+		const qualityBytes = bytesPerMegaPixel(byteSize, width, height);
+		log("thumbnail topic image softened", {
+			path: path.basename(outPath),
+			bytesPerMpx: Number.isFinite(qualityBytes)
+				? Number(qualityBytes.toFixed(1))
+				: null,
+		});
+	}
 	return outPath;
 }
 
@@ -2319,12 +2597,14 @@ function scoreVariantComposite({
 	hasBadge,
 	headlineWordCount,
 	headlineLen,
+	headline,
 }) {
 	let score = Number.isFinite(lumaScore) ? lumaScore : -Infinity;
 	if (hasBadge) score += 0.05;
 	if (headlineWordCount <= 3) score += 0.04;
 	if (headlineLen <= 14) score += 0.02;
 	if (headlineWordCount >= 4 || headlineLen >= 18) score -= 0.03;
+	if (headline && isGenericHeadline(headline)) score -= 0.05;
 	return score;
 }
 
@@ -2495,10 +2775,16 @@ async function composeThumbnailBase({
 		} else {
 			filters.push(
 				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
-					`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
-					`unsharp=3:3:0.35[panel1i]`
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=10:1,` +
+					`eq=contrast=1.03:saturation=1.05:brightness=0.03,format=rgba[panel1bg]`
 			);
+			filters.push(
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+					`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+					`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
+					`unsharp=3:3:0.35,format=rgba[panel1fg]`
+			);
+			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
 		}
 		filters.push(
 			`[panel1i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel1]`
@@ -2514,10 +2800,16 @@ async function composeThumbnailBase({
 		const panelCropY = "(ih-oh)*0.35";
 		filters.push(
 			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
-				`eq=contrast=1.07:saturation=1.10:brightness=0.06:gamma=0.95,` +
-				`unsharp=3:3:0.35[panel2i]`
+				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=10:1,` +
+				`eq=contrast=1.03:saturation=1.05:brightness=0.03,format=rgba[panel2bg]`
 		);
+		filters.push(
+			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+				`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+				`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
+				`unsharp=3:3:0.35,format=rgba[panel2fg]`
+		);
+		filters.push("[panel2bg][panel2fg]overlay=0:0[panel2i]");
 		filters.push(
 			`[panel2i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel2]`
 		);
@@ -2897,6 +3189,30 @@ function computeHeadlineBoxRect({
 	};
 }
 
+function computeFocusRingRect({ leftPanelPct, textRect }) {
+	const panelW = Math.max(1, Math.round(THUMBNAIL_WIDTH * leftPanelPct));
+	const maxRingW = Math.max(80, panelW - Math.round(panelW * 0.15));
+	const ringW = Math.min(Math.round(panelW * 0.62), maxRingW);
+	const ringH = ringW;
+	const x = Math.round(panelW * 0.18);
+	let y = Math.round(THUMBNAIL_HEIGHT * 0.38);
+	if (textRect) {
+		const minY =
+			textRect.y + textRect.h + Math.round(THUMBNAIL_HEIGHT * 0.04);
+		y = Math.max(y, minY);
+	}
+	y = Math.min(
+		y,
+		THUMBNAIL_HEIGHT - ringH - Math.round(THUMBNAIL_HEIGHT * 0.04)
+	);
+	return {
+		x: Math.max(0, x),
+		y: Math.max(0, y),
+		w: Math.max(40, Math.min(ringW, panelW - 8)),
+		h: Math.max(40, Math.min(ringH, THUMBNAIL_HEIGHT - y - 4)),
+	};
+}
+
 async function renderThumbnailOverlay({
 	inputPath,
 	outputPath,
@@ -2924,7 +3240,7 @@ async function renderThumbnailOverlay({
 		: 0.96;
 	const panelOpacity = Number.isFinite(Number(overlayOptions.panelOpacity))
 		? Number(overlayOptions.panelOpacity)
-		: 0;
+		: THUMBNAIL_PANEL_OPACITY;
 	const textBoxOpacity = Number.isFinite(Number(overlayOptions.textBoxOpacity))
 		? Number(overlayOptions.textBoxOpacity)
 		: 0.28;
@@ -2943,6 +3259,23 @@ async function renderThumbnailOverlay({
 	const leftFeatherPct = Number.isFinite(Number(overlayOptions.leftFeatherPct))
 		? clampNumber(Number(overlayOptions.leftFeatherPct), 0, 0.12)
 		: Math.min(0.05, leftPanelPct * 0.25);
+	const focusRingEnabled =
+		typeof overlayOptions.focusRing === "boolean"
+			? overlayOptions.focusRing
+			: true;
+	const focusRingOpacity = Number.isFinite(
+		Number(overlayOptions.focusRingOpacity)
+	)
+		? Number(overlayOptions.focusRingOpacity)
+		: THUMBNAIL_FOCUS_RING_OPACITY;
+	const focusRingThickness = Number.isFinite(
+		Number(overlayOptions.focusRingThickness)
+	)
+		? Math.max(2, Math.round(Number(overlayOptions.focusRingThickness)))
+		: Math.max(
+				2,
+				Math.round(THUMBNAIL_WIDTH * THUMBNAIL_FOCUS_RING_THICKNESS_PCT)
+		  );
 	const badgeTextRaw =
 		typeof overlayOptions.badgeText === "string"
 			? overlayOptions.badgeText.trim()
@@ -2965,6 +3298,16 @@ async function renderThumbnailOverlay({
 		Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_TEXT_SIZE_PCT * fontScale)
 	);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
+	const headlineRect = hasText
+		? computeHeadlineBoxRect({
+				leftPanelPct,
+				fontSize,
+				lineSpacing,
+				lines: lineCount || 1,
+				marginX: THUMBNAIL_TEXT_MARGIN_PCT,
+				yOffset: THUMBNAIL_TEXT_Y_OFFSET_PCT,
+		  })
+		: null;
 	const textFilePath = hasText
 		? path.join(
 				path.dirname(outputPath),
@@ -3040,6 +3383,21 @@ async function renderThumbnailOverlay({
 		`drawbox=x=0:y=0:w=iw:h=ih:color=${accentColor}@0.08:t=4`,
 		`vignette=${vignetteStrength.toFixed(2)}`
 	);
+	if (focusRingEnabled && focusRingOpacity > 0) {
+		const ringRect = computeFocusRingRect({
+			leftPanelPct,
+			textRect: headlineRect,
+		});
+		filters.push(
+			`drawbox=x=${ringRect.x}:y=${ringRect.y}:w=${ringRect.w}:h=${ringRect.h}` +
+				`:color=${accentColor}@${clampNumber(
+					focusRingOpacity,
+					0.05,
+					0.6
+				).toFixed(2)}` +
+				`:t=${focusRingThickness}`
+		);
+	}
 	if (hasBadge) {
 		const badgeFontSize = Math.max(
 			18,
@@ -3053,17 +3411,9 @@ async function renderThumbnailOverlay({
 		);
 	}
 	if (hasText) {
-		const rect = computeHeadlineBoxRect({
-			leftPanelPct,
-			fontSize,
-			lineSpacing,
-			lines: lineCount || 1,
-			marginX: THUMBNAIL_TEXT_MARGIN_PCT,
-			yOffset: THUMBNAIL_TEXT_Y_OFFSET_PCT,
-		});
 		filters.push(
-			`drawbox=x=${rect.x}:y=${rect.y}:w=${rect.w}:h=${
-				rect.h
+			`drawbox=x=${headlineRect.x}:y=${headlineRect.y}:w=${headlineRect.w}:h=${
+				headlineRect.h
 			}:color=black@${textBoxOpacity.toFixed(2)}:t=fill`
 		);
 		filters.push(
@@ -3439,6 +3789,8 @@ async function collectThumbnailTopicImages({
 		if (isMerchDisallowedCandidate({ url, source, title })) return;
 		const merchPenalty = merchPenaltyScore({ url, source, title });
 		const multiPenalty = multiPersonPenalty({ url, source, title });
+		const injuryPenalty = injuryVisualPenalty({ url, source, title });
+		const lowQualityPenalty = lowQualityTextPenalty({ url, source, title });
 		const match = scoreThumbnailTopicMatch(url, source, criteria);
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
 		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
@@ -3456,6 +3808,8 @@ async function collectThumbnailTopicImages({
 			sourceScore: scoreSourceAffinity(url, source),
 			merchPenalty,
 			multiPersonPenalty: multiPenalty,
+			injuryPenalty,
+			lowQualityPenalty,
 			priority,
 			relaxed: relaxed || merchPenalty >= 0.6,
 		});
@@ -3708,6 +4062,8 @@ async function collectThumbnailTopicImages({
 				(c.priority || 0) -
 				(c.merchPenalty || 0) -
 				(c.multiPersonPenalty || 0) -
+				(c.injuryPenalty || 0) -
+				(c.lowQualityPenalty || 0) -
 				(c.relaxed ? 0.6 : 0),
 		}))
 		.sort((a, b) => b.relevanceScore - a.relevanceScore);
@@ -3742,10 +4098,15 @@ async function collectThumbnailTopicImages({
 					width: dims.width || 0,
 					height: dims.height || 0,
 					tone,
+					injuryPenalty: candidate.injuryPenalty || 0,
+					lowQualityPenalty: candidate.lowQualityPenalty || 0,
 					score: scoreTopicImageCandidate({
 						width: dims.width || 0,
 						height: dims.height || 0,
 						tone,
+						byteSize: st.size,
+						injuryPenalty: candidate.injuryPenalty,
+						lowQualityPenalty: candidate.lowQualityPenalty,
 					}),
 				});
 				continue;
@@ -3758,14 +4119,19 @@ async function collectThumbnailTopicImages({
 				tone,
 				matchScore: candidate.matchScore,
 				sourceScore: candidate.sourceScore,
+				injuryPenalty: candidate.injuryPenalty || 0,
+				lowQualityPenalty: candidate.lowQualityPenalty || 0,
 				url,
 				source: candidate.source,
 				score: scoreTopicImageCandidate({
 					width: dims.width || 0,
 					height: dims.height || 0,
 					tone,
+					byteSize: st.size,
 					matchScore: candidate.matchScore,
 					sourceScore: candidate.sourceScore,
+					injuryPenalty: candidate.injuryPenalty,
+					lowQualityPenalty: candidate.lowQualityPenalty,
 				}),
 			});
 		} catch {
@@ -3799,7 +4165,18 @@ async function collectThumbnailTopicImages({
 		return c.size >= THUMBNAIL_TOPIC_MIN_BYTES;
 	});
 
-	const pickPool = preferred.length ? preferred : usableCandidates;
+	const safePreferred = preferred.filter((c) => !(c.injuryPenalty > 0));
+	const safeUsable = usableCandidates.filter((c) => !(c.injuryPenalty > 0));
+	const safePool = safePreferred.length
+		? safePreferred
+		: safeUsable.length
+		? safeUsable
+		: [];
+	const pickPool = safePool.length
+		? safePool
+		: preferred.length
+		? preferred
+		: usableCandidates;
 	pickPool.sort((a, b) => {
 		if (Number.isFinite(a.score) && Number.isFinite(b.score)) {
 			if (b.score !== a.score) return b.score - a.score;
@@ -3819,6 +4196,10 @@ async function collectThumbnailTopicImages({
 			tmpDir,
 			jobId,
 			index: i,
+			byteSize: candidate.size,
+			width: candidate.width,
+			height: candidate.height,
+			lowQualityPenalty: candidate.lowQualityPenalty,
 			log,
 		});
 		selected.push(normalized);
@@ -3852,6 +4233,33 @@ function extractHookWord(texts = []) {
 			if (words.includes(hook)) return hook.toUpperCase();
 		}
 	}
+	return "";
+}
+
+function isGenericHeadline(text = "") {
+	const cleaned = cleanThumbnailText(text).toUpperCase();
+	if (!cleaned) return true;
+	if (SPECIFIC_HEADLINE_PHRASES.has(cleaned)) return false;
+	if (GENERIC_HEADLINE_PHRASES.has(cleaned)) return true;
+	const words = cleaned.split(" ").filter(Boolean);
+	if (!words.length) return true;
+	if (words.length <= 3 && words.every((w) => GENERIC_HEADLINE_TOKENS.has(w)))
+		return true;
+	return false;
+}
+
+function deriveSpecificHeadline({ title = "", topics = [] } = {}) {
+	const t0 = topics?.[0] || {};
+	const rqRise = (t0?.relatedQueries?.risingSample || []).join(" ");
+	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ");
+	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
+	if (/\bwhat happened to\b|\bwhat happened\b/.test(hay)) return "WHAT HAPPENED?";
+	if (/\bexplained\b|\bwhy\b/.test(hay)) return "EXPLAINED";
+	if (/\bleak(ed)?\b/.test(hay)) return "LEAKED?";
+	if (/\bconfirmed\b|\bconfirm(ed)?\b/.test(hay)) return "CONFIRMED?";
+	if (/\bnew details\b|\bdetails emerge\b/.test(hay)) return "NEW DETAILS";
+	if (/\bbig update\b|\bmajor update\b/.test(hay)) return "BIG UPDATE";
+	if (/\bshocking\b|\bshocking turn\b/.test(hay)) return "SHOCKING TURN";
 	return "";
 }
 
@@ -3947,9 +4355,11 @@ function deriveHeadlineAndBadge({
 		.toLowerCase();
 	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ").toLowerCase();
 	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
+	const specificHeadline = deriveSpecificHeadline({ title, topics });
 
 	let headline = "";
-	if (intent === "legal" && /conservatorship/.test(hay))
+	if (specificHeadline) headline = specificHeadline;
+	else if (intent === "legal" && /conservatorship/.test(hay))
 		headline = "LEGAL MOVE";
 	else if (intent === "legal" && /(court|filing)/.test(hay))
 		headline = "COURT FILE";
@@ -4150,26 +4560,37 @@ async function generateThumbnailPackage({
 		maxWords: THUMBNAIL_TEXT_MAX_WORDS,
 		punchyMaxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
 	});
-	const thumbTitle =
-		resolvedOverrideHeadline ||
-		hook?.headline ||
-		questionPlan?.headline ||
-		selectThumbnailTitle({
-			title,
-			shortTitle,
-			seoTitle,
+	const defaultTitle = selectThumbnailTitle({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+	});
+	const defaultPunchy = buildShortHookTitle({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+	});
+	const questionHeadline = questionPlan?.headline || "";
+	const questionPunchy = questionPlan?.punchy || "";
+	let thumbTitle =
+		resolvedOverrideHeadline || questionPunchy || questionHeadline || hook?.headline || defaultTitle;
+	if (!resolvedOverrideHeadline && isGenericHeadline(thumbTitle)) {
+		const topicHeadline = buildTopicPhrase(topics, THUMBNAIL_TEXT_MAX_WORDS);
+		if (topicHeadline) thumbTitle = topicHeadline;
+		else if (!isGenericHeadline(defaultTitle)) thumbTitle = defaultTitle;
+	}
+	let punchyTitle =
+		resolvedOverrideHeadline || questionPunchy || hook?.headline || defaultPunchy;
+	if (!resolvedOverrideHeadline && isGenericHeadline(punchyTitle)) {
+		const topicPunchy = buildTopicPhrase(
 			topics,
-		});
-	const punchyTitle =
-		resolvedOverrideHeadline ||
-		hook?.headline ||
-		questionPlan?.punchy ||
-		buildShortHookTitle({
-			title,
-			shortTitle,
-			seoTitle,
-			topics,
-		});
+			THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS
+		);
+		if (topicPunchy) punchyTitle = topicPunchy;
+		else if (!isGenericHeadline(defaultPunchy)) punchyTitle = defaultPunchy;
+	}
 	const topicCount = Array.isArray(topics) ? topics.length : 0;
 	const badgeText =
 		resolvedOverrideBadgeText ||
@@ -4199,6 +4620,7 @@ async function generateThumbnailPackage({
 		overrideTopicImageQueries,
 		log,
 	});
+	const shouldFocusRing = (topicImagePaths || []).length === 1;
 	const backgroundTitle = resolvedOverrideHeadline
 		? title || seoTitle || thumbTitle
 		: thumbTitle;
@@ -4222,13 +4644,14 @@ async function generateThumbnailPackage({
 		panelOpacity: THUMBNAIL_VARIANT_B_PANEL_PCT,
 		textBoxOpacity: THUMBNAIL_VARIANT_B_TEXT_BOX_PCT,
 		badgeText,
+		focusRing: shouldFocusRing,
 	};
 	const variantPlans = [
 		{
 			key: "a",
 			title: thumbTitle,
 			layout: {},
-			overlayOptions: { badgeText },
+			overlayOptions: { badgeText, focusRing: shouldFocusRing },
 		},
 		{
 			key: "b",
@@ -4289,17 +4712,37 @@ async function generateThumbnailPackage({
 			)
 				? Number(overlayOptions.textBoxOpacity)
 				: 0.28;
+			const basePanelOpacity = Number.isFinite(Number(overlayOptions.panelOpacity))
+				? Number(overlayOptions.panelOpacity)
+				: THUMBNAIL_PANEL_OPACITY;
 			const headlineStatsBase = samplePreviewLumaStats(
 				baseImage,
 				getHeadlineQaRegion()
 			);
 			let tunedTextBoxOpacity = baseTextBoxOpacity;
+			let tunedPanelOpacity = basePanelOpacity;
 			if (headlineStatsBase && Number.isFinite(headlineStatsBase.std)) {
-				if (headlineStatsBase.std > 0.22) {
+				if (headlineStatsBase.std > 0.28) {
 					tunedTextBoxOpacity = clampNumber(
-						baseTextBoxOpacity + 0.06,
+						baseTextBoxOpacity + 0.12,
 						0.16,
 						0.6
+					);
+					tunedPanelOpacity = clampNumber(
+						basePanelOpacity + 0.06,
+						0,
+						0.35
+					);
+				} else if (headlineStatsBase.std > 0.22) {
+					tunedTextBoxOpacity = clampNumber(
+						baseTextBoxOpacity + 0.08,
+						0.16,
+						0.6
+					);
+					tunedPanelOpacity = clampNumber(
+						basePanelOpacity + 0.04,
+						0,
+						0.32
 					);
 				} else if (headlineStatsBase.std < 0.12) {
 					tunedTextBoxOpacity = clampNumber(
@@ -4307,11 +4750,17 @@ async function generateThumbnailPackage({
 						0.1,
 						0.5
 					);
+					tunedPanelOpacity = clampNumber(
+						basePanelOpacity - 0.02,
+						0,
+						0.3
+					);
 				}
 			}
 			const tunedOverlayOptions = {
 				...overlayOptions,
 				textBoxOpacity: tunedTextBoxOpacity,
+				panelOpacity: tunedPanelOpacity,
 			};
 			await renderThumbnailOverlay({
 				inputPath: baseImage,
@@ -4411,6 +4860,7 @@ async function generateThumbnailPackage({
 				hasBadge: Boolean(tunedOverlayOptions.badgeText),
 				headlineWordCount: headlineWords.length,
 				headlineLen: headline.length,
+				headline,
 			});
 			if (log)
 				log("thumbnail composite score", {
