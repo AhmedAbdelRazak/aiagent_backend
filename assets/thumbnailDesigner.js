@@ -2598,6 +2598,7 @@ function scoreVariantComposite({
 	headlineWordCount,
 	headlineLen,
 	headline,
+	topicKeywords = [],
 }) {
 	let score = Number.isFinite(lumaScore) ? lumaScore : -Infinity;
 	if (hasBadge) score += 0.05;
@@ -2605,6 +2606,14 @@ function scoreVariantComposite({
 	if (headlineLen <= 14) score += 0.02;
 	if (headlineWordCount >= 4 || headlineLen >= 18) score -= 0.03;
 	if (headline && isGenericHeadline(headline)) score -= 0.05;
+	if (headline && headline.includes("?")) score += 0.08;
+	if (headline && Array.isArray(topicKeywords) && topicKeywords.length) {
+		const lower = cleanThumbnailText(headline).toLowerCase();
+		const hit = topicKeywords.some((tok) =>
+			lower.includes(String(tok || "").toLowerCase())
+		);
+		if (hit) score += 0.06;
+	}
 	return score;
 }
 
@@ -3197,8 +3206,7 @@ function computeFocusRingRect({ leftPanelPct, textRect }) {
 	const x = Math.round(panelW * 0.18);
 	let y = Math.round(THUMBNAIL_HEIGHT * 0.38);
 	if (textRect) {
-		const minY =
-			textRect.y + textRect.h + Math.round(THUMBNAIL_HEIGHT * 0.04);
+		const minY = textRect.y + textRect.h + Math.round(THUMBNAIL_HEIGHT * 0.04);
 		y = Math.max(y, minY);
 	}
 	y = Math.min(
@@ -3499,18 +3507,21 @@ async function fetchCseImages(
 	);
 	const topicTokens = filterImageSearchTokens(topicTokensBase);
 	const searchTokens = buildSearchLabelTokens(topic, extraTokens);
-	const searchLabel = searchTokens.slice(0, 4).join(" ") || topic;
+	const rawSearchLabel = searchTokens.slice(0, 4).join(" ") || topic;
+	const searchLabel = sanitizeImageQuery(rawSearchLabel) || rawSearchLabel;
 
 	const intentKey = String(intent || "").toLowerCase();
 	const isLegalIntent = intentKey === "legal";
-	const legalQueries = isLegalIntent
-		? [
-				`${searchLabel} headshot`,
-				`${searchLabel} portrait`,
-				`${searchLabel} press photo`,
-				`${searchLabel} interview`,
-		  ]
-		: [];
+	const isSeriousIntent = intentKey === "serious_update";
+	const legalQueries =
+		isLegalIntent || isSeriousIntent
+			? [
+					`${searchLabel} headshot`,
+					`${searchLabel} portrait`,
+					`${searchLabel} press photo`,
+					`${searchLabel} interview`,
+			  ]
+			: [];
 	const categoryQueries = [];
 	if (category === "film") {
 		categoryQueries.push(
@@ -3529,7 +3540,8 @@ async function fetchCseImages(
 			`${searchLabel} stage photo`
 		);
 	} else if (category === "celebrity") {
-		if (!isLegalIntent) categoryQueries.push(`${searchLabel} red carpet`);
+		if (!isLegalIntent && !isSeriousIntent)
+			categoryQueries.push(`${searchLabel} red carpet`);
 		categoryQueries.push(`${searchLabel} interview photo`);
 	}
 	const baseQueries = [
@@ -3544,7 +3556,7 @@ async function fetchCseImages(
 	]);
 
 	let fallbackQueries = uniqueStrings([
-		...(isLegalIntent
+		...(isLegalIntent || isSeriousIntent
 			? [
 					`${searchLabel} headshot`,
 					`${searchLabel} portrait`,
@@ -3554,7 +3566,7 @@ async function fetchCseImages(
 			: []),
 		`${searchLabel} photo`,
 		`${searchLabel} press`,
-		...(isLegalIntent ? [] : [`${searchLabel} red carpet`]),
+		...(isLegalIntent || isSeriousIntent ? [] : [`${searchLabel} red carpet`]),
 		`${searchLabel} still`,
 		`${searchLabel} interview`,
 	]);
@@ -4253,7 +4265,8 @@ function deriveSpecificHeadline({ title = "", topics = [] } = {}) {
 	const rqRise = (t0?.relatedQueries?.risingSample || []).join(" ");
 	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ");
 	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
-	if (/\bwhat happened to\b|\bwhat happened\b/.test(hay)) return "WHAT HAPPENED?";
+	if (/\bwhat happened to\b|\bwhat happened\b/.test(hay))
+		return "WHAT HAPPENED?";
 	if (/\bexplained\b|\bwhy\b/.test(hay)) return "EXPLAINED";
 	if (/\bleak(ed)?\b/.test(hay)) return "LEAKED?";
 	if (/\bconfirmed\b|\bconfirm(ed)?\b/.test(hay)) return "CONFIRMED?";
@@ -4359,6 +4372,7 @@ function deriveHeadlineAndBadge({
 
 	let headline = "";
 	if (specificHeadline) headline = specificHeadline;
+	else if (intent === "serious_update") headline = "WHAT HAPPENED?";
 	else if (intent === "legal" && /conservatorship/.test(hay))
 		headline = "LEGAL MOVE";
 	else if (intent === "legal" && /(court|filing)/.test(hay))
@@ -4575,14 +4589,21 @@ async function generateThumbnailPackage({
 	const questionHeadline = questionPlan?.headline || "";
 	const questionPunchy = questionPlan?.punchy || "";
 	let thumbTitle =
-		resolvedOverrideHeadline || questionPunchy || questionHeadline || hook?.headline || defaultTitle;
+		resolvedOverrideHeadline ||
+		questionPunchy ||
+		questionHeadline ||
+		hook?.headline ||
+		defaultTitle;
 	if (!resolvedOverrideHeadline && isGenericHeadline(thumbTitle)) {
 		const topicHeadline = buildTopicPhrase(topics, THUMBNAIL_TEXT_MAX_WORDS);
 		if (topicHeadline) thumbTitle = topicHeadline;
 		else if (!isGenericHeadline(defaultTitle)) thumbTitle = defaultTitle;
 	}
 	let punchyTitle =
-		resolvedOverrideHeadline || questionPunchy || hook?.headline || defaultPunchy;
+		resolvedOverrideHeadline ||
+		questionPunchy ||
+		hook?.headline ||
+		defaultPunchy;
 	if (!resolvedOverrideHeadline && isGenericHeadline(punchyTitle)) {
 		const topicPunchy = buildTopicPhrase(
 			topics,
@@ -4592,6 +4613,11 @@ async function generateThumbnailPackage({
 		else if (!isGenericHeadline(defaultPunchy)) punchyTitle = defaultPunchy;
 	}
 	const topicCount = Array.isArray(topics) ? topics.length : 0;
+	const primaryTopicLabel =
+		topics?.[0]?.displayTopic || topics?.[0]?.topic || "";
+	const topicKeywords = filterSpecificTopicTokens(
+		topicTokensFromTitle(primaryTopicLabel)
+	);
 	const badgeText =
 		resolvedOverrideBadgeText ||
 		(topicCount > 1
@@ -4624,7 +4650,7 @@ async function generateThumbnailPackage({
 	const backgroundTitle = resolvedOverrideHeadline
 		? title || seoTitle || thumbTitle
 		: thumbTitle;
-	const bg = await resolveThumbnailBackground({
+	const bgResult = await resolveThumbnailBackground({
 		jobId,
 		tmpDir,
 		title: backgroundTitle,
@@ -4636,6 +4662,34 @@ async function generateThumbnailPackage({
 		topicImagePaths,
 		log,
 	});
+	if (!bgResult.usedRunway) {
+		const fallbackSpecific = deriveSpecificHeadline({
+			title: title || seoTitle || "",
+			topics,
+		});
+		const fallbackTopic = buildTopicPhrase(topics, THUMBNAIL_TEXT_MAX_WORDS);
+		const fallbackPunchy = buildTopicPhrase(
+			topics,
+			THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS
+		);
+		const boostedHeadline = fallbackSpecific || fallbackTopic;
+		const boostedPunchy = fallbackSpecific || fallbackPunchy;
+		let updated = false;
+		if (boostedHeadline && isGenericHeadline(thumbTitle)) {
+			thumbTitle = boostedHeadline;
+			updated = true;
+		}
+		if (boostedPunchy && isGenericHeadline(punchyTitle)) {
+			punchyTitle = boostedPunchy;
+			updated = true;
+		}
+		if (updated && log) {
+			log("thumbnail runway fallback headline boosted", {
+				headline: thumbTitle,
+				punchy: punchyTitle,
+			});
+		}
+	}
 
 	const variantBOverlayOptions = {
 		maxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
@@ -4689,7 +4743,7 @@ async function generateThumbnailPackage({
 				`thumb_comp_${jobId}_${variant.key}.png`
 			);
 			await composeThumbnailBase({
-				baseImagePath: bg.path,
+				baseImagePath: bgResult.path,
 				presenterImagePath: presenterForCompose,
 				topicImagePaths,
 				outPath: baseImage,
@@ -4712,7 +4766,9 @@ async function generateThumbnailPackage({
 			)
 				? Number(overlayOptions.textBoxOpacity)
 				: 0.28;
-			const basePanelOpacity = Number.isFinite(Number(overlayOptions.panelOpacity))
+			const basePanelOpacity = Number.isFinite(
+				Number(overlayOptions.panelOpacity)
+			)
 				? Number(overlayOptions.panelOpacity)
 				: THUMBNAIL_PANEL_OPACITY;
 			const headlineStatsBase = samplePreviewLumaStats(
@@ -4728,33 +4784,21 @@ async function generateThumbnailPackage({
 						0.16,
 						0.6
 					);
-					tunedPanelOpacity = clampNumber(
-						basePanelOpacity + 0.06,
-						0,
-						0.35
-					);
+					tunedPanelOpacity = clampNumber(basePanelOpacity + 0.06, 0, 0.35);
 				} else if (headlineStatsBase.std > 0.22) {
 					tunedTextBoxOpacity = clampNumber(
 						baseTextBoxOpacity + 0.08,
 						0.16,
 						0.6
 					);
-					tunedPanelOpacity = clampNumber(
-						basePanelOpacity + 0.04,
-						0,
-						0.32
-					);
+					tunedPanelOpacity = clampNumber(basePanelOpacity + 0.04, 0, 0.32);
 				} else if (headlineStatsBase.std < 0.12) {
 					tunedTextBoxOpacity = clampNumber(
 						baseTextBoxOpacity - 0.05,
 						0.1,
 						0.5
 					);
-					tunedPanelOpacity = clampNumber(
-						basePanelOpacity - 0.02,
-						0,
-						0.3
-					);
+					tunedPanelOpacity = clampNumber(basePanelOpacity - 0.02, 0, 0.3);
 				}
 			}
 			const tunedOverlayOptions = {
@@ -4861,6 +4905,7 @@ async function generateThumbnailPackage({
 				headlineWordCount: headlineWords.length,
 				headlineLen: headline.length,
 				headline,
+				topicKeywords,
 			});
 			if (log)
 				log("thumbnail composite score", {

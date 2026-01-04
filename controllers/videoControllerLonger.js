@@ -4666,6 +4666,50 @@ function buildThumbnailSignalsFromTopicPick(topicPick) {
 	};
 }
 
+const THUMBNAIL_SERIOUS_UPDATE_RE =
+	/\b(concussion|injury|injured|health|brain|hospital|recovery|tbi|brain damage|medical|surgery|illness|diagnosis)\b/i;
+const THUMBNAIL_IMAGE_STRIP_TOKENS = [
+	"concussion",
+	"injury",
+	"injured",
+	"health",
+	"brain",
+	"tbi",
+	"brain damage",
+	"hospital",
+	"recovery",
+	"medical",
+	"surgery",
+	"illness",
+	"diagnosis",
+];
+const THUMBNAIL_GENERIC_HOOK_HEADLINES = new Set([
+	"TRENDING NOW",
+	"NEW UPDATE",
+	"UPDATE",
+	"TOP STORIES",
+	"TOP STORY",
+	"BREAKING",
+]);
+const THUMBNAIL_PERSON_EXCLUDE_TOKENS = new Set([
+	"season",
+	"episode",
+	"documentary",
+	"movie",
+	"film",
+	"show",
+	"series",
+	"trailer",
+	"update",
+	"news",
+	"top",
+	"stories",
+	"trending",
+	"super",
+	"bowl",
+	"mtv",
+]);
+
 const THUMBNAIL_INTENT_RULES = [
 	{
 		intent: "legal",
@@ -4710,6 +4754,7 @@ function inferIntentFromSignals({ title, signals }) {
 		.join(" ")
 		.toLowerCase();
 
+	if (THUMBNAIL_SERIOUS_UPDATE_RE.test(hay)) return "serious_update";
 	for (const rule of THUMBNAIL_INTENT_RULES) {
 		if (rule.re.test(hay)) return rule.intent;
 	}
@@ -4724,6 +4769,58 @@ function clampHeadline(text) {
 		.toUpperCase();
 	if (!t) return "";
 	return t.length > 18 ? t.slice(0, 18).trim() : t;
+}
+
+function stripImageQueryTokens(text = "") {
+	let cleaned = String(text || "");
+	if (!cleaned) return "";
+	for (const token of THUMBNAIL_IMAGE_STRIP_TOKENS) {
+		const re = new RegExp(`\\b${escapeRegExp(token)}\\b`, "gi");
+		cleaned = cleaned.replace(re, "");
+	}
+	return cleaned.replace(/\s+/g, " ").trim();
+}
+
+function looksLikePersonName(text = "") {
+	const cleaned = cleanTopicLabel(text)
+		.replace(/[^a-zA-Z\s]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	const tokens = cleaned.split(/\s+/).filter(Boolean);
+	if (tokens.length < 2 || tokens.length > 3) return false;
+	if (tokens.some((t) => /\d/.test(t))) return false;
+	const lowered = tokens.map((t) => t.toLowerCase());
+	if (lowered.some((t) => THUMBNAIL_PERSON_EXCLUDE_TOKENS.has(t))) return false;
+	return true;
+}
+
+function extractLastName(text = "") {
+	const cleaned = cleanTopicLabel(text)
+		.replace(/[^a-zA-Z\s]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	const tokens = cleaned.split(/\s+/).filter(Boolean);
+	if (tokens.length < 2) return "";
+	return tokens[tokens.length - 1].toUpperCase();
+}
+
+function buildPersonSpecificHeadline({ title = "", signals } = {}) {
+	const rq = signals?.relatedQueries || { top: [], rising: [] };
+	const hay = [
+		title || "",
+		signals?.displayTopic || "",
+		(rq.top || []).join(" "),
+		(rq.rising || []).join(" "),
+		(signals?.articleTitles || []).join(" "),
+	].join(" ");
+	const lower = hay.toLowerCase();
+	if (/\b(steps back|stepping away)\b/.test(lower)) return "STEPS BACK";
+	if (/\b(acting pause|pause from acting|acting break)\b/.test(lower))
+		return "ACTING PAUSE";
+	if (/\b(what she said|what he said)\b/.test(lower)) return "WHAT SHE SAID";
+	if (/\b(health update|medical update)\b/.test(lower)) return "HEALTH UPDATE";
+	if (THUMBNAIL_SERIOUS_UPDATE_RE.test(lower)) return "HER UPDATE";
+	return "";
 }
 
 function pickHookFromQueries({
@@ -4741,6 +4838,15 @@ function pickHookFromQueries({
 	if (/\breaction\b|\bresigns?\b|\bsteps down\b/.test(hay))
 		return { headline: "BIG REACTION", badge: "UPDATE" };
 
+	if (intent === "serious_update") {
+		if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
+			return { headline: "WHAT HAPPENED?", badge: "UPDATE" };
+		if (/\bwhat she said\b|\bwhat he said\b/.test(hay))
+			return { headline: "WHAT SHE SAID", badge: "UPDATE" };
+		if (/\brecovery\b|\bhealth\b/.test(hay))
+			return { headline: "HER UPDATE", badge: "UPDATE" };
+		return { headline: "WHAT WE KNOW?", badge: "UPDATE" };
+	}
 	if (intent === "legal") return { headline: "LEGAL MOVE", badge: "REPORTS" };
 	if (intent === "finance")
 		return {
@@ -4770,9 +4876,21 @@ function buildTopicImageQueries({ signals, intent }) {
 	const base = [topic, ...entities, ...rqRising]
 		.map((s) => String(s || "").trim())
 		.filter(Boolean);
-	const core = base[0] || topic;
+	const rawCore = base[0] || topic;
+	const core = stripImageQueryTokens(rawCore) || rawCore;
 
 	if (intent === "legal") {
+		return uniqueStrings(
+			[
+				`${core} headshot`,
+				`${core} portrait`,
+				`${core} press photo`,
+				`${core} interview`,
+			],
+			{ limit: 6 }
+		);
+	}
+	if (intent === "serious_update") {
 		return uniqueStrings(
 			[
 				`${core} headshot`,
@@ -4827,6 +4945,22 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 		intent,
 		slope,
 	});
+	let resolvedHeadline = clampHeadline(headline);
+	const isPerson = looksLikePersonName(signals.displayTopic || "");
+	if (topics.length === 1 && isPerson) {
+		const isGeneric = THUMBNAIL_GENERIC_HOOK_HEADLINES.has(resolvedHeadline);
+		if (isGeneric) {
+			const actionHeadline = buildPersonSpecificHeadline({ title, signals });
+			const lastName = extractLastName(signals.displayTopic || "");
+			const fallback =
+				(actionHeadline && actionHeadline !== "HER UPDATE"
+					? actionHeadline
+					: lastName
+					? `${lastName} UPDATE`
+					: actionHeadline) || "";
+			if (fallback) resolvedHeadline = clampHeadline(fallback);
+		}
+	}
 
 	if (topics.length > 1) {
 		return {
@@ -4839,7 +4973,7 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 
 	return {
 		intent,
-		headline: clampHeadline(headline),
+		headline: resolvedHeadline,
 		badgeText: String(badge || "UPDATE")
 			.trim()
 			.toUpperCase(),
