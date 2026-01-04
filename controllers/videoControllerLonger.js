@@ -9745,14 +9745,22 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const thumbShortTitle = String(
 				script.shortTitle || shortTitleFromText(thumbTitle)
 			).trim();
-			const thumbExpression =
-				script?.segments?.[0]?.expression || tonePlan?.mood || "warm";
 			const thumbLog = (message, payload) => logJob(jobId, message, payload);
 			const hookPlan = buildThumbnailHookPlan({
 				title: thumbTitle,
 				topicPicks,
 			});
 			if (hookPlan) thumbLog("thumbnail hook plan (computed)", hookPlan);
+			let thumbExpression =
+				script?.segments?.[0]?.expression || tonePlan?.mood || "warm";
+			if (
+				hookPlan?.intent === "serious_update" &&
+				["neutral", "warm"].includes(
+					String(thumbExpression || "").toLowerCase()
+				)
+			) {
+				thumbExpression = "thoughtful";
+			}
 			const hookHeadline = String(hookPlan?.headline || "").trim();
 			const resolvedShortTitle = hookHeadline || thumbShortTitle;
 			const thumbResult = await generateThumbnailPackage({

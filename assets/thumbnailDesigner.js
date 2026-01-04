@@ -901,7 +901,9 @@ function lowQualityTextPenalty({
 	isPersonTopic = false,
 } = {}) {
 	const hay = `${url} ${source} ${title}`.toLowerCase();
-	let penalty = LOW_QUALITY_IMAGE_TOKENS.some((t) => hay.includes(t)) ? 0.25 : 0;
+	let penalty = LOW_QUALITY_IMAGE_TOKENS.some((t) => hay.includes(t))
+		? 0.25
+		: 0;
 	if (TEXT_OVERLAY_PENALTY_TOKENS.some((t) => hay.includes(t))) {
 		penalty = Math.max(penalty, isPersonTopic ? 0.38 : 0.2);
 	}
@@ -2467,8 +2469,14 @@ async function normalizeTopicImageIfNeeded({
 	const outPath = path.join(tmpDir, `thumb_topic_norm_${jobId}_${index}.jpg`);
 	const filters = [];
 	if (needsSoften) {
-		filters.push("boxblur=2:1");
-		filters.push("eq=contrast=1.02:saturation=0.92:brightness=-0.015");
+		const strongSoften =
+			Number.isFinite(lowQualityPenalty) && lowQualityPenalty >= 0.35;
+		filters.push(strongSoften ? "boxblur=3:1" : "boxblur=2:1");
+		filters.push(
+			strongSoften
+				? "eq=contrast=1.0:saturation=0.88:brightness=-0.03"
+				: "eq=contrast=1.02:saturation=0.92:brightness=-0.015"
+		);
 	}
 	if (needsNeutralize) {
 		filters.push("colorchannelmixer=rr=0.95:gg=0.97:bb=1.10");
@@ -3322,12 +3330,33 @@ async function renderThumbnailOverlay({
 	const badgeText = badgeTextRaw
 		? hardTruncateText(badgeTextRaw.toUpperCase(), THUMBNAIL_BADGE_MAX_CHARS)
 		: "";
+	const badgeScale = Number.isFinite(Number(overlayOptions.badgeScale))
+		? clampNumber(Number(overlayOptions.badgeScale), 0.7, 1.2)
+		: 0.9;
+	const sublineRaw =
+		typeof overlayOptions.sublineText === "string"
+			? overlayOptions.sublineText.trim()
+			: "";
+	const sublineText = sublineRaw
+		? titleCaseIfLower(cleanThumbnailText(sublineRaw))
+		: "";
+	const sublineScale = Number.isFinite(Number(overlayOptions.sublineScale))
+		? clampNumber(Number(overlayOptions.sublineScale), 0.45, 0.85)
+		: 0.62;
+	const sublineSpacingPct = Number.isFinite(
+		Number(overlayOptions.sublineSpacingPct)
+	)
+		? clampNumber(Number(overlayOptions.sublineSpacingPct), 0.05, 0.35)
+		: 0.18;
+	const sublineColor =
+		typeof overlayOptions.sublineColor === "string" &&
+		overlayOptions.sublineColor.trim()
+			? overlayOptions.sublineColor.trim()
+			: "0xE6E6E6";
 	const textSizePct = Number.isFinite(Number(overlayOptions.textSizePct))
 		? clampNumber(Number(overlayOptions.textSizePct), 0.08, 0.16)
 		: THUMBNAIL_TEXT_SIZE_PCT;
-	const baseTextYOffset = Number.isFinite(
-		Number(overlayOptions.textYOffsetPct)
-	)
+	const baseTextYOffset = Number.isFinite(Number(overlayOptions.textYOffsetPct))
 		? clampNumber(Number(overlayOptions.textYOffsetPct), 0.08, 0.24)
 		: THUMBNAIL_TEXT_Y_OFFSET_PCT;
 	const { text, fontScale } = buildThumbnailText(title, {
@@ -3337,11 +3366,15 @@ async function renderThumbnailOverlay({
 	const lineCount = text ? text.split("\n").length : 0;
 	const hasText = Boolean(text);
 	const hasBadge = Boolean(badgeText);
+	const hasSubline = Boolean(sublineText);
 	const fontFile = THUMBNAIL_FONT_FILE
 		? `:fontfile='${escapeDrawtext(THUMBNAIL_FONT_FILE)}'`
 		: "";
 	let adjustedTextSizePct = textSizePct;
 	let textYOffset = baseTextYOffset;
+	if (hasSubline) {
+		textYOffset = clampNumber(baseTextYOffset + 0.01, 0.08, 0.24);
+	}
 	if (lineCount >= 2) {
 		const cleanLen = cleanThumbnailText(text).length;
 		const scale = cleanLen >= 14 ? 0.92 : 0.96;
@@ -3353,6 +3386,20 @@ async function renderThumbnailOverlay({
 		Math.round(THUMBNAIL_HEIGHT * adjustedTextSizePct * fontScale)
 	);
 	const lineSpacing = Math.round(fontSize * THUMBNAIL_TEXT_LINE_SPACING_PCT);
+	const headlineTextHeight =
+		lineCount > 0
+			? fontSize * lineCount + lineSpacing * Math.max(0, lineCount - 1)
+			: 0;
+	const subFontSize = hasSubline
+		? Math.max(18, Math.round(fontSize * sublineScale))
+		: 0;
+	const sublineGap = hasSubline
+		? Math.max(6, Math.round(fontSize * sublineSpacingPct))
+		: 0;
+	const headlineY = Math.round(THUMBNAIL_HEIGHT * textYOffset);
+	const sublineY = hasSubline
+		? Math.round(headlineY + headlineTextHeight + sublineGap)
+		: 0;
 	const headlineRect = hasText
 		? computeHeadlineBoxRect({
 				leftPanelPct,
@@ -3363,6 +3410,19 @@ async function renderThumbnailOverlay({
 				yOffset: textYOffset,
 		  })
 		: null;
+	const textBoxRect =
+		headlineRect && hasSubline
+			? {
+					...headlineRect,
+					h: Math.min(
+						THUMBNAIL_HEIGHT - headlineRect.y - 4,
+						headlineRect.h +
+							sublineGap +
+							subFontSize +
+							Math.round(subFontSize * 0.35)
+					),
+			  }
+			: headlineRect;
 	const textFilePath = hasText
 		? path.join(
 				path.dirname(outputPath),
@@ -3375,8 +3435,15 @@ async function renderThumbnailOverlay({
 				`thumb_badge_${path.basename(outputPath, path.extname(outputPath))}.txt`
 		  )
 		: "";
+	const sublineFilePath = hasSubline
+		? path.join(
+				path.dirname(outputPath),
+				`thumb_sub_${path.basename(outputPath, path.extname(outputPath))}.txt`
+		  )
+		: "";
 	if (hasText) fs.writeFileSync(textFilePath, text, "utf8");
 	if (hasBadge) fs.writeFileSync(badgeFilePath, badgeText, "utf8");
+	if (hasSubline) fs.writeFileSync(sublineFilePath, sublineText, "utf8");
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
@@ -3456,7 +3523,7 @@ async function renderThumbnailOverlay({
 	if (hasBadge) {
 		const badgeFontSize = Math.max(
 			18,
-			Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_FONT_PCT)
+			Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_FONT_PCT * badgeScale)
 		);
 		const badgeBorder = Math.round(badgeFontSize * 0.55);
 		filters.push(
@@ -3467,15 +3534,22 @@ async function renderThumbnailOverlay({
 	}
 	if (hasText) {
 		filters.push(
-			`drawbox=x=${headlineRect.x}:y=${headlineRect.y}:w=${headlineRect.w}:h=${
-				headlineRect.h
+			`drawbox=x=${textBoxRect.x}:y=${textBoxRect.y}:w=${textBoxRect.w}:h=${
+				textBoxRect.h
 			}:color=black@${textBoxOpacity.toFixed(2)}:t=fill`
 		);
 		filters.push(
 			`drawtext=textfile='${escapeDrawtext(
 				textFilePath
-			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=h*${textYOffset}`
+			)}'${fontFile}:fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black@0.6:shadowcolor=black@0.45:shadowx=2:shadowy=2:line_spacing=${lineSpacing}:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=${headlineY}`
 		);
+		if (hasSubline) {
+			filters.push(
+				`drawtext=textfile='${escapeDrawtext(
+					sublineFilePath
+				)}'${fontFile}:fontsize=${subFontSize}:fontcolor=${sublineColor}:borderw=2:bordercolor=black@0.45:shadowcolor=black@0.35:shadowx=1:shadowy=1:x=w*${THUMBNAIL_TEXT_MARGIN_PCT}:y=${sublineY}`
+			);
+		}
 	}
 
 	try {
@@ -3497,6 +3571,7 @@ async function renderThumbnailOverlay({
 	} finally {
 		if (textFilePath) safeUnlink(textFilePath);
 		if (badgeFilePath) safeUnlink(badgeFilePath);
+		if (sublineFilePath) safeUnlink(sublineFilePath);
 	}
 
 	return outputPath;
@@ -4333,6 +4408,15 @@ function looksLikePersonTopic(label = "") {
 	return tokens.every((t) => !GENERIC_TOPIC_TOKENS.has(t.toLowerCase()));
 }
 
+function buildIdentitySubline(label = "", maxWords = 4) {
+	const base = buildTopicIdentityLabel(label, []);
+	const candidate = base || cleanThumbnailText(label);
+	if (!candidate) return "";
+	const words = selectHeadlineWords(candidate, maxWords);
+	if (!words.length) return "";
+	return hardTruncateText(titleCaseIfLower(words.join(" ")), 28);
+}
+
 function buildPersonIdentityToken(label = "") {
 	const cleaned = cleanThumbnailText(label);
 	const tokens = cleaned.split(" ").filter(Boolean);
@@ -4350,9 +4434,7 @@ function headlineHasToken(headline = "", token = "") {
 function headlineHasAnyToken(headline = "", tokens = []) {
 	if (!headline || !Array.isArray(tokens) || !tokens.length) return false;
 	const hay = cleanThumbnailText(headline).toLowerCase();
-	return tokens.some((tok) =>
-		hay.includes(String(tok || "").toLowerCase())
-	);
+	return tokens.some((tok) => hay.includes(String(tok || "").toLowerCase()));
 }
 
 function mergeIdentityIntoHeadline(identity, headline, maxWords = 4) {
@@ -4719,30 +4801,43 @@ async function generateThumbnailPackage({
 		questionHeadline ||
 		hook?.headline ||
 		defaultTitle;
-	if (!resolvedOverrideHeadline && isGenericHeadline(thumbTitle)) {
-		const topicHeadline = buildTopicPhrase(topics, THUMBNAIL_TEXT_MAX_WORDS);
-		if (topicHeadline) thumbTitle = topicHeadline;
-		else if (!isGenericHeadline(defaultTitle)) thumbTitle = defaultTitle;
-	}
 	let punchyTitle =
 		resolvedOverrideHeadline ||
 		questionPunchy ||
 		hook?.headline ||
 		defaultPunchy;
-	if (!resolvedOverrideHeadline && isGenericHeadline(punchyTitle)) {
-		const topicPunchy = buildTopicPhrase(
-			topics,
-			THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS
-		);
-		if (topicPunchy) punchyTitle = topicPunchy;
-		else if (!isGenericHeadline(defaultPunchy)) punchyTitle = defaultPunchy;
-	}
 	const topicCount = Array.isArray(topics) ? topics.length : 0;
 	const primaryTopicLabel =
 		topics?.[0]?.displayTopic || topics?.[0]?.topic || "";
 	const topicKeywords = filterSpecificTopicTokens(
 		topicTokensFromTitle(primaryTopicLabel)
 	);
+	const identitySubline = buildIdentitySubline(primaryTopicLabel, 4);
+	const identityTokens = topicTokensFromTitle(identitySubline);
+	const useIdentitySubline =
+		topicCount === 1 &&
+		identitySubline &&
+		!headlineHasAnyToken(thumbTitle, identityTokens) &&
+		!headlineHasAnyToken(punchyTitle, identityTokens) &&
+		cleanThumbnailText(identitySubline).toLowerCase() !==
+			cleanThumbnailText(thumbTitle).toLowerCase();
+	if (!resolvedOverrideHeadline && isGenericHeadline(thumbTitle)) {
+		if (!useIdentitySubline) {
+			const topicHeadline = buildTopicPhrase(topics, THUMBNAIL_TEXT_MAX_WORDS);
+			if (topicHeadline) thumbTitle = topicHeadline;
+			else if (!isGenericHeadline(defaultTitle)) thumbTitle = defaultTitle;
+		}
+	}
+	if (!resolvedOverrideHeadline && isGenericHeadline(punchyTitle)) {
+		if (!useIdentitySubline) {
+			const topicPunchy = buildTopicPhrase(
+				topics,
+				THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS
+			);
+			if (topicPunchy) punchyTitle = topicPunchy;
+			else if (!isGenericHeadline(defaultPunchy)) punchyTitle = defaultPunchy;
+		}
+	}
 	const badgeText =
 		resolvedOverrideBadgeText ||
 		(topicCount > 1
@@ -4753,7 +4848,7 @@ async function generateThumbnailPackage({
 		: "";
 	const allowIdentityOverride =
 		!resolvedOverrideHeadline || isGenericHeadline(resolvedOverrideHeadline);
-	if (personIdentity && allowIdentityOverride) {
+	if (!useIdentitySubline && personIdentity && allowIdentityOverride) {
 		const hasTopicToken = headlineHasAnyToken(thumbTitle, topicKeywords);
 		if (
 			!headlineHasToken(thumbTitle, personIdentity) &&
@@ -4777,12 +4872,21 @@ async function generateThumbnailPackage({
 			);
 		}
 	}
+	if (useIdentitySubline) {
+		if (/^WHAT WE KNOW\??$/i.test(thumbTitle)) thumbTitle = "WHAT WE KNOW";
+		if (/^WHAT WE KNOW\??$/i.test(punchyTitle)) punchyTitle = "WHAT WE KNOW";
+	}
+	const sublineText =
+		useIdentitySubline && !isGenericHeadline(identitySubline)
+			? identitySubline
+			: "";
 	if (log)
 		log("thumbnail hook plan", {
 			intent: resolvedIntent,
 			headline: thumbTitle,
 			punchy: punchyTitle,
 			badgeText,
+			subline: sublineText || null,
 			overrideHeadline: resolvedOverrideHeadline || null,
 			overrideBadgeText: resolvedOverrideBadgeText || null,
 		});
@@ -4866,21 +4970,41 @@ async function generateThumbnailPackage({
 		}
 	}
 
+	const primaryMaxWords = useIdentitySubline
+		? Math.min(3, THUMBNAIL_TEXT_MAX_WORDS)
+		: THUMBNAIL_TEXT_MAX_WORDS;
+	const sublineOptions = sublineText
+		? {
+				sublineText,
+				sublineScale: 0.62,
+				sublineSpacingPct: 0.18,
+				sublineColor: "0xE6E6E6",
+		  }
+		: {};
+	const variantAOverlayOptions = {
+		maxWords: primaryMaxWords,
+		badgeText,
+		badgeScale: 0.9,
+		focusRing: shouldFocusRing,
+		...sublineOptions,
+	};
 	const variantBOverlayOptions = {
-		maxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
+		maxWords: Math.min(THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS, primaryMaxWords),
 		baseChars: THUMBNAIL_VARIANT_B_BASE_CHARS,
 		contrast: THUMBNAIL_VARIANT_B_CONTRAST,
 		panelOpacity: THUMBNAIL_VARIANT_B_PANEL_PCT,
 		textBoxOpacity: THUMBNAIL_VARIANT_B_TEXT_BOX_PCT,
 		badgeText,
+		badgeScale: 0.9,
 		focusRing: shouldFocusRing,
+		...sublineOptions,
 	};
 	const variantPlans = [
 		{
 			key: "a",
 			title: thumbTitle,
 			layout: {},
-			overlayOptions: { badgeText, focusRing: shouldFocusRing },
+			overlayOptions: variantAOverlayOptions,
 		},
 		{
 			key: "b",
