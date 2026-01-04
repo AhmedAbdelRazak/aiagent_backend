@@ -258,6 +258,12 @@ const AUDIO_BITRATE = "256k";
 const FINAL_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.0:LRA=11";
 const FINAL_MASTER_MAX_HEIGHT = 2160;
 const FINAL_MASTER_MIN_HEIGHT = 1080;
+// 0 disables the timeout so long 4K encodes can finish without being killed.
+const FINAL_MASTER_TIMEOUT_MS = clampNumber(
+	process.env.FINAL_MASTER_TIMEOUT_MS ?? 0,
+	0,
+	7 * 24 * 60 * 60 * 1000
+);
 const FINAL_GOP_SECONDS = 2;
 const FINAL_COLOR_SPACE = "bt709";
 const FINAL_COLOR_RANGE = "tv";
@@ -9181,7 +9187,7 @@ async function finalizeVideoWithFadeOut({
 			outputPath,
 		],
 		"final_master",
-		{ timeoutMs: 480000 }
+		{ timeoutMs: FINAL_MASTER_TIMEOUT_MS }
 	);
 }
 
