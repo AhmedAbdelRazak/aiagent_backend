@@ -323,6 +323,9 @@ const ENABLE_MICRO_EMOTES = true;
 // Audio processing
 const AUDIO_SR = 48000;
 const AUDIO_CHANNELS = 1; // mono voice for stability + smaller sync payload
+const TRIM_LEADING_SILENCE = true;
+const LEAD_SILENCE_MIN_SEC = clampNumber(0.04, 0.02, 0.2);
+const LEAD_SILENCE_THRESHOLD_DB = clampNumber(-45, -60, -35);
 const GLOBAL_ATEMPO_MIN = 0.95;
 const GLOBAL_ATEMPO_MAX = 1.07;
 const INTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
@@ -5571,6 +5574,7 @@ function pickIntroTemplate(mood = "neutral", jobId) {
 
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	const normalizedMood = normalizeExpression(mood);
+	const moodKey = FORCE_NEUTRAL_VOICEOVER ? "neutral" : normalizedMood;
 	const subject =
 		normalizedMood === "serious"
 			? formatTopicList(topics)
@@ -5578,7 +5582,7 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 			? shortTopicLabel(shortTitle, 5)
 			: formatTopicList(topics);
 	const safeSubject = subject || "today's topic";
-	const template = pickIntroTemplate(normalizedMood, jobId);
+	const template = pickIntroTemplate(moodKey, jobId);
 	const line = template.replace("{topic}", safeSubject);
 	return sanitizeIntroOutroLine(line);
 }
@@ -5662,7 +5666,7 @@ function buildOutroLine({
 		}
 		if (countWords(line) < 12) {
 			line =
-				"Thank you for watching. We appreciate you, and we'll see you next time.";
+				"Thank you for watching. I appreciate you, and I'll see you next time.";
 		}
 	}
 	return sanitizeIntroOutroLine(line);
@@ -6104,7 +6108,7 @@ async function generateScript({
 		mood === "serious"
 			? `Segment 0: measured, serious tone, slower pacing. ${outroGuide}`
 			: mood === "excited"
-			? `Segment 0: high-energy, upbeat hook. ${outroGuide}`
+			? `Segment 0: confident, neutral hook with controlled energy (no shouty hype). ${outroGuide}`
 			: `Segment 0: confident, neutral hook. ${outroGuide}`;
 	const ctaLine = includeOutro
 		? "End the LAST segment of EACH topic with one short, topic-specific engagement question for comments. Do NOT add like/subscribe in content; the closing line only says thank you and see you next time."
@@ -6287,6 +6291,9 @@ Style rules (IMPORTANT):
 - Avoid staccato punctuation. Do NOT put commas between single words.
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
 - Lead with the answer, then add context (what happened, why it matters, what to watch for).
+- Make each segment feel like a mini reveal: include one standout detail, twist, or implication likely new to viewers.
+- Use specific nouns (people, places, titles) over vague phrases like "big news" or "fans are excited".
+- Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
 - Prioritize genuinely interesting facts (history, timeline, behind-the-scenes, credible rumors, estimates) without overstating.
 - If you mention a rumor or estimate, label it clearly as unconfirmed and attribute it (\"reports suggest\", \"according to [source]\").
 - Include at least one brief source attribution per topic using the provided context (e.g., \"According to Variety...\").
@@ -6457,6 +6464,9 @@ Return JSON ONLY:
 		...s,
 		text: sanitizeSegmentText(s.text),
 	}));
+	if (FORCE_NEUTRAL_VOICEOVER && segments[0]) {
+		segments[0] = { ...segments[0], expression: "neutral" };
+	}
 	// Smooth expressions so adjacent segments stay coherent.
 	const smoothed = smoothExpressionPlan(
 		segments.map((s) => s.expression),
@@ -6930,6 +6940,9 @@ Rules:
 - Keep EXACTLY ${segments.length} segments with the same indexes.
 - Keep the same topic order and assignments.
 - No redundancy: each segment adds a new detail or angle with concrete, interesting facts.
+- Add one fresh, concrete detail or implication per segment when possible.
+- Prefer specific nouns over vague hype phrases.
+- Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
 - Add at least one short attribution per topic when sources are available (e.g., "According to Variety...").
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
@@ -7516,6 +7529,37 @@ async function mp3ToCleanWav(mp3Path, wavPath) {
 		"mp3_to_wav",
 		{ timeoutMs: 120000 }
 	);
+}
+
+async function trimLeadingSilenceWav(inWav, outWav) {
+	const trimLead = `silenceremove=start_periods=1:start_duration=${LEAD_SILENCE_MIN_SEC}:start_threshold=${LEAD_SILENCE_THRESHOLD_DB}dB`;
+	const af = [
+		`aresample=${AUDIO_SR}`,
+		"aformat=channel_layouts=mono",
+		trimLead,
+	].join(",");
+
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-i",
+			inWav,
+			"-vn",
+			"-af",
+			af,
+			"-acodec",
+			"pcm_s16le",
+			"-ar",
+			String(AUDIO_SR),
+			"-ac",
+			String(AUDIO_CHANNELS),
+			"-y",
+			outWav,
+		],
+		"trim_lead_silence",
+		{ timeoutMs: 120000 }
+	);
+	return outWav;
 }
 
 async function applyGlobalAtempoToWav(inWav, outWav, atempo) {
@@ -10630,6 +10674,9 @@ Rules:
 - Improve clarity and specificity; avoid vague filler phrasing or repeating the question.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
 - No redundancy: do not restate the same fact or idea in different words.
+- Add one fresh, concrete detail or implication per segment when possible.
+- Prefer specific nouns over vague hype phrases.
+- Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Preserve source attributions already in the text; keep at least one brief attribution per topic when possible.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
@@ -10726,6 +10773,32 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			});
 		}
 
+		if (TRIM_LEADING_SILENCE) {
+			const introTight = path.join(tmpDir, `intro_tight_${jobId}.wav`);
+			await trimLeadingSilenceWav(introAudioPath, introTight);
+			safeUnlink(introAudioPath);
+			introAudioPath = introTight;
+			introDurationSec = await probeDurationSeconds(introAudioPath);
+
+			const outroTight = path.join(tmpDir, `outro_tight_${jobId}.wav`);
+			await trimLeadingSilenceWav(outroAudioPath, outroTight);
+			safeUnlink(outroAudioPath);
+			outroAudioPath = outroTight;
+			outroDurationSec = await probeDurationSeconds(outroAudioPath);
+
+			logJob(jobId, "intro/outro leading silence trimmed", {
+				introDurationSec: Number(introDurationSec.toFixed(3)),
+				outroDurationSec: Number(outroDurationSec.toFixed(3)),
+			});
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					intro: { text: introTextFinal, targetSec: introDurationSec },
+					outro: { text: outroTextFinal, targetSec: outroDurationSec },
+				},
+			});
+		}
+
 		const finalScriptSegments = segments.map((s) => ({
 			index: s.index,
 			topicIndex: s.topicIndex,
@@ -10761,14 +10834,24 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		for (const a of cleanedWavs.sort((x, y) => x.index - y.index)) {
 			const out = path.join(tmpDir, `seg_audio_${jobId}_${a.index}.wav`);
 			await applyGlobalAtempoToWav(a.wav, out, globalAtempo);
-			const d2 = await probeDurationSeconds(out);
+			let finalWav = out;
+			if (TRIM_LEADING_SILENCE && !voiceoverUrl) {
+				const trimmed = path.join(
+					tmpDir,
+					`seg_audio_${jobId}_${a.index}_tight.wav`
+				);
+				await trimLeadingSilenceWav(out, trimmed);
+				safeUnlink(out);
+				finalWav = trimmed;
+			}
+			const d2 = await probeDurationSeconds(finalWav);
 			logJob(jobId, "tts segment atempo applied", {
 				segment: a.index,
 				atempo: Number(globalAtempo.toFixed(4)),
 				cleanDur: Number((a.cleanDur || 0).toFixed(3)),
 				finalDur: Number((d2 || 0).toFixed(3)),
 			});
-			segmentAudio.push({ index: a.index, wav: out, dur: d2 });
+			segmentAudio.push({ index: a.index, wav: finalWav, dur: d2 });
 			safeUnlink(a.wav);
 		}
 
