@@ -1150,8 +1150,7 @@ function ensureAnchorInShortsSegments(
 	if (!text) return segments;
 	const anchorLower = anchor.toLowerCase();
 	if (text.toLowerCase().includes(anchorLower)) return segments;
-	const prefix = domain === "fictional" ? `In ${anchor}, ` : `${anchor}: `;
-	const merged = `${prefix}${text}`.replace(/\s+/g, " ").trim();
+	const merged = mergeAnchorIntoLeadText(text, anchor, domain);
 	const updated = segments.slice();
 	updated[0] = { ...first, scriptText: merged };
 	return updated;
@@ -2068,6 +2067,12 @@ function improveTTSPronunciation(text) {
 function normalizePunctuationForTTS(text = "") {
 	let cleaned = String(text || "");
 
+	// Normalize smart punctuation to ASCII for consistent TTS + storage
+	cleaned = cleaned
+		.replace(/[\u2018\u2019]/g, "'")
+		.replace(/[\u201C\u201D]/g, '"')
+		.replace(/[\u2013\u2014]/g, "-");
+
 	// Remove URLs and emails that ElevenLabs will spell awkwardly
 	cleaned = cleaned.replace(/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi, " ");
 
@@ -2113,6 +2118,121 @@ function cleanForTTS(text = "", language = DEFAULT_LANGUAGE) {
 	}
 	if (!cleaned) return text || "";
 	return cleaned;
+}
+
+function normalizeScriptForTTS(text = "", language = DEFAULT_LANGUAGE) {
+	const langNote = normalizeLanguageLabel(language || DEFAULT_LANGUAGE);
+	const base = String(text || "");
+	const improved =
+		langNote === "English" ? improveTTSPronunciation(base) : base;
+	return cleanForTTS(improved, langNote);
+}
+
+function normalizeForDedup(text = "") {
+	return String(text || "")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/gi, " ")
+		.trim();
+}
+
+function tokenizeForDedup(text = "") {
+	const normText = normalizeForDedup(text);
+	return normText ? normText.split(/\s+/).filter(Boolean) : [];
+}
+
+function buildLeadPrefixRegex(tokens = []) {
+	if (!tokens.length) return null;
+	const pattern = tokens.map((t) => escapeRegExp(t)).join("[^a-z0-9]+");
+	return new RegExp(`^\\s*${pattern}[^a-z0-9]*`, "i");
+}
+
+function stripLeadingTokenSequence(text = "", tokens = []) {
+	const re = buildLeadPrefixRegex(tokens);
+	if (!re) return String(text || "").trim();
+	return String(text || "")
+		.replace(re, "")
+		.trim();
+}
+
+function mergeAnchorIntoLeadText(text = "", anchor = "", domain = "real") {
+	const rawText = String(text || "").trim();
+	const rawAnchor = String(anchor || "").trim();
+	if (!rawText || !rawAnchor) return rawText;
+	if (rawText.toLowerCase().includes(rawAnchor.toLowerCase())) return rawText;
+
+	const textTokens = tokenizeForDedup(rawText);
+	const anchorTokens = tokenizeForDedup(rawAnchor);
+	let prefixLen = 0;
+	while (
+		prefixLen < Math.min(textTokens.length, anchorTokens.length) &&
+		textTokens[prefixLen] === anchorTokens[prefixLen]
+	) {
+		prefixLen += 1;
+	}
+
+	if (prefixLen >= 2) {
+		const remainder = stripLeadingTokenSequence(
+			rawText,
+			textTokens.slice(0, prefixLen)
+		);
+		if (!remainder) return rawAnchor;
+		if (domain === "fictional") {
+			const cleaned = remainder.replace(/^[,.;!?]\s*/, "");
+			const lead = /^in\s+/i.test(cleaned) ? "" : "In ";
+			return `${lead}${rawAnchor}, ${cleaned}`.replace(/\s+/g, " ").trim();
+		}
+		const joiner = /^[,.;!?]/.test(remainder) ? "" : ". ";
+		return `${rawAnchor}${joiner}${remainder}`.replace(/\s+/g, " ").trim();
+	}
+
+	const prefix =
+		domain === "fictional" ? `In ${rawAnchor}, ` : `${rawAnchor}: `;
+	return `${prefix}${rawText}`.replace(/\s+/g, " ").trim();
+}
+
+function dedupeLeadLabel(text = "") {
+	const raw = String(text || "").trim();
+	if (!raw) return raw;
+	const match = raw.match(/^(.{4,120}?)[\\s]*[:;\\u2013\\u2014-]\\s+(.+)$/);
+	if (!match) return raw;
+	const label = match[1].trim();
+	const rest = match[2].trim();
+	if (!label || !rest) return raw;
+
+	const labelTokens = tokenizeForDedup(label);
+	const restTokens = tokenizeForDedup(rest);
+	if (labelTokens.length < 2 || restTokens.length < 4) return raw;
+
+	const headTokens = restTokens.slice(0, Math.min(8, restTokens.length));
+	const overlap = headTokens.filter((t) => labelTokens.includes(t)).length;
+	const denom = Math.min(labelTokens.length, headTokens.length);
+	const isHeadline = /[;|]/.test(label) || /\s[-\u2013\u2014]\s/.test(label);
+	const threshold = isHeadline ? 0.6 : 0.75;
+	if (!denom || overlap < 2 || overlap / denom < threshold) return raw;
+
+	return rest;
+}
+
+function removeRedundantLeadLabels(segments = [], { category } = {}) {
+	if (!Array.isArray(segments) || !segments.length) return segments;
+	if (category === "Top5") return segments;
+	return segments.map((seg) => {
+		if (!seg || !seg.scriptText) return seg;
+		const cleaned = dedupeLeadLabel(seg.scriptText);
+		return cleaned === seg.scriptText ? seg : { ...seg, scriptText: cleaned };
+	});
+}
+
+function finalizeSegmentsForTTS(segments = [], { language } = {}) {
+	if (!Array.isArray(segments) || !segments.length) return segments;
+	const langNote = language || DEFAULT_LANGUAGE;
+	return segments.map((seg) => {
+		if (!seg) return seg;
+		const normalized = normalizeScriptForTTS(seg.scriptText || "", langNote);
+		return normalized === seg.scriptText
+			? seg
+			: { ...seg, scriptText: normalized };
+	});
 }
 
 function segmentLooksFragmentary(text = "") {
@@ -4144,23 +4264,8 @@ Original: "${seg.scriptText}"
 
 function buildTtsPartsForSegment(seg, category) {
 	const text = String(seg?.scriptText || "").trim();
-	if (category !== "Top5" || !seg?.countdownRank) {
-		return { parts: [text], pauseSeconds: 0 };
-	}
-
-	const rankWord = NUM_WORD[seg.countdownRank] || String(seg.countdownRank);
-	const label = String(seg.countdownLabel || "").trim();
-	const remainder = removeLeadingLabel(stripCountdownPrefix(text), label);
-	const labelLine = label
-		? `${label}${remainder ? `: ${remainder}` : ""}`
-		: text;
-
-	const spoken = `Number ${rankWord}: ${labelLine}`.replace(/\s+/g, " ").trim();
-
-	return {
-		parts: [spoken],
-		pauseSeconds: 0,
-	};
+	if (!text) return { parts: [], pauseSeconds: 0 };
+	return { parts: [text], pauseSeconds: 0 };
 }
 
 function shortImageDesc(title = "", label = "") {
@@ -7794,6 +7899,8 @@ ${segDescLines}
 Narration rules:
 - Natural spoken language, like a professional commentator.
 - Vary sentence lengths and verbs so it feels human and lively, not robotic.
+- Avoid headline repetition: never open with "X:" or a title line followed by the same wording.
+- Do not restate the subject in the very next sentence; each line must add new information or stakes.
 - Sprinkle quick, honest reactions that match the facts (amazed, relieved, concerned) without overhyping.
 - Even for somber news, stay compassionate but keep momentum with clear, visual language - no flat recaps.
 - Segment 1 must immediately land the who/what/when and why-now hook in one tight line.
@@ -8768,6 +8875,9 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 				anchor: topicIntent?.anchor || topic,
 			});
 		}
+		if (category !== "Top5") {
+			segments = removeRedundantLeadLabels(segments, { category });
+		}
 		if (category !== "Top5" && allowTrendsImageSearch) {
 			const refined = await prepareSegmentImagePairsForShorts({
 				segments,
@@ -8803,6 +8913,8 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 				};
 			}
 		}
+
+		segments = finalizeSegmentsForTTS(segments, { language });
 
 		const fullScript = segments.map((s) => s.scriptText.trim()).join(" ");
 		const recomputed = recomputeSegmentDurationsFromScript(
@@ -9066,16 +9178,13 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 			const ttsPlan = buildTtsPartsForSegment(segments[i], category);
 			const requestedParts = Array.isArray(ttsPlan.parts) ? ttsPlan.parts : [];
 			const ttsParts = requestedParts
-				.map((p) => cleanForTTS(String(p || "").trim(), language))
+				.map((p) => String(p || "").trim())
 				.filter((p) => p.length);
 			if (!ttsParts.length)
-				ttsParts.push(
-					cleanForTTS(String(segments[i].scriptText || "").trim(), language) ||
-						"Update"
-				);
+				ttsParts.push(String(segments[i].scriptText || "").trim() || "Update");
 
-			const toneText = cleanForTTS(
-				improveTTSPronunciation(ttsParts.join(" ").trim()),
+			const toneText = normalizeScriptForTTS(
+				ttsParts.join(" ").trim(),
 				language
 			);
 			const localTone = deriveVoiceSettings(toneText, category);
@@ -9083,11 +9192,8 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 
 			const piecePaths = [];
 			for (let pIdx = 0; pIdx < ttsParts.length; pIdx++) {
-				const partText = cleanForTTS(
-					improveTTSPronunciation(ttsParts[pIdx] || "Countdown update"),
-					language
-				);
-				if (!partText.trim()) continue;
+				const partText = String(ttsParts[pIdx] || "").trim();
+				if (!partText) continue;
 				const partPath = tmpFile(`tts_part_${i + 1}_${pIdx + 1}`, ".mp3");
 
 				try {
@@ -9635,18 +9741,15 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 					? ttsPlan.parts
 					: [];
 				const ttsParts = requestedParts
-					.map((p) => cleanForTTS(String(p || "").trim(), language))
+					.map((p) => String(p || "").trim())
 					.filter((p) => p.length);
 				if (!ttsParts.length)
 					ttsParts.push(
-						cleanForTTS(
-							String(segments[i].scriptText || "").trim(),
-							language
-						) || "Update"
+						String(segments[i].scriptText || "").trim() || "Update"
 					);
 
-				const toneText = cleanForTTS(
-					improveTTSPronunciation(ttsParts.join(" ").trim()),
+				const toneText = normalizeScriptForTTS(
+					ttsParts.join(" ").trim(),
 					language
 				);
 				const localTone = deriveVoiceSettings(toneText, category);
@@ -9654,11 +9757,8 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 
 				const piecePaths = [];
 				for (let pIdx = 0; pIdx < ttsParts.length; pIdx++) {
-					const partText = cleanForTTS(
-						improveTTSPronunciation(ttsParts[pIdx] || "Countdown update"),
-						language
-					);
-					if (!partText.trim()) continue;
+					const partText = String(ttsParts[pIdx] || "").trim();
+					if (!partText) continue;
 					const partPath = tmpFile(`tts_part_${i + 1}_${pIdx + 1}`, ".mp3");
 
 					try {
