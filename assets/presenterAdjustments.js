@@ -36,7 +36,7 @@ const WARDROBE_VARIANTS = [
 	"black button-up with subtle sheen, open collar, slim dark blazer",
 	"deep navy oxford button-up, open collar, no blazer",
 	"charcoal button-up with thin pinstripe, open collar, open blazer",
-	"black button-up with hidden placket, open collar, no blazer",
+	"black button-up with standard placket, open collar, no blazer",
 	"midnight-blue button-up, open collar, relaxed dark blazer",
 	"dark espresso button-up, open collar, tailored black blazer",
 	"deep charcoal twill button-up, open collar, structured dark blazer",
@@ -162,6 +162,7 @@ function fallbackWardrobePrompt({ topicLine, wardrobeVariant }) {
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment.
 Change ONLY the outfit on the torso/upper body area to a dark, classy outfit. Outfit spec (use exactly): ${wardrobeVariant}.
 Outfit colors must be dark only (charcoal, black, deep navy). No bright or light colors.
+Outfit must be intact: no rips, tears, holes, or missing fabric; shirt placket straight and buttons aligned.
 Do NOT alter the face or head at all. Keep glasses, beard, hairline, skin texture, and facial features exactly as in @presenter_ref. Single face only, no ghosting.
 Studio background, desk, lighting, camera angle, and all props must remain EXACTLY the same.
 No crop/zoom, no borders/letterboxing/vignettes, no added blur or beautification; keep exact framing and processing.
@@ -228,6 +229,7 @@ Return JSON only with key: wardrobePrompt.
 	- Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts, no retouching or smoothing.
 	- Keep studio/desk/background/camera/framing/lighting unchanged; no crop/zoom, no borders/letterboxing/vignettes, no added blur or processing.
 	- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; the prompt must include the cue explicitly and match it exactly (dark colors only, open collar, optional open blazer).
+- Outfit must be intact: no rips, tears, holes, missing fabric, or broken seams; shirt placket straight and buttons aligned.
 - Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
 - No extra objects and no added text/logos; no watermarks.
 `.trim();
@@ -261,11 +263,19 @@ Topics: ${topicLine}
 		});
 		const content = String(resp?.choices?.[0]?.message?.content || "").trim();
 		const parsed = parseJsonObject(content);
-		if (parsed && parsed.wardrobePrompt) {
-			const result = {
-				wardrobePrompt: String(parsed.wardrobePrompt).trim(),
-				wardrobeVariant,
-			};
+	if (parsed && parsed.wardrobePrompt) {
+		const integrityLine =
+			"Outfit must be intact: no rips, tears, holes, or missing fabric; shirt placket straight and buttons aligned.";
+		const promptBase = String(parsed.wardrobePrompt).trim();
+		const promptWithIntegrity = promptBase
+			.toLowerCase()
+			.includes("rips")
+			? promptBase
+			: `${promptBase}\n${integrityLine}`;
+		const result = {
+			wardrobePrompt: promptWithIntegrity,
+			wardrobeVariant,
+		};
 			if (log)
 				log("orchestrator prompts", {
 					wardrobe: result.wardrobePrompt.slice(0, 300),

@@ -410,6 +410,8 @@ const NON_PERSON_PORTRAIT_TOKENS = [
 	"died",
 	"death",
 ];
+const BLOCK_PORTRAIT_FOR_NON_PERSON_TOPICS = true;
+const NON_PERSON_PORTRAIT_BLOCK_THRESHOLD = 0.2;
 const GENERIC_HEADLINE_PHRASES = new Set([
 	"TRENDING NOW",
 	"TOP STORIES",
@@ -4041,8 +4043,12 @@ async function collectThumbnailTopicImages({
 	const hasCSE = !!(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
 	if (!hasCSE && log)
 		log("thumbnail topic images: CSE missing, using wiki/commons only");
-	const topicList = Array.isArray(topics) ? topics : [];
-	if (!topicList.length) return [];
+const topicList = Array.isArray(topics) ? topics : [];
+if (!topicList.length) return [];
+const hasPersonTopic = topicList.some((t) =>
+	looksLikePersonTopic(t?.displayTopic || t?.topic || "")
+);
+const allowEmptyForNonPerson = !hasPersonTopic;
 
 	const combinedContext = `${title || ""} ${shortTitle || ""} ${
 		seoTitle || ""
@@ -4066,36 +4072,60 @@ async function collectThumbnailTopicImages({
 	const urlCandidates = [];
 	const seen = new Set();
 	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
-	const pushCandidate = (
+let portraitSkipCount = 0;
+const pushCandidate = (
+	url,
+	{
+		source = "",
+		title = "",
+		priority = 0,
+		criteria,
+		isPersonTopic,
+		topicIndex,
+	} = {}
+) => {
+	if (!url) return;
+	const key = normalizeImageUrlKey(url);
+	if (seen.has(key)) return;
+	if (isLikelyThumbnailUrl(url)) return;
+	if (isLikelyWatermarkedSource(url, source)) return;
+	if (isMerchDisallowedCandidate({ url, source, title })) return;
+	const merchPenalty = merchPenaltyScore({ url, source, title });
+	const multiPenalty = multiPersonPenalty({ url, source, title });
+	const injuryPenalty = injuryVisualPenalty({ url, source, title });
+	const lowQualityPenalty = lowQualityTextPenalty({
 		url,
-		{ source = "", title = "", priority = 0, criteria, isPersonTopic } = {}
-	) => {
-		if (!url) return;
-		const key = normalizeImageUrlKey(url);
-		if (seen.has(key)) return;
-		if (isLikelyThumbnailUrl(url)) return;
-		if (isLikelyWatermarkedSource(url, source)) return;
-		if (isMerchDisallowedCandidate({ url, source, title })) return;
-		const merchPenalty = merchPenaltyScore({ url, source, title });
-		const multiPenalty = multiPersonPenalty({ url, source, title });
-		const injuryPenalty = injuryVisualPenalty({ url, source, title });
-		const lowQualityPenalty = lowQualityTextPenalty({
-			url,
-			source,
-			title,
-			isPersonTopic,
-		});
-		const personPenalty = nonPersonPortraitPenalty({
-			url,
-			source,
-			title,
-			isPersonTopic,
-		});
-		const match = scoreThumbnailTopicMatch(url, source, criteria);
-		const minWordMatches = Number(criteria?.minWordMatches || 0);
-		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
-		const relaxed =
-			(minWordMatches && match.wordMatches < minWordMatches) ||
+		source,
+		title,
+		isPersonTopic,
+	});
+	const personPenalty = nonPersonPortraitPenalty({
+		url,
+		source,
+		title,
+		isPersonTopic,
+	});
+	if (
+		BLOCK_PORTRAIT_FOR_NON_PERSON_TOPICS &&
+		!isPersonTopic &&
+		personPenalty >= NON_PERSON_PORTRAIT_BLOCK_THRESHOLD
+	) {
+		if (log && portraitSkipCount < 4) {
+			log("thumbnail topic image skipped (portrait)", {
+				url: String(url).slice(0, 140),
+				source: String(source).slice(0, 80),
+				title: String(title).slice(0, 80),
+				personPenalty,
+			});
+			portraitSkipCount += 1;
+		}
+		return;
+	}
+	const match = scoreThumbnailTopicMatch(url, source, criteria);
+	const minWordMatches = Number(criteria?.minWordMatches || 0);
+	const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
+	const relaxed =
+		(minWordMatches && match.wordMatches < minWordMatches) ||
 			(minSubjectMatches && match.subjectMatches < minSubjectMatches);
 		urlCandidates.push({
 			url,
@@ -4108,14 +4138,15 @@ async function collectThumbnailTopicImages({
 			sourceScore: scoreSourceAffinity(url, source),
 			merchPenalty,
 			multiPersonPenalty: multiPenalty,
-			injuryPenalty,
-			lowQualityPenalty,
-			personPenalty,
-			priority,
-			relaxed: relaxed || merchPenalty >= 0.6,
-		});
-		seen.add(key);
-	};
+		injuryPenalty,
+		lowQualityPenalty,
+		personPenalty,
+		priority,
+		topicIndex,
+		relaxed: relaxed || merchPenalty >= 0.6,
+	});
+	seen.add(key);
+};
 
 	for (let topicIndex = 0; topicIndex < topicList.length; topicIndex++) {
 		if (urlCandidates.length >= maxUrls) break;
@@ -4124,6 +4155,17 @@ async function collectThumbnailTopicImages({
 		if (!label) continue;
 		const isPersonTopic = looksLikePersonTopic(label);
 		const extraTokens = Array.isArray(t?.keywords) ? t.keywords : [];
+		const articleList = Array.isArray(t?.trendStory?.articles)
+			? t.trendStory.articles
+			: [];
+		const articleTitleByUrl = new Map(
+			articleList
+				.map((a) => [
+					String(a?.url || "").trim(),
+					String(a?.title || "").trim(),
+				])
+				.filter(([u]) => u)
+		);
 		const trendHints = uniqueStrings(
 			[
 				...(Array.isArray(t?.trendStory?.searchPhrases)
@@ -4132,9 +4174,7 @@ async function collectThumbnailTopicImages({
 				...(Array.isArray(t?.trendStory?.entityNames)
 					? t.trendStory.entityNames
 					: []),
-				...(Array.isArray(t?.trendStory?.articles)
-					? t.trendStory.articles.map((a) => a?.title)
-					: []),
+				...articleList.map((a) => a?.title),
 				t?.trendStory?.imageComment,
 				...(Array.isArray(t?.trendStory?.viralImageBriefs)
 					? t.trendStory.viralImageBriefs.map((b) =>
@@ -4180,6 +4220,7 @@ async function collectThumbnailTopicImages({
 				priority: 1.15,
 				criteria,
 				isPersonTopic,
+				topicIndex,
 			});
 		}
 
@@ -4200,6 +4241,7 @@ async function collectThumbnailTopicImages({
 				priority: 0.7,
 				criteria,
 				isPersonTopic,
+				topicIndex,
 			});
 		}
 
@@ -4228,31 +4270,40 @@ async function collectThumbnailTopicImages({
 					priority: 0.55,
 					criteria,
 					isPersonTopic,
+					topicIndex,
 				});
 			}
 		}
 
 		if (!hits.length && hasCSE) {
 			const ctxItems = await fetchCseContext(searchLabel, mergedTokens);
+			const ctxTitleByUrl = new Map(
+				(ctxItems || [])
+					.map((c) => [
+						String(c?.link || "").trim(),
+						String(c?.title || c?.snippet || "").trim(),
+					])
+					.filter(([u]) => u)
+			);
 			const articleUrls = uniqueStrings(
 				[
-					...(Array.isArray(t?.trendStory?.articles)
-						? t.trendStory.articles.map((a) => a?.url)
-						: []),
+					...articleList.map((a) => a?.url),
 					...ctxItems.map((c) => c?.link),
 				],
 				{ limit: 6 }
 			);
 			const ogHits = [];
+			const ogSeen = new Set();
 			for (const pageUrl of articleUrls) {
 				if (ogHits.length >= 3) break;
-				if (!pageUrl || ogHits.includes(pageUrl)) continue;
+				if (!pageUrl || ogSeen.has(pageUrl)) continue;
 				const og = await fetchOpenGraphImageUrl(pageUrl);
 				if (!og) continue;
 				if (isLikelyWatermarkedSource(og, pageUrl)) continue;
 				const ct = await headContentType(og, 7000);
 				if (ct && !ct.startsWith("image/")) continue;
-				ogHits.push(og);
+				ogSeen.add(pageUrl);
+				ogHits.push({ url: og, pageUrl });
 			}
 			if (ogHits.length && log)
 				log("thumbnail topic images fallback og", {
@@ -4260,12 +4311,17 @@ async function collectThumbnailTopicImages({
 					count: ogHits.length,
 				});
 			for (const og of ogHits) {
-				pushCandidate(og, {
-					source: label,
-					title: label,
+				const pageTitle =
+					articleTitleByUrl.get(og.pageUrl || "") ||
+					ctxTitleByUrl.get(og.pageUrl || "") ||
+					"";
+				pushCandidate(og.url, {
+					source: og.pageUrl || label,
+					title: pageTitle || label,
 					priority: 0.5,
 					criteria,
 					isPersonTopic,
+					topicIndex,
 				});
 			}
 		}
@@ -4310,6 +4366,7 @@ async function collectThumbnailTopicImages({
 						priority: 0.25,
 						criteria,
 						isPersonTopic,
+						topicIndex,
 					});
 					if (urlCandidates.length >= maxUrls) break;
 				}
@@ -4331,6 +4388,7 @@ async function collectThumbnailTopicImages({
 					priority: 0.4,
 					criteria,
 					isPersonTopic,
+					topicIndex,
 				});
 			}
 		}
@@ -4349,6 +4407,7 @@ async function collectThumbnailTopicImages({
 					priority: 0.35,
 					criteria,
 					isPersonTopic,
+					topicIndex,
 				});
 				if (urlCandidates.length >= maxUrls) break;
 			}
@@ -4356,6 +4415,14 @@ async function collectThumbnailTopicImages({
 	}
 
 	if (!urlCandidates.length) {
+		if (allowEmptyForNonPerson) {
+			if (log)
+				log("thumbnail topic images none", {
+					reason: "no_urls_non_person",
+					target,
+				});
+			return [];
+		}
 		if (requireTopicImages) throw new Error("thumbnail_topic_images_missing");
 		if (log)
 			log("thumbnail topic images none", {
@@ -4424,6 +4491,7 @@ async function collectThumbnailTopicImages({
 					injuryPenalty: candidate.injuryPenalty || 0,
 					lowQualityPenalty: candidate.lowQualityPenalty || 0,
 					personPenalty: candidate.personPenalty || 0,
+					topicIndex: candidate.topicIndex,
 					score: scoreTopicImageCandidate({
 						width: dims.width || 0,
 						height: dims.height || 0,
@@ -4447,6 +4515,7 @@ async function collectThumbnailTopicImages({
 				injuryPenalty: candidate.injuryPenalty || 0,
 				lowQualityPenalty: candidate.lowQualityPenalty || 0,
 				personPenalty: candidate.personPenalty || 0,
+				topicIndex: candidate.topicIndex,
 				url,
 				source: candidate.source,
 				score: scoreTopicImageCandidate({
@@ -4476,6 +4545,14 @@ async function collectThumbnailTopicImages({
 	}
 
 	if (!usableCandidates.length) {
+		if (allowEmptyForNonPerson) {
+			if (log)
+				log("thumbnail topic images none", {
+					reason: "no_candidates_non_person",
+					target,
+				});
+			return [];
+		}
 		if (requireTopicImages) throw new Error("thumbnail_topic_images_missing");
 		if (log)
 			log("thumbnail topic images none", {
@@ -4513,7 +4590,40 @@ async function collectThumbnailTopicImages({
 		const bPixels = (b.width || 0) * (b.height || 0);
 		return bPixels - aPixels;
 	});
-	const selectedCandidates = pickPool.slice(0, target);
+	let selectedCandidates = [];
+	const preferPerTopic = topicList.length > 1 && target > 1;
+	if (preferPerTopic) {
+		const seen = new Set();
+		for (let i = 0; i < topicList.length; i++) {
+			const match = pickPool.find(
+				(c) => Number.isFinite(Number(c.topicIndex)) && Number(c.topicIndex) === i
+			);
+			if (match && !seen.has(match.path)) {
+				selectedCandidates.push(match);
+				seen.add(match.path);
+			}
+			if (selectedCandidates.length >= target) break;
+		}
+		if (selectedCandidates.length < target) {
+			for (const c of pickPool) {
+				if (selectedCandidates.length >= target) break;
+				if (seen.has(c.path)) continue;
+				selectedCandidates.push(c);
+				seen.add(c.path);
+			}
+		}
+		selectedCandidates.sort((a, b) => {
+			const ai = Number.isFinite(Number(a.topicIndex))
+				? Number(a.topicIndex)
+				: 99;
+			const bi = Number.isFinite(Number(b.topicIndex))
+				? Number(b.topicIndex)
+				: 99;
+			return ai - bi;
+		});
+	} else {
+		selectedCandidates = pickPool.slice(0, target);
+	}
 	const selected = [];
 	for (let i = 0; i < selectedCandidates.length; i++) {
 		const candidate = selectedCandidates[i];
@@ -5034,7 +5144,7 @@ async function generateThumbnailPackage({
 	const badgeText =
 		resolvedOverrideBadgeText ||
 		(topicCount > 1
-			? `${Math.min(topicCount, 9)} STORIES`
+			? "UPDATE"
 			: questionPlan?.badgeText || hook?.badgeText || "UPDATE");
 	const personIdentity = looksLikePersonTopic(primaryTopicLabel)
 		? buildPersonIdentityToken(primaryTopicLabel)
@@ -5084,6 +5194,7 @@ async function generateThumbnailPackage({
 			overrideBadgeText: resolvedOverrideBadgeText || null,
 		});
 
+	const topicImageTarget = topicCount > 1 ? 2 : 1;
 	const topicImagePaths = await collectThumbnailTopicImages({
 		topics,
 		tmpDir,
@@ -5091,7 +5202,7 @@ async function generateThumbnailPackage({
 		title: title || seoTitle || "",
 		shortTitle,
 		seoTitle,
-		maxImages: THUMBNAIL_TOPIC_MAX_IMAGES,
+		maxImages: topicImageTarget,
 		requireTopicImages,
 		intent: resolvedIntent,
 		overrideTopicImageQueries,

@@ -5347,10 +5347,23 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 	}
 
 	if (topics.length > 1) {
+		const labels = topics
+			.map((t) => t.displayTopic || t.topic || "")
+			.filter(Boolean);
+		const buildPair = (maxWords) => {
+			const first = shortTopicLabel(labels[0] || "", maxWords);
+			const second = shortTopicLabel(labels[1] || "", maxWords);
+			return [first, second].filter(Boolean).join(" & ").trim();
+		};
+		let multiHeadline = buildPair(2);
+		if (multiHeadline.length > 18) multiHeadline = buildPair(1);
+		if (!multiHeadline && labels.length)
+			multiHeadline = shortTopicLabel(labels[0], 2);
+		const finalHeadline = clampHeadline(multiHeadline || "UPDATE") || "UPDATE";
 		return {
 			intent: "multi",
-			headline: "TOP STORIES",
-			badgeText: `${Math.min(topics.length, 9)} STORIES`,
+			headline: finalHeadline,
+			badgeText: "UPDATE",
 			imageQueries: [],
 		};
 	}
