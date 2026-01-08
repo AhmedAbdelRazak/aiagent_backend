@@ -153,6 +153,13 @@ const IMAGE_DEEMPHASIS_TOKENS = new Set([
 	"died",
 	"dead",
 	"death",
+	"addio",
+	"morte",
+	"morto",
+	"funerale",
+	"necrologio",
+	"scomparsa",
+	"lutto",
 	"kill",
 	"killed",
 	"killing",
@@ -372,6 +379,36 @@ const TEXT_OVERLAY_PENALTY_TOKENS = [
 	"quote",
 	"caption",
 	"headline",
+];
+const NON_PERSON_PORTRAIT_TOKENS = [
+	"portrait",
+	"headshot",
+	"profile",
+	"bio",
+	"biography",
+	"obituary",
+	"memorial",
+	"tribute",
+	"funeral",
+	"addio",
+	"morte",
+	"morto",
+	"funerale",
+	"necrologio",
+	"scomparsa",
+	"lutto",
+	"ricordo",
+	"cordoglio",
+	"commemorazione",
+	"defunto",
+	"defunti",
+	"remembering",
+	"in memoriam",
+	"rip",
+	"condolences",
+	"born",
+	"died",
+	"death",
 ];
 const GENERIC_HEADLINE_PHRASES = new Set([
 	"TRENDING NOW",
@@ -895,6 +932,29 @@ function multiPersonPenalty({ url = "", source = "", title = "" } = {}) {
 function injuryVisualPenalty({ url = "", source = "", title = "" } = {}) {
 	const hay = `${url} ${source} ${title}`.toLowerCase();
 	return INJURY_VISUAL_TOKENS.some((t) => hay.includes(t)) ? 0.45 : 0;
+}
+
+function looksLikePersonSlug(url = "") {
+	const raw = String(url || "").split(/[?#]/)[0] || "";
+	const tokens = tokenizeLabel(raw).slice(-4);
+	if (tokens.length < 2 || tokens.length > 3) return false;
+	if (tokens.some((t) => t.length < 3)) return false;
+	if (tokens.some((t) => GENERIC_TOPIC_TOKENS.has(t))) return false;
+	return true;
+}
+
+function nonPersonPortraitPenalty({
+	url = "",
+	source = "",
+	title = "",
+	isPersonTopic = false,
+} = {}) {
+	if (isPersonTopic) return 0;
+	const hay = `${url} ${source} ${title}`.toLowerCase();
+	if (NON_PERSON_PORTRAIT_TOKENS.some((t) => hay.includes(t))) return 0.6;
+	if (looksLikePersonTopic(title) || looksLikePersonTopic(source)) return 0.3;
+	if (looksLikePersonSlug(url)) return 0.22;
+	return 0;
 }
 
 function lowQualityTextPenalty({
@@ -1558,13 +1618,13 @@ function buildThumbnailPrompt({ title, topics, topicImageCount = 0 }) {
 			: `Add subtle, tasteful visual cues related to: ${topicFocus}.`;
 
 	return `
-Create a YouTube thumbnail image (no text in the image).
+Create a YouTube thumbnail image (no typography or signage in the image).
 Use the provided person reference; keep identity, face shape, and wardrobe consistent with the studio desk setup and lighting.
-Composition: presenter on the right third (face and shoulders fully inside the right third), leave the left ~40% clean for headline text.
+Composition: presenter on the right third (face and shoulders fully inside the right third), leave the left ~40% clean for later overlay panels.
 ${topicImageLine}
 Style: ultra sharp, clean, premium, high contrast, cinematic studio lighting, shallow depth of field, crisp subject separation.
 Expression: confident, intrigued, camera-ready.
-No candles, no logos, no watermarks, no extra people, no extra hands, no distortion, no text.
+No candles, no logos, no watermarks, no extra people, no extra hands, no distortion, no typography.
 `.trim();
 }
 
@@ -1597,15 +1657,29 @@ function buildRunwayThumbnailPrompt({ title, topics }) {
 	const safeKeywords =
 		sanitizeThumbnailContext(keywordLine) || cleanThumbnailText(keywordLine);
 	const topicFocusRaw = [safeContext, safeKeywords].filter(Boolean).join(" | ");
+	const focusTokens = buildSearchLabelTokens(primaryTopicLabel || title, [
+		safeKeywords,
+	]).slice(0, 4);
+	const compactFocus = focusTokens.join(" ");
+	const rawFocusText = cleanThumbnailText(topicFocusRaw);
+	const rawWordCount = rawFocusText.split(" ").filter(Boolean).length;
 	const topicFocus = isPersonTopic
 		? "celebrity news update"
-		: topicFocusRaw || cleanThumbnailText(title || "") || "the topic";
+		: rawWordCount > 6
+		? compactFocus ||
+		  rawFocusText ||
+		  cleanThumbnailText(title || "") ||
+		  "the topic"
+		: rawFocusText ||
+		  compactFocus ||
+		  cleanThumbnailText(title || "") ||
+		  "the topic";
 
 	const prompt = `
 Premium studio background plate for a YouTube thumbnail.
-No people, no faces, no text, no logos, no watermarks, no candles.
+No people, no faces, no logos, no watermarks, no candles, no signage or typography.
 Lighting: BRIGHT, high-key studio lighting with lifted shadows (avoid deep blacks), clean highlights, crisp detail, balanced contrast (not moody, not low-key).
-Left ~40% is clean AND BRIGHTER for headline text and panels; keep it uncluttered with a smooth gradient backdrop.
+Left ~40% is clean AND BRIGHTER for later overlays and panels; keep it uncluttered with a smooth gradient backdrop.
 Subtle, tasteful topic atmosphere inspired by: ${topicFocus}.
 No dark corners, no heavy vignette, no gloomy cinematic look.
 Elegant, vibrant but controlled color palette, clean subject separation feel.
@@ -2452,6 +2526,9 @@ function scoreTopicImageCandidate(candidate) {
 	const lowQualityPenalty = Number.isFinite(candidate?.lowQualityPenalty)
 		? clampNumber(candidate.lowQualityPenalty, 0, 0.6)
 		: 0;
+	const personPenalty = Number.isFinite(candidate?.personPenalty)
+		? clampNumber(candidate.personPenalty, 0, 0.6)
+		: 0;
 	return (
 		sizeScore * 0.35 +
 		lumaScore * 0.2 +
@@ -2461,7 +2538,8 @@ function scoreTopicImageCandidate(candidate) {
 		warmPenalty -
 		compressionPenalty -
 		lowQualityPenalty -
-		injuryPenalty
+		injuryPenalty -
+		personPenalty
 	);
 }
 
@@ -4007,6 +4085,12 @@ async function collectThumbnailTopicImages({
 			title,
 			isPersonTopic,
 		});
+		const personPenalty = nonPersonPortraitPenalty({
+			url,
+			source,
+			title,
+			isPersonTopic,
+		});
 		const match = scoreThumbnailTopicMatch(url, source, criteria);
 		const minWordMatches = Number(criteria?.minWordMatches || 0);
 		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
@@ -4026,6 +4110,7 @@ async function collectThumbnailTopicImages({
 			multiPersonPenalty: multiPenalty,
 			injuryPenalty,
 			lowQualityPenalty,
+			personPenalty,
 			priority,
 			relaxed: relaxed || merchPenalty >= 0.6,
 		});
@@ -4301,6 +4386,7 @@ async function collectThumbnailTopicImages({
 				(c.multiPersonPenalty || 0) -
 				(c.injuryPenalty || 0) -
 				(c.lowQualityPenalty || 0) -
+				(c.personPenalty || 0) -
 				(c.relaxed ? 0.6 : 0),
 		}))
 		.sort((a, b) => b.relevanceScore - a.relevanceScore);
@@ -4337,6 +4423,7 @@ async function collectThumbnailTopicImages({
 					tone,
 					injuryPenalty: candidate.injuryPenalty || 0,
 					lowQualityPenalty: candidate.lowQualityPenalty || 0,
+					personPenalty: candidate.personPenalty || 0,
 					score: scoreTopicImageCandidate({
 						width: dims.width || 0,
 						height: dims.height || 0,
@@ -4344,6 +4431,7 @@ async function collectThumbnailTopicImages({
 						byteSize: st.size,
 						injuryPenalty: candidate.injuryPenalty,
 						lowQualityPenalty: candidate.lowQualityPenalty,
+						personPenalty: candidate.personPenalty,
 					}),
 				});
 				continue;
@@ -4358,6 +4446,7 @@ async function collectThumbnailTopicImages({
 				sourceScore: candidate.sourceScore,
 				injuryPenalty: candidate.injuryPenalty || 0,
 				lowQualityPenalty: candidate.lowQualityPenalty || 0,
+				personPenalty: candidate.personPenalty || 0,
 				url,
 				source: candidate.source,
 				score: scoreTopicImageCandidate({
@@ -4369,6 +4458,7 @@ async function collectThumbnailTopicImages({
 					sourceScore: candidate.sourceScore,
 					injuryPenalty: candidate.injuryPenalty,
 					lowQualityPenalty: candidate.lowQualityPenalty,
+					personPenalty: candidate.personPenalty,
 				}),
 			});
 		} catch {
@@ -4496,7 +4586,13 @@ function looksLikePersonTopic(label = "") {
 	const tokens = cleaned.split(" ").filter(Boolean);
 	if (tokens.length < 2 || tokens.length > 3) return false;
 	if (tokens.some((t) => /\d/.test(t))) return false;
-	return tokens.every((t) => !GENERIC_TOPIC_TOKENS.has(t.toLowerCase()));
+	const genericCount = tokens.filter((t) =>
+		GENERIC_TOPIC_TOKENS.has(t.toLowerCase())
+	).length;
+	const nameCount = tokens.length - genericCount;
+	if (tokens.length === 2) return nameCount === 2;
+	if (tokens.length === 3) return nameCount >= 2 && genericCount <= 1;
+	return false;
 }
 
 function buildIdentitySubline(label = "", maxWords = 4) {
@@ -4704,6 +4800,12 @@ function buildTopicPhrase(topics = [], maxWords = 3) {
 			combinedCount <= maxWords
 		) {
 			return `${primaryWords[0]} & ${secondaryWords[0]}`;
+		}
+		if (primaryWords.length === 1 && secondaryWords[0] && maxWords >= 3) {
+			return `${primaryWords[0]} & ${secondaryWords[0]}`;
+		}
+		if (primaryWords.length === 2 && secondaryWords[0] && maxWords >= 4) {
+			return `${primaryWords[0]} ${primaryWords[1]} & ${secondaryWords[0]}`;
 		}
 	}
 	return primaryWords.join(" ");

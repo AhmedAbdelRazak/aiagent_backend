@@ -4292,6 +4292,46 @@ const ANCHOR_NOISE_TOKENS = new Set([
 	"breaking",
 	"official",
 	"video",
+	"live",
+	"today",
+	"yesterday",
+	"vlog",
+	"shorts",
+	"reel",
+	"clip",
+	"stream",
+	"watch",
+	"highlights",
+	"full",
+]);
+const ANCHOR_SHORT_TOKENS_KEEP = new Set([
+	"us",
+	"uk",
+	"eu",
+	"uae",
+	"ai",
+	"nba",
+	"nfl",
+	"mlb",
+	"nhl",
+]);
+const CONTEXT_NOISE_TOKENS = new Set([
+	"live",
+	"today",
+	"yesterday",
+	"official",
+	"breaking",
+]);
+const CONTEXT_SHORT_TOKENS_KEEP = new Set([
+	"us",
+	"uk",
+	"eu",
+	"uae",
+	"ai",
+	"nba",
+	"nfl",
+	"mlb",
+	"nhl",
 ]);
 
 const TOPIC_DOMAIN_TOKENS = [
@@ -4454,16 +4494,57 @@ function splitTitleSegments(text = "") {
 		.filter(Boolean);
 }
 
+function normalizeContextLine(line = "") {
+	let text = String(line || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!text) return "";
+	text = text.replace(/[|:]+/g, " ");
+	text = text.replace(/\s*-\s*/g, " ");
+	text = text.replace(/([a-z])[-\u2013\u2014](\s*)([a-z])/gi, "$1 $3");
+	text = text.replace(/([a-z])([A-Z])/g, "$1 $2");
+	text = text.replace(
+		/\b(vlog|clip|shorts|reel)(today|yesterday)\b/gi,
+		"$1 $2"
+	);
+	text = text.replace(/\b(today|yesterday)\b/gi, "");
+	text = text.replace(/\s+/g, " ").trim();
+	if (!text) return "";
+
+	const tokens = text.split(/\s+/).filter(Boolean);
+	const filtered = tokens.filter((tok, idx) => {
+		const lower = tok.toLowerCase();
+		if (CONTEXT_NOISE_TOKENS.has(lower)) return false;
+		const isEdge = idx === 0 || idx === tokens.length - 1;
+		if (
+			isEdge &&
+			tok.length <= 2 &&
+			tokens.length > 3 &&
+			!CONTEXT_SHORT_TOKENS_KEEP.has(lower)
+		) {
+			return false;
+		}
+		return true;
+	});
+
+	const cleaned = filtered.join(" ");
+	if (filtered.length >= 2) return cleaned;
+	return text;
+}
+
 function buildTopicContextStrings(topicObj, contextItems = []) {
 	const list = [];
 	const topicLabel = cleanTopicLabel(
 		topicObj?.displayTopic || topicObj?.topic || ""
 	);
-	if (topicLabel) list.push(topicLabel);
-	if (topicObj?.rawTitle) list.push(String(topicObj.rawTitle));
-	if (topicObj?.seoTitle) list.push(String(topicObj.seoTitle));
-	if (topicObj?.youtubeShortTitle)
-		list.push(String(topicObj.youtubeShortTitle));
+	const pushLine = (value) => {
+		const cleaned = normalizeContextLine(value);
+		if (cleaned) list.push(cleaned);
+	};
+	if (topicLabel) pushLine(topicLabel);
+	if (topicObj?.rawTitle) pushLine(String(topicObj.rawTitle));
+	if (topicObj?.seoTitle) pushLine(String(topicObj.seoTitle));
+	if (topicObj?.youtubeShortTitle) pushLine(String(topicObj.youtubeShortTitle));
 
 	const story = topicObj?.trendStory || topicObj || {};
 	const phrases = Array.isArray(story.searchPhrases) ? story.searchPhrases : [];
@@ -4474,35 +4555,25 @@ function buildTopicContextStrings(topicObj, contextItems = []) {
 	const related = normalizeRelatedQueries(
 		story.relatedQueries || topicObj?.relatedQueries || null
 	);
-	const articleUrls = uniqueStrings(
-		[
-			...(Array.isArray(story.articleUrls) ? story.articleUrls : []),
-			...articles.map((a) => a?.url).filter(Boolean),
-		],
-		{ limit: 8 }
-	);
-	const articleHosts = uniqueStrings(
-		articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
-		{ limit: 8 }
-	);
 
-	list.push(
+	for (const value of [
 		...phrases,
 		...entities,
 		...articleTitles,
-		...articleHosts,
 		...related.rising,
-		...related.top
-	);
-	if (imageComment) list.push(String(imageComment));
+		...related.top,
+	]) {
+		pushLine(value);
+	}
+	if (imageComment) pushLine(String(imageComment));
 
 	for (const item of Array.isArray(contextItems) ? contextItems : []) {
 		if (typeof item === "string") {
-			list.push(item);
+			pushLine(item);
 			continue;
 		}
-		if (item?.title) list.push(String(item.title));
-		if (item?.snippet) list.push(String(item.snippet));
+		if (item?.title) pushLine(String(item.title));
+		if (item?.snippet) pushLine(String(item.snippet));
 	}
 
 	return uniqueStrings(list.filter(Boolean), { limit: 24 });
@@ -4516,6 +4587,13 @@ function scoreAnchorCandidate(candidate = "", baseTokens = []) {
 	if (!tokens.length) return -999;
 	const matchCount = baseTokens.filter((t) => lower.includes(t)).length;
 	const noiseHits = tokens.filter((t) => ANCHOR_NOISE_TOKENS.has(t)).length;
+	const baseSet = new Set(baseTokens);
+	const extraTokens = tokens.filter(
+		(t) =>
+			!baseSet.has(t) &&
+			!TOPIC_STOP_WORDS.has(t) &&
+			!GENERIC_TOPIC_TOKENS.has(t)
+	);
 	const capWords = (candidate.match(/\b[A-Z][a-z]+\b/g) || []).length;
 	const wordCount = tokens.length;
 	let score =
@@ -4524,6 +4602,8 @@ function scoreAnchorCandidate(candidate = "", baseTokens = []) {
 		Math.min(wordCount, 6) * 0.25 -
 		Math.max(0, wordCount - 8) * 0.4;
 	if (noiseHits) score -= Math.min(1.4, noiseHits * 0.7);
+	if (extraTokens.length > 1)
+		score -= Math.min(1.2, (extraTokens.length - 1) * 0.25);
 	if (
 		/^(did|does|do|is|are|was|were|will|can|could|should|would|has|have|had)\b/i.test(
 			cleaned
@@ -5298,14 +5378,31 @@ function stripAnchorNoise(label = "") {
 		.split(/\s+/)
 		.filter(Boolean)
 		.filter((t) => /[a-z0-9]/i.test(t));
-	while (tokens.length && ANCHOR_NOISE_TOKENS.has(tokens[0].toLowerCase())) {
-		tokens.shift();
+	while (tokens.length) {
+		const lower = tokens[0].toLowerCase();
+		if (
+			ANCHOR_NOISE_TOKENS.has(lower) ||
+			(tokens.length > 3 &&
+				tokens[0].length <= 2 &&
+				!ANCHOR_SHORT_TOKENS_KEEP.has(lower))
+		) {
+			tokens.shift();
+			continue;
+		}
+		break;
 	}
-	while (
-		tokens.length &&
-		ANCHOR_NOISE_TOKENS.has(tokens[tokens.length - 1].toLowerCase())
-	) {
-		tokens.pop();
+	while (tokens.length) {
+		const lower = tokens[tokens.length - 1].toLowerCase();
+		if (
+			ANCHOR_NOISE_TOKENS.has(lower) ||
+			(tokens.length > 3 &&
+				tokens[tokens.length - 1].length <= 2 &&
+				!ANCHOR_SHORT_TOKENS_KEEP.has(lower))
+		) {
+			tokens.pop();
+			continue;
+		}
+		break;
 	}
 	return tokens.join(" ");
 }
@@ -5834,9 +5931,12 @@ function hasOpenParenthetical(text = "") {
 function appendClosingPhrase(text = "", mood = "neutral") {
 	const closer =
 		mood === "serious"
-			? "That's the key takeaway in this moment."
-			: "That's the key takeaway right now.";
-	return `${String(text || "").trim()} ${closer}`.trim();
+			? "That's the takeaway for now."
+			: "That's the takeaway.";
+	const base = String(text || "").trim();
+	if (!base) return closer;
+	const needsPunct = /[.!?]["')\]]?$/.test(base) ? "" : ".";
+	return `${base}${needsPunct} ${closer}`.trim();
 }
 
 function enforceCtaQuestion(text = "", mood = "neutral") {
@@ -6853,7 +6953,7 @@ function summarizeScriptEngagement(script = {}) {
 	};
 }
 
-function formatSourceLabel(host = "") {
+function formatSourceLabel(host = "", topicLabel = "") {
 	const cleaned = String(host || "")
 		.replace(/^www\./i, "")
 		.trim();
@@ -6867,6 +6967,29 @@ function formatSourceLabel(host = "") {
 		.split(/\s+/)
 		.filter(Boolean);
 	if (!words.length) return cleaned;
+	if (topicLabel) {
+		const topicTokens = cleanTopicLabel(topicLabel)
+			.toLowerCase()
+			.split(/\s+/)
+			.filter(Boolean);
+		const slug = topicTokens.join("");
+		const baseLower = base.toLowerCase();
+		if (slug && baseLower.includes(slug)) {
+			return topicTokens
+				.map((t) =>
+					t.length <= 3 ? t.toUpperCase() : t[0].toUpperCase() + t.slice(1)
+				)
+				.join(" ");
+		}
+		if (topicTokens.length >= 2) {
+			const nameSlug = `${topicTokens[0]}${topicTokens[1]}`;
+			if (baseLower.includes(nameSlug)) {
+				return `${topicTokens[0][0].toUpperCase() + topicTokens[0].slice(1)} ${
+					topicTokens[1][0].toUpperCase() + topicTokens[1].slice(1)
+				}`;
+			}
+		}
+	}
 	return words
 		.map((w) =>
 			w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)
@@ -6986,7 +7109,10 @@ function ensureTopicAttributions({
 
 		const targetIndex = segments.findIndex((s) => Number(s.topicIndex) === i);
 		if (targetIndex < 0) continue;
-		const sourceLabel = formatSourceLabel(sourceHosts[0]);
+		const sourceLabel = formatSourceLabel(
+			sourceHosts[0],
+			segments[targetIndex]?.topicLabel || topics?.[i]?.topic || ""
+		);
 		if (!sourceLabel) continue;
 		const prefix = `According to ${sourceLabel}, `;
 		const baseText = String(segments[targetIndex].text || "").trim();
