@@ -109,10 +109,10 @@ const ELEVEN_TTS_MODEL_FALLBACKS = String(
 	.split(",")
 	.map((s) => s.trim())
 	.filter(Boolean);
-// TTS realism tuning (favor natural cadence, avoid over-stylization)
-const ELEVEN_TTS_STABILITY = clampNumber(0.78, 0.1, 1);
+// TTS realism tuning (neutral, consistent delivery with light naturalness)
+const ELEVEN_TTS_STABILITY = clampNumber(0.8, 0.1, 1);
 const ELEVEN_TTS_SIMILARITY = clampNumber(0.94, 0.1, 1);
-const ELEVEN_TTS_STYLE = clampNumber(0.12, 0, 1);
+const ELEVEN_TTS_STYLE = clampNumber(0.1, 0, 1);
 const ELEVEN_TTS_SPEAKER_BOOST = true;
 const UNIFORM_TTS_VOICE_SETTINGS = true;
 
@@ -319,6 +319,10 @@ const MAX_FILLER_WORDS_PER_VIDEO = clampNumber(0, 0, 2);
 const MAX_FILLER_WORDS_PER_SEGMENT = clampNumber(0, 0, 2);
 const MAX_MICRO_EMOTES_PER_VIDEO = clampNumber(0, 0, 1);
 const ENABLE_MICRO_EMOTES = true;
+const ENABLE_MICRO_BREATHS = true;
+const MAX_MICRO_BREATHS_PER_VIDEO = clampNumber(1, 0, 3);
+const MICRO_BREATH_MIN_WORDS = clampNumber(26, 18, 40);
+const MICRO_BREATH_TARGET_WORD = clampNumber(12, 8, 18);
 
 // Audio processing
 const AUDIO_SR = 48000;
@@ -4641,6 +4645,9 @@ function inferTonePlan({ topic, topics, angle, liveContext }) {
 	for (const tok of SERIOUS_TONE_TOKENS) {
 		if (hay.includes(tok)) seriousScore += 2;
 	}
+	for (const tok of POLITICAL_TONE_TOKENS) {
+		if (hay.includes(tok)) seriousScore += 2;
+	}
 	for (const tok of EXCITED_TONE_TOKENS) {
 		if (hay.includes(tok)) excitedScore += 1;
 	}
@@ -4652,6 +4659,50 @@ function inferTonePlan({ topic, topics, angle, liveContext }) {
 			? "excited"
 			: "neutral";
 	return { mood };
+}
+
+const POLITICAL_TONE_TOKENS = [
+	"politic",
+	"election",
+	"vote",
+	"voting",
+	"campaign",
+	"government",
+	"policy",
+	"congress",
+	"senate",
+	"parliament",
+	"president",
+	"prime minister",
+	"governor",
+	"mayor",
+	"legislation",
+	"lawmakers",
+	"bill",
+	"referendum",
+	"ballot",
+	"protest",
+	"protests",
+	"war",
+	"conflict",
+	"invasion",
+	"ceasefire",
+	"sanction",
+	"treaty",
+	"security",
+	"terror",
+	"attack",
+];
+
+function isSensitiveTopicText(text = "") {
+	const t = String(text || "").toLowerCase();
+	if (!t) return false;
+	const has = (list) => list.some((tok) => t.includes(tok));
+	return (
+		has(SERIOUS_TONE_TOKENS) ||
+		has(EXPLICIT_SERIOUS_CUES) ||
+		has(POLITICAL_TONE_TOKENS)
+	);
 }
 
 const EXPRESSION_SET = new Set([
@@ -4689,7 +4740,13 @@ function inferExplicitExpression(text = "") {
 	return null;
 }
 
-function coerceExpressionForNaturalness(rawExpression, text, mood = "neutral") {
+function coerceExpressionForNaturalness(
+	rawExpression,
+	text,
+	mood = "neutral",
+	topicLabel = ""
+) {
+	if (isSensitiveTopicText(`${text} ${topicLabel}`)) return "neutral";
 	const base = normalizeExpression(rawExpression, mood);
 	const explicit = inferExplicitExpression(text);
 	if (explicit) {
@@ -4790,10 +4847,20 @@ function buildSubtleVideoExpressionPlan(
 		normalizeExpression(s.expression, mood)
 	);
 	for (const idx of indices) {
+		const seg = segments[idx] || {};
+		const sensitive = isSensitiveTopicText(
+			`${seg.text || ""} ${seg.topicLabel || ""}`
+		);
+		if (sensitive) {
+			plan[idx] = "neutral";
+			continue;
+		}
 		const preferred = normalized[idx];
-		if (preferred === "excited") plan[idx] = "excited";
+		if (preferred === "excited")
+			plan[idx] = FORCE_NEUTRAL_VOICEOVER ? "warm" : "excited";
 		else if (preferred === "thoughtful") plan[idx] = "thoughtful";
-		else plan[idx] = "warm";
+		else if (preferred === "warm") plan[idx] = "warm";
+		else plan[idx] = "neutral";
 	}
 	return plan;
 }
@@ -5353,6 +5420,64 @@ function cleanupSpeechText(text = "") {
 	t = t.replace(/,\s*([.!?])/g, "$1");
 	t = t.replace(/\s+/g, " ").trim();
 	return t;
+}
+
+const MICRO_BREATH_BREAK_TOKENS = new Set([
+	"and",
+	"but",
+	"so",
+	"because",
+	"while",
+	"as",
+	"when",
+	"which",
+	"that",
+	"though",
+	"however",
+]);
+
+function hasBreathPunctuation(text = "") {
+	const t = String(text || "");
+	return /[,;:]/.test(t) || /\.{3,}/.test(t) || /\s--\s/.test(t);
+}
+
+function injectMicroBreath(text = "", state) {
+	if (!ENABLE_MICRO_BREATHS || !FORCE_NEUTRAL_VOICEOVER || !state)
+		return String(text || "").trim();
+	if (state.used >= MAX_MICRO_BREATHS_PER_VIDEO)
+		return String(text || "").trim();
+
+	const t = String(text || "").trim();
+	if (!t) return t;
+	if (countWords(t) < MICRO_BREATH_MIN_WORDS) return t;
+	if (splitSentences(t).length !== 1) return t;
+	if (hasBreathPunctuation(t)) return t;
+
+	const words = t.split(/\s+/);
+	const targetIdx = Math.min(
+		words.length - 5,
+		Math.max(MICRO_BREATH_TARGET_WORD, Math.floor(words.length * 0.45))
+	);
+	const cleanWord = (w) => w.toLowerCase().replace(/[^a-z']/g, "");
+	const scan = (start, end, step) => {
+		for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
+			if (i <= 2 || i >= words.length - 2) continue;
+			const w = cleanWord(words[i]);
+			if (MICRO_BREATH_BREAK_TOKENS.has(w)) return i;
+		}
+		return -1;
+	};
+
+	let breakIdx = scan(targetIdx, Math.min(words.length - 3, targetIdx + 6), 1);
+	if (breakIdx === -1) {
+		breakIdx = scan(targetIdx, Math.max(3, targetIdx - 6), -1);
+	}
+	if (breakIdx === -1) breakIdx = targetIdx;
+
+	if (/[,.!?;:]$/.test(words[breakIdx])) return t;
+	words[breakIdx] = `${words[breakIdx]},`;
+	state.used += 1;
+	return cleanupSpeechText(words.join(" "));
 }
 
 const META_SENTENCE_PATTERNS = [
@@ -6285,11 +6410,13 @@ ${topicIntentLines}
 Style rules (IMPORTANT):
 - Keep pacing steady and conversational; no sudden speed-ups.
 - Slightly brisk, natural American delivery; avoid drawn-out phrasing.
+- Keep the delivery consistently neutral and professional across ALL segments; avoid hypey, excited, or dramatic phrasing.
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
 - Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic), but stay professional.
 - Use contractions. Punchy sentences. A little playful, but not cringe.
 - Avoid staccato punctuation. Do NOT put commas between single words.
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
+- Avoid exclamation points; use calm, steady punctuation.
 - Lead with the answer, then add context (what happened, why it matters, what to watch for).
 - Make each segment feel like a mini reveal: include one standout detail, twist, or implication likely new to viewers.
 - Use specific nouns (people, places, titles) over vague phrases like "big news" or "fans are excited".
@@ -6329,6 +6456,7 @@ Style rules (IMPORTANT):
 - For each segment, include "expression" from: neutral, warm, serious, excited, thoughtful.
 - Default to neutral for most segments. Use warm/thoughtful sparingly (1-2 middle segments max) and keep it subtle.
 - If the topic is sad or serious, use neutral (no exaggerated sadness).
+- If the topic is political or a real-world tragedy, keep expression neutral (no smiles).
 - ONLY if a topic is about a TV show, film, or fictional character, frame it as plot/character discussion, not real-life tragedy.
 - ONLY if a topic is marked as Fictional/Story, keep it in-universe and avoid real-world mourning language.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
@@ -6403,7 +6531,12 @@ Return JSON ONLY:
 
 	segments = segments.map((s) => ({
 		...s,
-		expression: coerceExpressionForNaturalness(s.expression, s.text, mood),
+		expression: coerceExpressionForNaturalness(
+			s.expression,
+			s.text,
+			mood,
+			s.topicLabel
+		),
 	}));
 
 	// Force exact segment count
@@ -6466,6 +6599,11 @@ Return JSON ONLY:
 	}));
 	if (FORCE_NEUTRAL_VOICEOVER && segments[0]) {
 		segments[0] = { ...segments[0], expression: "neutral" };
+	}
+	if (FORCE_NEUTRAL_VOICEOVER) {
+		segments = segments.map((s) =>
+			s.expression === "excited" ? { ...s, expression: "warm" } : s
+		);
 	}
 	// Smooth expressions so adjacent segments stay coherent.
 	const smoothed = smoothExpressionPlan(
@@ -6943,6 +7081,7 @@ Rules:
 - Add one fresh, concrete detail or implication per segment when possible.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
+- Keep the overall delivery neutral and professional; avoid excited phrasing and exclamation points.
 - Add at least one short attribution per topic when sources are available (e.g., "According to Variety...").
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
@@ -7341,6 +7480,7 @@ async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
 
 function cleanForTTS(text = "") {
 	let t = String(text || "");
+	if (FORCE_NEUTRAL_VOICEOVER) t = softenNeutralPunctuation(t);
 	// remove URLs/emails
 	t = t.replace(/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi, " ");
 	// normalize excessive punctuation while preserving natural pauses
@@ -7351,6 +7491,14 @@ function cleanForTTS(text = "") {
 	t = t.replace(/:{2,}/g, ":");
 	// normalize spacing
 	t = t.replace(/\s+/g, " ").trim();
+	return t;
+}
+
+function softenNeutralPunctuation(text = "") {
+	let t = String(text || "");
+	t = t.replace(/!\?/g, "?");
+	t = t.replace(/\?!/g, "?");
+	t = t.replace(/!+/g, ".");
 	return t;
 }
 
@@ -9537,6 +9685,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			youtubeTokenExpiresAt,
 			youtubeCategory,
 		} = payload;
+		const hasProvidedVoiceoverUrl = Boolean(voiceoverUrl);
+		const voiceoverUrlLocked = FORCE_NEUTRAL_VOICEOVER ? "" : voiceoverUrl;
 		const enableRunwayPresenterMotion = true;
 		const enableWardrobeEdit = true;
 		const effectiveVoiceId = String(voiceId || ELEVEN_FIXED_VOICE_ID).trim();
@@ -9573,7 +9723,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			totalTargetSec,
 			output,
 			presenterAssetUrl: presenterAssetUrl ? "(provided)" : "(none)",
-			hasVoiceoverUrl: Boolean(voiceoverUrl),
+			hasVoiceoverUrl: Boolean(voiceoverUrlLocked),
+			voiceoverLocked: FORCE_NEUTRAL_VOICEOVER && hasProvidedVoiceoverUrl,
 			hasMusicUrl: Boolean(musicUrl),
 			hasCseKeys: Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY),
 			hasRunway: Boolean(RUNWAY_API_KEY),
@@ -9582,6 +9733,9 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			voiceIdLocked: effectiveVoiceId,
 			hasYouTubeTokens,
 		});
+		if (hasProvidedVoiceoverUrl && FORCE_NEUTRAL_VOICEOVER) {
+			logJob(jobId, "external voiceover ignored (neutral ElevenLabs lock)");
+		}
 
 		if (dryRun) {
 			const dummyUrl = LONG_VIDEO_PERSIST_OUTPUT
@@ -9829,6 +9983,14 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		}
 		tonePlan.contentType = contentType;
 		tonePlan.topicContextFlags = topicContextFlags;
+		const voiceTonePlan = FORCE_NEUTRAL_VOICEOVER
+			? { ...tonePlan, mood: "neutral" }
+			: tonePlan;
+		if (FORCE_NEUTRAL_VOICEOVER && tonePlan.mood !== "neutral") {
+			logJob(jobId, "voice tone forced to neutral", {
+				originalMood: tonePlan.mood,
+			});
+		}
 		logJob(jobId, "topic context flags", {
 			contentType,
 			topics: topicContextFlags.map((t) => ({
@@ -9867,7 +10029,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			segmentCount,
 			wordCaps,
 			topicContexts,
-			tonePlan,
+			tonePlan: voiceTonePlan,
 			topicContextFlags,
 			includeOutro: true,
 			contentMode,
@@ -9898,7 +10060,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					topicContexts,
 					topicContextFlags,
 					wordCaps,
-					tonePlan,
+					tonePlan: voiceTonePlan,
 					narrationTargetSec,
 					includeOutro: true,
 					contentMode,
@@ -10055,7 +10217,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			});
 			if (hookPlan) thumbLog("thumbnail hook plan (computed)", hookPlan);
 			let thumbExpression =
-				script?.segments?.[0]?.expression || tonePlan?.mood || "warm";
+				script?.segments?.[0]?.expression || voiceTonePlan?.mood || "warm";
 			if (
 				hookPlan?.intent === "serious_update" &&
 				["neutral", "warm"].includes(
@@ -10142,7 +10304,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		});
 
 		// 6) Orchestrator plan (intro/outro) + voice prep
-		const introOutroMood = tonePlan?.mood || "neutral";
+		const introOutroMood = voiceTonePlan?.mood || "neutral";
 		const lastSegmentText =
 			script?.segments && script.segments.length
 				? script.segments[script.segments.length - 1].text || ""
@@ -10204,7 +10366,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				: null;
 		const resolveVoiceSettings = (expression, text) =>
 			lockedVoiceSettings ||
-			buildVoiceSettingsForExpression(expression, tonePlan?.mood, text, {
+			buildVoiceSettingsForExpression(expression, voiceTonePlan?.mood, text, {
 				forceNeutral: FORCE_NEUTRAL_VOICEOVER,
 			});
 		const ttsModelOrder = [
@@ -10376,23 +10538,29 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				: 0,
 			topicLabel: String(s.topicLabel || "").trim(),
 			expression: coerceExpressionForNaturalness(
-				normalizeExpression(s.expression, tonePlan?.mood),
+				normalizeExpression(s.expression, voiceTonePlan?.mood),
 				s.text,
-				tonePlan?.mood
+				voiceTonePlan?.mood,
+				s.topicLabel
 			),
 			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
 		}));
 		const smoothedExpressions = smoothExpressionPlan(
 			segments.map((s) => s.expression),
-			tonePlan?.mood
+			voiceTonePlan?.mood
 		);
-		const segmentsWithExpressions = segments.map((s, i) => ({
+		let segmentsWithExpressions = segments.map((s, i) => ({
 			...s,
 			expression: smoothedExpressions[i] || s.expression,
 		}));
+		if (FORCE_NEUTRAL_VOICEOVER) {
+			segmentsWithExpressions = segmentsWithExpressions.map((s) =>
+				s.expression === "excited" ? { ...s, expression: "warm" } : s
+			);
+		}
 		const videoExpressionPlan = buildSubtleVideoExpressionPlan(
 			segmentsWithExpressions,
-			tonePlan?.mood,
+			voiceTonePlan?.mood,
 			jobId
 		);
 		segments = segmentsWithExpressions.map((s, i) => ({
@@ -10418,17 +10586,17 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let driftSec = 0;
 		let autoOverlayAssets = [];
 		let segmentImagePaths = new Map();
-		const maxRewriteAttempts = voiceoverUrl ? 0 : MAX_SCRIPT_REWRITES;
+		const maxRewriteAttempts = voiceoverUrlLocked ? 0 : MAX_SCRIPT_REWRITES;
 
 		for (let attempt = 0; attempt <= maxRewriteAttempts; attempt++) {
 			cleanedWavs = [];
 			sumCleanDur = 0;
 
-			if (voiceoverUrl) {
+			if (voiceoverUrlLocked) {
 				// If you provide a full voiceoverUrl, we will NOT time-stretch; we just slice precisely.
 				// (Best quality approach is to provide already-edited VO that matches the content script.)
 				const voicePath = path.join(tmpDir, `voice_${jobId}.wav`);
-				await downloadToFile(voiceoverUrl, voicePath, 45000, 2);
+				await downloadToFile(voiceoverUrlLocked, voicePath, 45000, 2);
 
 				// Convert to wav if needed
 				const voiceWav = path.join(tmpDir, `voice_${jobId}_pcm.wav`);
@@ -10493,6 +10661,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					modelId: ttsModelId || "auto",
 				});
 
+				const breathState = { used: 0 };
 				for (const seg of segments) {
 					const mp3 = path.join(tmpDir, `tts_${jobId}_${seg.index}.mp3`);
 					const cleanWav = path.join(
@@ -10502,14 +10671,19 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 
 					const rawText = seg.text;
 					const cleanText = sanitizeSegmentText(rawText);
-					const textChanged = String(rawText || "").trim() !== cleanText;
-					seg.text = cleanText;
-					const voiceSettings = resolveVoiceSettings(seg.expression, cleanText);
+					const breathedText = injectMicroBreath(cleanText, breathState);
+					const textChanged =
+						String(rawText || "").trim() !== String(breathedText || "").trim();
+					seg.text = breathedText;
+					const voiceSettings = resolveVoiceSettings(
+						seg.expression,
+						breathedText
+					);
 					logJob(jobId, "tts segment start", {
 						segment: seg.index,
 						attempt,
-						words: countWords(cleanText),
-						text: cleanText,
+						words: countWords(breathedText),
+						text: breathedText,
 						expression: seg.expression,
 						voiceSettings,
 						voiceId: effectiveVoiceId,
@@ -10517,7 +10691,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						textChanged,
 					});
 					const usedModelId = await elevenLabsTTS({
-						text: cleanText,
+						text: breathedText,
 						outMp3Path: mp3,
 						voiceId: effectiveVoiceId,
 						voiceSettings,
@@ -10587,11 +10761,11 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				ratioDelta <= REWRITE_CLOSE_RATIO_DELTA ||
 				driftSec <= toleranceSec * REWRITE_CLOSE_DRIFT_MULT;
 			const shouldTimeStretch =
-				!voiceoverUrl && (ratioDelta >= 0.04 || driftSec > toleranceSec);
+				!voiceoverUrlLocked && (ratioDelta >= 0.04 || driftSec > toleranceSec);
 			globalAtempo = shouldTimeStretch
 				? clampNumber(rawAtempo, GLOBAL_ATEMPO_MIN, GLOBAL_ATEMPO_MAX)
 				: 1;
-			if (!voiceoverUrl && VOICE_SPEED_BOOST && VOICE_SPEED_BOOST !== 1) {
+			if (!voiceoverUrlLocked && VOICE_SPEED_BOOST && VOICE_SPEED_BOOST !== 1) {
 				globalAtempo = clampNumber(
 					globalAtempo * VOICE_SPEED_BOOST,
 					GLOBAL_ATEMPO_MIN,
@@ -10617,7 +10791,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			});
 
 			const needsRewrite =
-				!voiceoverUrl &&
+				!voiceoverUrlLocked &&
 				!allowOverage &&
 				!closeEnough &&
 				(!withinTolerance ||
@@ -10677,6 +10851,7 @@ Rules:
 - Add one fresh, concrete detail or implication per segment when possible.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
+- Keep the overall delivery neutral and professional; avoid excited phrasing and exclamation points.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Preserve source attributions already in the text; keep at least one brief attribution per topic when possible.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
@@ -10718,14 +10893,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			// Re-apply segment completion rules after rewrite.
 			const fixedSegments = enforceSegmentCompleteness(
 				segments,
-				tonePlan?.mood,
+				voiceTonePlan?.mood,
 				{ includeCta: false }
 			);
 			const withTransitions = ensureTopicTransitions(fixedSegments, topicPicks);
 			const withQuestions = ensureTopicEngagementQuestions(
 				withTransitions,
 				topicPicks,
-				tonePlan?.mood,
+				voiceTonePlan?.mood,
 				adjustedCaps
 			);
 			const fillerLimited = limitFillerAndEmotesAcrossSegments(withQuestions, {
@@ -10835,7 +11010,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const out = path.join(tmpDir, `seg_audio_${jobId}_${a.index}.wav`);
 			await applyGlobalAtempoToWav(a.wav, out, globalAtempo);
 			let finalWav = out;
-			if (TRIM_LEADING_SILENCE && !voiceoverUrl) {
+			if (TRIM_LEADING_SILENCE && !voiceoverUrlLocked) {
 				const trimmed = path.join(
 					tmpDir,
 					`seg_audio_${jobId}_${a.index}_tight.wav`
@@ -11019,7 +11194,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		);
 		const presenterVideoPlan = buildSubtleVideoExpressionPlan(
 			presenterOnlySegments,
-			tonePlan?.mood,
+			voiceTonePlan?.mood,
 			jobId
 		);
 		const presenterPlanByIndex = new Map();
