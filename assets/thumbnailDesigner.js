@@ -73,6 +73,10 @@ const THUMBNAIL_BADGE_FONT_PCT = 0.045;
 const THUMBNAIL_BADGE_X_PCT = 0.05;
 const THUMBNAIL_BADGE_Y_PCT = 0.05;
 const THUMBNAIL_BADGE_MAX_CHARS = 18;
+const THUMBNAIL_BG_SOFT_BLUR = 2;
+const THUMBNAIL_BG_WASH_PRIMARY_OPACITY = 0.06;
+const THUMBNAIL_BG_WASH_SECONDARY_OPACITY = 0.05;
+const THUMBNAIL_BG_WASH_SECONDARY_COLOR = "0x5B2DFF";
 const THUMBNAIL_PANEL_OPACITY = 0.06;
 const THUMBNAIL_FOCUS_RING_OPACITY = 0.34;
 const THUMBNAIL_FOCUS_RING_THICKNESS_PCT = 0.005;
@@ -1683,6 +1687,7 @@ No people, no faces, no logos, no watermarks, no candles, no signage or typograp
 Lighting: BRIGHT, high-key studio lighting with lifted shadows (avoid deep blacks), clean highlights, crisp detail, balanced contrast (not moody, not low-key).
 Left ~40% is clean AND BRIGHTER for later overlays and panels; keep it uncluttered with a smooth gradient backdrop.
 Subtle, tasteful topic atmosphere inspired by: ${topicFocus}.
+Soft bokeh depth, gentle studio glow, subtle teal + violet color wash.
 No dark corners, no heavy vignette, no gloomy cinematic look.
 Elegant, vibrant but controlled color palette, clean subject separation feel.
 `.trim();
@@ -2900,6 +2905,15 @@ async function composeThumbnailBase({
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
 	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
+	const bgBlur = Math.max(0, Math.round(THUMBNAIL_BG_SOFT_BLUR));
+	const washPrimary = clampNumber(THUMBNAIL_BG_WASH_PRIMARY_OPACITY, 0, 0.12);
+	const washSecondary = clampNumber(
+		THUMBNAIL_BG_WASH_SECONDARY_OPACITY,
+		0,
+		0.12
+	);
+	const washPrimaryStrong = clampNumber(washPrimary * 1.05, 0, 0.14);
+	const washPrimarySoft = clampNumber(washPrimary * 0.7, 0, 0.12);
 
 	if (log)
 		log("thumbnail layout geometry", {
@@ -2917,8 +2931,22 @@ async function composeThumbnailBase({
 	const inputs = [baseImagePath, presenterImagePath, ...topics];
 	const filters = [];
 	filters.push(
-		`[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}[base]`
+		`[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}[base0]`
 	);
+	const baseFx = [
+		"format=rgba",
+		bgBlur > 0 ? `boxblur=${bgBlur}:1` : null,
+		`drawbox=x=0:y=0:w=iw*0.4:h=ih:color=${accentColor}@${washPrimaryStrong.toFixed(
+			3
+		)}:t=fill`,
+		`drawbox=x=iw*0.4:y=0:w=iw*0.2:h=ih:color=${accentColor}@${washPrimarySoft.toFixed(
+			3
+		)}:t=fill`,
+		`drawbox=x=iw*0.6:y=0:w=iw*0.4:h=ih:color=${THUMBNAIL_BG_WASH_SECONDARY_COLOR}@${washSecondary.toFixed(
+			3
+		)}:t=fill`,
+	].filter(Boolean);
+	filters.push(`[base0]${baseFx.join(",")}[base]`);
 	filters.push(
 		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=increase:flags=lanczos,` +
 			`crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)/2,format=rgba,` +
