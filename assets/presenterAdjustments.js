@@ -263,19 +263,17 @@ Topics: ${topicLine}
 		});
 		const content = String(resp?.choices?.[0]?.message?.content || "").trim();
 		const parsed = parseJsonObject(content);
-	if (parsed && parsed.wardrobePrompt) {
-		const integrityLine =
-			"Outfit must be intact: no rips, tears, holes, or missing fabric; shirt placket straight and buttons aligned.";
-		const promptBase = String(parsed.wardrobePrompt).trim();
-		const promptWithIntegrity = promptBase
-			.toLowerCase()
-			.includes("rips")
-			? promptBase
-			: `${promptBase}\n${integrityLine}`;
-		const result = {
-			wardrobePrompt: promptWithIntegrity,
-			wardrobeVariant,
-		};
+		if (parsed && parsed.wardrobePrompt) {
+			const integrityLine =
+				"Outfit must be intact: no rips, tears, holes, or missing fabric; shirt placket straight and buttons aligned.";
+			const promptBase = String(parsed.wardrobePrompt).trim();
+			const promptWithIntegrity = promptBase.toLowerCase().includes("rips")
+				? promptBase
+				: `${promptBase}\n${integrityLine}`;
+			const result = {
+				wardrobePrompt: promptWithIntegrity,
+				wardrobeVariant,
+			};
 			if (log)
 				log("orchestrator prompts", {
 					wardrobe: result.wardrobePrompt.slice(0, 300),

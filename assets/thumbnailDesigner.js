@@ -2875,7 +2875,7 @@ async function composeThumbnailBase({
 	const presenterX = Math.max(0, Math.min(W - presenterW, leftW - overlap));
 
 	const topics = Array.isArray(topicImagePaths)
-		? topicImagePaths.filter(Boolean).slice(0, 2)
+		? topicImagePaths.filter(Boolean).slice(0, 3)
 		: [];
 	const panelCount = topics.length;
 	const hasSinglePanel = panelCount === 1;
@@ -2889,7 +2889,12 @@ async function composeThumbnailBase({
 	const panelW = makeEven(Math.max(2, leftW - panelMargin * 2));
 	const panelH =
 		panelCount > 1
-			? makeEven(Math.max(2, Math.round((H - panelMargin * 3) / 2)))
+			? makeEven(
+					Math.max(
+						2,
+						Math.round((H - panelMargin * (panelCount + 1)) / panelCount)
+					)
+			  )
 			: makeEven(Math.max(2, H - panelMargin * 2 - topPad));
 	const panelBorder = Math.max(4, Math.round(W * 0.004));
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
@@ -2996,6 +3001,30 @@ async function composeThumbnailBase({
 		);
 		filters.push(`${current}[panel2]overlay=${margin}:${panel2Y}[tmp2]`);
 		current = "[tmp2]";
+	}
+
+	if (panelCount >= 3) {
+		const panel3Idx = 4;
+		const panel3Y = Math.max(0, panelMargin * 3 + panelH * 2);
+		const panelCropX = "(iw-ow)/2";
+		const panelCropY = "(ih-oh)*0.35";
+		filters.push(
+			`[${panel3Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=10:1,` +
+				`eq=contrast=1.03:saturation=1.05:brightness=0.03,format=rgba[panel3bg]`
+		);
+		filters.push(
+			`[${panel3Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+				`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+				`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
+				`unsharp=3:3:0.35,format=rgba[panel3fg]`
+		);
+		filters.push("[panel3bg][panel3fg]overlay=0:0[panel3i]");
+		filters.push(
+			`[panel3i]pad=${panelW}:${panelH}:${panelBorder}:${panelBorder}:color=${accentColor}@0.55[panel3]`
+		);
+		filters.push(`${current}[panel3]overlay=${panelMargin}:${panel3Y}[tmp3]`);
+		current = "[tmp3]";
 	}
 
 	if (presenterHasAlpha) {
@@ -3587,9 +3616,137 @@ async function renderThumbnailOverlay({
 				`thumb_sub_${path.basename(outputPath, path.extname(outputPath))}.txt`
 		  )
 		: "";
+	const panelSubheaderRaw = Array.isArray(overlayOptions.panelSubheaders)
+		? overlayOptions.panelSubheaders
+		: [];
+	const panelSubheaders = panelSubheaderRaw
+		.map((entry, idx) => {
+			if (typeof entry === "string") return { text: entry, panelIndex: idx };
+			if (entry && typeof entry.text === "string") {
+				const panelIndex = Number.isFinite(Number(entry.panelIndex))
+					? Number(entry.panelIndex)
+					: idx;
+				return { text: entry.text, panelIndex };
+			}
+			return null;
+		})
+		.filter(Boolean);
+	const panelCountRaw = Number.isFinite(Number(overlayOptions.panelCount))
+		? Math.max(0, Math.min(3, Math.floor(Number(overlayOptions.panelCount))))
+		: 0;
+	const panelCount = panelCountRaw || Math.min(panelSubheaders.length, 3) || 0;
+	const panelMarginPct = Number.isFinite(Number(overlayOptions.panelMarginPct))
+		? clampNumber(Number(overlayOptions.panelMarginPct), 0.02, 0.08)
+		: PANEL_MARGIN_PCT;
+	const panelLabelScale = Number.isFinite(
+		Number(overlayOptions.panelLabelScale)
+	)
+		? clampNumber(Number(overlayOptions.panelLabelScale), 0.08, 0.18)
+		: panelCount <= 1
+		? 0.14
+		: panelCount === 2
+		? 0.12
+		: 0.105;
+	const panelLabelBoxOpacity = Number.isFinite(
+		Number(overlayOptions.panelLabelBoxOpacity)
+	)
+		? clampNumber(Number(overlayOptions.panelLabelBoxOpacity), 0.18, 0.7)
+		: 0.42;
+	const panelLabelColor =
+		typeof overlayOptions.panelLabelColor === "string" &&
+		overlayOptions.panelLabelColor.trim()
+			? overlayOptions.panelLabelColor.trim()
+			: "white";
 	if (hasText) fs.writeFileSync(textFilePath, text, "utf8");
 	if (hasBadge) fs.writeFileSync(badgeFilePath, badgeText, "utf8");
 	if (hasSubline) fs.writeFileSync(sublineFilePath, sublineText, "utf8");
+
+	const panelLabelFiles = [];
+	const panelLabelItems = [];
+	if (panelCount > 0 && panelSubheaders.length) {
+		const panelMargin = Math.max(
+			4,
+			Math.round(THUMBNAIL_WIDTH * panelMarginPct)
+		);
+		const panelBorder = Math.max(4, Math.round(THUMBNAIL_WIDTH * 0.004));
+		const leftW = Math.max(1, Math.round(THUMBNAIL_WIDTH * leftPanelPct));
+		const singleTopPad = clampNumber(
+			THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX,
+			18,
+			Math.round(THUMBNAIL_HEIGHT * 0.06)
+		);
+		const hasSinglePanel = panelCount === 1;
+		const topPad = hasSinglePanel ? Math.round(singleTopPad) : 0;
+		const panelW = Math.max(2, leftW - panelMargin * 2);
+		const panelH = hasSinglePanel
+			? Math.max(2, THUMBNAIL_HEIGHT - panelMargin * 2 - topPad)
+			: Math.max(
+					2,
+					Math.round(
+						(THUMBNAIL_HEIGHT - panelMargin * (panelCount + 1)) / panelCount
+					)
+			  );
+
+		for (let i = 0; i < panelSubheaders.length; i++) {
+			const entry = panelSubheaders[i];
+			if (!entry?.text) continue;
+			const idx = clampNumber(
+				Number.isFinite(Number(entry.panelIndex)) ? entry.panelIndex : i,
+				0,
+				panelCount - 1
+			);
+			const panelY = hasSinglePanel
+				? Math.round(panelMargin + topPad)
+				: Math.round(panelMargin + idx * (panelH + panelMargin));
+			const cleanText = titleCaseIfLower(cleanThumbnailText(entry.text));
+			if (!cleanText) continue;
+			const maxCharsPerLine = clampNumber(Math.round(panelW / 30), 14, 24);
+			const wrapped = wrapText(cleanText, maxCharsPerLine, 2);
+			const lineCount = wrapped.lines || 1;
+			const scale = lineCount > 1 ? 0.92 : 1;
+			const panelFontSize = Math.max(
+				16,
+				Math.round(panelH * panelLabelScale * scale)
+			);
+			const panelLineSpacing = Math.round(panelFontSize * 0.18);
+			const labelTextHeight =
+				panelFontSize * lineCount +
+				panelLineSpacing * Math.max(0, lineCount - 1);
+			const labelBoxH = Math.min(
+				panelH - panelBorder * 2,
+				Math.round(labelTextHeight + panelFontSize * 0.6)
+			);
+			const boxX = panelMargin + panelBorder;
+			const boxW = Math.max(10, panelW - panelBorder * 2);
+			const boxY = Math.max(
+				panelY + panelBorder,
+				panelY + panelH - labelBoxH - panelBorder
+			);
+			const textX = boxX + Math.round(panelFontSize * 0.3);
+			const textY = boxY + Math.round(panelFontSize * 0.15);
+			const panelTextPath = path.join(
+				path.dirname(outputPath),
+				`thumb_panel_${i}_${path.basename(
+					outputPath,
+					path.extname(outputPath)
+				)}.txt`
+			);
+			fs.writeFileSync(panelTextPath, wrapped.text || cleanText, "utf8");
+			panelLabelFiles.push(panelTextPath);
+			panelLabelItems.push({
+				path: panelTextPath,
+				boxX,
+				boxY,
+				boxW,
+				boxH: labelBoxH,
+				textX,
+				textY,
+				fontSize: panelFontSize,
+				lineSpacing: panelLineSpacing,
+				color: panelLabelColor,
+			});
+		}
+	}
 
 	const filters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}`,
@@ -3708,6 +3865,21 @@ async function renderThumbnailOverlay({
 			);
 		}
 	}
+	if (panelLabelItems.length) {
+		for (const panel of panelLabelItems) {
+			filters.push(
+				`drawbox=x=${panel.boxX}:y=${panel.boxY}:w=${panel.boxW}:h=${panel.boxH}` +
+					`:color=black@${panelLabelBoxOpacity.toFixed(2)}:t=fill`
+			);
+			filters.push(
+				`drawtext=textfile='${escapeDrawtext(
+					panel.path
+				)}'${fontFile}:fontsize=${panel.fontSize}:fontcolor=${panel.color}` +
+					`:borderw=2:bordercolor=black@0.4:shadowcolor=black@0.35:shadowx=1:shadowy=1` +
+					`:line_spacing=${panel.lineSpacing}:x=${panel.textX}:y=${panel.textY}`
+			);
+		}
+	}
 
 	try {
 		await runFfmpeg(
@@ -3729,6 +3901,7 @@ async function renderThumbnailOverlay({
 		if (textFilePath) safeUnlink(textFilePath);
 		if (badgeFilePath) safeUnlink(badgeFilePath);
 		if (sublineFilePath) safeUnlink(sublineFilePath);
+		for (const p of panelLabelFiles) safeUnlink(p);
 	}
 
 	return outputPath;
@@ -4043,12 +4216,12 @@ async function collectThumbnailTopicImages({
 	const hasCSE = !!(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
 	if (!hasCSE && log)
 		log("thumbnail topic images: CSE missing, using wiki/commons only");
-const topicList = Array.isArray(topics) ? topics : [];
-if (!topicList.length) return [];
-const hasPersonTopic = topicList.some((t) =>
-	looksLikePersonTopic(t?.displayTopic || t?.topic || "")
-);
-const allowEmptyForNonPerson = !hasPersonTopic;
+	const topicList = Array.isArray(topics) ? topics : [];
+	if (!topicList.length) return [];
+	const hasPersonTopic = topicList.some((t) =>
+		looksLikePersonTopic(t?.displayTopic || t?.topic || "")
+	);
+	const allowEmptyForNonPerson = !hasPersonTopic;
 
 	const combinedContext = `${title || ""} ${shortTitle || ""} ${
 		seoTitle || ""
@@ -4072,60 +4245,60 @@ const allowEmptyForNonPerson = !hasPersonTopic;
 	const urlCandidates = [];
 	const seen = new Set();
 	const maxUrls = Math.max(target * 4, THUMBNAIL_TOPIC_MAX_DOWNLOADS);
-let portraitSkipCount = 0;
-const pushCandidate = (
-	url,
-	{
-		source = "",
-		title = "",
-		priority = 0,
-		criteria,
-		isPersonTopic,
-		topicIndex,
-	} = {}
-) => {
-	if (!url) return;
-	const key = normalizeImageUrlKey(url);
-	if (seen.has(key)) return;
-	if (isLikelyThumbnailUrl(url)) return;
-	if (isLikelyWatermarkedSource(url, source)) return;
-	if (isMerchDisallowedCandidate({ url, source, title })) return;
-	const merchPenalty = merchPenaltyScore({ url, source, title });
-	const multiPenalty = multiPersonPenalty({ url, source, title });
-	const injuryPenalty = injuryVisualPenalty({ url, source, title });
-	const lowQualityPenalty = lowQualityTextPenalty({
+	let portraitSkipCount = 0;
+	const pushCandidate = (
 		url,
-		source,
-		title,
-		isPersonTopic,
-	});
-	const personPenalty = nonPersonPortraitPenalty({
-		url,
-		source,
-		title,
-		isPersonTopic,
-	});
-	if (
-		BLOCK_PORTRAIT_FOR_NON_PERSON_TOPICS &&
-		!isPersonTopic &&
-		personPenalty >= NON_PERSON_PORTRAIT_BLOCK_THRESHOLD
-	) {
-		if (log && portraitSkipCount < 4) {
-			log("thumbnail topic image skipped (portrait)", {
-				url: String(url).slice(0, 140),
-				source: String(source).slice(0, 80),
-				title: String(title).slice(0, 80),
-				personPenalty,
-			});
-			portraitSkipCount += 1;
+		{
+			source = "",
+			title = "",
+			priority = 0,
+			criteria,
+			isPersonTopic,
+			topicIndex,
+		} = {}
+	) => {
+		if (!url) return;
+		const key = normalizeImageUrlKey(url);
+		if (seen.has(key)) return;
+		if (isLikelyThumbnailUrl(url)) return;
+		if (isLikelyWatermarkedSource(url, source)) return;
+		if (isMerchDisallowedCandidate({ url, source, title })) return;
+		const merchPenalty = merchPenaltyScore({ url, source, title });
+		const multiPenalty = multiPersonPenalty({ url, source, title });
+		const injuryPenalty = injuryVisualPenalty({ url, source, title });
+		const lowQualityPenalty = lowQualityTextPenalty({
+			url,
+			source,
+			title,
+			isPersonTopic,
+		});
+		const personPenalty = nonPersonPortraitPenalty({
+			url,
+			source,
+			title,
+			isPersonTopic,
+		});
+		if (
+			BLOCK_PORTRAIT_FOR_NON_PERSON_TOPICS &&
+			!isPersonTopic &&
+			personPenalty >= NON_PERSON_PORTRAIT_BLOCK_THRESHOLD
+		) {
+			if (log && portraitSkipCount < 4) {
+				log("thumbnail topic image skipped (portrait)", {
+					url: String(url).slice(0, 140),
+					source: String(source).slice(0, 80),
+					title: String(title).slice(0, 80),
+					personPenalty,
+				});
+				portraitSkipCount += 1;
+			}
+			return;
 		}
-		return;
-	}
-	const match = scoreThumbnailTopicMatch(url, source, criteria);
-	const minWordMatches = Number(criteria?.minWordMatches || 0);
-	const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
-	const relaxed =
-		(minWordMatches && match.wordMatches < minWordMatches) ||
+		const match = scoreThumbnailTopicMatch(url, source, criteria);
+		const minWordMatches = Number(criteria?.minWordMatches || 0);
+		const minSubjectMatches = Number(criteria?.minSubjectMatches || 0);
+		const relaxed =
+			(minWordMatches && match.wordMatches < minWordMatches) ||
 			(minSubjectMatches && match.subjectMatches < minSubjectMatches);
 		urlCandidates.push({
 			url,
@@ -4138,15 +4311,15 @@ const pushCandidate = (
 			sourceScore: scoreSourceAffinity(url, source),
 			merchPenalty,
 			multiPersonPenalty: multiPenalty,
-		injuryPenalty,
-		lowQualityPenalty,
-		personPenalty,
-		priority,
-		topicIndex,
-		relaxed: relaxed || merchPenalty >= 0.6,
-	});
-	seen.add(key);
-};
+			injuryPenalty,
+			lowQualityPenalty,
+			personPenalty,
+			priority,
+			topicIndex,
+			relaxed: relaxed || merchPenalty >= 0.6,
+		});
+		seen.add(key);
+	};
 
 	for (let topicIndex = 0; topicIndex < topicList.length; topicIndex++) {
 		if (urlCandidates.length >= maxUrls) break;
@@ -4286,10 +4459,7 @@ const pushCandidate = (
 					.filter(([u]) => u)
 			);
 			const articleUrls = uniqueStrings(
-				[
-					...articleList.map((a) => a?.url),
-					...ctxItems.map((c) => c?.link),
-				],
+				[...articleList.map((a) => a?.url), ...ctxItems.map((c) => c?.link)],
 				{ limit: 6 }
 			);
 			const ogHits = [];
@@ -4596,7 +4766,8 @@ const pushCandidate = (
 		const seen = new Set();
 		for (let i = 0; i < topicList.length; i++) {
 			const match = pickPool.find(
-				(c) => Number.isFinite(Number(c.topicIndex)) && Number(c.topicIndex) === i
+				(c) =>
+					Number.isFinite(Number(c.topicIndex)) && Number(c.topicIndex) === i
 			);
 			if (match && !seen.has(match.path)) {
 				selectedCandidates.push(match);
@@ -4921,6 +5092,57 @@ function buildTopicPhrase(topics = [], maxWords = 3) {
 	return primaryWords.join(" ");
 }
 
+function buildTopicPanelSubheader(topic, { minWords = 4, maxWords = 6 } = {}) {
+	const label = cleanThumbnailText(topic?.displayTopic || topic?.topic || "");
+	if (!label) return "";
+	const lower = label.toLowerCase();
+	let tokens = label.split(" ").filter(Boolean);
+	const tokenSet = new Set(tokens.map((t) => t.toLowerCase()));
+	const pushToken = (tok) => {
+		const key = String(tok || "").toLowerCase();
+		if (!key || tokenSet.has(key)) return;
+		tokens.push(tok);
+		tokenSet.add(key);
+	};
+
+	let descriptor = [];
+	if (looksLikePersonTopic(label)) descriptor = ["latest", "update"];
+	else if (/\btour\b/.test(lower)) descriptor = ["tour", "dates"];
+	else if (/\bseason\b/.test(lower) || /\bepisode\b/.test(lower))
+		descriptor = ["release", "timing"];
+	else if (/\brelease\b/.test(lower) || /\bpremiere\b/.test(lower))
+		descriptor = ["release", "timing"];
+	else if (/\bmeaning\b|\bdefinition\b/.test(lower))
+		descriptor = ["meaning", "explained"];
+	else if (/\btrailer\b/.test(lower)) descriptor = ["trailer", "details"];
+	else descriptor = ["quick", "update"];
+
+	tokens = tokens.slice(0, Math.max(1, maxWords));
+	for (const tok of descriptor) {
+		if (tokens.length >= minWords || tokens.length >= maxWords) break;
+		pushToken(tok);
+	}
+	const fillers = ["new", "details", "today"];
+	for (const tok of fillers) {
+		if (tokens.length >= minWords || tokens.length >= maxWords) break;
+		pushToken(tok);
+	}
+	tokens = tokens.slice(0, Math.max(1, maxWords));
+	return titleCaseIfLower(tokens.join(" "));
+}
+
+function buildTopicPanelSubheaders(topics = [], { minWords, maxWords } = {}) {
+	const list = Array.isArray(topics) ? topics : [];
+	const items = list.slice(0, 3);
+	const out = [];
+	for (let i = 0; i < items.length; i++) {
+		const text = buildTopicPanelSubheader(items[i], { minWords, maxWords });
+		if (!text) continue;
+		out.push({ text, panelIndex: i });
+	}
+	return out;
+}
+
 function buildSeoHeadline({
 	title,
 	shortTitle,
@@ -5194,7 +5416,7 @@ async function generateThumbnailPackage({
 			overrideBadgeText: resolvedOverrideBadgeText || null,
 		});
 
-	const topicImageTarget = topicCount > 1 ? 2 : 1;
+	const topicImageTarget = Math.max(1, Math.min(topicCount || 1, 3));
 	const topicImagePaths = await collectThumbnailTopicImages({
 		topics,
 		tmpDir,
@@ -5208,6 +5430,19 @@ async function generateThumbnailPackage({
 		overrideTopicImageQueries,
 		log,
 	});
+	const panelCount = Math.min(topicImagePaths.length, 3);
+	const panelWordLimits =
+		topicCount >= 3
+			? { minWords: 5, maxWords: 7 }
+			: { minWords: 4, maxWords: 6 };
+	const panelSubheaders = buildTopicPanelSubheaders(topics, panelWordLimits)
+		.slice(0, panelCount)
+		.map((entry, idx) => ({
+			text: entry.text,
+			panelIndex: Number.isFinite(Number(entry.panelIndex))
+				? Number(entry.panelIndex)
+				: idx,
+		}));
 	const shouldFocusRing = (topicImagePaths || []).length === 0;
 	const backgroundTitle = resolvedOverrideHeadline
 		? title || seoTitle || thumbTitle
@@ -5291,6 +5526,8 @@ async function generateThumbnailPackage({
 		badgeScale: 0.82,
 		badgeOpacity: 0.8,
 		focusRing: shouldFocusRing,
+		panelCount,
+		panelSubheaders,
 		...sublineOptions,
 	};
 	const variantBOverlayOptions = {
@@ -5303,6 +5540,8 @@ async function generateThumbnailPackage({
 		badgeScale: 0.82,
 		badgeOpacity: 0.8,
 		focusRing: shouldFocusRing,
+		panelCount,
+		panelSubheaders,
 		...sublineOptions,
 	};
 	const variantPlans = [
@@ -5365,6 +5604,9 @@ async function generateThumbnailPackage({
 				leftPanelPct: Number.isFinite(Number(variant.layout?.leftPanelPct))
 					? Number(variant.layout.leftPanelPct)
 					: LEFT_PANEL_PCT,
+				panelMarginPct: Number.isFinite(Number(variant.layout?.panelMarginPct))
+					? Number(variant.layout.panelMarginPct)
+					: PANEL_MARGIN_PCT,
 			};
 			const baseTextBoxOpacity = Number.isFinite(
 				Number(overlayOptions.textBoxOpacity)

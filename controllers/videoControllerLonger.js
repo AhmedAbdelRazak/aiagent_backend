@@ -5347,22 +5347,9 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 	}
 
 	if (topics.length > 1) {
-		const labels = topics
-			.map((t) => t.displayTopic || t.topic || "")
-			.filter(Boolean);
-		const buildPair = (maxWords) => {
-			const first = shortTopicLabel(labels[0] || "", maxWords);
-			const second = shortTopicLabel(labels[1] || "", maxWords);
-			return [first, second].filter(Boolean).join(" & ").trim();
-		};
-		let multiHeadline = buildPair(2);
-		if (multiHeadline.length > 18) multiHeadline = buildPair(1);
-		if (!multiHeadline && labels.length)
-			multiHeadline = shortTopicLabel(labels[0], 2);
-		const finalHeadline = clampHeadline(multiHeadline || "UPDATE") || "UPDATE";
 		return {
 			intent: "multi",
-			headline: finalHeadline,
+			headline: "NEWS BRIEF",
 			badgeText: "UPDATE",
 			imageQueries: [],
 		};
@@ -5516,6 +5503,21 @@ function formatTopicList(topics = []) {
 	if (labels.length === 1) return labels[0];
 	if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
 	return `${labels[0]}, ${labels[1]}, and ${labels[2]}`;
+}
+
+function formatLabelList(labels = []) {
+	const list = (labels || []).filter(Boolean).slice(0, 3);
+	if (!list.length) return "";
+	if (list.length === 1) return list[0];
+	if (list.length === 2) return `${list[0]} and ${list[1]}`;
+	return `${list[0]}, ${list[1]}, and ${list[2]}`;
+}
+
+function buildIntroTopicLabels(topics = [], maxWords = 4) {
+	return (topics || [])
+		.map((t) => shortTopicLabel(t?.displayTopic || t?.topic || t, maxWords))
+		.filter(Boolean)
+		.slice(0, 3);
 }
 
 const FILLER_WORD_REGEX = /\b(?:um+|uh+|uhm+|erm+|er|ah+|hmm+)\b/gi;
@@ -5784,41 +5786,79 @@ function enforceRealWorldFraming(segments = [], topicContextFlags = []) {
 }
 
 const INTRO_TEMPLATES = {
-	neutral: [
-		"Hi, I'm Amad. Today: {topic}.",
-		"Hi, I'm Amad. Covering {topic}.",
-		"Hi, it's Amad. Here's {topic}.",
-	],
-	excited: [
-		"Hi, I'm Amad. Big update on {topic}.",
-		"Hi, I'm Amad. Let's get into {topic}.",
-	],
-	serious: [
-		"Hi, I'm Amad, and here's the latest on {topic}.",
-		"Hi, I'm Amad, bringing you the latest on {topic}.",
-	],
+	neutral: {
+		single: [
+			"Here's what people are searching for: {topic1}.",
+			"Here's the latest on {topic1}.",
+			"Here's what's driving searches on {topic1}.",
+		],
+		dual: [
+			"Two stories to cover: {topicList}.",
+			"First: {topic1}. Then: {topic2}.",
+			"Two updates driving searches: {topicList}.",
+		],
+		multi: [
+			"Three stories in focus: {topicList}.",
+			"Here's the quick rundown: {topicList}.",
+			"Today's lineup: {topicList}.",
+		],
+	},
+	excited: {
+		single: ["Here's the latest on {topic1}.", "Fresh update on {topic1}."],
+		dual: [
+			"Two updates to know: {topicList}.",
+			"First: {topic1}. Then: {topic2}.",
+		],
+		multi: [
+			"Three updates to know: {topicList}.",
+			"Here's the rundown: {topicList}.",
+		],
+	},
+	serious: {
+		single: [
+			"Here's the latest on {topic1}.",
+			"Here's the key update on {topic1}.",
+		],
+		dual: [
+			"Here are the key updates: {topicList}.",
+			"Two updates to track: {topicList}.",
+		],
+		multi: [
+			"Here are the key updates: {topicList}.",
+			"Here's the rundown: {topicList}.",
+		],
+	},
 };
 
-function pickIntroTemplate(mood = "neutral", jobId) {
+function pickIntroTemplate(mood = "neutral", topicCount = 1, jobId) {
 	const key = INTRO_TEMPLATES[mood] ? mood : "neutral";
-	const pool = INTRO_TEMPLATES[key];
-	if (!pool.length) return INTRO_TEMPLATES.neutral[0];
+	const buckets = INTRO_TEMPLATES[key] || INTRO_TEMPLATES.neutral;
+	const count = Number.isFinite(Number(topicCount)) ? Number(topicCount) : 1;
+	const pool =
+		count <= 1 ? buckets.single : count === 2 ? buckets.dual : buckets.multi;
+	const fallback = buckets.single || INTRO_TEMPLATES.neutral.single || [];
+	const safePool = pool && pool.length ? pool : fallback;
+	if (!safePool.length) return "Today: {topic1}.";
 	const seed = jobId ? seedFromJobId(jobId) : 0;
-	return pool[seed % pool.length];
+	return safePool[seed % safePool.length];
 }
 
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	const normalizedMood = normalizeExpression(mood);
 	const moodKey = FORCE_NEUTRAL_VOICEOVER ? "neutral" : normalizedMood;
-	const subject =
-		normalizedMood === "serious"
-			? formatTopicList(topics)
-			: shortTitle
-			? shortTopicLabel(shortTitle, 5)
-			: formatTopicList(topics);
-	const safeSubject = subject || "today's topic";
-	const template = pickIntroTemplate(moodKey, jobId);
-	const line = template.replace("{topic}", safeSubject);
+	const fallbackLabel = shortTopicLabel(shortTitle || "today's topic", 5);
+	const topicLabels = buildIntroTopicLabels(topics, 4);
+	const safeLabels = topicLabels.length ? topicLabels : [fallbackLabel];
+	const topicList = formatLabelList(safeLabels) || fallbackLabel;
+	const template = pickIntroTemplate(moodKey, safeLabels.length, jobId);
+	const line = template
+		.replace("{topicList}", topicList)
+		.replace("{topic1}", safeLabels[0] || topicList)
+		.replace("{topic2}", safeLabels[1] || safeLabels[0] || topicList)
+		.replace(
+			"{topic3}",
+			safeLabels[2] || safeLabels[1] || safeLabels[0] || topicList
+		);
 	return sanitizeIntroOutroLine(line);
 }
 
