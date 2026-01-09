@@ -218,6 +218,10 @@ const OUTRO_TOLERANCE_DEFAULT = 4;
 const TOP5_MAX_EXTRA_SECONDS = 7;
 const TOP5_OUTRO_SECONDS = 4;
 const TOP5_OUTRO_TOLERANCE_MAX = 3;
+const MAX_SHORTS_QA_REWRITES = 4;
+const SHORTS_REDUNDANT_NGRAM = 3;
+const SHORTS_ADJACENT_SIMILARITY_MAX = 0.72;
+const SHORTS_MIN_UNIQUE_IMAGE_RATIO = 0.9;
 const TEXTY_IMAGE_URL_RE =
 	/(logo|poster|banner|cover|keyart|titlecard|thumbnail|thumb|promo|template|vector|watermark|wallpaper)/i;
 const OFF_TOPIC_IMAGE_TITLE_RE =
@@ -2335,6 +2339,339 @@ Return ONLY JSON:
 	}
 }
 
+function isStopwordToken(token = "") {
+	return (
+		SEGMENT_STOP_WORDS.has(token) ||
+		TOPIC_STOP_WORDS.has(token) ||
+		GENERIC_TOPIC_TOKENS.has(token)
+	);
+}
+
+function findRepeatedNgram(text = "", n = SHORTS_REDUNDANT_NGRAM) {
+	const tokens = tokenizeForDedup(text);
+	if (tokens.length < n * 2) return "";
+	const counts = new Map();
+	for (let i = 0; i <= tokens.length - n; i += 1) {
+		const slice = tokens.slice(i, i + n);
+		if (slice.every((t) => isStopwordToken(t))) continue;
+		const key = slice.join(" ");
+		const next = (counts.get(key) || 0) + 1;
+		if (next >= 2) return key;
+		counts.set(key, next);
+	}
+	return "";
+}
+
+function leadingPhrase(text = "", words = 3) {
+	const tokens = tokenizeForDedup(text);
+	if (!tokens.length) return "";
+	return tokens.slice(0, Math.max(1, Number(words) || 1)).join(" ");
+}
+
+function countPhraseOccurrences(text = "", phrase = "") {
+	const hay = String(text || "").toLowerCase();
+	const needle = String(phrase || "")
+		.toLowerCase()
+		.trim();
+	if (!hay || !needle) return 0;
+	let idx = 0;
+	let count = 0;
+	while (true) {
+		idx = hay.indexOf(needle, idx);
+		if (idx === -1) break;
+		count += 1;
+		idx += needle.length;
+	}
+	return count;
+}
+
+function contentTokenSet(text = "") {
+	const tokens = tokenizeForDedup(text).filter(
+		(t) => t.length >= 3 && !isStopwordToken(t)
+	);
+	return new Set(tokens);
+}
+
+function jaccardSimilarity(a = new Set(), b = new Set()) {
+	if (!a.size || !b.size) return 0;
+	let intersect = 0;
+	for (const tok of a) if (b.has(tok)) intersect += 1;
+	const union = a.size + b.size - intersect;
+	return union ? intersect / union : 0;
+}
+
+function analyzeShortsScriptQuality(
+	segments = [],
+	{ topic = "", trendStory = null, anchor = "", segWordCaps = [] } = {}
+) {
+	const issues = [];
+	const stats = {
+		segments: segments.length,
+		repeatPhrases: 0,
+		repeatOpenings: 0,
+		adjacentSimilarity: 0,
+		topicDrift: 0,
+		anchorRepeats: 0,
+	};
+	if (!Array.isArray(segments) || !segments.length) {
+		return {
+			pass: false,
+			needsRewrite: true,
+			issues: [{ index: 1, type: "empty_segments", detail: "no segments" }],
+			stats,
+		};
+	}
+
+	const storyTokens = collectStoryTokens(topic, trendStory);
+	const filteredTokens = filterSpecificTopicTokens(storyTokens);
+	const topicTokens = filteredTokens.length ? filteredTokens : storyTokens;
+	const minMatches = topicTokens.length >= 3 ? 2 : 1;
+	const anchorRaw = String(anchor || "").trim();
+	const anchorLower = anchorRaw.toLowerCase();
+	const anchorWordCount = anchorRaw ? anchorRaw.split(/\s+/).length : 0;
+	const leads = [];
+	const tokenSets = [];
+
+	segments.forEach((seg, idx) => {
+		const text = String(seg?.scriptText || "").trim();
+		const cap =
+			Array.isArray(segWordCaps) && Number.isFinite(Number(segWordCaps[idx]))
+				? Number(segWordCaps[idx])
+				: null;
+		const segIndex = Number.isFinite(Number(seg?.index))
+			? Number(seg.index)
+			: idx + 1;
+		if (!text) {
+			issues.push({ index: segIndex, type: "empty" });
+			return;
+		}
+		if (segmentLooksFragmentary(text)) {
+			issues.push({ index: segIndex, type: "fragment" });
+		}
+		const repeated = findRepeatedNgram(text, SHORTS_REDUNDANT_NGRAM);
+		if (repeated) {
+			stats.repeatPhrases += 1;
+			issues.push({
+				index: segIndex,
+				type: "repeat_phrase",
+				detail: repeated,
+			});
+		}
+		if (cap && countWords(text) > cap + 2) {
+			issues.push({ index: segIndex, type: "over_cap" });
+		}
+		if (anchorLower && anchorWordCount >= 2) {
+			const anchorHits = countPhraseOccurrences(text, anchorLower);
+			if (anchorHits >= 2) {
+				stats.anchorRepeats += 1;
+				issues.push({ index: segIndex, type: "anchor_repeat" });
+			}
+		}
+		if (topicTokens.length) {
+			const matchCount = topicMatchInfo(topicTokens, [text]).count;
+			const hasAnchor = anchorLower
+				? text.toLowerCase().includes(anchorLower)
+				: false;
+			if (!hasAnchor && matchCount < minMatches) {
+				stats.topicDrift += 1;
+				issues.push({ index: segIndex, type: "topic_drift" });
+			}
+		}
+		leads[idx] = leadingPhrase(text, 3);
+		tokenSets[idx] = contentTokenSet(text);
+	});
+
+	for (let i = 1; i < segments.length; i += 1) {
+		if (leads[i] && leads[i] === leads[i - 1]) {
+			stats.repeatOpenings += 1;
+			issues.push({ index: i + 1, type: "repeat_opening" });
+		}
+		const setA = tokenSets[i - 1];
+		const setB = tokenSets[i];
+		if (setA && setB && setA.size >= 6 && setB.size >= 6) {
+			const sim = jaccardSimilarity(setA, setB);
+			if (sim >= SHORTS_ADJACENT_SIMILARITY_MAX) {
+				stats.adjacentSimilarity += 1;
+				issues.push({ index: i + 1, type: "adjacent_similarity" });
+			}
+		}
+	}
+
+	return {
+		pass: issues.length === 0,
+		needsRewrite: issues.length > 0,
+		issues,
+		stats,
+		topicTokens,
+	};
+}
+
+async function rewriteShortsSegmentsForQuality(
+	segments = [],
+	{
+		topic = "",
+		category = "",
+		language = DEFAULT_LANGUAGE,
+		segWordCaps = [],
+		topicIntent = null,
+		issues = [],
+	} = {}
+) {
+	if (!process.env.CHATGPT_API_TOKEN) return segments;
+	if (!Array.isArray(segments) || !segments.length) return segments;
+	if (!issues.length) return segments;
+
+	const anchor = cleanAnchorCandidate(topicIntent?.anchor || topic || "");
+	const domain = topicIntent?.domain || "real";
+	const evidence = String(topicIntent?.evidence || "(none)")
+		.replace(/\s+/g, " ")
+		.trim();
+	const capsLine = Array.isArray(segWordCaps)
+		? segWordCaps.map((c, i) => `#${i + 1}: <= ${c || "n/a"} words`).join(", ")
+		: "";
+	const issueMap = new Map();
+	for (const issue of issues) {
+		if (!issue || !issue.index) continue;
+		const list = issueMap.get(issue.index) || [];
+		list.push(issue.type);
+		issueMap.set(issue.index, list);
+	}
+	const issueLines = Array.from(issueMap.entries())
+		.map(([idx, list]) => `- #${idx}: ${list.join(", ")}`)
+		.join("\n");
+
+	const ask = `
+We need to tighten a YouTube Shorts script about "${topic}" (${category}).
+Fix redundancy and off-topic drift while keeping the same number of segments.
+
+Rules:
+- Keep the SAME number of segments and the SAME order.
+- Keep each segment to 1-2 sentences.
+- Respect word caps: ${capsLine || "(not provided)"}.
+- Avoid repeating any 3+ word phrase inside a segment.
+- Do NOT open two consecutive segments with the same 3-word sequence.
+- Each segment must add new info; no re-stating the prior line.
+- Anchor phrase (must appear in segment 1): "${
+		anchor || topic
+	}". Do not repeat the full anchor phrase more than once per segment.
+- Domain: ${domain}. Keep claims consistent with the evidence.
+- Evidence: ${evidence}. If "(none)", keep statements high-level and say it's trending rather than claiming specifics.
+- All narration must be in ${language}.
+
+Segments:
+${segments.map((s, i) => `- ${i + 1}: ${s.scriptText || ""}`).join("\n")}
+
+Issues by segment:
+${issueLines || "- (none listed)"}
+
+Return ONLY JSON:
+{ "segments": [ { "index": <number>, "scriptText": "<rewritten line>" } ] }
+`.trim();
+
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask }],
+		});
+		const parsed = parseJsonFlexible(strip(choices[0].message.content));
+		if (!parsed || !Array.isArray(parsed.segments)) return segments;
+		const byIndex = new Map();
+		for (const s of parsed.segments) {
+			const idx = typeof s.index === "number" ? s.index : null;
+			if (!idx) continue;
+			const txt = String(s.scriptText || "").trim();
+			if (!txt) continue;
+			byIndex.set(idx, txt);
+		}
+		if (!byIndex.size) return segments;
+		return segments.map((seg, idx) => {
+			const key = seg.index || idx + 1;
+			const replacement = byIndex.get(key);
+			return replacement ? { ...seg, scriptText: replacement } : seg;
+		});
+	} catch (e) {
+		console.warn("[GPT] rewriteShortsSegmentsForQuality failed ?", e.message);
+		return segments;
+	}
+}
+
+async function tightenSegmentsToWordCaps(
+	segments = [],
+	segWordCaps = [],
+	language = DEFAULT_LANGUAGE
+) {
+	if (!Array.isArray(segments) || !segments.length) return segments;
+	const langNote = normalizeLanguageLabel(language || DEFAULT_LANGUAGE);
+
+	await Promise.all(
+		segments.map((s, i) =>
+			String(s?.scriptText || "")
+				.trim()
+				.split(/\s+/)
+				.filter(Boolean).length <= segWordCaps[i]
+				? s
+				: (async () => {
+						const ask = `
+Rewrite the following narration in active voice.
+Keep all important facts, remove filler.
+Maximum ${segWordCaps[i]} words.
+One or two sentences only.
+Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
+Language: ${langNote}.
+
+"${s.scriptText}"
+`.trim();
+						const { choices } = await openai.chat.completions.create({
+							model: CHAT_MODEL,
+							messages: [{ role: "user", content: ask }],
+						});
+						s.scriptText = choices[0].message.content.trim();
+				  })()
+		)
+	);
+
+	return segments;
+}
+
+async function applyShortsScriptQualityGuard(
+	segments = [],
+	{
+		topic = "",
+		category = "",
+		language = DEFAULT_LANGUAGE,
+		trendStory = null,
+		segWordCaps = [],
+		topicIntent = null,
+		maxAttempts = MAX_SHORTS_QA_REWRITES,
+		label = "pre",
+	} = {}
+) {
+	let current = Array.isArray(segments) ? segments.slice() : [];
+	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+		const qa = analyzeShortsScriptQuality(current, {
+			topic,
+			trendStory,
+			anchor: topicIntent?.anchor || topic || "",
+			segWordCaps,
+		});
+		console.log(`[Shorts QA:${label}] script check`, {
+			attempt: attempt + 1,
+			issues: qa.issues.length,
+			stats: qa.stats,
+		});
+		if (!qa.needsRewrite) break;
+		current = await rewriteShortsSegmentsForQuality(current, {
+			topic,
+			category,
+			language,
+			segWordCaps,
+			topicIntent,
+			issues: qa.issues,
+		});
+	}
+	return current;
+}
+
 function escapeRegex(str = "") {
 	return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -2563,15 +2900,15 @@ function targetResolutionForRatio(ratio) {
 	switch (ratio) {
 		case "720:1280":
 		case "832:1104":
-			return { width: 1080, height: 1920 };
+			return { width: 2160, height: 3840 };
 		case "960:960":
-			return { width: 1080, height: 1080 };
+			return { width: 2160, height: 2160 };
 		case "1104:832":
-			return { width: 1440, height: 1080 };
+			return { width: 2880, height: 2160 };
 		case "1584:672":
 		case "1280:720":
 		default:
-			return { width: 1920, height: 1080 };
+			return { width: 3840, height: 2160 };
 	}
 }
 
@@ -5348,6 +5685,11 @@ function buildSegmentImageQueryVariants({
 		push(`${topicWithHint} ${tokenPhrase}`);
 	if (!variants.length && anchorWithHint) push(anchorWithHint);
 	if (!variants.length && topicWithHint) push(topicWithHint);
+	if (variants.length < limit && anchorText) {
+		["news photo", "press photo", "live photo"].forEach((suffix) => {
+			push(`${anchorText} ${suffix}`);
+		});
+	}
 
 	return uniqueStrings(variants, { limit });
 }
@@ -5452,13 +5794,21 @@ async function prepareSegmentImagePairsForShorts({
 			topic ||
 			""
 	);
+	const anchorTokens = topicTokensFromTitle(anchor);
 	const articleLinks = Array.isArray(trendStory?.articles)
 		? trendStory.articles.map((a) => a.url).filter(Boolean)
 		: [];
 	const negativeTitleRe =
 		/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i;
 	const queryCache = new Map();
-	const maxNewPairs = Math.min(safeSegments.length, 10);
+	const desiredUniqueCount = Math.max(
+		1,
+		Math.ceil(safeSegments.length * SHORTS_MIN_UNIQUE_IMAGE_RATIO)
+	);
+	const maxNewPairs = Math.min(
+		Math.max(desiredUniqueCount, safeSegments.length) * 2,
+		12
+	);
 	let addedPairs = 0;
 	const skipRunwaySegments = allowRunwaySegments && hadPlanImages;
 	const forceStaticOnRunwaySegments = allowRunwaySegments && !hadPlanImages;
@@ -5484,6 +5834,13 @@ async function prepareSegmentImagePairsForShorts({
 			seg.forceStatic = true;
 			stats.forcedStaticSegments += 1;
 		}
+		if (!seg.visualCue) {
+			seg.visualCue = buildSegmentPrimaryPhrase({
+				segmentText: seg.scriptText || "",
+				overlayText: seg.overlayText || "",
+				visualCue: seg.visualCue || "",
+			});
+		}
 
 		stats.segmentsEvaluated += 1;
 		const segmentTokens = extractSegmentImageTokens({
@@ -5501,6 +5858,10 @@ async function prepareSegmentImagePairsForShorts({
 			maxTokens: 3,
 			allowTopicFallback: false,
 		});
+		const guardTokens = uniqueStrings(
+			[...segmentGuardTokens, ...anchorTokens],
+			{ limit: 4 }
+		);
 		const segmentAnchors = buildSegmentAnchorPhrases({
 			segmentText: seg.scriptText || "",
 			overlayText: seg.overlayText || "",
@@ -5556,7 +5917,7 @@ async function prepareSegmentImagePairsForShorts({
 		if (segmentTokens.length) {
 			candidates = prioritizeTokenMatchedUrls(candidates, segmentTokens);
 		}
-		if (segmentGuardTokens.length >= 2) {
+		if (guardTokens.length >= 1) {
 			const gated = candidates.filter((url) => {
 				const fields = [url];
 				try {
@@ -5564,9 +5925,10 @@ async function prepareSegmentImagePairsForShorts({
 				} catch {
 					// ignore decode errors
 				}
-				return topicMatchInfo(segmentGuardTokens, fields).count >= 1;
+				return topicMatchInfo(guardTokens, fields).count >= 1;
 			});
-			if (gated.length >= 3) {
+			const gateMin = guardTokens.length >= 2 ? 3 : 2;
+			if (gated.length >= gateMin) {
 				candidates = gated;
 				stats.guardFiltered += 1;
 			}
@@ -5602,10 +5964,6 @@ async function prepareSegmentImagePairsForShorts({
 				}
 			}
 		}
-		if (assignedIndex === null && fallbackIndex !== null) {
-			assignedIndex = fallbackIndex;
-			assignedUrl = fallbackUrl;
-		}
 		if (assignedIndex !== null) {
 			seg.imageIndex = assignedIndex;
 			seg.referenceImageUrl = pairs[assignedIndex]?.originalUrl || assignedUrl;
@@ -5616,47 +5974,76 @@ async function prepareSegmentImagePairsForShorts({
 				segment: seg.index || i + 1,
 				imageIndex: assignedIndex,
 			});
-		}
-		if (assignedIndex !== null) continue;
-
-		const picked = pickSegmentImageUrl(candidates, usedUrlKeys, usedHosts);
-		if (!picked || addedPairs >= maxNewPairs) {
-			stats.noPick += 1;
-			if (!picked) {
-				console.log("[Shorts] segment image pick failed", {
-					segment: seg.index || i + 1,
-				});
-			}
 			continue;
 		}
 
-		try {
-			const up = await uploadTrendImageToCloudinary(
-				picked,
-				ratio,
-				`aivideomatic/trend_seeds/${safeSlug(topic || "shorts", 32)}_seg_${
-					seg.index || i + 1
-				}`
-			);
-			pairs.push({ originalUrl: picked, cloudinaryUrl: up.url });
-			const newIdx = pairs.length - 1;
-			urlToIndex.set(normalizeImageKey(picked), newIdx);
-			seg.imageIndex = newIdx;
-			seg.referenceImageUrl = picked;
-			addUsed(picked);
-			usedIndexes.add(newIdx);
-			addedPairs += 1;
-			stats.newUploads += 1;
-			console.log("[Shorts] segment image attached", {
-				segment: seg.index || i + 1,
-				query: queryVariants[0] || "",
-			});
-		} catch (e) {
-			console.warn("[Shorts] segment image upload failed", {
-				segment: seg.index || i + 1,
-				error: e.message,
-			});
+		const canUploadNew =
+			(hasCse || googleImagesFallback) && addedPairs < maxNewPairs;
+		const preferNewUpload =
+			canUploadNew && pairs.length + addedPairs < desiredUniqueCount;
+		let uploaded = false;
+
+		const tryUpload = async () => {
+			const picked = pickSegmentImageUrl(candidates, usedUrlKeys, usedHosts);
+			if (!picked) return false;
+			try {
+				const up = await uploadTrendImageToCloudinary(
+					picked,
+					ratio,
+					`aivideomatic/trend_seeds/${safeSlug(topic || "shorts", 32)}_seg_${
+						seg.index || i + 1
+					}`
+				);
+				pairs.push({ originalUrl: picked, cloudinaryUrl: up.url });
+				const newIdx = pairs.length - 1;
+				urlToIndex.set(normalizeImageKey(picked), newIdx);
+				seg.imageIndex = newIdx;
+				seg.referenceImageUrl = picked;
+				addUsed(picked);
+				usedIndexes.add(newIdx);
+				addedPairs += 1;
+				stats.newUploads += 1;
+				console.log("[Shorts] segment image attached", {
+					segment: seg.index || i + 1,
+					query: queryVariants[0] || "",
+				});
+				return true;
+			} catch (e) {
+				console.warn("[Shorts] segment image upload failed", {
+					segment: seg.index || i + 1,
+					error: e.message,
+				});
+				return false;
+			}
+		};
+
+		if (preferNewUpload) {
+			uploaded = await tryUpload();
+			if (uploaded) continue;
 		}
+
+		if (fallbackIndex !== null) {
+			seg.imageIndex = fallbackIndex;
+			seg.referenceImageUrl = pairs[fallbackIndex]?.originalUrl || fallbackUrl;
+			addUsed(fallbackUrl);
+			usedIndexes.add(fallbackIndex);
+			stats.reusedPairs += 1;
+			console.log("[Shorts] segment image reuse (fallback)", {
+				segment: seg.index || i + 1,
+				imageIndex: fallbackIndex,
+			});
+			continue;
+		}
+
+		if (canUploadNew) {
+			uploaded = await tryUpload();
+			if (uploaded) continue;
+		}
+
+		stats.noPick += 1;
+		console.log("[Shorts] segment image pick failed", {
+			segment: seg.index || i + 1,
+		});
 	}
 
 	if (pairs.length) {
@@ -5680,9 +6067,26 @@ async function prepareSegmentImagePairsForShorts({
 		}
 	}
 
+	const uniqueAssigned = new Set(
+		safeSegments
+			.map((s) => (Number.isInteger(s.imageIndex) ? s.imageIndex : null))
+			.filter((v) => v !== null)
+	).size;
+	const uniqueRatio = safeSegments.length
+		? uniqueAssigned / safeSegments.length
+		: 1;
+	if (uniqueRatio < SHORTS_MIN_UNIQUE_IMAGE_RATIO) {
+		console.warn("[Shorts] image diversity below target", {
+			uniqueAssigned,
+			segments: safeSegments.length,
+			uniqueRatio: Number(uniqueRatio.toFixed(2)),
+		});
+	}
 	console.log("[Shorts] segment image refinement summary", {
 		...stats,
 		finalPairs: pairs.length,
+		uniqueAssigned,
+		uniqueRatio: Number(uniqueRatio.toFixed(2)),
 	});
 
 	return { segments: safeSegments, trendImagePairs: pairs };
@@ -7901,6 +8305,7 @@ Narration rules:
 - Vary sentence lengths and verbs so it feels human and lively, not robotic.
 - Avoid headline repetition: never open with "X:" or a title line followed by the same wording.
 - Do not restate the subject in the very next sentence; each line must add new information or stakes.
+- Avoid repeating any 3+ word phrase inside a segment; do not echo the full proper name in back-to-back sentences. Use a short descriptor (the tour, the album, the bill) instead.
 - Sprinkle quick, honest reactions that match the facts (amazed, relieved, concerned) without overhyping.
 - Even for somber news, stay compassionate but keep momentum with clear, visual language - no flat recaps.
 - Segment 1 must immediately land the who/what/when and why-now hook in one tight line.
@@ -7917,7 +8322,7 @@ Narration rules:
 - Later segments deepen context: stakes, key players, what to watch, etc.
 - Stay within word caps so narration fits timing.
 - Keep sentences short and speakable; avoid tongue twisters, nested clauses, and long lists.
-- Prefer clear subject-verb-object phrasing; avoid ambiguous pronouns by repeating the subject when needed.
+- Prefer clear subject-verb-object phrasing; avoid ambiguous pronouns by repeating the subject when needed, without repeating the exact same 3+ word phrase back-to-back.
 - Expand acronyms on first mention and avoid heavy jargon unless briefly explained.
 - Use punctuation for natural pauses; avoid parentheses or brackets.
 - All narration MUST be in ${language}.
@@ -7930,7 +8335,7 @@ Narration rules:
 - Avoid speculation or hallucinations; if a detail is unconfirmed, state that it's unconfirmed rather than inventing facts.
 - Do NOT invent season/episode/part/chapter numbers. Only mention numbered installments if they appear in the topic label or the provided context; otherwise say "the episode" or "the season" without numbers.
 - Keep pacing human and coherent; do not cram unnatural speed-reading into segments.
-- Keep every segment directly on-topic for "${topic}"; no unrelated tangents.
+- Keep every segment directly on-topic for "${topic}"; no unrelated tangents. Each segment must include at least one clear topic token or anchor reference (name, project, team, or place).
 ${categoryTone ? `- Tone: ${categoryTone}` : ""}
 ${
 	category === "Sports"
@@ -8018,6 +8423,7 @@ Critical visual rules:
 - Choose the imageIndex that visually matches the script beat (setting, action, subject); avoid lazy repeats.
 - Every chosen image must directly match the topic and the segment beat; never substitute unrelated celebrities, politicians, or off-topic scenery.
 - If a provided photo looks off-topic for that beat, pick a different imageIndex; do NOT bend the script to fit an unrelated image.
+- Use a different imageIndex for each segment whenever possible; repeats are allowed only if the image pool is smaller than the segment count.
 - Keep the mood safe and non-threatening; no creepy, eerie, or horror vibes.
 - Use each imageIndex at most once before reusing any image.
 - Keep faces human and natural, no distortion.
@@ -8824,30 +9230,19 @@ exports.createVideo = async (req, res) => {
 				language,
 			});
 		}
+		if (category !== "Top5") {
+			segments = await applyShortsScriptQualityGuard(segments, {
+				topic,
+				category,
+				language,
+				trendStory,
+				segWordCaps,
+				topicIntent,
+				label: "pre",
+			});
+		}
 
-		// Tighten narration to fit word caps
-		await Promise.all(
-			segments.map((s, i) =>
-				s.scriptText.trim().split(/\s+/).length <= segWordCaps[i]
-					? s
-					: (async () => {
-							const ask = `
-Rewrite the following narration in active voice.
-Keep all important facts, remove filler.
-Maximum ${segWordCaps[i]} words.
-One or two sentences only.
-Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
-
-"${s.scriptText}"
-`.trim();
-							const { choices } = await openai.chat.completions.create({
-								model: CHAT_MODEL,
-								messages: [{ role: "user", content: ask }],
-							});
-							s.scriptText = choices[0].message.content.trim();
-					  })()
-			)
-		);
+		segments = await tightenSegmentsToWordCaps(segments, segWordCaps, language);
 
 		segments = segments.map((seg) => ({
 			...seg,
@@ -8876,6 +9271,47 @@ Keep it easy to speak for TTS; avoid tongue twisters or long compound clauses.
 			});
 		}
 		if (category !== "Top5") {
+			segments = removeRedundantLeadLabels(segments, { category });
+		}
+		if (category !== "Top5") {
+			segments = await applyShortsScriptQualityGuard(segments, {
+				topic,
+				category,
+				language,
+				trendStory,
+				segWordCaps,
+				topicIntent,
+				maxAttempts: 2,
+				label: "post",
+			});
+			segments = await tightenSegmentsToWordCaps(
+				segments,
+				segWordCaps,
+				language
+			);
+			segments = segments.map((seg) => ({
+				...seg,
+				scriptText: sanitizeAudienceFacingText(seg.scriptText, {
+					allowAITopic: topicIsAITopic,
+				}),
+				overlayText: sanitizeAudienceFacingText(seg.overlayText, {
+					allowAITopic: topicIsAITopic,
+				}),
+			}));
+			if (topicIntent?.anchor) {
+				segments = ensureAnchorInShortsSegments(
+					segments,
+					topicIntent.anchor,
+					topicIntent.domain || "real"
+				);
+			}
+			segments = enforceShortsSpecificityGuards(segments, {
+				topic,
+				trendStory,
+				liveContext: liveWebContext,
+				articleText: trendArticleText,
+				anchor: topicIntent?.anchor || topic,
+			});
 			segments = removeRedundantLeadLabels(segments, { category });
 		}
 		if (category !== "Top5" && allowTrendsImageSearch) {
