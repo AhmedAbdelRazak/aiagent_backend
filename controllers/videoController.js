@@ -205,6 +205,8 @@ const ARTICLE_FETCH_HEADERS = Object.freeze({
 	"Accept-Language": "en-US,en;q=0.9",
 	Referer: "https://www.google.com/",
 });
+const OG_FETCH_CACHE = new Map();
+const OG_CACHEABLE_STATUSES = new Set([401, 403, 404]);
 
 /**
  * WORDS_PER_SEC: cap used when asking GPT for max words.
@@ -5224,6 +5226,7 @@ async function fetchLiveContextForTopic(
 
 async function fetchOgImage(url) {
 	if (!url) return null;
+	if (OG_FETCH_CACHE.has(url)) return OG_FETCH_CACHE.get(url);
 	try {
 		const { data: html } = await axios.get(url, {
 			timeout: 8000,
@@ -5238,13 +5241,20 @@ async function fetchOgImage(url) {
 		];
 		for (const re of matches) {
 			const m = html.match(re);
-			if (m && m[1]) return m[1];
+			if (m && m[1]) {
+				OG_FETCH_CACHE.set(url, m[1]);
+				return m[1];
+			}
 		}
+		OG_FETCH_CACHE.set(url, null);
 		return null;
 	} catch (e) {
 		const status = e?.response?.status;
 		if (status && status !== 404) {
 			console.warn("[OG] fetch failed", { url, status, msg: e.message });
+		}
+		if (status && OG_CACHEABLE_STATUSES.has(status)) {
+			OG_FETCH_CACHE.set(url, null);
 		}
 		return null;
 	}
@@ -5904,7 +5914,7 @@ function buildSegmentPrimaryPhrase({
 	visualCue = "",
 } = {}) {
 	const cue = cleanAnchorCandidate(visualCue);
-	if (cue) return cue;
+	if (cue) return shortPhrase(cue, 7);
 	const overlay = cleanAnchorCandidate(overlayText);
 	if (overlay) return overlay;
 	return shortPhrase(segmentText, 7);
@@ -5984,6 +5994,26 @@ function buildSegmentImageQueryVariants({
 		overlayText,
 		visualCue,
 	});
+	const anchorTokens = topicTokensFromTitle(anchorText || topicText);
+	const primaryTokens = tokenizeLabel(primaryPhrase);
+	const primaryMatchTokens = new Set(
+		normalizeTopicTokens([...topicTokens, ...anchorTokens]).filter((tok) => {
+			if (tok.length < 3) return false;
+			if (SEGMENT_STOP_WORDS.has(tok)) return false;
+			if (TOPIC_STOP_WORDS.has(tok)) return false;
+			if (GENERIC_TOPIC_TOKENS.has(tok)) return false;
+			return true;
+		})
+	);
+	const primaryMatches = primaryTokens.filter((tok) =>
+		primaryMatchTokens.has(tok)
+	);
+	const primaryMatchThreshold = primaryMatchTokens.size > 1 ? 2 : 1;
+	const usePrimaryPhrase =
+		primaryPhrase &&
+		(segmentTokens.length > 0 ||
+			(primaryMatchTokens.size > 0 &&
+				primaryMatches.length >= primaryMatchThreshold));
 	const tokenPhrase =
 		Array.isArray(segmentTokens) && segmentTokens.length
 			? segmentTokens.slice(0, 2).join(" ")
@@ -5994,10 +6024,10 @@ function buildSegmentImageQueryVariants({
 	const topicWithHint =
 		topicText && disambiguator ? `${topicText} ${disambiguator}` : topicText;
 
-	if (anchorWithHint && primaryPhrase)
+	if (anchorWithHint && usePrimaryPhrase)
 		push(`${anchorWithHint} ${primaryPhrase}`);
 	if (anchorWithHint && tokenPhrase) push(`${anchorWithHint} ${tokenPhrase}`);
-	if (topicWithHint && primaryPhrase && topicWithHint !== anchorWithHint)
+	if (topicWithHint && usePrimaryPhrase && topicWithHint !== anchorWithHint)
 		push(`${topicWithHint} ${primaryPhrase}`);
 	if (topicWithHint && tokenPhrase && topicWithHint !== anchorWithHint)
 		push(`${topicWithHint} ${tokenPhrase}`);
