@@ -6166,10 +6166,13 @@ function buildSegmentImageQueryVariants({
 	});
 	const anchorTokens = topicTokensFromTitle(anchorText || topicText);
 	const primaryTokens = tokenizeLabel(primaryPhrase);
-	const coreTokenSet = new Set(normalizeTopicTokens(coreTokens));
-	const matchTokensSource = coreTokens.length
-		? coreTokens
-		: normalizeTopicTokens([...topicTokens, ...anchorTokens]);
+	const matchTokensSource = topicTokens.length
+		? topicTokens
+		: normalizeTopicTokens([...coreTokens, ...anchorTokens]);
+	const matchTokenSet = new Set(normalizeTopicTokens(matchTokensSource));
+	const coreTokenSet = new Set(
+		normalizeTopicTokens(coreTokens.length ? coreTokens : matchTokensSource)
+	);
 	const primaryMatchTokens = new Set(
 		normalizeTopicTokens([...matchTokensSource, ...anchorTokens]).filter(
 			(tok) => {
@@ -6185,21 +6188,21 @@ function buildSegmentImageQueryVariants({
 		primaryMatchTokens.has(tok)
 	);
 	const primaryMatchThreshold = primaryMatchTokens.size > 1 ? 2 : 1;
-	const primaryHasCore = coreTokenSet.size
-		? primaryTokens.some((tok) => coreTokenSet.has(tok))
+	const primaryHasMatch = matchTokenSet.size
+		? primaryTokens.some((tok) => matchTokenSet.has(tok))
 		: true;
-	const segmentHasCore =
+	const segmentHasMatch =
 		Array.isArray(segmentTokens) && segmentTokens.length
-			? coreTokenSet.size
-				? segmentTokens.some((tok) => coreTokenSet.has(tok))
+			? matchTokenSet.size
+				? segmentTokens.some((tok) => matchTokenSet.has(tok))
 				: true
 			: false;
 	const usePrimaryPhrase =
 		primaryPhrase &&
-		((segmentTokens.length > 0 && segmentHasCore) ||
+		((segmentTokens.length > 0 && segmentHasMatch) ||
 			(primaryMatchTokens.size > 0 &&
 				primaryMatches.length >= primaryMatchThreshold &&
-				primaryHasCore));
+				primaryHasMatch));
 	const tokenPhrase =
 		Array.isArray(segmentTokens) && segmentTokens.length
 			? segmentTokens.slice(0, 2).join(" ")
@@ -6212,7 +6215,7 @@ function buildSegmentImageQueryVariants({
 
 	if (anchorWithHint && usePrimaryPhrase)
 		push(`${anchorWithHint} ${primaryPhrase}`);
-	if (anchorWithHint && tokenPhrase && segmentHasCore)
+	if (anchorWithHint && tokenPhrase && segmentHasMatch)
 		push(`${anchorWithHint} ${tokenPhrase}`);
 	if (topicWithHint && usePrimaryPhrase && topicWithHint !== anchorWithHint)
 		push(`${topicWithHint} ${primaryPhrase}`);
@@ -6220,19 +6223,19 @@ function buildSegmentImageQueryVariants({
 		topicWithHint &&
 		tokenPhrase &&
 		topicWithHint !== anchorWithHint &&
-		segmentHasCore
+		segmentHasMatch
 	)
 		push(`${topicWithHint} ${tokenPhrase}`);
-	if (segmentTokens.length && topicWithHint && segmentHasCore)
+	if (segmentTokens.length && topicWithHint && segmentHasMatch)
 		push(`${segmentTokens.join(" ")} ${topicWithHint}`);
 	if (
 		segmentTokens.length &&
 		!topicWithHint &&
 		!anchorWithHint &&
-		segmentHasCore
+		segmentHasMatch
 	)
 		push(`${segmentTokens.join(" ")}`);
-	if (segmentTokens.length && variants.length < limit && segmentHasCore)
+	if (segmentTokens.length && variants.length < limit && segmentHasMatch)
 		push(`${segmentTokens.join(" ")} photo`);
 	if (!variants.length && anchorWithHint) push(anchorWithHint);
 	if (!variants.length && topicWithHint) push(topicWithHint);
@@ -6326,6 +6329,29 @@ async function prepareSegmentImagePairsForShorts({
 			// ignore host parse failures
 		}
 	};
+	const blockedHosts = new Set();
+	const addBlockedHost = (url) => {
+		if (!url) return;
+		try {
+			const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+			if (!host) return;
+			blockedHosts.add(host);
+			usedHosts.add(host);
+		} catch {
+			// ignore host parse failures
+		}
+	};
+	const filterBlockedUrls = (urls = []) => {
+		if (!blockedHosts.size) return urls;
+		return urls.filter((u) => {
+			try {
+				const host = new URL(u).hostname.toLowerCase().replace(/^www\./, "");
+				return host ? !blockedHosts.has(host) : true;
+			} catch {
+				return true;
+			}
+		});
+	};
 
 	pairs.forEach((p, idx) => {
 		const raw = p?.originalUrl || p?.cloudinaryUrl || "";
@@ -6338,19 +6364,30 @@ async function prepareSegmentImagePairsForShorts({
 	const storyTokens = collectStoryTokens(topic, trendStory);
 	const filteredTokens = filterSpecificTopicTokens(storyTokens);
 	const topicTokens = filteredTokens.length ? filteredTokens : storyTokens;
-	const anchor = cleanAnchorCandidate(
+	const intentAnchor = cleanAnchorCandidate(
 		topicIntent?.anchor ||
 			trendStory?.trendSearchTerm ||
 			trendStory?.title ||
 			topic ||
 			""
 	);
+	const imageAnchor = cleanAnchorCandidate(
+		trendStory?.trendSearchTerm || topic || ""
+	);
+	const anchor = imageAnchor || intentAnchor;
 	const anchorTokens = topicTokensFromTitle(anchor);
 	const baseTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+	const relatedTokensRaw = Array.isArray(trendStory?.entityNames)
+		? trendStory.entityNames.flatMap((name) => topicTokensFromTitle(name || ""))
+		: [];
+	const relatedTokens = filterSpecificTopicTokens(relatedTokensRaw);
 	const coreTokens = uniqueStrings([...anchorTokens, ...baseTokens], {
 		limit: 8,
 	});
-	const matchTokens = coreTokens.length ? coreTokens : topicTokens;
+	const matchTokens = uniqueStrings(
+		coreTokens.length ? [...coreTokens, ...relatedTokens] : topicTokens,
+		{ limit: 12 }
+	);
 	const topicTokenSet = new Set(matchTokens);
 	const anchorTokenSet = new Set(anchorTokens);
 	const articleLinks = Array.isArray(trendStory?.articles)
@@ -6475,7 +6512,7 @@ async function prepareSegmentImagePairsForShorts({
 			segmentTokens,
 			category,
 			topicTokens: matchTokens,
-			coreTokens: matchTokens,
+			coreTokens,
 			maxVariants: maxQueryVariants,
 		});
 
@@ -6606,12 +6643,14 @@ async function prepareSegmentImagePairsForShorts({
 			qaHits: qaCandidates.length,
 		});
 
-		const candidateUrls = candidates.map((c) => c.url).filter(Boolean);
+		const candidateUrlsRaw = candidates.map((c) => c.url).filter(Boolean);
+		const candidateUrls = filterBlockedUrls(candidateUrlsRaw);
+		const candidatePool = candidateUrls.length ? candidateUrls : candidateUrlsRaw;
 		let assignedIndex = null;
 		let assignedUrl = "";
 		let fallbackIndex = null;
 		let fallbackUrl = "";
-		for (const url of candidateUrls) {
+		for (const url of candidateUrlsRaw) {
 			const key = normalizeImageKey(url);
 			if (urlToIndex.has(key)) {
 				const idx = urlToIndex.get(key);
@@ -6646,37 +6685,54 @@ async function prepareSegmentImagePairsForShorts({
 		let uploaded = false;
 
 		const tryUpload = async () => {
-			const picked = pickSegmentImageUrl(candidateUrls, usedUrlKeys, usedHosts);
-			if (!picked) return false;
-			try {
-				const up = await uploadTrendImageToCloudinary(
-					picked,
-					ratio,
-					`aivideomatic/trend_seeds/${safeSlug(topic || "shorts", 32)}_seg_${
-						seg.index || i + 1
-					}`
+			const maxAttempts = 3;
+			let remaining = candidatePool.slice();
+			for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+				const pool = filterBlockedUrls(remaining);
+				const picked = pickSegmentImageUrl(
+					pool.length ? pool : remaining,
+					usedUrlKeys,
+					usedHosts
 				);
-				pairs.push({ originalUrl: picked, cloudinaryUrl: up.url });
-				const newIdx = pairs.length - 1;
-				urlToIndex.set(normalizeImageKey(picked), newIdx);
-				seg.imageIndex = newIdx;
-				seg.referenceImageUrl = picked;
-				addUsed(picked);
-				usedIndexes.add(newIdx);
-				addedPairs += 1;
-				stats.newUploads += 1;
-				console.log("[Shorts] segment image attached", {
-					segment: seg.index || i + 1,
-					query: queryVariants[0] || "",
-				});
-				return true;
-			} catch (e) {
-				console.warn("[Shorts] segment image upload failed", {
-					segment: seg.index || i + 1,
-					error: e.message,
-				});
-				return false;
+				if (!picked) return false;
+				try {
+					const up = await uploadTrendImageToCloudinary(
+						picked,
+						ratio,
+						`aivideomatic/trend_seeds/${safeSlug(
+							topic || "shorts",
+							32
+						)}_seg_${seg.index || i + 1}`
+					);
+					pairs.push({ originalUrl: picked, cloudinaryUrl: up.url });
+					const newIdx = pairs.length - 1;
+					urlToIndex.set(normalizeImageKey(picked), newIdx);
+					seg.imageIndex = newIdx;
+					seg.referenceImageUrl = picked;
+					addUsed(picked);
+					usedIndexes.add(newIdx);
+					addedPairs += 1;
+					stats.newUploads += 1;
+					console.log("[Shorts] segment image attached", {
+						segment: seg.index || i + 1,
+						query: queryVariants[0] || "",
+					});
+					return true;
+				} catch (e) {
+					const msg = String(e?.message || "");
+					if (/403|forbidden/i.test(msg)) {
+						addBlockedHost(picked);
+					}
+					remaining = remaining.filter(
+						(u) => normalizeImageKey(u) !== normalizeImageKey(picked)
+					);
+					console.warn("[Shorts] segment image upload failed", {
+						segment: seg.index || i + 1,
+						error: msg,
+					});
+				}
 			}
+			return false;
 		};
 
 		if (preferNewUpload) {
@@ -6807,8 +6863,16 @@ async function prepareSegmentImagePairsForShorts({
 				strict: false,
 			});
 			if (!qaCandidates.length) qaCandidates = normalized;
-			const candidateUrls = qaCandidates.map((c) => c.url).filter(Boolean);
-			const picked = pickSegmentImageUrl(candidateUrls, usedUrlKeys, usedHosts);
+			const candidateUrlsRaw = qaCandidates.map((c) => c.url).filter(Boolean);
+			const candidateUrls = filterBlockedUrls(candidateUrlsRaw);
+			const candidatePool = candidateUrls.length
+				? candidateUrls
+				: candidateUrlsRaw;
+			const picked = pickSegmentImageUrl(
+				candidatePool,
+				usedUrlKeys,
+				usedHosts
+			);
 			if (!picked) continue;
 
 			try {
