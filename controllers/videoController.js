@@ -6645,7 +6645,9 @@ async function prepareSegmentImagePairsForShorts({
 
 		const candidateUrlsRaw = candidates.map((c) => c.url).filter(Boolean);
 		const candidateUrls = filterBlockedUrls(candidateUrlsRaw);
-		const candidatePool = candidateUrls.length ? candidateUrls : candidateUrlsRaw;
+		const candidatePool = candidateUrls.length
+			? candidateUrls
+			: candidateUrlsRaw;
 		let assignedIndex = null;
 		let assignedUrl = "";
 		let fallbackIndex = null;
@@ -6699,10 +6701,9 @@ async function prepareSegmentImagePairsForShorts({
 					const up = await uploadTrendImageToCloudinary(
 						picked,
 						ratio,
-						`aivideomatic/trend_seeds/${safeSlug(
-							topic || "shorts",
-							32
-						)}_seg_${seg.index || i + 1}`
+						`aivideomatic/trend_seeds/${safeSlug(topic || "shorts", 32)}_seg_${
+							seg.index || i + 1
+						}`
 					);
 					pairs.push({ originalUrl: picked, cloudinaryUrl: up.url });
 					const newIdx = pairs.length - 1;
@@ -6868,11 +6869,7 @@ async function prepareSegmentImagePairsForShorts({
 			const candidatePool = candidateUrls.length
 				? candidateUrls
 				: candidateUrlsRaw;
-			const picked = pickSegmentImageUrl(
-				candidatePool,
-				usedUrlKeys,
-				usedHosts
-			);
+			const picked = pickSegmentImageUrl(candidatePool, usedUrlKeys, usedHosts);
 			if (!picked) continue;
 
 			try {
