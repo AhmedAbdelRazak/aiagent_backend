@@ -240,6 +240,27 @@ const TEXTY_IMAGE_URL_RE =
 const IMAGE_FILE_EXT_RE = /\.(jpg|jpeg|png|gif|webp|bmp|svg|avif)(\?|#|$)/i;
 const OFF_TOPIC_IMAGE_TITLE_RE =
 	/(stock|wallpaper|logo|poster|banner|cover|keyart|titlecard|thumbnail|thumb|promo|template|vector|illustration|clipart|scene|still|screengrab|trailer|clip)/i;
+const ENDING_EXPLAINED_RE =
+	/\b(ending explained|final twist|finale explained|ending breakdown|what the ending means|ending scene|ending reveal|final reveal)\b/i;
+const REVIEW_ANGLE_RE =
+	/\b(review|recap|preview|trailer|first look|interview|reaction|impressions)\b/i;
+const WEAK_TOPIC_TOKENS = new Set([
+	"his",
+	"hers",
+	"her",
+	"him",
+	"their",
+	"theirs",
+	"our",
+	"ours",
+	"your",
+	"yours",
+	"its",
+	"this",
+	"that",
+	"these",
+	"those",
+]);
 
 const SHORTS_WATERMARK_TEXT = "https://serenejannat.com";
 const SHORTS_WATERMARK_OPACITY = 0.55;
@@ -379,7 +400,7 @@ const HUMAN_SAFETY =
 const BRAND_ENHANCEMENT_HINT =
 	"subtle global brightness and contrast boost, slightly brighter and clearer faces while preserving natural skin tones, consistent AiVideomatic brand color grading";
 
-const CHAT_MODEL = "gpt-5.1";
+const CHAT_MODEL = "gpt-5.2";
 
 const ELEVEN_VOICES = {
 	English: "21m00Tcm4TlvDq8ikWAM",
@@ -461,8 +482,8 @@ const YT_CATEGORY_MAP = {
 
 const BRAND_TAG = "SereneJannat";
 const BRAND_CREDIT = "Powered by Serene Jannat";
-const MERCH_INTRO =
-	"Support the channel & customize your own merch:\nhttps://www.serenejannat.com/custom-gifts\nhttps://www.serenejannat.com/custom-gifts/6815366fd8583c434ec42fec\nhttps://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n\n";
+const MERCH_LINK = "https://www.serenejannat.com/custom-gifts";
+const MERCH_FOOTER = `Support the channel & customize your own merch:\n${MERCH_LINK}`;
 const PROMPT_CHAR_LIMIT = 220;
 
 /* ---------------------------------------------------------------
@@ -1157,6 +1178,79 @@ function buildShortsTopicIntentSummary({
 	};
 }
 
+function inferShortsStoryAngle({
+	topic = "",
+	trendStory = null,
+	articleText = "",
+	category = "",
+} = {}) {
+	if (category === "Top5") return "top5";
+	const context = [
+		topic,
+		trendStory?.title,
+		trendStory?.rawTitle,
+		trendStory?.seoTitle,
+		trendStory?.youtubeShortTitle,
+		...(Array.isArray(trendStory?.articles)
+			? trendStory.articles.map((a) => a.title)
+			: []),
+		...(Array.isArray(trendStory?.searchPhrases)
+			? trendStory.searchPhrases
+			: []),
+		...(Array.isArray(trendStory?.entityNames) ? trendStory.entityNames : []),
+		String(articleText || "").slice(0, 1200),
+	]
+		.filter(Boolean)
+		.join(" ")
+		.toLowerCase();
+	if (ENDING_EXPLAINED_RE.test(context)) return "ending_explained";
+	if (REVIEW_ANGLE_RE.test(context)) return "review";
+	return "update";
+}
+
+function buildShortsTopicList({
+	topic = "",
+	seoTitle = "",
+	trendStory = null,
+	topicIntent = null,
+	storyAngle = "",
+} = {}) {
+	const seen = new Set();
+	const list = [];
+	const push = (value) => {
+		const cleaned = cleanAnchorCandidate(value || "");
+		if (!cleaned) return;
+		const trimmed = cleaned.replace(/\s+/g, " ").trim();
+		if (!trimmed) return;
+		const key = trimmed.toLowerCase();
+		if (seen.has(key)) return;
+		seen.add(key);
+		list.push(trimmed.length > 80 ? trimmed.slice(0, 80) : trimmed);
+	};
+
+	push(topic);
+	push(topicIntent?.anchor);
+	push(seoTitle);
+	if (trendStory) {
+		push(trendStory.title);
+		push(trendStory.seoTitle);
+		if (Array.isArray(trendStory.entityNames)) {
+			trendStory.entityNames.forEach((t) => push(t));
+		}
+	}
+	if (storyAngle === "ending_explained") push("Ending Explained");
+	const context = [
+		trendStory?.title,
+		trendStory?.seoTitle,
+		trendStory?.rawTitle,
+	]
+		.filter(Boolean)
+		.join(" ")
+		.toLowerCase();
+	if (context.includes("netflix")) push("Netflix");
+	return uniqueStrings(list, { limit: 8 });
+}
+
 function ensureAnchorInShortsSegments(
 	segments = [],
 	anchor = "",
@@ -1312,6 +1406,15 @@ function filterSpecificTopicTokens(tokens = []) {
 		(t) => t.length >= 3 && !GENERIC_TOPIC_TOKENS.has(t)
 	);
 	return filtered.length ? filtered : norm;
+}
+
+function filterImageTopicTokens(tokens = []) {
+	return normalizeTopicTokens(tokens).filter((t) => {
+		if (t.length < 3) return false;
+		if (SEGMENT_STOP_WORDS.has(t) || TOPIC_STOP_WORDS.has(t)) return false;
+		if (GENERIC_TOPIC_TOKENS.has(t) || WEAK_TOPIC_TOKENS.has(t)) return false;
+		return true;
+	});
 }
 
 function expandTopicTokens(tokens = []) {
@@ -10022,6 +10125,13 @@ exports.createVideo = async (req, res) => {
 		if (category === "Top5") tags.unshift("Top5");
 		if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
 		tags = [...new Set(tags)];
+		const topicsList = buildShortsTopicList({
+			topic,
+			seoTitle,
+			trendStory,
+			topicIntent,
+			storyAngle,
+		});
 
 		/* 7. Load last ElevenLabs voice (avoid repetition) */
 		let lastVoiceMeta = null;
@@ -11072,6 +11182,7 @@ exports.createVideo = async (req, res) => {
 			user: user._id,
 			category,
 			topic,
+			topics: topicsList,
 			seoTitle,
 			seoDescription,
 			tags,
