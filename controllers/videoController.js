@@ -209,10 +209,13 @@ const TOP5_WORDS_PER_SEC = 1.82; // brisker Top5 pacing with tighter word caps
 const TOP5_NATURAL_WPS = 2.12;
 const TOP5_FINISH_PAD = 0.12;
 const TOP5_MIN_AUDIO_PAD = 0.1;
+const SHORTS_MIN_AUDIO_PAD = 0.14;
+const SHORTS_FINISH_PAD = 0.2;
 const TOP5_MAX_ATEMPO = 1.2;
 const ENGAGEMENT_TAIL_MIN = 5;
 const ENGAGEMENT_TAIL_MAX = 6;
 const MIN_OUTRO_WORDS = 16;
+const OUTRO_TOLERANCE_MIN = 3;
 const OUTRO_TOLERANCE_MAX = 5;
 const OUTRO_TOLERANCE_DEFAULT = 4;
 const TOP5_MAX_EXTRA_SECONDS = 7;
@@ -221,9 +224,11 @@ const TOP5_OUTRO_TOLERANCE_MAX = 3;
 const MAX_SHORTS_QA_REWRITES = 4;
 const SHORTS_REDUNDANT_NGRAM = 3;
 const SHORTS_ADJACENT_SIMILARITY_MAX = 0.72;
-const SHORTS_MIN_UNIQUE_IMAGE_RATIO = 0.9;
+const SHORTS_MIN_UNIQUE_IMAGE_RATIO = 1;
+const SEGMENT_IMAGE_QA_MAX_CHECKS = 14;
 const TEXTY_IMAGE_URL_RE =
 	/(logo|poster|banner|cover|keyart|titlecard|thumbnail|thumb|promo|template|vector|watermark|wallpaper)/i;
+const IMAGE_FILE_EXT_RE = /\.(jpg|jpeg|png|gif|webp|bmp|svg|avif)(\?|#|$)/i;
 const OFF_TOPIC_IMAGE_TITLE_RE =
 	/(stock|wallpaper|logo|poster|banner|cover|keyart|titlecard|thumbnail|thumb|promo|template|vector|illustration|clipart|scene|still|screengrab|trailer|clip)/i;
 
@@ -2828,7 +2833,11 @@ function computeOptionalOutroTolerance(
 				Math.max(0, TOP5_MAX_EXTRA_SECONDS - tailSeconds)
 		  )
 		: OUTRO_TOLERANCE_MAX;
-	const minTol = isTop5 && duration && duration >= 40 ? maxTol : 0;
+	const minTol = isTop5
+		? duration && duration >= 40
+			? maxTol
+			: 0
+		: Math.min(OUTRO_TOLERANCE_MIN, maxTol);
 	if (deficit <= 0) return +minTol.toFixed(2);
 	const computed = +Math.min(Math.max(deficit, 0), maxTol).toFixed(2);
 	return +Math.max(minTol, computed).toFixed(2);
@@ -5234,6 +5243,224 @@ async function fetchOgImage(url) {
 	}
 }
 
+function looksLikeHtmlPage(url = "") {
+	if (!url) return false;
+	if (!/^https?:\/\//i.test(url)) return false;
+	if (IMAGE_FILE_EXT_RE.test(url)) return false;
+	return true;
+}
+
+function extractMetaContent(html = "", key = "") {
+	if (!html || !key) return "";
+	const re = new RegExp(
+		`<meta[^>]+(?:property|name)=[\"']${escapeRegex(
+			key
+		)}[\"'][^>]*content=[\"']([^\"']+)[\"']`,
+		"i"
+	);
+	const match = html.match(re);
+	return match && match[1] ? String(match[1]).trim() : "";
+}
+
+function extractHtmlTitle(html = "") {
+	const og = extractMetaContent(html, "og:title");
+	if (og) return og.replace(/\s+/g, " ").trim();
+	const tw = extractMetaContent(html, "twitter:title");
+	if (tw) return tw.replace(/\s+/g, " ").trim();
+	const match = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+	return match && match[1] ? String(match[1]).replace(/\s+/g, " ").trim() : "";
+}
+
+function extractHtmlDescription(html = "") {
+	const og = extractMetaContent(html, "og:description");
+	if (og) return og.replace(/\s+/g, " ").trim();
+	const tw = extractMetaContent(html, "twitter:description");
+	if (tw) return tw.replace(/\s+/g, " ").trim();
+	const meta = extractMetaContent(html, "description");
+	return meta ? meta.replace(/\s+/g, " ").trim() : "";
+}
+
+function extractPageSignals(html = "") {
+	if (!html) return { title: "", description: "" };
+	return {
+		title: extractHtmlTitle(html),
+		description: extractHtmlDescription(html),
+	};
+}
+
+async function fetchPageSignals(url, cache = null) {
+	if (!url) return null;
+	const key = String(url || "").trim();
+	if (cache && cache.has(key)) return cache.get(key);
+	if (!looksLikeHtmlPage(key)) {
+		if (cache) cache.set(key, null);
+		return null;
+	}
+	try {
+		const { data } = await axios.get(key, {
+			timeout: 9000,
+			headers: ARTICLE_FETCH_HEADERS,
+			maxRedirects: 2,
+			validateStatus: (s) => s < 500,
+		});
+		if (typeof data !== "string") {
+			if (cache) cache.set(key, null);
+			return null;
+		}
+		const clipped = data.slice(0, 240000);
+		const signals = extractPageSignals(clipped);
+		if (cache) cache.set(key, signals);
+		return signals;
+	} catch {
+		if (cache) cache.set(key, null);
+		return null;
+	}
+}
+
+function normalizeImageCandidates(list = []) {
+	if (!Array.isArray(list)) return [];
+	return list
+		.map((item) => {
+			if (!item) return null;
+			if (typeof item === "string") {
+				return { url: item, source: "", title: "" };
+			}
+			const url = item.url || item.link || item.originalUrl || "";
+			if (!url) return null;
+			return {
+				url,
+				source: item.source || item.contextLink || "",
+				title: item.title || "",
+				topicMatchCount: item.topicMatchCount || 0,
+				anchorHit: Boolean(item.anchorHit),
+			};
+		})
+		.filter(Boolean);
+}
+
+function dedupeImageCandidates(candidates = [], limit = 18) {
+	const urls = candidates.map((c) => c.url);
+	const dedupedUrls = dedupeImageUrls(urls, limit);
+	const allowed = new Set(dedupedUrls.map((u) => normalizeImageKey(u)));
+	const used = new Set();
+	const out = [];
+	for (const cand of candidates) {
+		const key = normalizeImageKey(cand.url);
+		if (!allowed.has(key) || used.has(key)) continue;
+		used.add(key);
+		out.push(cand);
+		if (out.length >= dedupedUrls.length) break;
+	}
+	return out;
+}
+
+function candidateMatchFields(candidate, pageSignals = null) {
+	const fields = [
+		candidate?.url || "",
+		candidate?.title || "",
+		candidate?.source || "",
+	];
+	if (pageSignals?.title) fields.push(pageSignals.title);
+	if (pageSignals?.description) fields.push(pageSignals.description);
+	return fields.filter(Boolean);
+}
+
+async function assessSegmentImageCandidate(candidate, opts = {}) {
+	const {
+		segmentTokens = [],
+		anchorTokens = [],
+		topicTokens = [],
+		pageSignalCache = null,
+		strict = true,
+	} = opts;
+
+	const url = candidate?.url || "";
+	if (!url || TEXTY_IMAGE_URL_RE.test(url)) {
+		return { ok: false, score: 0 };
+	}
+
+	const title = String(candidate?.title || "");
+	if (title && OFF_TOPIC_IMAGE_TITLE_RE.test(title)) {
+		return { ok: false, score: 0 };
+	}
+
+	let signals = null;
+	let fields = candidateMatchFields(candidate);
+	let segmentInfo = topicMatchInfo(segmentTokens, fields);
+	let anchorInfo = topicMatchInfo(anchorTokens, fields);
+	let topicInfo = topicMatchInfo(topicTokens, fields);
+
+	const minTopicMatches = topicTokens.length
+		? strict
+			? minTopicTokenMatches(topicTokens)
+			: 1
+		: 0;
+	const hasTopic = minTopicMatches ? topicInfo.count >= minTopicMatches : true;
+	const hasSegment = segmentTokens.length ? segmentInfo.count >= 1 : false;
+	const hasAnchor = anchorTokens.length ? anchorInfo.count >= 1 : false;
+
+	const needsSignals =
+		(!hasSegment && !hasAnchor) || (topicTokens.length && !hasTopic);
+	if (
+		needsSignals &&
+		candidate?.source &&
+		looksLikeHtmlPage(candidate.source)
+	) {
+		signals = await fetchPageSignals(candidate.source, pageSignalCache);
+		if (signals) {
+			fields = candidateMatchFields(candidate, signals);
+			segmentInfo = topicMatchInfo(segmentTokens, fields);
+			anchorInfo = topicMatchInfo(anchorTokens, fields);
+			topicInfo = topicMatchInfo(topicTokens, fields);
+		}
+	}
+
+	const hasTopicFinal = minTopicMatches
+		? topicInfo.count >= minTopicMatches
+		: true;
+	const hasSegmentFinal = segmentTokens.length ? segmentInfo.count >= 1 : false;
+	const hasAnchorFinal = anchorTokens.length ? anchorInfo.count >= 1 : false;
+
+	let ok = false;
+	if (segmentTokens.length) {
+		ok = strict
+			? (hasSegmentFinal || hasAnchorFinal) && hasTopicFinal
+			: hasSegmentFinal || hasAnchorFinal || hasTopicFinal;
+	} else {
+		ok = hasTopicFinal || hasAnchorFinal;
+	}
+	const score = segmentInfo.count * 3 + anchorInfo.count * 2 + topicInfo.count;
+
+	return {
+		ok,
+		score,
+		segmentCount: segmentInfo.count,
+		anchorCount: anchorInfo.count,
+		topicCount: topicInfo.count,
+		usedSignals: Boolean(signals),
+	};
+}
+
+async function qaSegmentImageCandidates(candidates = [], opts = {}) {
+	const maxChecks =
+		typeof opts.maxChecks === "number"
+			? opts.maxChecks
+			: SEGMENT_IMAGE_QA_MAX_CHECKS;
+	const out = [];
+	let checks = 0;
+
+	for (const cand of candidates) {
+		if (checks >= maxChecks) break;
+		checks += 1;
+		const qa = await assessSegmentImageCandidate(cand, opts);
+		if (!qa.ok) continue;
+		out.push({ ...cand, qaScore: qa.score });
+	}
+
+	out.sort((a, b) => (b.qaScore || 0) - (a.qaScore || 0));
+	return out;
+}
+
 function scoreImageCandidateByRatio({
 	url,
 	width,
@@ -5293,6 +5520,7 @@ async function fetchHighQualityImagesForTopic({
 	strictTopicMatch = false,
 	phraseAnchors = [],
 	requireAnchorPhrase = false,
+	returnMeta = false,
 }) {
 	const candidates = [];
 	const dedupeSet = new Set();
@@ -5549,7 +5777,25 @@ async function fetchHighQualityImagesForTopic({
 		minTopicMatch,
 	});
 
-	return sliced;
+	if (!returnMeta) return sliced;
+	const wanted = new Set(sliced.map((u) => normalizeImageKey(u)));
+	const used = new Set();
+	const meta = [];
+	for (const cand of scored) {
+		if (!cand?.url) continue;
+		const key = normalizeImageKey(cand.url);
+		if (!wanted.has(key) || used.has(key)) continue;
+		used.add(key);
+		meta.push({
+			url: cand.url,
+			source: cand.source || "",
+			title: cand.title || "",
+			topicMatchCount: cand.topicMatchCount || 0,
+			anchorHit: Boolean(cand.anchorHit),
+		});
+		if (meta.length >= sliced.length) break;
+	}
+	return meta;
 }
 
 function shortPhrase(text = "", maxWords = 6) {
@@ -5683,6 +5929,12 @@ function buildSegmentImageQueryVariants({
 		push(`${topicWithHint} ${primaryPhrase}`);
 	if (topicWithHint && tokenPhrase && topicWithHint !== anchorWithHint)
 		push(`${topicWithHint} ${tokenPhrase}`);
+	if (segmentTokens.length && topicWithHint)
+		push(`${segmentTokens.join(" ")} ${topicWithHint}`);
+	if (segmentTokens.length && !topicWithHint && !anchorWithHint)
+		push(`${segmentTokens.join(" ")}`);
+	if (segmentTokens.length && variants.length < limit)
+		push(`${segmentTokens.join(" ")} photo`);
 	if (!variants.length && anchorWithHint) push(anchorWithHint);
 	if (!variants.length && topicWithHint) push(topicWithHint);
 	if (variants.length < limit && anchorText) {
@@ -5801,6 +6053,7 @@ async function prepareSegmentImagePairsForShorts({
 	const negativeTitleRe =
 		/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i;
 	const queryCache = new Map();
+	const pageSignalCache = new Map();
 	const desiredUniqueCount = Math.max(
 		1,
 		Math.ceil(safeSegments.length * SHORTS_MIN_UNIQUE_IMAGE_RATIO)
@@ -5862,6 +6115,11 @@ async function prepareSegmentImagePairsForShorts({
 			[...segmentGuardTokens, ...anchorTokens],
 			{ limit: 4 }
 		);
+		const searchTokens = uniqueStrings(
+			[...segmentTokens, ...anchorTokens, ...topicTokens],
+			{ limit: 6 }
+		);
+		const strictSearch = segmentTokens.length >= 2;
 		const segmentAnchors = buildSegmentAnchorPhrases({
 			segmentText: seg.scriptText || "",
 			overlayText: seg.overlayText || "",
@@ -5901,27 +6159,28 @@ async function prepareSegmentImagePairsForShorts({
 					articleLinks,
 					desiredCount: 6,
 					limit: 14,
-					topicTokens,
-					requireAnyToken: topicTokens.length > 0,
+					topicTokens: searchTokens.length ? searchTokens : topicTokens,
+					requireAnyToken: searchTokens.length > 0,
 					negativeTitleRe,
-					strictTopicMatch: topicTokens.length > 0,
+					strictTopicMatch: strictSearch,
 					phraseAnchors: segmentAnchors,
 					requireAnchorPhrase: false,
+					returnMeta: true,
 				});
 				queryCache.set(cacheKey, urls);
 			}
 			candidates.push(...(urls || []));
 		}
 
-		candidates = dedupeImageUrls(candidates, 18);
-		if (segmentTokens.length) {
-			candidates = prioritizeTokenMatchedUrls(candidates, segmentTokens);
-		}
+		candidates = dedupeImageCandidates(
+			normalizeImageCandidates(candidates),
+			18
+		);
 		if (guardTokens.length >= 1) {
-			const gated = candidates.filter((url) => {
-				const fields = [url];
+			const gated = candidates.filter((cand) => {
+				const fields = [cand.url, cand.title || "", cand.source || ""];
 				try {
-					fields.push(decodeURIComponent(url));
+					fields.push(decodeURIComponent(cand.url));
 				} catch {
 					// ignore decode errors
 				}
@@ -5933,6 +6192,57 @@ async function prepareSegmentImagePairsForShorts({
 				stats.guardFiltered += 1;
 			}
 		}
+
+		const qaOpts = {
+			segmentTokens,
+			anchorTokens,
+			topicTokens,
+			pageSignalCache,
+			strict: true,
+		};
+		let qaCandidates = await qaSegmentImageCandidates(candidates, qaOpts);
+		if (!qaCandidates.length && candidates.length) {
+			qaCandidates = await qaSegmentImageCandidates(candidates, {
+				...qaOpts,
+				strict: false,
+			});
+		}
+		if (!qaCandidates.length && (hasCse || googleImagesFallback)) {
+			const fallbackQuery = [
+				anchor,
+				seg.visualCue,
+				segmentTokens.join(" "),
+				topic,
+			]
+				.filter(Boolean)
+				.join(" ");
+			if (fallbackQuery) {
+				const fallback = await fetchHighQualityImagesForTopic({
+					topic: fallbackQuery,
+					ratio,
+					articleLinks,
+					desiredCount: 6,
+					limit: 14,
+					topicTokens: searchTokens.length ? searchTokens : topicTokens,
+					requireAnyToken: searchTokens.length > 0,
+					negativeTitleRe,
+					strictTopicMatch: false,
+					phraseAnchors: segmentAnchors,
+					requireAnchorPhrase: false,
+					returnMeta: true,
+				});
+				const normalized = dedupeImageCandidates(
+					normalizeImageCandidates(fallback),
+					18
+				);
+				qaCandidates = await qaSegmentImageCandidates(normalized, {
+					...qaOpts,
+					strict: false,
+				});
+			}
+		}
+		if (qaCandidates.length) candidates = qaCandidates;
+
 		if (!candidates.length) {
 			stats.noCandidates += 1;
 			console.log("[Shorts] segment image candidates empty", {
@@ -5943,13 +6253,15 @@ async function prepareSegmentImagePairsForShorts({
 		console.log("[Shorts] segment image candidates", {
 			segment: seg.index || i + 1,
 			total: candidates.length,
+			qaHits: qaCandidates.length,
 		});
 
+		const candidateUrls = candidates.map((c) => c.url).filter(Boolean);
 		let assignedIndex = null;
 		let assignedUrl = "";
 		let fallbackIndex = null;
 		let fallbackUrl = "";
-		for (const url of candidates) {
+		for (const url of candidateUrls) {
 			const key = normalizeImageKey(url);
 			if (urlToIndex.has(key)) {
 				const idx = urlToIndex.get(key);
@@ -5980,11 +6292,11 @@ async function prepareSegmentImagePairsForShorts({
 		const canUploadNew =
 			(hasCse || googleImagesFallback) && addedPairs < maxNewPairs;
 		const preferNewUpload =
-			canUploadNew && pairs.length + addedPairs < desiredUniqueCount;
+			canUploadNew && pairs.length + addedPairs < safeSegments.length;
 		let uploaded = false;
 
 		const tryUpload = async () => {
-			const picked = pickSegmentImageUrl(candidates, usedUrlKeys, usedHosts);
+			const picked = pickSegmentImageUrl(candidateUrls, usedUrlKeys, usedHosts);
 			if (!picked) return false;
 			try {
 				const up = await uploadTrendImageToCloudinary(
@@ -6064,6 +6376,118 @@ async function prepareSegmentImagePairsForShorts({
 			seg.imageIndex = pick;
 			usedIndexes.add(pick);
 			rr += 1;
+		}
+	}
+
+	if (pairs.length && (hasCse || googleImagesFallback)) {
+		const indexCounts = new Map();
+		for (const seg of safeSegments) {
+			if (
+				Number.isInteger(seg.imageIndex) &&
+				seg.imageIndex >= 0 &&
+				seg.imageIndex < pairs.length
+			) {
+				indexCounts.set(
+					seg.imageIndex,
+					(indexCounts.get(seg.imageIndex) || 0) + 1
+				);
+			}
+		}
+
+		let fixes = 0;
+		const maxFixes = Math.min(6, safeSegments.length);
+		for (let i = 0; i < safeSegments.length; i++) {
+			if (fixes >= maxFixes) break;
+			const seg = safeSegments[i];
+			if (
+				!Number.isInteger(seg.imageIndex) ||
+				seg.imageIndex < 0 ||
+				seg.imageIndex >= pairs.length
+			) {
+				continue;
+			}
+			const count = indexCounts.get(seg.imageIndex) || 0;
+			if (count <= 1) continue;
+
+			const segmentTokens = extractSegmentImageTokens({
+				segmentText: seg.scriptText || "",
+				overlayText: seg.overlayText || "",
+				visualCue: seg.visualCue || "",
+				topicTokens,
+				maxTokens: 4,
+			});
+			const segmentAnchors = buildSegmentAnchorPhrases({
+				segmentText: seg.scriptText || "",
+				overlayText: seg.overlayText || "",
+				visualCue: seg.visualCue || "",
+				anchor,
+				maxPhrases: 6,
+			});
+			const searchTokens = uniqueStrings(
+				[...segmentTokens, ...anchorTokens, ...topicTokens],
+				{ limit: 6 }
+			);
+			const fallbackQuery = [seg.visualCue, topic].filter(Boolean).join(" ");
+			if (!fallbackQuery) continue;
+
+			const fallback = await fetchHighQualityImagesForTopic({
+				topic: fallbackQuery,
+				ratio,
+				articleLinks,
+				desiredCount: 6,
+				limit: 14,
+				topicTokens: searchTokens.length ? searchTokens : topicTokens,
+				requireAnyToken: searchTokens.length > 0,
+				negativeTitleRe,
+				strictTopicMatch: false,
+				phraseAnchors: segmentAnchors,
+				requireAnchorPhrase: false,
+				returnMeta: true,
+			});
+			const normalized = dedupeImageCandidates(
+				normalizeImageCandidates(fallback),
+				12
+			);
+			let qaCandidates = await qaSegmentImageCandidates(normalized, {
+				segmentTokens,
+				anchorTokens,
+				topicTokens,
+				pageSignalCache,
+				strict: false,
+			});
+			if (!qaCandidates.length) qaCandidates = normalized;
+			const candidateUrls = qaCandidates.map((c) => c.url).filter(Boolean);
+			const picked = pickSegmentImageUrl(candidateUrls, usedUrlKeys, usedHosts);
+			if (!picked) continue;
+
+			try {
+				const up = await uploadTrendImageToCloudinary(
+					picked,
+					ratio,
+					`aivideomatic/trend_seeds/${safeSlug(topic || "shorts", 32)}_uniq_${
+						seg.index || i + 1
+					}`
+				);
+				pairs.push({ originalUrl: picked, cloudinaryUrl: up.url });
+				const newIdx = pairs.length - 1;
+				urlToIndex.set(normalizeImageKey(picked), newIdx);
+				indexCounts.set(seg.imageIndex, count - 1);
+				seg.imageIndex = newIdx;
+				seg.referenceImageUrl = picked;
+				addUsed(picked);
+				usedIndexes.add(newIdx);
+				stats.newUploads += 1;
+				fixes += 1;
+				console.log("[Shorts] segment image uniqueness fix", {
+					segment: seg.index || i + 1,
+					imageIndex: newIdx,
+				});
+			} catch (e) {
+				console.warn("[Shorts] uniqueness upload failed", {
+					segment: seg.index || i + 1,
+					error: e.message,
+				});
+			}
 		}
 	}
 
@@ -8284,7 +8708,7 @@ Segment ${segCnt} is the engagement outro (about ${
 - Vary the phrasing so outros never feel templated; keep it playful and topic-aware.
 - Keep it concise and entirely in ${language}.
 - Make it sound human and upbeat, not robotic; a friendly host riffing on the story.
-- This extra outro is appended on top of the requested duration, with a ~4s tolerance buffer baked in, so you can finish the thought without cutting yourself off.
+- This extra outro is appended on top of the requested duration, with a 3-5s tolerance buffer baked in, so you can finish the thought without cutting yourself off.
 `.trim();
 
 	const baseIntro = `
@@ -8350,7 +8774,7 @@ ${
 		  } carry the core visuals and together use about ${runwaySharePct}% of the runtime; pack the key beats there so later segments can stay simple.`
 		: ""
 }
-${outroDirective.replace("~4s tolerance buffer", "~3s max buffer")}
+${outroDirective.replace("3-5s tolerance buffer", "3-5s max buffer")}
 `.trim();
 
 	let promptText;
@@ -8968,7 +9392,7 @@ exports.createVideo = async (req, res) => {
 		let segCnt = segLens.length;
 		let engagementTailSeconds = segLens[segCnt - 1];
 		let totalDurationTarget = segLens.reduce((a, b) => a + b, 0);
-		const top5DurationCap =
+		let top5DurationCap =
 			category === "Top5" ? duration + TOP5_MAX_EXTRA_SECONDS : null;
 		const segWordCaps = segLens.map((s) =>
 			Math.floor(s * wordsPerSecForCaps(category))
@@ -9757,16 +10181,17 @@ exports.createVideo = async (req, res) => {
 		}
 
 		if (
-			category === "Top5" &&
 			rawVoiceDurations.length === segCnt &&
 			rawVoiceDurations.some((d) => d > 0.01)
 		) {
+			const isTop5 = category === "Top5";
 			const aligned = alignSegLensToVoice(segLens, rawVoiceDurations, {
-				minPad: TOP5_MIN_AUDIO_PAD,
-				finishPad: TOP5_FINISH_PAD,
+				minPad: isTop5 ? TOP5_MIN_AUDIO_PAD : SHORTS_MIN_AUDIO_PAD,
+				finishPad: isTop5 ? TOP5_FINISH_PAD : SHORTS_FINISH_PAD,
 			});
 			if (aligned.changed) {
-				console.log("[Timing] Top5 voice-aligned segments", {
+				console.log("[Timing] Voice-aligned segments", {
+					category,
 					before: segLens,
 					after: aligned.segLens,
 					delta: aligned.delta,
@@ -9775,6 +10200,13 @@ exports.createVideo = async (req, res) => {
 				totalDurationTarget = aligned.totalDuration;
 				segCnt = segLens.length;
 				engagementTailSeconds = segLens[segLens.length - 1];
+			}
+			if (top5DurationCap && aligned.totalDuration > top5DurationCap + 0.05) {
+				console.warn("[Timing] Top5 voiceover exceeds cap; keeping full", {
+					cap: top5DurationCap,
+					required: aligned.totalDuration,
+				});
+				top5DurationCap = null;
 			}
 			if (top5DurationCap) {
 				const capped = capTop5SegLensToMaxTotal(segLens, top5DurationCap);
