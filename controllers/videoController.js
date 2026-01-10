@@ -178,6 +178,13 @@ const GOOGLE_IMAGES_SEARCH_ENABLED = true;
 const GOOGLE_IMAGES_RESULTS_PER_QUERY = 28;
 const GOOGLE_IMAGES_VARIANT_LIMIT = 4;
 const GOOGLE_IMAGES_MIN_POOL_MULTIPLIER = 2;
+const CSE_PREFERRED_IMG_SIZE = "xlarge";
+const CSE_FALLBACK_IMG_SIZE = "large";
+const CSE_ULTRA_IMG_SIZE = "xxlarge";
+const CSE_MAX_PAGE_SIZE = 10;
+const CSE_MAX_PAGES = 4;
+const CSE_MIN_IMAGE_SHORT_EDGE = 720;
+const CSE_RELAXED_MIN_IMAGE_SHORT_EDGE = 480;
 
 const VALID_RATIOS = [
 	"1280:720",
@@ -5243,6 +5250,78 @@ async function fetchOgImage(url) {
 	}
 }
 
+async function fetchCseImageItems(
+	queries,
+	{ imgSize = null, maxPages = CSE_MAX_PAGES, pageSize = null } = {}
+) {
+	if (!canUseGoogleSearch()) return { items: [], rateLimited: false };
+	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
+	if (!list.length) return { items: [], rateLimited: false };
+
+	const results = [];
+	const seen = new Set();
+	let rateLimited = false;
+	const perPage = Math.min(
+		CSE_MAX_PAGE_SIZE,
+		Math.max(1, Number(pageSize) || CSE_MAX_PAGE_SIZE)
+	);
+	const pageCap = Math.min(CSE_MAX_PAGES, Math.max(1, Number(maxPages) || 1));
+
+	for (const q of list) {
+		let pageStart = 1;
+		let pagesFetched = 0;
+		while (pagesFetched < pageCap) {
+			try {
+				const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+					params: {
+						key: GOOGLE_CSE_KEY,
+						cx: GOOGLE_CSE_ID,
+						q,
+						num: perPage,
+						start: pageStart,
+						searchType: "image",
+						imgType: "photo",
+						imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
+						safe: "active",
+						gl: "us",
+						hl: "en",
+					},
+					timeout: GOOGLE_CSE_TIMEOUT_MS,
+					validateStatus: (s) => s < 500,
+				});
+				if (!data || data.error) break;
+				const items = Array.isArray(data?.items) ? data.items : [];
+				for (const it of items) {
+					const link = it.link || "";
+					if (!link) continue;
+					const key = normalizeImageKey(link);
+					if (seen.has(key)) continue;
+					seen.add(key);
+					results.push({
+						link,
+						title: String(it.title || "").trim(),
+						snippet: String(it.snippet || "").trim(),
+						image: it.image || null,
+						displayLink: it.displayLink || "",
+					});
+				}
+			} catch (e) {
+				const status = e?.response?.status;
+				if (status === 429) rateLimited = true;
+				break;
+			}
+			pageStart += perPage;
+			pagesFetched += 1;
+			if (pagesFetched < pageCap) {
+				await new Promise((r) => setTimeout(r, 120));
+			}
+		}
+		if (rateLimited) break;
+	}
+
+	return { items: results, rateLimited };
+}
+
 function looksLikeHtmlPage(url = "") {
 	if (!url) return false;
 	if (!/^https?:\/\//i.test(url)) return false;
@@ -5605,82 +5684,75 @@ async function fetchHighQualityImagesForTopic({
 
 	// 2) Google CSE search
 	if (canUseGoogleSearch()) {
-		const pages = [1, 11, 21];
+		const combinedQueries = uniqueStrings([...queries, ...fallbackQueries], {
+			limit: 10,
+		});
+		const sizeVariants = [
+			CSE_ULTRA_IMG_SIZE,
+			CSE_PREFERRED_IMG_SIZE,
+			CSE_FALLBACK_IMG_SIZE,
+		];
+		const minShortEdge = Math.max(
+			minEdgeForRatio(ratio) || 0,
+			strictTopicMatch
+				? CSE_MIN_IMAGE_SHORT_EDGE
+				: CSE_RELAXED_MIN_IMAGE_SHORT_EDGE
+		);
 
-		for (const q of queries) {
+		for (const imgSize of sizeVariants) {
 			if (cseRateLimited) break;
-			for (const start of pages) {
-				if (cseRateLimited) break;
-				try {
-					const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
-						params: {
-							key: GOOGLE_CSE_KEY,
-							cx: GOOGLE_CSE_ID,
-							q,
-							searchType: "image",
-							imgType: "photo",
-							imgSize: "huge",
-							num: 10,
-							start,
-							safe: "high",
-						},
-						timeout: GOOGLE_CSE_TIMEOUT_MS,
-					});
-					const items = Array.isArray(data?.items) ? data.items : [];
-					for (const it of items) {
-						const url = it.link;
-						if (!url || dedupeSet.has(url)) continue;
-						const w = Number(it.image?.width || 0);
-						const h = Number(it.image?.height || 0);
-						const host = (() => {
-							try {
-								return new URL(url).hostname.toLowerCase();
-							} catch {
-								return "";
-							}
-						})();
-						if (
-							IMAGE_BLOCKLIST_HOSTS.some(
-								(b) => host === b || host.endsWith(`.${b}`)
-							)
-						)
-							continue;
-						if (textyUrlRe.test(url)) continue;
-						const title = (it.title || "").toLowerCase();
-						if (mergeNegativeTitleRe(title)) continue;
-						const source = it.image?.contextLink || it.displayLink || "";
-						const gate = topicGate(url, source, it.title || "");
-						if (!gate.ok) continue;
-						candidates.push({
-							url,
-							width: w,
-							height: h,
-							source,
-							title: it.title || "",
-							topicMatchCount: gate.count,
-							anchorHit: gate.anchorHit,
-						});
-						dedupeSet.add(url);
-					}
-				} catch (e) {
-					const status = e?.response?.status;
-					if (status === 429) {
-						cseRateLimited = true;
-						console.warn("[ImageSearch] CSE throttled; stopping CSE loop", {
-							query: q,
-							start,
-						});
-						await new Promise((r) => setTimeout(r, 1200));
-						break;
-					}
-					console.warn("[ImageSearch] CSE failed", {
-						query: q,
-						start,
-						msg: e.message,
-						status,
-					});
-				}
+			const { items, rateLimited } = await fetchCseImageItems(combinedQueries, {
+				imgSize,
+				maxPages: CSE_MAX_PAGES,
+			});
+			if (rateLimited) {
+				cseRateLimited = true;
+				console.warn("[ImageSearch] CSE throttled; stopping CSE loop", {
+					imgSize,
+				});
+				break;
 			}
+			if (!items.length) continue;
+
+			for (const it of items) {
+				const url = it.link;
+				if (!url || dedupeSet.has(url)) continue;
+				const w = Number(it.image?.width || 0);
+				const h = Number(it.image?.height || 0);
+				const shortEdge = w && h ? Math.min(w, h) : 0;
+				if (shortEdge && shortEdge < minShortEdge) continue;
+				const host = (() => {
+					try {
+						return new URL(url).hostname.toLowerCase();
+					} catch {
+						return "";
+					}
+				})();
+				if (
+					IMAGE_BLOCKLIST_HOSTS.some(
+						(b) => host === b || host.endsWith(`.${b}`)
+					)
+				)
+					continue;
+				if (textyUrlRe.test(url)) continue;
+				const title = [it.title, it.snippet].filter(Boolean).join(" ");
+				if (mergeNegativeTitleRe(title.toLowerCase())) continue;
+				const source = it.image?.contextLink || it.displayLink || "";
+				const gate = topicGate(url, source, title);
+				if (!gate.ok) continue;
+				candidates.push({
+					url,
+					width: w,
+					height: h,
+					source,
+					title,
+					topicMatchCount: gate.count,
+					anchorHit: gate.anchorHit,
+				});
+				dedupeSet.add(url);
+				if (candidates.length >= maxCandidates) break;
+			}
+			if (candidates.length >= maxCandidates) break;
 		}
 	} else {
 		console.warn("[ImageSearch] Google CSE disabled (missing key/cx)");
@@ -6047,6 +6119,8 @@ async function prepareSegmentImagePairsForShorts({
 			""
 	);
 	const anchorTokens = topicTokensFromTitle(anchor);
+	const topicTokenSet = new Set(topicTokens);
+	const anchorTokenSet = new Set(anchorTokens);
 	const articleLinks = Array.isArray(trendStory?.articles)
 		? trendStory.articles.map((a) => a.url).filter(Boolean)
 		: [];
@@ -6075,6 +6149,7 @@ async function prepareSegmentImagePairsForShorts({
 		noCandidates: 0,
 		noPick: 0,
 		guardFiltered: 0,
+		offTopicCues: 0,
 	};
 
 	for (let i = 0; i < safeSegments.length; i++) {
@@ -6093,16 +6168,41 @@ async function prepareSegmentImagePairsForShorts({
 				overlayText: seg.overlayText || "",
 				visualCue: seg.visualCue || "",
 			});
+		} else if (topicTokens.length) {
+			const cueTokens = tokenizeLabel(seg.visualCue || "");
+			const cueMatches = cueTokens.filter(
+				(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok)
+			);
+			if (!cueMatches.length) {
+				seg.visualCue = buildSegmentPrimaryPhrase({
+					segmentText: seg.scriptText || "",
+					overlayText: seg.overlayText || "",
+					visualCue: "",
+				});
+				stats.offTopicCues += 1;
+			}
 		}
 
 		stats.segmentsEvaluated += 1;
-		const segmentTokens = extractSegmentImageTokens({
+		let segmentTokens = extractSegmentImageTokens({
 			segmentText: seg.scriptText || "",
 			overlayText: seg.overlayText || "",
 			visualCue: seg.visualCue || "",
 			topicTokens,
 			maxTokens: 4,
 		});
+		const segmentTokenMatches = segmentTokens.filter(
+			(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok)
+		);
+		if (
+			!segmentTokenMatches.length &&
+			segmentTokens.length &&
+			topicTokens.length
+		) {
+			segmentTokens = [];
+			stats.offTopicCues += 1;
+		}
+
 		const segmentGuardTokens = extractSegmentImageTokens({
 			segmentText: seg.scriptText || "",
 			overlayText: seg.overlayText || "",
@@ -6111,8 +6211,11 @@ async function prepareSegmentImagePairsForShorts({
 			maxTokens: 3,
 			allowTopicFallback: false,
 		});
+		const filteredGuardTokens = segmentGuardTokens.filter(
+			(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok)
+		);
 		const guardTokens = uniqueStrings(
-			[...segmentGuardTokens, ...anchorTokens],
+			[...filteredGuardTokens, ...anchorTokens],
 			{ limit: 4 }
 		);
 		const searchTokens = uniqueStrings(
