@@ -484,6 +484,7 @@ const BRAND_TAG = "SereneJannat";
 const BRAND_CREDIT = "Powered by Serene Jannat";
 const MERCH_LINK = "https://www.serenejannat.com/custom-gifts";
 const MERCH_FOOTER = `Support the channel & customize your own merch:\n${MERCH_LINK}`;
+const MERCH_INTRO = `${MERCH_FOOTER}\n\n`;
 const PROMPT_CHAR_LIMIT = 220;
 
 /* ---------------------------------------------------------------
@@ -6147,6 +6148,7 @@ function buildSegmentImageQueryVariants({
 	segmentTokens = [],
 	category = "",
 	topicTokens = [],
+	coreTokens = [],
 	maxVariants = 4,
 } = {}) {
 	const limit = Math.max(1, Number(maxVariants) || 1);
@@ -6164,24 +6166,40 @@ function buildSegmentImageQueryVariants({
 	});
 	const anchorTokens = topicTokensFromTitle(anchorText || topicText);
 	const primaryTokens = tokenizeLabel(primaryPhrase);
+	const coreTokenSet = new Set(normalizeTopicTokens(coreTokens));
+	const matchTokensSource = coreTokens.length
+		? coreTokens
+		: normalizeTopicTokens([...topicTokens, ...anchorTokens]);
 	const primaryMatchTokens = new Set(
-		normalizeTopicTokens([...topicTokens, ...anchorTokens]).filter((tok) => {
-			if (tok.length < 3) return false;
-			if (SEGMENT_STOP_WORDS.has(tok)) return false;
-			if (TOPIC_STOP_WORDS.has(tok)) return false;
-			if (GENERIC_TOPIC_TOKENS.has(tok)) return false;
-			return true;
-		})
+		normalizeTopicTokens([...matchTokensSource, ...anchorTokens]).filter(
+			(tok) => {
+				if (tok.length < 3) return false;
+				if (SEGMENT_STOP_WORDS.has(tok)) return false;
+				if (TOPIC_STOP_WORDS.has(tok)) return false;
+				if (GENERIC_TOPIC_TOKENS.has(tok)) return false;
+				return true;
+			}
+		)
 	);
 	const primaryMatches = primaryTokens.filter((tok) =>
 		primaryMatchTokens.has(tok)
 	);
 	const primaryMatchThreshold = primaryMatchTokens.size > 1 ? 2 : 1;
+	const primaryHasCore = coreTokenSet.size
+		? primaryTokens.some((tok) => coreTokenSet.has(tok))
+		: true;
+	const segmentHasCore =
+		Array.isArray(segmentTokens) && segmentTokens.length
+			? coreTokenSet.size
+				? segmentTokens.some((tok) => coreTokenSet.has(tok))
+				: true
+			: false;
 	const usePrimaryPhrase =
 		primaryPhrase &&
-		(segmentTokens.length > 0 ||
+		((segmentTokens.length > 0 && segmentHasCore) ||
 			(primaryMatchTokens.size > 0 &&
-				primaryMatches.length >= primaryMatchThreshold));
+				primaryMatches.length >= primaryMatchThreshold &&
+				primaryHasCore));
 	const tokenPhrase =
 		Array.isArray(segmentTokens) && segmentTokens.length
 			? segmentTokens.slice(0, 2).join(" ")
@@ -6194,16 +6212,27 @@ function buildSegmentImageQueryVariants({
 
 	if (anchorWithHint && usePrimaryPhrase)
 		push(`${anchorWithHint} ${primaryPhrase}`);
-	if (anchorWithHint && tokenPhrase) push(`${anchorWithHint} ${tokenPhrase}`);
+	if (anchorWithHint && tokenPhrase && segmentHasCore)
+		push(`${anchorWithHint} ${tokenPhrase}`);
 	if (topicWithHint && usePrimaryPhrase && topicWithHint !== anchorWithHint)
 		push(`${topicWithHint} ${primaryPhrase}`);
-	if (topicWithHint && tokenPhrase && topicWithHint !== anchorWithHint)
+	if (
+		topicWithHint &&
+		tokenPhrase &&
+		topicWithHint !== anchorWithHint &&
+		segmentHasCore
+	)
 		push(`${topicWithHint} ${tokenPhrase}`);
-	if (segmentTokens.length && topicWithHint)
+	if (segmentTokens.length && topicWithHint && segmentHasCore)
 		push(`${segmentTokens.join(" ")} ${topicWithHint}`);
-	if (segmentTokens.length && !topicWithHint && !anchorWithHint)
+	if (
+		segmentTokens.length &&
+		!topicWithHint &&
+		!anchorWithHint &&
+		segmentHasCore
+	)
 		push(`${segmentTokens.join(" ")}`);
-	if (segmentTokens.length && variants.length < limit)
+	if (segmentTokens.length && variants.length < limit && segmentHasCore)
 		push(`${segmentTokens.join(" ")} photo`);
 	if (!variants.length && anchorWithHint) push(anchorWithHint);
 	if (!variants.length && topicWithHint) push(topicWithHint);
@@ -6317,7 +6346,12 @@ async function prepareSegmentImagePairsForShorts({
 			""
 	);
 	const anchorTokens = topicTokensFromTitle(anchor);
-	const topicTokenSet = new Set(topicTokens);
+	const baseTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+	const coreTokens = uniqueStrings([...anchorTokens, ...baseTokens], {
+		limit: 8,
+	});
+	const matchTokens = coreTokens.length ? coreTokens : topicTokens;
+	const topicTokenSet = new Set(matchTokens);
 	const anchorTokenSet = new Set(anchorTokens);
 	const articleLinks = Array.isArray(trendStory?.articles)
 		? trendStory.articles.map((a) => a.url).filter(Boolean)
@@ -6349,8 +6383,10 @@ async function prepareSegmentImagePairsForShorts({
 		guardFiltered: 0,
 		offTopicCues: 0,
 	};
-	const maxQueryVariants = hasCse ? 4 : 2;
-	const segmentGoogleVariantLimit = hasCse ? GOOGLE_IMAGES_VARIANT_LIMIT : 2;
+	const maxQueryVariants = hasCse ? 3 : 2;
+	const segmentGoogleVariantLimit = hasCse ? 2 : 1;
+	const segmentDesiredCount = 6;
+	const segmentCandidateTarget = Math.max(10, segmentDesiredCount * 2);
 
 	for (let i = 0; i < safeSegments.length; i++) {
 		if (skipRunwaySegments && i < 2) {
@@ -6368,7 +6404,7 @@ async function prepareSegmentImagePairsForShorts({
 				overlayText: seg.overlayText || "",
 				visualCue: seg.visualCue || "",
 			});
-		} else if (topicTokens.length) {
+		} else if (matchTokens.length) {
 			const cueTokens = tokenizeLabel(seg.visualCue || "");
 			const cueMatches = cueTokens.filter(
 				(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok)
@@ -6388,7 +6424,7 @@ async function prepareSegmentImagePairsForShorts({
 			segmentText: seg.scriptText || "",
 			overlayText: seg.overlayText || "",
 			visualCue: seg.visualCue || "",
-			topicTokens,
+			topicTokens: matchTokens,
 			maxTokens: 4,
 		});
 		const segmentTokenMatches = segmentTokens.filter(
@@ -6397,7 +6433,7 @@ async function prepareSegmentImagePairsForShorts({
 		if (
 			!segmentTokenMatches.length &&
 			segmentTokens.length &&
-			topicTokens.length
+			matchTokens.length
 		) {
 			segmentTokens = [];
 			stats.offTopicCues += 1;
@@ -6407,7 +6443,7 @@ async function prepareSegmentImagePairsForShorts({
 			segmentText: seg.scriptText || "",
 			overlayText: seg.overlayText || "",
 			visualCue: seg.visualCue || "",
-			topicTokens,
+			topicTokens: matchTokens,
 			maxTokens: 3,
 			allowTopicFallback: false,
 		});
@@ -6419,7 +6455,7 @@ async function prepareSegmentImagePairsForShorts({
 			{ limit: 4 }
 		);
 		const searchTokens = uniqueStrings(
-			[...segmentTokens, ...anchorTokens, ...topicTokens],
+			[...segmentTokens, ...anchorTokens, ...matchTokens],
 			{ limit: 6 }
 		);
 		const strictSearch = segmentTokens.length >= 2;
@@ -6438,7 +6474,8 @@ async function prepareSegmentImagePairsForShorts({
 			anchor,
 			segmentTokens,
 			category,
-			topicTokens,
+			topicTokens: matchTokens,
+			coreTokens: matchTokens,
 			maxVariants: maxQueryVariants,
 		});
 
@@ -6452,6 +6489,7 @@ async function prepareSegmentImagePairsForShorts({
 		});
 
 		let candidates = [];
+		const candidateKeys = new Set();
 		for (const q of queryVariants) {
 			const cacheKey = q.toLowerCase();
 			let urls = queryCache.get(cacheKey);
@@ -6460,9 +6498,9 @@ async function prepareSegmentImagePairsForShorts({
 					topic: q,
 					ratio,
 					articleLinks,
-					desiredCount: 6,
+					desiredCount: segmentDesiredCount,
 					limit: 14,
-					topicTokens: searchTokens.length ? searchTokens : topicTokens,
+					topicTokens: searchTokens.length ? searchTokens : matchTokens,
 					requireAnyToken: searchTokens.length > 0,
 					negativeTitleRe,
 					strictTopicMatch: strictSearch,
@@ -6473,7 +6511,14 @@ async function prepareSegmentImagePairsForShorts({
 				});
 				queryCache.set(cacheKey, urls);
 			}
-			candidates.push(...(urls || []));
+			const items = urls || [];
+			for (const item of items) {
+				const url = typeof item === "string" ? item : item?.url;
+				if (!url) continue;
+				candidateKeys.add(normalizeImageKey(url));
+			}
+			candidates.push(...items);
+			if (candidateKeys.size >= segmentCandidateTarget) break;
 		}
 
 		candidates = dedupeImageCandidates(
@@ -6500,7 +6545,7 @@ async function prepareSegmentImagePairsForShorts({
 		const qaOpts = {
 			segmentTokens,
 			anchorTokens,
-			topicTokens,
+			topicTokens: matchTokens,
 			pageSignalCache,
 			strict: true,
 		};
@@ -6525,9 +6570,9 @@ async function prepareSegmentImagePairsForShorts({
 					topic: fallbackQuery,
 					ratio,
 					articleLinks,
-					desiredCount: 6,
+					desiredCount: segmentDesiredCount,
 					limit: 14,
-					topicTokens: searchTokens.length ? searchTokens : topicTokens,
+					topicTokens: searchTokens.length ? searchTokens : matchTokens,
 					requireAnyToken: searchTokens.length > 0,
 					negativeTitleRe,
 					strictTopicMatch: false,
@@ -6718,7 +6763,7 @@ async function prepareSegmentImagePairsForShorts({
 				segmentText: seg.scriptText || "",
 				overlayText: seg.overlayText || "",
 				visualCue: seg.visualCue || "",
-				topicTokens,
+				topicTokens: matchTokens,
 				maxTokens: 4,
 			});
 			const segmentAnchors = buildSegmentAnchorPhrases({
@@ -6729,7 +6774,7 @@ async function prepareSegmentImagePairsForShorts({
 				maxPhrases: 6,
 			});
 			const searchTokens = uniqueStrings(
-				[...segmentTokens, ...anchorTokens, ...topicTokens],
+				[...segmentTokens, ...anchorTokens, ...matchTokens],
 				{ limit: 6 }
 			);
 			const fallbackQuery = [seg.visualCue, topic].filter(Boolean).join(" ");
@@ -6739,9 +6784,9 @@ async function prepareSegmentImagePairsForShorts({
 				topic: fallbackQuery,
 				ratio,
 				articleLinks,
-				desiredCount: 6,
+				desiredCount: segmentDesiredCount,
 				limit: 14,
-				topicTokens: searchTokens.length ? searchTokens : topicTokens,
+				topicTokens: searchTokens.length ? searchTokens : matchTokens,
 				requireAnyToken: searchTokens.length > 0,
 				negativeTitleRe,
 				strictTopicMatch: false,
@@ -6757,7 +6802,7 @@ async function prepareSegmentImagePairsForShorts({
 			let qaCandidates = await qaSegmentImageCandidates(normalized, {
 				segmentTokens,
 				anchorTokens,
-				topicTokens,
+				topicTokens: matchTokens,
 				pageSignalCache,
 				strict: false,
 			});
