@@ -987,11 +987,60 @@ function splitTitleSegments(text = "") {
 		.filter(Boolean);
 }
 
+const TREND_META_PREFIX_RE =
+	/^\s*\d+\s*(?:minute|minutes|min|mins|hour|hours|hr|hrs|day|days|week|weeks|month|months|year|years)\s+ago\b/i;
+const TREND_META_LABELS = new Set(["sport", "sports", "news"]);
+const TREND_META_SPLIT_RE = /\s(?:-|\u2013|\u2014|\||:|\u00b7)\s/;
+const TREND_META_LEADING_SEP_RE = /^[\s\-\u2013\u2014|:\u00b7]+/;
+
+function stripTrendMetaPrefix(text = "") {
+	let cleaned = String(text || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!cleaned) return "";
+
+	const segments = cleaned
+		.split(TREND_META_SPLIT_RE)
+		.map((seg) => seg.trim())
+		.filter(Boolean);
+	if (segments.length > 1) {
+		let start = 0;
+		while (start < segments.length) {
+			const seg = segments[start];
+			if (TREND_META_PREFIX_RE.test(seg)) {
+				start += 1;
+				continue;
+			}
+			if (TREND_META_LABELS.has(seg.toLowerCase())) {
+				start += 1;
+				continue;
+			}
+			break;
+		}
+		if (start < segments.length) {
+			cleaned = segments.slice(start).join(" ").trim();
+		}
+	}
+
+	cleaned = cleaned
+		.replace(TREND_META_PREFIX_RE, "")
+		.replace(TREND_META_LEADING_SEP_RE, "")
+		.trim();
+
+	if (!cleaned) return "";
+	const tokens = cleaned.split(/\s+/);
+	if (tokens.length > 2 && TREND_META_LABELS.has(tokens[0].toLowerCase())) {
+		cleaned = tokens.slice(1).join(" ");
+	}
+	return cleaned.trim();
+}
+
 function cleanAnchorCandidate(text = "") {
-	return String(text || "")
+	const cleaned = String(text || "")
 		.replace(/["'(){}\[\]]/g, "")
 		.replace(/\s+/g, " ")
 		.trim();
+	return stripTrendMetaPrefix(cleaned);
 }
 
 function detectFictionalContext(text = "") {
@@ -1049,35 +1098,42 @@ function buildShortsTopicContextStrings({
 	articleText,
 } = {}) {
 	const list = [];
+	const pushContext = (value) => {
+		const cleaned = stripTrendMetaPrefix(String(value || "").trim());
+		if (cleaned) list.push(cleaned);
+	};
 	const topicLabel = cleanAnchorCandidate(topic || "");
 	if (topicLabel) list.push(topicLabel);
 	if (trendStory) {
-		list.push(
+		[
 			trendStory.trendSearchTerm,
 			trendStory.trendDialogTitle,
 			trendStory.rawTitle,
 			trendStory.title,
 			trendStory.youtubeShortTitle,
 			trendStory.seoTitle,
-			trendStory.imageComment
-		);
+			trendStory.imageComment,
+		].forEach(pushContext);
 		if (Array.isArray(trendStory.searchPhrases))
-			list.push(...trendStory.searchPhrases);
+			trendStory.searchPhrases.forEach(pushContext);
 		if (Array.isArray(trendStory.entityNames))
-			list.push(...trendStory.entityNames);
+			trendStory.entityNames.forEach(pushContext);
 		if (Array.isArray(trendStory.articles)) {
-			list.push(...trendStory.articles.map((a) => a?.title).filter(Boolean));
+			trendStory.articles
+				.map((a) => a?.title)
+				.filter(Boolean)
+				.forEach(pushContext);
 		}
 	}
 
 	if (Array.isArray(liveContext)) {
 		for (const item of liveContext) {
 			if (typeof item === "string") {
-				list.push(item);
+				pushContext(item);
 				continue;
 			}
-			if (item?.title) list.push(String(item.title));
-			if (item?.snippet) list.push(String(item.snippet));
+			if (item?.title) pushContext(item.title);
+			if (item?.snippet) pushContext(item.snippet);
 		}
 	}
 
@@ -1086,7 +1142,7 @@ function buildShortsTopicContextStrings({
 			.replace(/\s+/g, " ")
 			.trim()
 			.slice(0, 220);
-		if (excerpt) list.push(excerpt);
+		if (excerpt) pushContext(excerpt);
 	}
 
 	return uniqueStrings(list.filter(Boolean), { limit: 28 });
@@ -5713,6 +5769,7 @@ async function fetchHighQualityImagesForTopic({
 	phraseAnchors = [],
 	requireAnchorPhrase = false,
 	returnMeta = false,
+	googleVariantLimit = null,
 }) {
 	const candidates = [];
 	const dedupeSet = new Set();
@@ -5875,8 +5932,13 @@ async function fetchHighQualityImagesForTopic({
 		console.warn("[ImageSearch] CSE throttled; using fallback pools only");
 	}
 
+	const variantLimit =
+		typeof googleVariantLimit === "number"
+			? Math.max(0, Math.floor(googleVariantLimit))
+			: GOOGLE_IMAGES_VARIANT_LIMIT;
 	if (
 		GOOGLE_IMAGES_SEARCH_ENABLED &&
+		variantLimit > 0 &&
 		candidates.length < desiredCount * GOOGLE_IMAGES_MIN_POOL_MULTIPLIER
 	) {
 		const googleQueries = [];
@@ -5892,7 +5954,7 @@ async function fetchHighQualityImagesForTopic({
 		pushGoogleQuery(topic);
 		queries.forEach((q) => pushGoogleQuery(q));
 		fallbackQueries.forEach((q) => pushGoogleQuery(q));
-		const limitedQueries = googleQueries.slice(0, GOOGLE_IMAGES_VARIANT_LIMIT);
+		const limitedQueries = googleQueries.slice(0, variantLimit);
 
 		for (const gQuery of limitedQueries) {
 			const googleUrls = await fetchGoogleImagesFromService(gQuery, {
@@ -6042,8 +6104,11 @@ function extractSegmentImageTokens({
 	allowTopicFallback = true,
 } = {}) {
 	const limit = Math.max(1, Number(maxTokens) || 1);
+	const cleanedCue = stripTrendMetaPrefix(visualCue);
+	const cleanedOverlay = stripTrendMetaPrefix(overlayText);
+	const cleanedSegment = stripTrendMetaPrefix(segmentText);
 	const ordered = [];
-	[visualCue, overlayText, segmentText]
+	[cleanedCue, cleanedOverlay, cleanedSegment]
 		.filter(Boolean)
 		.forEach((src) => ordered.push(...tokenizeLabel(src)));
 	let tokens = filterSegmentTokens(ordered, topicTokens);
@@ -6284,6 +6349,8 @@ async function prepareSegmentImagePairsForShorts({
 		guardFiltered: 0,
 		offTopicCues: 0,
 	};
+	const maxQueryVariants = hasCse ? 4 : 2;
+	const segmentGoogleVariantLimit = hasCse ? GOOGLE_IMAGES_VARIANT_LIMIT : 2;
 
 	for (let i = 0; i < safeSegments.length; i++) {
 		if (skipRunwaySegments && i < 2) {
@@ -6372,7 +6439,7 @@ async function prepareSegmentImagePairsForShorts({
 			segmentTokens,
 			category,
 			topicTokens,
-			maxVariants: 4,
+			maxVariants: maxQueryVariants,
 		});
 
 		if (!queryVariants.length) continue;
@@ -6402,6 +6469,7 @@ async function prepareSegmentImagePairsForShorts({
 					phraseAnchors: segmentAnchors,
 					requireAnchorPhrase: false,
 					returnMeta: true,
+					googleVariantLimit: segmentGoogleVariantLimit,
 				});
 				queryCache.set(cacheKey, urls);
 			}
@@ -6466,6 +6534,7 @@ async function prepareSegmentImagePairsForShorts({
 					phraseAnchors: segmentAnchors,
 					requireAnchorPhrase: false,
 					returnMeta: true,
+					googleVariantLimit: segmentGoogleVariantLimit,
 				});
 				const normalized = dedupeImageCandidates(
 					normalizeImageCandidates(fallback),
@@ -6679,6 +6748,7 @@ async function prepareSegmentImagePairsForShorts({
 				phraseAnchors: segmentAnchors,
 				requireAnchorPhrase: false,
 				returnMeta: true,
+				googleVariantLimit: segmentGoogleVariantLimit,
 			});
 			const normalized = dedupeImageCandidates(
 				normalizeImageCandidates(fallback),
