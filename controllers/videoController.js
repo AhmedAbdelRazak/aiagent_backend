@@ -9717,6 +9717,12 @@ exports.createVideo = async (req, res) => {
 				trendStory,
 			});
 		}
+		const storyAngle = inferShortsStoryAngle({
+			topic,
+			trendStory,
+			articleText: trendArticleText,
+			category,
+		});
 
 		/* 2. Segment timing */
 		const requestedTailSeconds = computeEngagementTail(duration, category);
