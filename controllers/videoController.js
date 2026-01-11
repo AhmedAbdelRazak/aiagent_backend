@@ -233,6 +233,7 @@ const TOP5_OUTRO_TOLERANCE_MAX = 3;
 const MAX_SHORTS_QA_REWRITES = 4;
 const SHORTS_REDUNDANT_NGRAM = 3;
 const SHORTS_ADJACENT_SIMILARITY_MAX = 0.72;
+const SHORTS_INTRO_SIMILARITY_MAX = 0.5;
 const SHORTS_MIN_UNIQUE_IMAGE_RATIO = 1;
 const SEGMENT_IMAGE_QA_MAX_CHECKS = 14;
 const TEXTY_IMAGE_URL_RE =
@@ -1830,7 +1831,25 @@ function sanitizeAudienceFacingText(text, { allowAITopic = false } = {}) {
 }
 
 function enforceEngagementOutroText(text, { topic, wordCap, category }) {
-	const existing = String(text || "").trim();
+	const normalizeOutroCopy = (value = "") => {
+		let updated = String(value || "");
+		updated = updated
+			.replace(
+				/\b(like)\s*&\s*(subscribe|sub|follow)?\b/gi,
+				"like and subscribe"
+			)
+			.replace(/\b(like)\s+and\s+follow\b/gi, "like and subscribe")
+			.replace(/\bcomment\s+down\s+below\b/gi, "comment in the comments")
+			.replace(/\bcomment\s+below\b/gi, "comment in the comments")
+			.replace(/\bcomment\s+in\s+the\b/gi, "comment in the comments")
+			.replace(
+				/\b(tell me|let me know|share)\b([^.!?]{0,40})\bin the\b/gi,
+				"$1$2 in the comments"
+			)
+			.replace(/\.\.\.+/g, ".");
+		return updated.replace(/\s+/g, " ").trim();
+	};
+	const existing = normalizeOutroCopy(String(text || "").trim());
 	const hasQuestion = /\?/.test(existing);
 	const hasCTA = /(comment|subscribe|follow|like)/i.test(existing);
 	const hasSignOff =
@@ -1859,9 +1878,9 @@ function enforceEngagementOutroText(text, { topic, wordCap, category }) {
 						  ]
 			  );
 	const cta = choose([
-		"Drop your take below, tap like, and subscribe for more quick hits.",
-		"Tell me your angle in the comments, hit like, and subscribe for the next drop.",
-		"Share your thoughts, smash like, and follow for tomorrow's update.",
+		"Like and subscribe, then drop your take in the comments.",
+		"Like and subscribe for more, and tell me your angle in the comments.",
+		"Like and subscribe, and sound off in the comments.",
 	]);
 	const signOff = choose([
 		"See you tomorrow!",
@@ -1877,26 +1896,55 @@ function enforceEngagementOutroText(text, { topic, wordCap, category }) {
 	else if (!hasCTA) combined = `${existing} ${cta}`;
 	if (!hasSignOff) combined = `${combined} ${signOff}`;
 
+	combined = normalizeOutroCopy(combined);
+
 	// Ensure the CTA is complete and not dangling.
 	if (/[&]\s*$/.test(combined) || /\band\s*$/i.test(combined)) {
 		combined = combined.replace(/[&]\s*$/g, "and").replace(/\band\s*$/i, "and");
 		combined = `${combined} subscribe!`;
 	}
-	if (!/subscribe/i.test(combined) && /like/i.test(combined)) {
-		combined = `${combined} Subscribe for more!`;
+	if (!/subscribe/i.test(combined)) {
+		combined = `${combined} Like and subscribe.`;
 	}
+	if (!/comment/i.test(combined)) {
+		combined = `${combined} Tell me your take in the comments.`;
+	}
+	combined = combined
+		.replace(/\bin the\s*$/i, "in the comments.")
+		.replace(/[,;:]\s*$/g, ".");
 	if (!/[.!?]$/.test(combined)) combined = `${combined}!`;
 
 	combined = combined.replace(/\s+/g, " ").trim();
+	combined = normalizeSegmentCompletion(combined);
 
 	if (wordCap && Number.isFinite(wordCap) && wordCap > 3) {
-		const words = combined.split(/\s+/);
-		if (words.length > wordCap) {
-			combined = words
-				.slice(0, wordCap)
-				.join(" ")
-				.replace(/[.,;:]?$/, ".");
+		const candidates = [
+			combined,
+			`${question} ${cta}`,
+			cta,
+			"Like and subscribe, and comment in the comments.",
+			"Like and subscribe. Comment in the comments.",
+		];
+		let picked = "";
+		for (const candidate of candidates) {
+			const normalized = normalizeSegmentCompletion(
+				normalizeOutroCopy(candidate)
+			);
+			const words = countWords(normalized);
+			const hasCTA =
+				/subscribe/i.test(normalized) && /comment/i.test(normalized);
+			if (words <= wordCap && !segmentLooksFragmentary(normalized)) {
+				if (hasCTA) {
+					picked = normalized;
+					break;
+				}
+				if (!picked) picked = normalized;
+			}
 		}
+		if (!picked) {
+			picked = trimToWordCapSafely(combined, wordCap);
+		}
+		combined = picked;
 	}
 	return combined;
 }
@@ -2371,10 +2419,11 @@ function mergeAnchorIntoLeadText(text = "", anchor = "", domain = "real") {
 function dedupeLeadLabel(text = "") {
 	const raw = String(text || "").trim();
 	if (!raw) return raw;
-	const match = raw.match(/^(.{4,120}?)[\\s]*[:;\\u2013\\u2014-]\\s+(.+)$/);
+	const match = raw.match(/^(.{4,120}?)[\\s]*([:;\\u2013\\u2014-])\\s+(.+)$/);
 	if (!match) return raw;
 	const label = match[1].trim();
-	const rest = match[2].trim();
+	const separator = match[2];
+	const rest = match[3].trim();
 	if (!label || !rest) return raw;
 
 	const labelTokens = tokenizeForDedup(label);
@@ -2384,8 +2433,12 @@ function dedupeLeadLabel(text = "") {
 	const headTokens = restTokens.slice(0, Math.min(8, restTokens.length));
 	const overlap = headTokens.filter((t) => labelTokens.includes(t)).length;
 	const denom = Math.min(labelTokens.length, headTokens.length);
-	const isHeadline = /[;|]/.test(label) || /\s[-\u2013\u2014]\s/.test(label);
-	const threshold = isHeadline ? 0.6 : 0.75;
+	const isHeadline =
+		separator === ":" ||
+		separator === ";" ||
+		/\s[-\u2013\u2014]\s/.test(label) ||
+		/[|]/.test(label);
+	const threshold = isHeadline ? 0.55 : 0.72;
 	if (!denom || overlap < 2 || overlap / denom < threshold) return raw;
 
 	return rest;
@@ -2413,6 +2466,84 @@ function finalizeSegmentsForTTS(segments = [], { language } = {}) {
 	});
 }
 
+function hasUnbalancedDelimiters(text = "") {
+	const t = String(text || "");
+	const openParen = (t.match(/\(/g) || []).length;
+	const closeParen = (t.match(/\)/g) || []).length;
+	if (openParen !== closeParen) return true;
+	const openBracket = (t.match(/\[/g) || []).length;
+	const closeBracket = (t.match(/]/g) || []).length;
+	if (openBracket !== closeBracket) return true;
+	const quotes = (t.match(/"/g) || []).length;
+	if (quotes % 2 !== 0) return true;
+	return false;
+}
+
+function trimDanglingTail(text = "") {
+	let out = String(text || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!out) return out;
+	out = out.replace(/\.\.\.+\s*$/g, "").trim();
+	const tailPatterns = [
+		/\b(?:in|on|for|with|of|about|from|into|over|under|between|after|before|during|within|without|via)\s+(?:the|a|an)\s*$/i,
+		/\b(?:the|a|an)\s*$/i,
+		/\b(?:to|for|with|of|in|on|at|by|from|into|over|under|between|about|after|before|during|within|without|via)\s*$/i,
+		/\b(?:and|or|but|so|because|if|when|while|than|as|that|which|who|whom)\s*$/i,
+		/\b(?:like|plus)\s*$/i,
+	];
+	for (let i = 0; i < 3; i += 1) {
+		let changed = false;
+		for (const re of tailPatterns) {
+			if (re.test(out)) {
+				const next = out.replace(re, "").trim();
+				if (next && next !== out) {
+					out = next;
+					changed = true;
+				}
+			}
+		}
+		if (!changed) break;
+	}
+	return out;
+}
+
+function ensureTerminalPunctuation(text = "") {
+	const out = String(text || "").trim();
+	if (!out) return out;
+	if (/[.!?]["')\]]?\s*$/.test(out)) return out;
+	if (/["']\s*$/.test(out)) return out.replace(/(["'])\s*$/, ".$1");
+	if (/[)\]]\s*$/.test(out)) return `${out}.`;
+	return `${out}.`;
+}
+
+function normalizeSegmentCompletion(text = "") {
+	let out = String(text || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!out) return out;
+	const trimmed = trimDanglingTail(out);
+	out = trimmed || out;
+	out = out.replace(/[,:;]\s*$/, "").trim();
+	return ensureTerminalPunctuation(out);
+}
+
+function trimToWordCapSafely(text = "", wordCap = null) {
+	const cap = Number(wordCap);
+	const base = String(text || "").trim();
+	if (!base) return base;
+	if (!Number.isFinite(cap) || cap <= 0) return base;
+	const words = base.split(/\s+/).filter(Boolean);
+	if (words.length <= cap) return base;
+	let trimmed = normalizeSegmentCompletion(words.slice(0, cap).join(" "));
+	if (!segmentLooksFragmentary(trimmed)) return trimmed;
+	for (let i = cap - 1; i >= Math.max(4, cap - 4); i -= 1) {
+		const candidate = normalizeSegmentCompletion(words.slice(0, i).join(" "));
+		if (!segmentLooksFragmentary(candidate)) return candidate;
+	}
+	return trimmed;
+}
+
 function segmentLooksFragmentary(text = "") {
 	const t = String(text || "").trim();
 	if (!t) return true;
@@ -2436,9 +2567,38 @@ function segmentLooksFragmentary(text = "") {
 		"and",
 		"or",
 		"but",
+		"so",
+		"because",
+		"if",
+		"when",
+		"while",
+		"than",
+		"as",
+		"from",
+		"into",
+		"over",
+		"under",
+		"between",
+		"about",
+		"after",
+		"before",
+		"during",
+		"within",
+		"without",
+		"via",
+		"like",
 	]);
 	if (orphanTail.has(lastWord)) return true;
+	if (
+		/\b(?:in|on|for|with|of|about|from|into|over|under|between|after|before|during|within|without|via)\s+(?:the|a|an)\s*$/i.test(
+			t
+		)
+	)
+		return true;
+	if (/[,:;]\s*$/.test(t)) return true;
+	if (/\.{3,}\s*$/.test(t)) return true;
 	if (/[-\u2013\u2014]\s*$/.test(t)) return true;
+	if (hasUnbalancedDelimiters(t)) return true;
 	return false;
 }
 
@@ -2513,6 +2673,102 @@ Return ONLY JSON:
 	}
 }
 
+async function ensureSegmentsCompleteForTTS(
+	segments = [],
+	segWordCaps = [],
+	{ topic = "", category = "", language = DEFAULT_LANGUAGE } = {}
+) {
+	if (!Array.isArray(segments) || !segments.length) return segments;
+
+	const normalized = segments.map((seg) => {
+		if (!seg || !seg.scriptText) return seg;
+		const cleaned = normalizeSegmentCompletion(seg.scriptText);
+		return cleaned === seg.scriptText ? seg : { ...seg, scriptText: cleaned };
+	});
+
+	const fragTargets = normalized
+		.map((seg, idx) => ({
+			seg,
+			idx,
+			index: Number.isFinite(Number(seg?.index)) ? Number(seg.index) : idx + 1,
+		}))
+		.filter(({ seg }) => segmentLooksFragmentary(seg?.scriptText));
+
+	if (!fragTargets.length || !process.env.CHATGPT_API_TOKEN) return normalized;
+
+	const capsLine = Array.isArray(segWordCaps)
+		? fragTargets
+				.map(
+					({ idx, index }) => `#${index}: <= ${segWordCaps[idx] || "n/a"} words`
+				)
+				.join(", ")
+		: "";
+	const fragLines = fragTargets
+		.map(({ index, seg }) => `- ${index}: ${seg?.scriptText || ""}`)
+		.join("\n");
+	const totalSegments = segments.length;
+
+	const ask = `
+We need to fix a few narration lines that are cut off in a YouTube Shorts script about "${topic}" (${category}).
+Rewrite ONLY the listed segments so each one is a complete, self-contained sentence or two.
+
+Rules:
+- Only rewrite the segment indexes listed below; leave all others unchanged.
+- Keep the same meaning and tone; do not add new facts.
+- Keep each line 1-2 short sentences, easy for TTS.
+- Respect soft word caps: ${capsLine || "(not provided)"}.
+- Language: ${language}.
+- If a line starts with a ranking label (e.g., "#3" or "Number three"), keep it intact.
+- If the final segment (index ${totalSegments}) is listed, include a complete CTA question and do not end with fragments like "in the".
+
+Segments to fix:
+${fragLines}
+
+Return ONLY JSON:
+{ "segments": [ { "index": <number>, "scriptText": "<fixed line>" } ] }
+`.trim();
+
+	try {
+		const { choices } = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: ask }],
+		});
+		const parsed = parseJsonFlexible(strip(choices[0].message.content));
+		if (!parsed || !Array.isArray(parsed.segments)) return normalized;
+
+		const allowed = new Set(fragTargets.map(({ index }) => index));
+		const byIndex = new Map();
+		for (const s of parsed.segments) {
+			const idx = typeof s.index === "number" ? s.index : null;
+			if (!idx || !allowed.has(idx)) continue;
+			const txt = String(s.scriptText || "").trim();
+			if (!txt) continue;
+			byIndex.set(idx, txt);
+		}
+		if (!byIndex.size) return normalized;
+
+		return normalized.map((seg, idx) => {
+			const key = Number.isFinite(Number(seg?.index))
+				? Number(seg.index)
+				: idx + 1;
+			const replacement = byIndex.get(key);
+			if (!replacement) return seg;
+			let cleaned = normalizeSegmentCompletion(replacement);
+			const cap =
+				Array.isArray(segWordCaps) && Number.isFinite(Number(segWordCaps[idx]))
+					? Number(segWordCaps[idx])
+					: null;
+			if (cap && countWords(cleaned) > cap + 1) {
+				cleaned = trimToWordCapSafely(cleaned, cap);
+			}
+			return cleaned ? { ...seg, scriptText: cleaned } : seg;
+		});
+	} catch (e) {
+		console.warn("[GPT] ensureSegmentsCompleteForTTS failed ?", e.message);
+		return normalized;
+	}
+}
+
 function isStopwordToken(token = "") {
 	return (
 		SEGMENT_STOP_WORDS.has(token) ||
@@ -2584,6 +2840,7 @@ function analyzeShortsScriptQuality(
 		repeatPhrases: 0,
 		repeatOpenings: 0,
 		adjacentSimilarity: 0,
+		introRedundancy: 0,
 		topicDrift: 0,
 		anchorRepeats: 0,
 	};
@@ -2670,6 +2927,17 @@ function analyzeShortsScriptQuality(
 			}
 		}
 	}
+	if (segments.length >= 2) {
+		const setA = tokenSets[0];
+		const setB = tokenSets[1];
+		if (setA && setB && setA.size >= 5 && setB.size >= 5) {
+			const sim = jaccardSimilarity(setA, setB);
+			if (sim >= SHORTS_INTRO_SIMILARITY_MAX) {
+				stats.introRedundancy += 1;
+				issues.push({ index: 2, type: "intro_redundant" });
+			}
+		}
+	}
 
 	return {
 		pass: issues.length === 0,
@@ -2725,12 +2993,15 @@ Rules:
 - Avoid repeating any 3+ word phrase inside a segment.
 - Do NOT open two consecutive segments with the same 3-word sequence.
 - Each segment must add new info; no re-stating the prior line.
+- Segment 1: hook + why-now in a lively tone; avoid bland filler like "the story is trending."
+- Segment 2: MUST NOT restate segment 1; add a new concrete detail (timeline/source/what changed).
 - Anchor phrase (must appear in segment 1): "${
 		anchor || topic
 	}". Do not repeat the full anchor phrase more than once per segment.
 - Domain: ${domain}. Keep claims consistent with the evidence.
 - Evidence: ${evidence}. If "(none)", keep statements high-level and say it's trending rather than claiming specifics.
 - All narration must be in ${language}.
+- Outro should be a full sentence; use "like and subscribe" and say "in the comments."
 
 Segments:
 ${segments.map((s, i) => `- ${i + 1}: ${s.scriptText || ""}`).join("\n")}
@@ -10156,6 +10427,11 @@ exports.createVideo = async (req, res) => {
 			});
 			segments = removeRedundantLeadLabels(segments, { category });
 		}
+		segments = await ensureSegmentsCompleteForTTS(segments, segWordCaps, {
+			topic,
+			category,
+			language,
+		});
 		if (category !== "Top5" && allowTrendsImageSearch) {
 			const refined = await prepareSegmentImagePairsForShorts({
 				segments,
