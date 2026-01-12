@@ -241,9 +241,9 @@ const DEFAULT_PRESENTER_ASSET_URL =
 const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 	"https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
 const STUDIO_EMPTY_PROMPT =
-	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter; background must be static with no moving elements, screens, or window activity; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
+	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"natural head and neck movement with very occasional micro-nods (not repetitive); head mostly steady; slow and controlled; avoid rhythmic bobbing; no fast turns or jerky motion; human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; mouth neutral or very light smile when appropriate; no exaggerated expressions";
+	"natural head and neck movement with very occasional micro-nods (not repetitive); head mostly steady; slow and controlled; avoid rhythmic bobbing; no fast turns or jerky motion; shoulders mostly still; hands resting or out of frame with minimal movement; human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; mouth neutral or very light smile when appropriate; avoid robotic or looped motion; no exaggerated expressions";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -347,10 +347,11 @@ const MAX_SUBTLE_VISUAL_EXPRESSIONS = clampNumber(2, 0, 2);
 const SUBTLE_VISUAL_EDGE_BUFFER = clampNumber(1, 0, 3);
 // Audio QA (quality-first voiceover)
 const AUDIO_QA_ENABLED = true;
-const AUDIO_QA_MAX_ATTEMPTS = clampNumber(3, 1, 4);
-const AUDIO_QA_INTERNAL_SILENCE_SEC = clampNumber(1.0, 0.4, 2.5);
+const AUDIO_QA_MAX_ATTEMPTS = clampNumber(4, 1, 4);
+const AUDIO_QA_INTERNAL_SILENCE_SEC = clampNumber(0.7, 0.35, 2.5);
 const AUDIO_QA_INTERNAL_SILENCE_DB = clampNumber(-40, -60, -25);
 const AUDIO_QA_EDGE_BUFFER_SEC = clampNumber(0.08, 0, 0.2);
+const AUDIO_QA_REPAIR_MAX_SILENCE_SEC = clampNumber(0.22, 0.12, 0.5);
 const AUDIO_QA_TRANSCRIBE = true;
 const AUDIO_QA_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
 const AUDIO_QA_MIN_WORDS = clampNumber(7, 4, 14);
@@ -4078,7 +4079,7 @@ Outfit: classy tailored suit or blazer with a neat shirt.
 Lighting: slightly darker cinematic look with a warm key light and gentle shadows (not too dark).
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Preserve the original performance timing and micro-expressions (eyebrows, blinks, subtle reactions).
-No text overlays, no extra people, no weird hands, no face warping, no mouth distortion.
+No text overlays, no extra people, no background figures or reflections, no weird hands, no face warping, no mouth distortion.
 ${smileLine}
 `.trim();
 }
@@ -4111,7 +4112,7 @@ function buildBaselinePrompt(
 			? "Use a slightly different blink cadence and a soft head turn or two."
 			: "";
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance: gentle head movement with rare micro-nods (no repeated nodding); head mostly steady; slow and controlled; no fast turns or jerky motion; no hand gestures."
+		? "Match the natural motion style from the reference performance: gentle head movement with rare micro-nods (no repeated nodding); head mostly steady; slow and controlled; no fast turns or jerky motion; hands resting with minimal movement; avoid robotic or looped motion."
 		: PRESENTER_MOTION_STYLE;
 
 	return `
@@ -4127,8 +4128,8 @@ Smiles/laughter: tiny, brief smiles only; no laughs or exaggerated emotion.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
 Eyes: relaxed, comfortable, natural reflections and blink cadence; avoid glassy or robotic eyes.
 Avoid exaggerated eye expressions or wide-eyed looks.
-Hands: subtle, small gestures near the desk; do NOT cover the face.
-No extra people, no text overlays, no screens, no charts, no logos except those already present in the reference, no camera shake, no mouth warping.
+Hands: resting on the desk or out of frame; minimal movement; do NOT cover the face.
+No extra people, no reflections or background figures, no text overlays, no screens, no charts, no logos except those already present in the reference, no camera shake, no mouth warping.
 Do NOT try to lip-sync.
 `.trim();
 }
@@ -7521,7 +7522,7 @@ async function synthesizeTtsWav({
 		await mp3ToCleanWav(mp3, wav);
 		safeUnlink(mp3);
 		const durationSec = await probeDurationSeconds(wav);
-		const qa = AUDIO_QA_ENABLED
+		let qa = AUDIO_QA_ENABLED
 			? await analyzeAudioQuality({
 					wavPath: wav,
 					expectedText: ttsText,
@@ -7529,6 +7530,8 @@ async function synthesizeTtsWav({
 					label: safeLabel,
 			  })
 			: { pass: true, issues: [] };
+		let activeWav = wav;
+		let activeDurationSec = durationSec;
 
 		if (jobId && AUDIO_QA_ENABLED) {
 			logJob(jobId, "tts audio qa", {
@@ -7543,11 +7546,78 @@ async function synthesizeTtsWav({
 			});
 		}
 
+		if (!qa.pass && Array.isArray(qa.issues)) {
+			if (qa.issues.includes("long_internal_silence")) {
+				try {
+					const tightened = await tightenInternalSilenceWav({
+						wavPath: wav,
+						tmpDir,
+						jobId,
+						label: attemptLabel,
+					});
+					if (tightened?.changed && tightened?.wavPath) {
+						const tightenedQa = await analyzeAudioQuality({
+							wavPath: tightened.wavPath,
+							expectedText: ttsText,
+							jobId,
+							label: `${safeLabel}_tight`,
+						});
+						if (jobId && AUDIO_QA_ENABLED) {
+							logJob(jobId, "tts audio qa tightened", {
+								label: safeLabel,
+								attempt,
+								pass: tightenedQa.pass,
+								issues: tightenedQa.issues,
+								maxInternalSilenceSec: Number(
+									(tightenedQa.maxInternalSilenceSec || 0).toFixed(3)
+								),
+								similarity: Number((tightenedQa.similarity || 0).toFixed(3)),
+							});
+						}
+						if (tightenedQa.pass) {
+							safeUnlink(wav);
+							return {
+								wavPath: tightened.wavPath,
+								durationSec: tightened.durationSec || activeDurationSec,
+								modelId: usedModelId,
+								text: ttsText,
+								qa: tightenedQa,
+							};
+						}
+						const scoreOriginal =
+							(qa.similarity || 0) -
+							(qa.maxInternalSilenceSec || 0) * 0.5 -
+							(qa.issues?.length || 0);
+						const scoreTight =
+							(tightenedQa.similarity || 0) -
+							(tightenedQa.maxInternalSilenceSec || 0) * 0.5 -
+							(tightenedQa.issues?.length || 0);
+						if (scoreTight > scoreOriginal) {
+							safeUnlink(wav);
+							activeWav = tightened.wavPath;
+							activeDurationSec = tightened.durationSec || activeDurationSec;
+							qa = tightenedQa;
+						} else {
+							safeUnlink(tightened.wavPath);
+						}
+					}
+				} catch (e) {
+					if (jobId) {
+						logJob(jobId, "tts audio tighten failed", {
+							label: safeLabel,
+							attempt,
+							error: e?.message || String(e),
+						});
+					}
+				}
+			}
+		}
+
 		if (qa.pass) {
-			if (best?.wavPath && best.wavPath !== wav) safeUnlink(best.wavPath);
+			if (best?.wavPath && best.wavPath !== activeWav) safeUnlink(best.wavPath);
 			return {
-				wavPath: wav,
-				durationSec,
+				wavPath: activeWav,
+				durationSec: activeDurationSec,
 				modelId: usedModelId,
 				text: ttsText,
 				qa,
@@ -7559,17 +7629,17 @@ async function synthesizeTtsWav({
 			(qa.maxInternalSilenceSec || 0) * 0.5 -
 			(qa.issues?.length || 0);
 		if (!best || score > bestScore) {
-			if (best?.wavPath && best.wavPath !== wav) safeUnlink(best.wavPath);
+			if (best?.wavPath && best.wavPath !== activeWav) safeUnlink(best.wavPath);
 			best = {
-				wavPath: wav,
-				durationSec,
+				wavPath: activeWav,
+				durationSec: activeDurationSec,
 				modelId: usedModelId,
 				text: ttsText,
 				qa,
 			};
 			bestScore = score;
 		} else {
-			safeUnlink(wav);
+			safeUnlink(activeWav);
 		}
 	}
 
@@ -8293,6 +8363,138 @@ async function detectInternalSilence(
 		maxInternalSilenceSec: maxInternal,
 		internalSilences: internal,
 	};
+}
+
+function mergeSilenceIntervals(silences = []) {
+	const sorted = (silences || [])
+		.map((s) => ({
+			start: Number(s?.start) || 0,
+			end: Number(s?.end) || 0,
+		}))
+		.filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end))
+		.map((s) => ({
+			start: Math.max(0, s.start),
+			end: Math.max(0, s.end),
+		}))
+		.sort((a, b) => a.start - b.start);
+
+	const merged = [];
+	for (const s of sorted) {
+		if (!merged.length) {
+			merged.push({ ...s, duration: Math.max(0, s.end - s.start) });
+			continue;
+		}
+		const last = merged[merged.length - 1];
+		if (s.start <= last.end + 0.02) {
+			last.end = Math.max(last.end, s.end);
+			last.duration = Math.max(0, last.end - last.start);
+		} else {
+			merged.push({ ...s, duration: Math.max(0, s.end - s.start) });
+		}
+	}
+	return merged;
+}
+
+async function tightenInternalSilenceWav({
+	wavPath,
+	tmpDir,
+	jobId,
+	label,
+	maxSilenceSec = AUDIO_QA_REPAIR_MAX_SILENCE_SEC,
+}) {
+	const silenceInfo = await detectInternalSilence(wavPath);
+	const durationSec = silenceInfo.durationSec || 0;
+	const longSilences = mergeSilenceIntervals(silenceInfo.internalSilences || [])
+		.filter((s) => (s.duration || 0) >= AUDIO_QA_INTERNAL_SILENCE_SEC)
+		.filter((s) => s.start < s.end);
+
+	if (!longSilences.length || !durationSec) {
+		return { wavPath, durationSec, changed: false };
+	}
+
+	const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
+	const outPath = path.join(
+		tmpDir,
+		`${safeLabel}_tight_${jobId || "audio"}.wav`
+	);
+	const minSeg = 0.02;
+	const keepSilence = clampNumber(maxSilenceSec, 0.08, 0.5);
+	let cursor = 0;
+	const segments = [];
+
+	for (const silence of longSilences) {
+		const start = Math.max(0, Math.min(durationSec, silence.start));
+		const end = Math.max(start, Math.min(durationSec, silence.end));
+		if (start - cursor >= minSeg) {
+			segments.push({ type: "audio", start: cursor, end: start });
+		}
+		if (keepSilence >= minSeg) {
+			segments.push({ type: "silence", duration: keepSilence });
+		}
+		cursor = end;
+	}
+
+	if (durationSec - cursor >= minSeg) {
+		segments.push({ type: "audio", start: cursor, end: durationSec });
+	}
+
+	if (!segments.length || !segments.some((s) => s.type === "audio")) {
+		return { wavPath, durationSec, changed: false };
+	}
+
+	const filterParts = [];
+	const labels = [];
+	let idx = 0;
+
+	for (const seg of segments) {
+		if (seg.type === "audio") {
+			const aLabel = `a${idx}`;
+			filterParts.push(
+				`[0:a]atrim=start=${seg.start.toFixed(3)}:end=${seg.end.toFixed(
+					3
+				)},asetpts=PTS-STARTPTS[${aLabel}]`
+			);
+			labels.push(`[${aLabel}]`);
+		} else {
+			const sLabel = `s${idx}`;
+			filterParts.push(
+				`anullsrc=r=${AUDIO_SR}:cl=mono:d=${seg.duration.toFixed(3)}[${sLabel}]`
+			);
+			labels.push(`[${sLabel}]`);
+		}
+		idx += 1;
+	}
+
+	filterParts.push(
+		`${labels.join("")}concat=n=${
+			labels.length
+		}:v=0:a=1,aresample=${AUDIO_SR},aformat=channel_layouts=mono[clean]`
+	);
+
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-i",
+			wavPath,
+			"-filter_complex",
+			filterParts.join(";"),
+			"-map",
+			"[clean]",
+			"-acodec",
+			"pcm_s16le",
+			"-ar",
+			String(AUDIO_SR),
+			"-ac",
+			String(AUDIO_CHANNELS),
+			"-y",
+			outPath,
+		],
+		"tighten_internal_silence",
+		{ timeoutMs: 120000 }
+	);
+
+	const outDuration = await probeDurationSeconds(outPath);
+	return { wavPath: outPath, durationSec: outDuration, changed: true };
 }
 
 async function analyzeAudioQuality({ wavPath, expectedText, jobId, label }) {
@@ -9335,8 +9537,8 @@ async function createPresenterIntroMotion({
 	);
 
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance: gentle head movement with rare micro-nods (no repeated nodding), human blink rate with slight variation, subtle hand gestures."
-		: "Natural head and neck movement, human blink rate with slight variation, subtle breathing.";
+		? "Match the natural motion style from the reference performance: gentle head movement with rare micro-nods (no repeated nodding), human blink rate with slight variation, hands resting with minimal movement, avoid robotic or looped motion."
+		: "Natural head and neck movement, human blink rate with slight variation, subtle breathing, hands resting with minimal movement.";
 	const introFace = pickIntroExpression(jobId);
 	const titleTarget = `${Math.round(
 		INTRO_TEXT_X_PCT * 100
@@ -9346,7 +9548,7 @@ async function createPresenterIntroMotion({
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
-Action: calm intro delivery with natural, subtle hand movement near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
+Action: calm intro delivery with hands resting on the desk; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Expression: ${introFace}. Calm and neutral, composed and professional with a very subtle, light smile (barely noticeable, not constant).
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
@@ -9360,7 +9562,7 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
-Action: small, natural intro gesture near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
+Action: small, natural intro posture with hands resting; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Expression: ${introFace}. Calm and neutral; very subtle, light smile only (barely noticeable), not constant.
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
