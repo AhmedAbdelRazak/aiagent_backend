@@ -1500,6 +1500,57 @@ function normalizeImageUrlKey(url = "") {
 	}
 }
 
+function aspectForRatio(ratio) {
+	if (!ratio) return null;
+	const parts = String(ratio)
+		.split(":")
+		.map((p) => parseFloat(p));
+	if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+	return parts[0] >= parts[1] ? "landscape" : "portrait";
+}
+
+function pickTrendImagesForRatio(trendStory, ratio, desiredCount = 6) {
+	if (!trendStory) return [];
+	const aspect = aspectForRatio(ratio) || "landscape";
+	const exact =
+		trendStory.imagesByAspect &&
+		Array.isArray(trendStory.imagesByAspect[ratio]) &&
+		trendStory.imagesByAspect[ratio].length
+			? trendStory.imagesByAspect[ratio]
+			: [];
+	const fallbackKey = aspect === "portrait" ? "720:1280" : "1280:720";
+	const fallback =
+		trendStory.imagesByAspect &&
+		Array.isArray(trendStory.imagesByAspect[fallbackKey])
+			? trendStory.imagesByAspect[fallbackKey]
+			: [];
+	const articleImages = Array.isArray(trendStory.articles)
+		? trendStory.articles.map((a) => a?.image).filter(Boolean)
+		: [];
+
+	const pools = [
+		...exact,
+		...fallback,
+		trendStory.image,
+		...(Array.isArray(trendStory.images) ? trendStory.images : []),
+		...articleImages,
+		...(trendStory.imagesByAspect?.square || []),
+		...(trendStory.imagesByAspect?.unknown || []),
+	];
+
+	const seen = new Set();
+	const picked = [];
+	for (const url of pools) {
+		if (!url || typeof url !== "string") continue;
+		if (!/^https?:\/\//i.test(url)) continue;
+		if (seen.has(url)) continue;
+		seen.add(url);
+		picked.push(url);
+		if (picked.length >= desiredCount) break;
+	}
+	return picked;
+}
+
 async function headContentType(url, timeoutMs = 8000) {
 	try {
 		const res = await axios.head(url, {
@@ -5176,6 +5227,30 @@ async function collectThumbnailTopicImages({
 				source: label,
 				title: label,
 				priority: 1.15,
+				criteria,
+				isPersonTopic,
+				topicIndex,
+			});
+		}
+
+		const feedSeedUrls = uniqueStrings(
+			[
+				...pickTrendImagesForRatio(t?.trendStory, THUMBNAIL_RATIO, 6),
+				...pickTrendImagesForRatio(t, THUMBNAIL_RATIO, 4),
+			].filter(Boolean),
+			{ limit: 10 }
+		);
+		if (feedSeedUrls.length && log) {
+			log("thumbnail topic images feed seeds", {
+				topic: label,
+				count: feedSeedUrls.length,
+			});
+		}
+		for (const url of feedSeedUrls) {
+			pushCandidate(url, {
+				source: t?.trendStory?.articles?.[0]?.url || label,
+				title: t?.trendStory?.articles?.[0]?.title || label,
+				priority: 0.9,
 				criteria,
 				isPersonTopic,
 				topicIndex,
