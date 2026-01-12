@@ -241,7 +241,7 @@ const DEFAULT_PRESENTER_ASSET_URL =
 const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 	"https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
 const STUDIO_EMPTY_PROMPT =
-	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter; background must be static with no moving elements, screens, or window activity.";
+	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no movement behind the presenter; background must be static with no moving elements, screens, or window activity; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
 	"natural head and neck movement with very occasional micro-nods (not repetitive); head mostly steady; slow and controlled; avoid rhythmic bobbing; no fast turns or jerky motion; human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; mouth neutral or very light smile when appropriate; no exaggerated expressions";
 
@@ -4064,7 +4064,7 @@ Keep the SAME identity (Ahmed): same face structure, beard, glasses, and age.
 Location: clean desk, tasteful background, soft practical lighting, studio quality. ${STUDIO_EMPTY_PROMPT}
 Outfit: classy tailored suit or blazer with a neat shirt.
 Lighting: slightly darker cinematic look with a warm key light and gentle shadows (not too dark).
-Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; do not add extra candles.
+Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Preserve the original performance timing and micro-expressions (eyebrows, blinks, subtle reactions).
 No text overlays, no extra people, no weird hands, no face warping, no mouth distortion.
 ${smileLine}
@@ -4106,7 +4106,7 @@ function buildBaselinePrompt(
 Photorealistic talking-head video of the SAME person as the reference image.
 Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT}
 Background must remain locked and static; no movement or people behind the presenter.
-Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; no extra candles.
+Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 ${expressionLine}
 Motion: ${motionHint} ${variantHint}
@@ -8921,7 +8921,7 @@ Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: calm intro delivery with natural, subtle hand movement near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
-Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; no extra candles.
+Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Expression: ${introFace}. Calm and neutral, composed and professional with a very subtle, light smile (barely noticeable, not constant).
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes. Briefly glance toward the open title area, then back to the camera.
@@ -8935,7 +8935,7 @@ Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: small, natural intro gesture near the desk. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
-Props: keep all existing props exactly as in the reference; do not add or remove objects. If a candle is visible, keep it subtle and unchanged with a calm flame; no extra candles.
+Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Expression: ${introFace}. Calm and neutral; very subtle, light smile only (barely noticeable), not constant.
 Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes.
