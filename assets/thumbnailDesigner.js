@@ -49,19 +49,19 @@ const THUMBNAIL_PRESENTER_SMILE_PATH = "";
 const THUMBNAIL_PRESENTER_NEUTRAL_PATH = "";
 const THUMBNAIL_PRESENTER_SURPRISED_PATH = "";
 const THUMBNAIL_PRESENTER_LIKENESS_MIN = clampNumber(0.82, 0.5, 0.98);
-const THUMBNAIL_PRESENTER_SCALE = clampNumber(1.18, 1.0, 1.25);
+const THUMBNAIL_PRESENTER_SCALE = clampNumber(1.22, 1.0, 1.25);
 const THUMBNAIL_PRESENTER_CROP_Y_PCT = clampNumber(0.18, 0, 0.5);
 const THUMBNAIL_PRESENTER_FACE_REGION = {
-	x: 0.55,
+	x: 0.5,
 	y: 0.05,
-	w: 0.4,
+	w: 0.38,
 	h: 0.6,
 };
 const THUMBNAIL_PRESENTER_EYES_REGION = {
-	x: 0.6,
+	x: 0.54,
 	y: 0.1,
-	w: 0.3,
-	h: 0.2,
+	w: 0.26,
+	h: 0.18,
 };
 const QA_PREVIEW_WIDTH = 320;
 const QA_PREVIEW_HEIGHT = 180;
@@ -893,13 +893,42 @@ function isSensitiveStoryText(text = "") {
 	return false;
 }
 
+function buildTopicLabelText(topics = []) {
+	const list = Array.isArray(topics) ? topics : [];
+	return list
+		.map((t) => t?.displayTopic || t?.topic || "")
+		.filter(Boolean)
+		.join(" ");
+}
+
+const STRONG_BADGE_TOKENS = new Set([
+	"BREAKING",
+	"CONFIRMED",
+	"LEAKED",
+	"EXCLUSIVE",
+	"OFFICIAL",
+	"NEW",
+]);
+
+function isStrongBadgeText(text = "") {
+	const cleaned = String(text || "").trim().toUpperCase();
+	if (!cleaned) return false;
+	for (const token of STRONG_BADGE_TOKENS) {
+		if (cleaned.includes(token)) return true;
+	}
+	return false;
+}
+
 function inferStoryIntent({ title = "", topics = [] } = {}) {
 	const t0 = topics?.[0] || {};
 	const rqTop = t0?.relatedQueries?.topSample || [];
 	const rqRise = t0?.relatedQueries?.risingSample || [];
 	const kw = t0?.keywords || [];
 
-	const hay = `${title} ${rqTop.join(" ")} ${rqRise.join(" ")} ${kw.join(" ")}`
+	const topicText = buildTopicLabelText(topics);
+	const hay = `${title} ${topicText} ${rqTop.join(" ")} ${rqRise.join(
+		" "
+	)} ${kw.join(" ")}`
 		.toLowerCase()
 		.trim();
 
@@ -5504,7 +5533,8 @@ function deriveSpecificHeadline({ title = "", topics = [] } = {}) {
 	const t0 = topics?.[0] || {};
 	const rqRise = (t0?.relatedQueries?.risingSample || []).join(" ");
 	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ");
-	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
+	const topicText = buildTopicLabelText(topics);
+	const hay = `${title} ${topicText} ${rqTop} ${rqRise}`.toLowerCase();
 	const sensitive = isSensitiveStoryText(hay);
 	if (/\bwhat happened to\b|\bwhat happened\b/.test(hay))
 		return "WHAT HAPPENED?";
@@ -5675,7 +5705,8 @@ function deriveHeadlineAndBadge({
 		.join(" ")
 		.toLowerCase();
 	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ").toLowerCase();
-	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
+	const topicText = buildTopicLabelText(topics);
+	const hay = `${title} ${topicText} ${rqTop} ${rqRise}`.toLowerCase();
 	const specificHeadline = deriveSpecificHeadline({ title, topics });
 	const sensitive = isSensitiveStoryText(hay);
 
@@ -5922,24 +5953,49 @@ async function generateThumbnailPackage({
 	if (presenterDetected?.kind !== "image")
 		throw new Error("thumbnail_presenter_missing_or_invalid");
 
-	const resolvedOverrideHeadline =
+	const rawOverrideHeadline =
 		typeof overrideHeadline === "string" ? overrideHeadline.trim() : "";
-	const resolvedOverrideBadgeText =
+	const rawOverrideBadgeText =
 		typeof overrideBadgeText === "string" ? overrideBadgeText.trim() : "";
+	const overrideHeadlineAllowed =
+		Boolean(rawOverrideHeadline) && !isGenericHeadline(rawOverrideHeadline);
+	const resolvedOverrideHeadline = overrideHeadlineAllowed
+		? rawOverrideHeadline
+		: "";
+	const resolvedOverrideBadgeText = overrideHeadlineAllowed
+		? rawOverrideBadgeText
+		: isStrongBadgeText(rawOverrideBadgeText)
+		? rawOverrideBadgeText
+		: "";
+	const overrideIntentRaw =
+		typeof overrideIntent === "string" ? overrideIntent.trim() : "";
+	const overrideIntentKey = overrideIntentRaw.toLowerCase();
+	const inferredIntent = inferStoryIntent({
+		title: title || seoTitle || "",
+		topics,
+	});
 	const resolvedIntent =
-		typeof overrideIntent === "string" && overrideIntent.trim()
-			? overrideIntent.trim()
-			: inferStoryIntent({
-					title: title || seoTitle || "",
-					topics,
-			  });
+		overrideIntentKey && !["general", "multi"].includes(overrideIntentKey)
+			? overrideIntentKey
+			: inferredIntent;
+	const shortTitleSafe =
+		typeof shortTitle === "string" &&
+		rawOverrideHeadline &&
+		!overrideHeadlineAllowed &&
+		shortTitle.trim().toLowerCase() === rawOverrideHeadline.toLowerCase()
+			? ""
+			: shortTitle;
 	const topicCount = Array.isArray(topics) ? topics.length : 0;
-	const preferSingleFocal =
-		topicCount <= 1 &&
-		!(
-			Array.isArray(overrideTopicImageQueries) &&
-			overrideTopicImageQueries.length
-		);
+	const topicLabelText = buildTopicLabelText(topics);
+	const entertainmentSignal =
+		resolvedIntent === "entertainment" ||
+		hasAwardsSignal(`${title} ${topicLabelText}`);
+	const hasOverrideImages =
+		Array.isArray(overrideTopicImageQueries) &&
+		overrideTopicImageQueries.length;
+	const preferSingleFocal = entertainmentSignal
+		? true
+		: topicCount <= 1 && !hasOverrideImages;
 	const baseHeadlineMaxWords =
 		resolvedIntent === "entertainment" ? 3 : THUMBNAIL_TEXT_MAX_WORDS;
 	const headlineMaxWords =
@@ -5958,7 +6014,7 @@ async function generateThumbnailPackage({
 	});
 	const questionPlan = deriveQuestionHeadlinePlan({
 		title,
-		shortTitle,
+		shortTitle: shortTitleSafe,
 		seoTitle,
 		topics,
 		maxWords: headlineMaxWords,
@@ -5966,14 +6022,14 @@ async function generateThumbnailPackage({
 	});
 	const defaultTitle = buildSeoHeadline({
 		title,
-		shortTitle,
+		shortTitle: shortTitleSafe,
 		seoTitle,
 		topics,
 		maxWords: headlineMaxWords,
 	});
 	const defaultPunchy = buildSeoHeadline({
 		title,
-		shortTitle,
+		shortTitle: shortTitleSafe,
 		seoTitle,
 		topics,
 		maxWords: punchyMaxWords,
@@ -6092,7 +6148,7 @@ async function generateThumbnailPackage({
 
 	const stylePlan = planThumbnailStyle({
 		title,
-		shortTitle,
+		shortTitle: shortTitleSafe,
 		seoTitle,
 		topics,
 		expression,
