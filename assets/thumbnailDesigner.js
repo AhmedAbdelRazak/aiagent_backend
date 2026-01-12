@@ -27,7 +27,7 @@ const DEFAULT_CANVAS_WIDTH = 1280;
 const DEFAULT_CANVAS_HEIGHT = 720;
 const LEFT_PANEL_PCT = 0.55;
 const PANEL_MARGIN_PCT = 0.035;
-const PRESENTER_OVERLAP_PCT = 0.06;
+const PRESENTER_OVERLAP_PCT = 0.09;
 
 const THUMBNAIL_RATIO = "1280:720";
 const THUMBNAIL_WIDTH = 1280;
@@ -35,7 +35,7 @@ const THUMBNAIL_HEIGHT = 720;
 const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
 const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.55;
-const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.06;
+const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.1;
 const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.18;
 const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.38;
 const THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS = 3;
@@ -49,6 +49,8 @@ const THUMBNAIL_PRESENTER_SMILE_PATH = "";
 const THUMBNAIL_PRESENTER_NEUTRAL_PATH = "";
 const THUMBNAIL_PRESENTER_SURPRISED_PATH = "";
 const THUMBNAIL_PRESENTER_LIKENESS_MIN = clampNumber(0.82, 0.5, 0.98);
+const THUMBNAIL_PRESENTER_SCALE = clampNumber(1.1, 1.0, 1.25);
+const THUMBNAIL_PRESENTER_CROP_Y_PCT = clampNumber(0.22, 0, 0.5);
 const THUMBNAIL_PRESENTER_FACE_REGION = {
 	x: 0.3,
 	y: 0.05,
@@ -65,6 +67,12 @@ const QA_PREVIEW_WIDTH = 320;
 const QA_PREVIEW_HEIGHT = 180;
 const QA_LUMA_MIN = 0.34;
 const QA_LUMA_LEFT_MIN = 0.33;
+const QA_HEADLINE_STD_MIN = 0.085;
+const QA_HEADLINE_STD_GOOD = 0.14;
+const QA_HEADLINE_EDGE_MAX = 0.25;
+const QA_FACE_EDGE_MIN = 0.12;
+const QA_FACE_DOMINANCE_MIN = 0.06;
+const QA_LEFT_EDGE_MAX = 0.25;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
@@ -86,15 +94,21 @@ const THUMBNAIL_TOPIC_MIN_BYTES = 90000;
 const THUMBNAIL_IMAGE_MIN_BYTES_PER_MPX = 9000;
 const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 8;
 const THUMBNAIL_MIN_BYTES = 12000;
-const THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX = 26;
+const THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX = 0;
 const THUMBNAIL_TEXT_EDGE_DENSITY_MIN = 0.18;
 const THUMBNAIL_TEXT_EDGE_DENSITY_STRONG = 0.24;
+const THUMBNAIL_PANEL_EDGE_DENSITY_SOFTEN = 0.2;
+const THUMBNAIL_PANEL_EDGE_DENSITY_DROP = 0.24;
 const THUMBNAIL_HOOK_WORDS = [
 	"trailer",
 	"finale",
 	"ending",
 	"cast",
 	"update",
+	"twist",
+	"leak",
+	"leaked",
+	"secret",
 	"explained",
 	"revealed",
 	"confirmed",
@@ -110,6 +124,36 @@ const THUMBNAIL_HOOK_WORDS = [
 	"album",
 	"single",
 ];
+const THUMBNAIL_POWER_TOKENS = new Set([
+	"LEAKED",
+	"CONFIRMED",
+	"SECRET",
+	"WHY",
+	"RETURNS",
+	"RETURN",
+	"BACK",
+	"CHANGED",
+	"TWIST",
+	"REAL",
+	"REASON",
+	"SHOCKING",
+	"NEW",
+	"WHAT",
+	"HAPPENED",
+	"CANCELED",
+]);
+const THUMBNAIL_CURIOSITY_TOKENS = new Set([
+	"WHY",
+	"WHAT",
+	"CHANGED",
+	"LEAKED",
+	"SECRET",
+	"CONFIRMED",
+	"TWIST",
+	"RETURNS",
+	"BACK",
+	"CANCELED",
+]);
 const QUESTION_START_TOKENS = new Set([
 	"did",
 	"does",
@@ -379,6 +423,13 @@ const TEXT_OVERLAY_PENALTY_TOKENS = [
 	"cover art",
 	"title card",
 	"poster",
+	"collage",
+	"fanart",
+	"fan art",
+	"key art",
+	"keyart",
+	"meme",
+	"cover",
 	"logo",
 	"quote",
 	"caption",
@@ -448,6 +499,13 @@ const SPECIFIC_HEADLINE_PHRASES = new Set([
 	"BIG UPDATE",
 	"SHOCKING TURN",
 	"EXPLAINED",
+	"NEW TWIST",
+	"WHAT CHANGED",
+	"REAL REASON",
+	"SECRET",
+	"RETURNS",
+	"BACK",
+	"SHOCKING",
 ]);
 const THUMBNAIL_MERCH_DISALLOWED_HOSTS = [
 	"amazon.com",
@@ -925,7 +983,7 @@ const THUMBNAIL_PREFERRED_SOURCE_TOKENS = [
 function scoreSourceAffinity(url = "", contextLink = "") {
 	const hay = `${url} ${contextLink}`.toLowerCase();
 	for (const token of THUMBNAIL_PREFERRED_SOURCE_TOKENS) {
-		if (hay.includes(token)) return 0.35;
+		if (hay.includes(token)) return 0.45;
 	}
 	return 0;
 }
@@ -970,11 +1028,9 @@ function lowQualityTextPenalty({
 	isPersonTopic = false,
 } = {}) {
 	const hay = `${url} ${source} ${title}`.toLowerCase();
-	let penalty = LOW_QUALITY_IMAGE_TOKENS.some((t) => hay.includes(t))
-		? 0.25
-		: 0;
+	let penalty = LOW_QUALITY_IMAGE_TOKENS.some((t) => hay.includes(t)) ? 0.3 : 0;
 	if (TEXT_OVERLAY_PENALTY_TOKENS.some((t) => hay.includes(t))) {
-		penalty = Math.max(penalty, isPersonTopic ? 0.38 : 0.2);
+		penalty = Math.max(penalty, isPersonTopic ? 0.5 : 0.35);
 	}
 	return Math.min(penalty, 0.6);
 }
@@ -2061,9 +2117,11 @@ function fileHash(p) {
 	return crypto.createHash("sha1").update(buf).digest("hex").slice(0, 12);
 }
 
-function poseFromExpression(expression = "", text = "") {
+function poseFromExpression(expression = "", text = "", intent = "") {
 	const expr = String(expression || "").toLowerCase();
 	const lower = String(text || "").toLowerCase();
+	const isEntertainment =
+		String(intent || "").toLowerCase() === "entertainment";
 	const hasNegative =
 		/(death|died|dead|killed|suicide|murder|arrest|charged|trial|lawsuit|injury|injured|concussion|accident|crash|sad|tragic|funeral|hospital|scandal|abuse|assault|violence)/.test(
 			lower
@@ -2081,7 +2139,15 @@ function poseFromExpression(expression = "", text = "") {
 			lower
 		);
 	if (expr === "thoughtful") return "thoughtful";
-	if (expr === "warm" || expr === "excited") return "smile";
+	if (expr === "warm" || expr === "excited") {
+		if (isEntertainment && !hasNegative) {
+			if (hasSurprise) return "surprised";
+			if (hasUrgent) return "thoughtful";
+			if (hasPositive) return "smile";
+			return "surprised";
+		}
+		return "smile";
+	}
 	if (expr === "serious" || expr === "neutral") {
 		if (hasNegative) return "neutral";
 		if (hasSurprise) return "surprised";
@@ -2089,6 +2155,12 @@ function poseFromExpression(expression = "", text = "") {
 		return "neutral";
 	}
 	if (hasNegative) return "neutral";
+	if (isEntertainment) {
+		if (hasSurprise) return "surprised";
+		if (hasUrgent) return "thoughtful";
+		if (hasPositive) return "smile";
+		return "surprised";
+	}
 	if (hasSurprise) return "surprised";
 	if (hasUrgent) return "thoughtful";
 	if (hasPositive) return "smile";
@@ -2123,8 +2195,14 @@ function planThumbnailStyle({
 	else if (/(money|finance|business|startup)/i.test(text))
 		accent = ACCENT_PALETTE.business;
 
+	const intent = inferStoryIntent({ title: title || seoTitle || "", topics });
+	const poseIntent =
+		intent === "general" &&
+		(cat === "film" || cat === "tv" || cat === "celebrity")
+			? "entertainment"
+			: intent;
 	return {
-		pose: poseFromExpression(expression, text),
+		pose: poseFromExpression(expression, text, poseIntent),
 		accent,
 	};
 }
@@ -2591,21 +2669,35 @@ async function normalizeTopicImageIfNeeded({
 	const strongTextLikely =
 		Number.isFinite(edgeDensity) &&
 		edgeDensity >= THUMBNAIL_TEXT_EDGE_DENSITY_STRONG;
+	const clutterSoft =
+		Number.isFinite(edgeDensity) &&
+		edgeDensity >= THUMBNAIL_PANEL_EDGE_DENSITY_SOFTEN;
+	const clutterHard =
+		Number.isFinite(edgeDensity) &&
+		edgeDensity >= THUMBNAIL_PANEL_EDGE_DENSITY_DROP;
 	const needsSoften =
 		shouldSoftenTopicImage({
 			byteSize,
 			width,
 			height,
 			lowQualityPenalty,
-		}) || textLikely;
+		}) ||
+		textLikely ||
+		clutterSoft;
 	if (!needsNeutralize && !needsSoften) return inputPath;
 	const outPath = path.join(tmpDir, `thumb_topic_norm_${jobId}_${index}.jpg`);
 	const filters = [];
 	if (needsSoften) {
 		const strongSoften =
 			(Number.isFinite(lowQualityPenalty) && lowQualityPenalty >= 0.35) ||
-			strongTextLikely;
-		filters.push(strongSoften ? "boxblur=3:1" : "boxblur=2:1");
+			strongTextLikely ||
+			clutterHard;
+		const blur = clutterHard
+			? "boxblur=4:1"
+			: strongSoften
+			? "boxblur=3:1"
+			: "boxblur=2:1";
+		filters.push(blur);
 		filters.push(
 			strongSoften
 				? "eq=contrast=0.98:saturation=0.86:brightness=-0.035"
@@ -2648,9 +2740,61 @@ async function normalizeTopicImageIfNeeded({
 			edgeDensity: Number.isFinite(edgeDensity)
 				? Number(edgeDensity.toFixed(3))
 				: null,
+			clutterSoft,
+			clutterHard,
 		});
 	}
 	return outPath;
+}
+
+function filterPanelTopicImages(imagePaths = [], { log } = {}) {
+	const kept = [];
+	const dropped = [];
+	for (const p of imagePaths || []) {
+		if (!p || !fs.existsSync(p)) continue;
+		const dims = ffprobeDimensions(p);
+		const edgeDensity = sampleEdgeDensity(p);
+		const minEdge = Math.min(dims?.width || 0, dims?.height || 0);
+		const bytes = fs.statSync(p).size || 0;
+		const bytesPerMpx = bytesPerMegaPixel(bytes, dims?.width, dims?.height);
+		const tooCluttered =
+			Number.isFinite(edgeDensity) &&
+			edgeDensity >= THUMBNAIL_PANEL_EDGE_DENSITY_DROP;
+		if (tooCluttered) {
+			dropped.push({
+				path: p,
+				edgeDensity,
+				minEdge,
+				bytesPerMpx,
+			});
+			continue;
+		}
+		kept.push({
+			path: p,
+			edgeDensity,
+			minEdge,
+			bytesPerMpx,
+		});
+	}
+	if (log && dropped.length) {
+		log("thumbnail panel images dropped (clutter)", {
+			count: dropped.length,
+			paths: dropped.map((d) => path.basename(d.path)),
+			edgeDensity: dropped.map((d) =>
+				Number.isFinite(d.edgeDensity) ? Number(d.edgeDensity.toFixed(3)) : null
+			),
+		});
+	}
+	if (log && kept.length) {
+		log("thumbnail panel images kept", {
+			count: kept.length,
+			paths: kept.map((d) => path.basename(d.path)),
+			edgeDensity: kept.map((d) =>
+				Number.isFinite(d.edgeDensity) ? Number(d.edgeDensity.toFixed(3)) : null
+			),
+		});
+	}
+	return kept.map((k) => k.path);
 }
 
 function getQaLeftSampleRegion() {
@@ -2668,6 +2812,30 @@ function getHeadlineQaRegion() {
 		y: 0,
 		w: Math.round(QA_PREVIEW_WIDTH * 0.52),
 		h: Math.round(QA_PREVIEW_HEIGHT * 0.36),
+	};
+}
+
+function scalePreviewRegionToImage(region, width, height) {
+	const w = Math.max(1, Number(width) || 1);
+	const h = Math.max(1, Number(height) || 1);
+	const scaleX = w / QA_PREVIEW_WIDTH;
+	const scaleY = h / QA_PREVIEW_HEIGHT;
+	return {
+		x: Math.round((region?.x || 0) * scaleX),
+		y: Math.round((region?.y || 0) * scaleY),
+		w: Math.max(1, Math.round((region?.w || 1) * scaleX)),
+		h: Math.max(1, Math.round((region?.h || 1) * scaleY)),
+	};
+}
+
+function pctRegionToImage(region, width, height) {
+	const w = Math.max(1, Number(width) || 1);
+	const h = Math.max(1, Number(height) || 1);
+	return {
+		x: Math.round((region?.x || 0) * w),
+		y: Math.round((region?.y || 0) * h),
+		w: Math.max(1, Math.round((region?.w || 1) * w)),
+		h: Math.max(1, Math.round((region?.h || 1) * h)),
 	};
 }
 
@@ -2768,29 +2936,268 @@ function scoreThumbnailLuma({ overall, left }) {
 	return score;
 }
 
-function scoreVariantComposite({
-	lumaScore,
-	hasBadge,
-	headlineWordCount,
-	headlineLen,
-	headline,
+function analyzeHeadline(headline = "") {
+	const cleaned = cleanThumbnailText(headline);
+	const words = cleaned.split(" ").filter(Boolean);
+	const upper = words.map((w) => w.toUpperCase()).join(" ");
+	const hasQuestion = /\?/.test(headline);
+	const hasPower = Array.from(THUMBNAIL_POWER_TOKENS).some((tok) =>
+		upper.includes(tok)
+	);
+	const hasCuriosity =
+		hasPower ||
+		Array.from(THUMBNAIL_CURIOSITY_TOKENS).some((tok) => upper.includes(tok));
+	const isGeneric = isGenericHeadline(headline);
+	return {
+		cleaned,
+		upper,
+		words,
+		wordCount: words.length,
+		hasQuestion,
+		hasPower,
+		hasCuriosity,
+		isGeneric,
+	};
+}
+
+function shouldDropBadge({ headline = "", badgeText = "", intent = "" } = {}) {
+	if (!badgeText) return true;
+	const info = analyzeHeadline(headline);
+	const normalizedBadge = String(badgeText || "").toUpperCase();
+	if (info.hasQuestion && info.hasPower) return true;
+	if (info.wordCount <= 3 && info.hasCuriosity) return true;
+	if (
+		String(intent || "").toLowerCase() === "entertainment" &&
+		["UPDATE", "TRENDING"].includes(normalizedBadge)
+	) {
+		return true;
+	}
+	return false;
+}
+
+function scoreHeadlineStrength({
+	headline = "",
+	intent = "",
 	topicKeywords = [],
-}) {
-	let score = Number.isFinite(lumaScore) ? lumaScore : -Infinity;
-	if (hasBadge) score += 0.05;
-	if (headlineWordCount <= 3) score += 0.04;
-	if (headlineLen <= 14) score += 0.02;
-	if (headlineWordCount >= 4 || headlineLen >= 18) score -= 0.03;
-	if (headline && isGenericHeadline(headline)) score -= 0.05;
-	if (headline && headline.includes("?")) score += 0.08;
+} = {}) {
+	const info = analyzeHeadline(headline);
+	let score = 0.5;
+	if (info.wordCount <= 3) score += 0.22;
+	else if (info.wordCount === 4) score += 0.08;
+	else if (info.wordCount >= 6) score -= 0.22;
+	if (info.hasQuestion) score += 0.12;
+	if (info.hasPower) score += 0.15;
+	if (info.hasCuriosity) score += 0.08;
+	if (info.isGeneric) score -= 0.22;
+	if (
+		String(intent || "").toLowerCase() === "entertainment" &&
+		!info.hasCuriosity
+	)
+		score -= 0.12;
 	if (headline && Array.isArray(topicKeywords) && topicKeywords.length) {
-		const lower = cleanThumbnailText(headline).toLowerCase();
+		const lower = info.cleaned.toLowerCase();
 		const hit = topicKeywords.some((tok) =>
 			lower.includes(String(tok || "").toLowerCase())
 		);
-		if (hit) score += 0.06;
+		if (hit) score += 0.05;
 	}
-	return score;
+	return {
+		...info,
+		score: clampNumber(score, 0, 1),
+	};
+}
+
+function scoreFaceDominance({ faceEdge, leftEdge } = {}) {
+	const faceEdgeScore = Number.isFinite(faceEdge)
+		? clampNumber((faceEdge - QA_FACE_EDGE_MIN) / 0.18, 0, 1)
+		: 0;
+	const dominanceScore =
+		Number.isFinite(faceEdge) && Number.isFinite(leftEdge)
+			? clampNumber((faceEdge - leftEdge - QA_FACE_DOMINANCE_MIN) / 0.18, 0, 1)
+			: 0;
+	return clampNumber(faceEdgeScore * 0.55 + dominanceScore * 0.45, 0, 1);
+}
+
+function scoreFocalSimplicity({ headlineEdge, leftEdge } = {}) {
+	const headlineEdgeScore = Number.isFinite(headlineEdge)
+		? 1 - clampNumber((headlineEdge - 0.16) / 0.14, 0, 1)
+		: 0.5;
+	const leftEdgeScore = Number.isFinite(leftEdge)
+		? 1 - clampNumber((leftEdge - 0.18) / 0.16, 0, 1)
+		: 0.5;
+	return clampNumber(headlineEdgeScore * 0.6 + leftEdgeScore * 0.4, 0, 1);
+}
+
+function scoreReadability({ headlineStd, headlineEdge, leftLuma } = {}) {
+	let stdScore = 0.4;
+	if (Number.isFinite(headlineStd)) {
+		if (headlineStd >= QA_HEADLINE_STD_GOOD) stdScore = 1;
+		else if (headlineStd <= QA_HEADLINE_STD_MIN) stdScore = 0.2;
+		else {
+			const t =
+				(headlineStd - QA_HEADLINE_STD_MIN) /
+				(QA_HEADLINE_STD_GOOD - QA_HEADLINE_STD_MIN);
+			stdScore = clampNumber(0.2 + t * 0.8, 0, 1);
+		}
+	}
+	const leftScore = Number.isFinite(leftLuma)
+		? clampNumber(1 - Math.abs(leftLuma - QA_LUMA_LEFT_MIN) / 0.14, 0, 1)
+		: 0.5;
+	const edgePenalty = Number.isFinite(headlineEdge)
+		? clampNumber((headlineEdge - 0.18) / 0.18, 0, 1)
+		: 0;
+	return clampNumber(
+		stdScore * 0.6 + leftScore * 0.4 - edgePenalty * 0.15,
+		0,
+		1
+	);
+}
+
+function scoreVariantCtr({
+	headlineScore,
+	faceScore,
+	focalScore,
+	hasBadge,
+	panelCount,
+	leftEdge,
+} = {}) {
+	let score =
+		clampNumber(headlineScore, 0, 1) * 0.5 +
+		clampNumber(faceScore, 0, 1) * 0.3 +
+		clampNumber(focalScore, 0, 1) * 0.2;
+	if (hasBadge) score += 0.03;
+	if (
+		panelCount > 0 &&
+		Number.isFinite(leftEdge) &&
+		leftEdge >= THUMBNAIL_PANEL_EDGE_DENSITY_SOFTEN
+	) {
+		score -= 0.06;
+	}
+	return clampNumber(score, 0, 1);
+}
+
+function scoreVariantComposite({ ctrScore, readabilityScore, lumaScore } = {}) {
+	const luma = Number.isFinite(lumaScore) ? clampNumber(lumaScore, 0, 1) : 0;
+	return (
+		clampNumber(ctrScore, 0, 1) * 0.45 +
+		clampNumber(readabilityScore, 0, 1) * 0.35 +
+		luma * 0.2
+	);
+}
+
+function evaluateThumbnailVariant({
+	filePath,
+	headline,
+	intent,
+	topicKeywords = [],
+	panelCount = 0,
+	hasBadge = false,
+} = {}) {
+	const dims = ffprobeDimensions(filePath);
+	const headlinePreview = getHeadlineQaRegion();
+	const leftPreview = getQaLeftSampleRegion();
+	const headlineRegion = scalePreviewRegionToImage(
+		headlinePreview,
+		dims?.width || THUMBNAIL_WIDTH,
+		dims?.height || THUMBNAIL_HEIGHT
+	);
+	const leftRegion = scalePreviewRegionToImage(
+		leftPreview,
+		dims?.width || THUMBNAIL_WIDTH,
+		dims?.height || THUMBNAIL_HEIGHT
+	);
+	const faceRegion = pctRegionToImage(
+		THUMBNAIL_PRESENTER_FACE_REGION,
+		dims?.width || THUMBNAIL_WIDTH,
+		dims?.height || THUMBNAIL_HEIGHT
+	);
+	const eyesRegion = pctRegionToImage(
+		THUMBNAIL_PRESENTER_EYES_REGION,
+		dims?.width || THUMBNAIL_WIDTH,
+		dims?.height || THUMBNAIL_HEIGHT
+	);
+
+	const headlineEdge = sampleEdgeDensity(filePath, headlineRegion);
+	const leftEdge = sampleEdgeDensity(filePath, leftRegion);
+	const faceEdge = sampleEdgeDensity(filePath, faceRegion);
+	const eyesEdge = sampleEdgeDensity(filePath, eyesRegion);
+	const headlineStats = samplePreviewLumaStats(filePath, headlinePreview);
+	const leftLuma = samplePreviewLuma(filePath, leftPreview);
+
+	const headlineInfo = scoreHeadlineStrength({
+		headline,
+		intent,
+		topicKeywords,
+	});
+	const faceScore = scoreFaceDominance({ faceEdge, leftEdge });
+	const focalScore = scoreFocalSimplicity({ headlineEdge, leftEdge });
+	const readabilityScore = scoreReadability({
+		headlineStd: headlineStats?.std,
+		headlineEdge,
+		leftLuma,
+	});
+	const ctrScore = scoreVariantCtr({
+		headlineScore: headlineInfo.score,
+		faceScore,
+		focalScore,
+		hasBadge,
+		panelCount,
+		leftEdge,
+	});
+
+	const failures = [];
+	const warnings = [];
+	if (!headlineInfo.wordCount) failures.push("headline_missing");
+	if (headlineInfo.wordCount > 4) warnings.push("headline_too_long");
+	if (headlineInfo.isGeneric) warnings.push("headline_generic");
+	if (
+		String(intent || "").toLowerCase() === "entertainment" &&
+		!headlineInfo.hasCuriosity
+	) {
+		warnings.push("headline_lacks_curiosity");
+	}
+	if (
+		Number.isFinite(headlineStats?.std) &&
+		headlineStats.std < QA_HEADLINE_STD_MIN
+	) {
+		failures.push("headline_low_contrast");
+	}
+	if (Number.isFinite(headlineEdge) && headlineEdge >= QA_HEADLINE_EDGE_MAX) {
+		failures.push("headline_cluttered");
+	}
+	if (Number.isFinite(faceEdge) && faceEdge < QA_FACE_EDGE_MIN) {
+		failures.push("face_not_prominent");
+	}
+	if (Number.isFinite(eyesEdge) && eyesEdge < QA_FACE_EDGE_MIN * 0.85) {
+		warnings.push("eyes_soft");
+	}
+	if (
+		Number.isFinite(faceEdge) &&
+		Number.isFinite(leftEdge) &&
+		faceEdge - leftEdge < QA_FACE_DOMINANCE_MIN
+	) {
+		warnings.push("face_not_dominant");
+	}
+	if (Number.isFinite(leftEdge) && leftEdge > QA_LEFT_EDGE_MAX) {
+		warnings.push("left_cluttered");
+	}
+	if (Number.isFinite(leftLuma) && leftLuma < QA_LUMA_LEFT_MIN) {
+		warnings.push("left_dim");
+	}
+
+	return {
+		headlineInfo,
+		headlineStats,
+		edges: { headlineEdge, leftEdge, faceEdge, eyesEdge },
+		scores: {
+			headlineStrength: headlineInfo.score,
+			faceScore,
+			focalScore,
+			readabilityScore,
+			ctrScore,
+		},
+		qa: { failures, warnings },
+	};
 }
 
 async function generateFallbackBackground({
@@ -2878,6 +3285,9 @@ async function composeThumbnailBase({
 	let presenterW = Math.max(2, W - leftW + overlap);
 	presenterW = makeEven(Math.min(W, presenterW));
 	const presenterX = Math.max(0, Math.min(W - presenterW, leftW - overlap));
+	const presenterScale = clampNumber(THUMBNAIL_PRESENTER_SCALE, 1.0, 1.25);
+	const presenterWScaled = makeEven(Math.round(presenterW * presenterScale));
+	const presenterHScaled = makeEven(Math.round(H * presenterScale));
 
 	const topics = Array.isArray(topicImagePaths)
 		? topicImagePaths.filter(Boolean).slice(0, 3)
@@ -2887,7 +3297,7 @@ async function composeThumbnailBase({
 	const panelMargin = hasSinglePanel ? 0 : margin;
 	const singleTopPad = clampNumber(
 		THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX,
-		18,
+		0,
 		Math.round(H * 0.06)
 	);
 	const topPad = hasSinglePanel ? Math.round(singleTopPad) : 0;
@@ -2948,9 +3358,9 @@ async function composeThumbnailBase({
 	].filter(Boolean);
 	filters.push(`[base0]${baseFx.join(",")}[base]`);
 	filters.push(
-		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=increase:flags=lanczos,` +
-			`crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)/2,format=rgba,` +
-			`eq=contrast=1.05:saturation=1.04:brightness=0.035:gamma=0.95,` +
+		`[1:v]scale=${presenterWScaled}:${presenterHScaled}:force_original_aspect_ratio=increase:flags=lanczos,` +
+			`crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)*${THUMBNAIL_PRESENTER_CROP_Y_PCT},format=rgba,` +
+			`eq=contrast=1.08:saturation=1.05:brightness=0.04:gamma=0.95,` +
 			`unsharp=3:3:0.45[presenter]`
 	);
 	if (presenterHasAlpha) {
@@ -2980,8 +3390,8 @@ async function composeThumbnailBase({
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-					`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
 					`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
 					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
@@ -2993,8 +3403,8 @@ async function composeThumbnailBase({
 					`eq=contrast=1.03:saturation=1.05:brightness=0.03,format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-					`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
 					`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
 					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
@@ -3018,8 +3428,8 @@ async function composeThumbnailBase({
 				`eq=contrast=1.03:saturation=1.05:brightness=0.03,format=rgba[panel2bg]`
 		);
 		filters.push(
-			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-				`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
 				`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
 				`unsharp=3:3:0.35,format=rgba[panel2fg]`
 		);
@@ -3042,8 +3452,8 @@ async function composeThumbnailBase({
 				`eq=contrast=1.03:saturation=1.05:brightness=0.03,format=rgba[panel3bg]`
 		);
 		filters.push(
-			`[${panel3Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-				`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+			`[${panel3Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
 				`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
 				`unsharp=3:3:0.35,format=rgba[panel3fg]`
 		);
@@ -5060,6 +5470,45 @@ function deriveQuestionHeadlinePlan({
 	return null;
 }
 
+function pickEntertainmentHeadline({ title = "", topics = [], hay = "" } = {}) {
+	const primaryTopicLabel =
+		Array.isArray(topics) && topics.length
+			? topics[0]?.displayTopic || topics[0]?.topic || ""
+			: "";
+	const personToken = looksLikePersonTopic(primaryTopicLabel)
+		? buildPersonIdentityToken(primaryTopicLabel)
+		: "";
+	const hasLeak = /(leak|leaked)/.test(hay);
+	const hasConfirm = /(confirm|confirmed)/.test(hay);
+	const hasReturn = /(return|returns|comeback|back)\b/.test(hay);
+	const hasChange = /(changed|change|twist|turn|shift)/.test(hay);
+	const hasCancel = /(cancel|canceled|cancelled)/.test(hay);
+	const hasWhy = /\bwhy\b/.test(hay);
+
+	if (hasLeak) return "LEAKED?";
+	if (hasConfirm) return "CONFIRMED?";
+	if (hasCancel) return "CANCELED?";
+	if (hasReturn && personToken) return `${personToken} RETURNS?`;
+	if (hasReturn) return "RETURNS?";
+	if (hasChange) return "NEW TWIST?";
+	if (hasWhy) return "WHY?";
+	return "WHAT CHANGED?";
+}
+
+function pickEntertainmentBadge({ hay = "", headline = "" } = {}) {
+	const upperHeadline = String(headline || "").toUpperCase();
+	const hasQuestion = /\?/.test(upperHeadline);
+	const hasPower = Array.from(THUMBNAIL_POWER_TOKENS).some((tok) =>
+		upperHeadline.includes(tok)
+	);
+	if (hasQuestion && hasPower) return "";
+	if (/(leak|leaked)/.test(hay)) return "LEAKED";
+	if (/(confirm|confirmed)/.test(hay)) return "CONFIRMED";
+	if (/(breaking|just in)/.test(hay)) return "BREAKING";
+	if (/(new|latest|update|revealed)/.test(hay)) return "NEW";
+	return "";
+}
+
 function deriveHeadlineAndBadge({
 	title = "",
 	topics = [],
@@ -5076,16 +5525,19 @@ function deriveHeadlineAndBadge({
 	let headline = "";
 	if (specificHeadline) headline = specificHeadline;
 	else if (intent === "serious_update") headline = "WHAT HAPPENED?";
+	else if (intent === "entertainment")
+		headline = pickEntertainmentHeadline({ title, topics, hay });
 	else if (intent === "legal" && /conservatorship/.test(hay))
 		headline = "LEGAL MOVE";
 	else if (intent === "legal" && /(court|filing)/.test(hay))
 		headline = "COURT FILE";
 	else if (/(reports|reported)/.test(hay)) headline = "NEW REPORTS";
-	else headline = "WHAT WE KNOW";
+	else headline = intent === "entertainment" ? "NEW TWIST?" : "WHAT WE KNOW";
 
 	let badgeText = "";
 	if (intent === "legal") badgeText = "REPORTS";
-	else if (intent === "entertainment") badgeText = "TRENDING";
+	else if (intent === "entertainment")
+		badgeText = pickEntertainmentBadge({ hay, headline });
 	else badgeText = "UPDATE";
 
 	return { headline, badgeText };
@@ -5290,10 +5742,33 @@ async function generateThumbnailPackage({
 		expression,
 	});
 	const resolvedCutout = resolvePresenterCutoutPath(stylePlan.pose);
-	const presenterForCompose = resolvedCutout || presenterLocalPath;
+	let presenterForCompose = resolvedCutout || presenterLocalPath;
+	if (resolvedCutout && presenterLocalPath) {
+		const likeness = comparePresenterSimilarity(
+			presenterLocalPath,
+			resolvedCutout
+		);
+		if (
+			Number.isFinite(likeness) &&
+			likeness < THUMBNAIL_PRESENTER_LIKENESS_MIN
+		) {
+			if (log)
+				log("thumbnail presenter cutout rejected (low likeness)", {
+					path: path.basename(resolvedCutout),
+					likeness: Number(likeness.toFixed(3)),
+					min: THUMBNAIL_PRESENTER_LIKENESS_MIN,
+				});
+			presenterForCompose = presenterLocalPath;
+		} else if (log && Number.isFinite(likeness)) {
+			log("thumbnail presenter cutout similarity", {
+				path: path.basename(resolvedCutout),
+				likeness: Number(likeness.toFixed(3)),
+			});
+		}
+	}
 	if (log)
 		log(
-			resolvedCutout
+			resolvedCutout && presenterForCompose !== presenterLocalPath
 				? "presenter cutout selected"
 				: "presenter fixed (no emotion variants)",
 			{
@@ -5321,6 +5796,12 @@ async function generateThumbnailPackage({
 					title: title || seoTitle || "",
 					topics,
 			  });
+	const headlineMaxWords =
+		resolvedIntent === "entertainment" ? 3 : THUMBNAIL_TEXT_MAX_WORDS;
+	const punchyMaxWords =
+		resolvedIntent === "entertainment"
+			? Math.min(3, THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS)
+			: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS;
 	const hook = deriveHeadlineAndBadge({
 		title: title || seoTitle || "",
 		topics,
@@ -5331,20 +5812,22 @@ async function generateThumbnailPackage({
 		shortTitle,
 		seoTitle,
 		topics,
-		maxWords: THUMBNAIL_TEXT_MAX_WORDS,
-		punchyMaxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
+		maxWords: headlineMaxWords,
+		punchyMaxWords,
 	});
-	const defaultTitle = selectThumbnailTitle({
+	const defaultTitle = buildSeoHeadline({
 		title,
 		shortTitle,
 		seoTitle,
 		topics,
+		maxWords: headlineMaxWords,
 	});
-	const defaultPunchy = buildShortHookTitle({
+	const defaultPunchy = buildSeoHeadline({
 		title,
 		shortTitle,
 		seoTitle,
 		topics,
+		maxWords: punchyMaxWords,
 	});
 	const questionHeadline = questionPlan?.headline || "";
 	const questionPunchy = questionPlan?.punchy || "";
@@ -5376,26 +5859,38 @@ async function generateThumbnailPackage({
 			cleanThumbnailText(thumbTitle).toLowerCase();
 	if (!resolvedOverrideHeadline && isGenericHeadline(thumbTitle)) {
 		if (!useIdentitySubline) {
-			const topicHeadline = buildTopicPhrase(topics, THUMBNAIL_TEXT_MAX_WORDS);
+			const topicHeadline = buildTopicPhrase(topics, headlineMaxWords);
 			if (topicHeadline) thumbTitle = topicHeadline;
 			else if (!isGenericHeadline(defaultTitle)) thumbTitle = defaultTitle;
 		}
 	}
 	if (!resolvedOverrideHeadline && isGenericHeadline(punchyTitle)) {
 		if (!useIdentitySubline) {
-			const topicPunchy = buildTopicPhrase(
-				topics,
-				THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS
-			);
+			const topicPunchy = buildTopicPhrase(topics, punchyMaxWords);
 			if (topicPunchy) punchyTitle = topicPunchy;
 			else if (!isGenericHeadline(defaultPunchy)) punchyTitle = defaultPunchy;
 		}
 	}
-	const badgeText =
+	let badgeText =
 		resolvedOverrideBadgeText ||
 		(topicCount > 1
-			? "UPDATE"
-			: questionPlan?.badgeText || hook?.badgeText || "UPDATE");
+			? resolvedIntent === "entertainment"
+				? ""
+				: "UPDATE"
+			: questionPlan?.badgeText || hook?.badgeText || "");
+	if (
+		shouldDropBadge({
+			headline: thumbTitle,
+			badgeText,
+			intent: resolvedIntent,
+		}) ||
+		shouldDropBadge({
+			headline: punchyTitle,
+			badgeText,
+			intent: resolvedIntent,
+		})
+	)
+		badgeText = "";
 	const personIdentity = looksLikePersonTopic(primaryTopicLabel)
 		? buildPersonIdentityToken(primaryTopicLabel)
 		: "";
@@ -5410,7 +5905,7 @@ async function generateThumbnailPackage({
 			thumbTitle = mergeIdentityIntoHeadline(
 				personIdentity,
 				thumbTitle,
-				THUMBNAIL_TEXT_MAX_WORDS
+				headlineMaxWords
 			);
 		}
 		const punchyHasTopic = headlineHasAnyToken(punchyTitle, topicKeywords);
@@ -5421,7 +5916,7 @@ async function generateThumbnailPackage({
 			punchyTitle = buildIdentityPunchyHeadline(
 				personIdentity,
 				punchyTitle,
-				THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS
+				punchyMaxWords
 			);
 		}
 	}
@@ -5439,6 +5934,9 @@ async function generateThumbnailPackage({
 			headline: thumbTitle,
 			punchy: punchyTitle,
 			badgeText,
+			headlineMaxWords,
+			punchyMaxWords,
+			badgeDropped: !badgeText,
 			subline: sublineText || null,
 			overrideHeadline: resolvedOverrideHeadline || null,
 			overrideBadgeText: resolvedOverrideBadgeText || null,
@@ -5458,7 +5956,8 @@ async function generateThumbnailPackage({
 		overrideTopicImageQueries,
 		log,
 	});
-	const panelCount = Math.min(topicImagePaths.length, 3);
+	const panelImagePaths = filterPanelTopicImages(topicImagePaths, { log });
+	const panelCount = Math.min(panelImagePaths.length, 3);
 	const panelWordLimits =
 		topicCount >= 3
 			? { minWords: 5, maxWords: 7 }
@@ -5538,8 +6037,8 @@ async function generateThumbnailPackage({
 	}
 
 	const primaryMaxWords = useIdentitySubline
-		? Math.min(3, THUMBNAIL_TEXT_MAX_WORDS)
-		: THUMBNAIL_TEXT_MAX_WORDS;
+		? Math.min(3, headlineMaxWords)
+		: headlineMaxWords;
 	const sublineOptions = sublineText
 		? {
 				sublineText,
@@ -5559,7 +6058,7 @@ async function generateThumbnailPackage({
 		...sublineOptions,
 	};
 	const variantBOverlayOptions = {
-		maxWords: Math.min(THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS, primaryMaxWords),
+		maxWords: Math.min(punchyMaxWords, primaryMaxWords),
 		baseChars: THUMBNAIL_VARIANT_B_BASE_CHARS,
 		contrast: THUMBNAIL_VARIANT_B_CONTRAST,
 		panelOpacity: THUMBNAIL_VARIANT_B_PANEL_PCT,
@@ -5617,7 +6116,7 @@ async function generateThumbnailPackage({
 			await composeThumbnailBase({
 				baseImagePath: bgResult.path,
 				presenterImagePath: presenterForCompose,
-				topicImagePaths,
+				topicImagePaths: panelImagePaths,
 				outPath: baseImage,
 				width: THUMBNAIL_WIDTH,
 				height: THUMBNAIL_HEIGHT,
@@ -5721,15 +6220,6 @@ async function generateThumbnailPackage({
 				overlayOptions: finalOverlayOptions,
 			});
 			ensureThumbnailFile(finalPath);
-			const headlineStats = samplePreviewLumaStats(
-				finalPath,
-				getHeadlineQaRegion()
-			);
-			if (log && headlineStats)
-				log("thumbnail headline stats", {
-					variant: variant.key,
-					...headlineStats,
-				});
 			const qa = await applyThumbnailQaAdjustments(finalPath, { log });
 			if (log) log("thumbnail qa result", { variant: variant.key, ...qa });
 			ensureThumbnailFile(finalPath);
@@ -5803,27 +6293,69 @@ async function generateThumbnailPackage({
 				});
 
 			const headline = variant.title || "";
-			const headlineWords = cleanThumbnailText(headline)
-				.split(" ")
-				.filter(Boolean);
-			const compositeScore = scoreVariantComposite({
-				lumaScore,
-				hasBadge: Boolean(tunedOverlayOptions.badgeText),
-				headlineWordCount: headlineWords.length,
-				headlineLen: headline.length,
+			const hasBadge = Boolean(tunedOverlayOptions.badgeText);
+			const qaEval = evaluateThumbnailVariant({
+				filePath: finalPath,
 				headline,
+				intent: resolvedIntent,
 				topicKeywords,
+				panelCount,
+				hasBadge,
 			});
+			const ctrScore = qaEval?.scores?.ctrScore;
+			const readabilityScore = qaEval?.scores?.readabilityScore;
+			const compositeScore = scoreVariantComposite({
+				ctrScore,
+				readabilityScore,
+				lumaScore,
+			});
+			const qaRejected = Boolean(qaEval?.qa?.failures?.length);
 			if (log)
-				log("thumbnail composite score", {
+				log("thumbnail qa evaluation", {
 					variant: variant.key,
+					headline,
+					intent: resolvedIntent,
+					headlineWordCount: qaEval?.headlineInfo?.wordCount || 0,
+					headlineHasCuriosity: Boolean(qaEval?.headlineInfo?.hasCuriosity),
+					headlineHasPower: Boolean(qaEval?.headlineInfo?.hasPower),
+					headlineGeneric: Boolean(qaEval?.headlineInfo?.isGeneric),
 					lumaScore: scoreLog,
+					ctrScore: Number.isFinite(ctrScore)
+						? Number(ctrScore.toFixed(3))
+						: null,
+					readabilityScore: Number.isFinite(readabilityScore)
+						? Number(readabilityScore.toFixed(3))
+						: null,
 					compositeScore: Number.isFinite(compositeScore)
 						? Number(compositeScore.toFixed(3))
 						: null,
-					headline,
+					headlineStd: Number.isFinite(qaEval?.headlineStats?.std)
+						? Number(qaEval.headlineStats.std.toFixed(3))
+						: null,
+					headlineEdge: Number.isFinite(qaEval?.edges?.headlineEdge)
+						? Number(qaEval.edges.headlineEdge.toFixed(3))
+						: null,
+					faceEdge: Number.isFinite(qaEval?.edges?.faceEdge)
+						? Number(qaEval.edges.faceEdge.toFixed(3))
+						: null,
+					eyesEdge: Number.isFinite(qaEval?.edges?.eyesEdge)
+						? Number(qaEval.edges.eyesEdge.toFixed(3))
+						: null,
+					leftEdge: Number.isFinite(qaEval?.edges?.leftEdge)
+						? Number(qaEval.edges.leftEdge.toFixed(3))
+						: null,
 					badge: tunedOverlayOptions.badgeText || "",
+					panelCount,
+					failures: qaEval?.qa?.failures || [],
+					warnings: qaEval?.qa?.warnings || [],
+					qaRejected,
 				});
+			if (qaRejected && log) {
+				log("thumbnail qa failed; variant rejected", {
+					variant: variant.key,
+					failures: qaEval?.qa?.failures || [],
+				});
+			}
 
 			variantResults.push({
 				variant: variant.key,
@@ -5833,7 +6365,12 @@ async function generateThumbnailPackage({
 				width: THUMBNAIL_WIDTH,
 				height: THUMBNAIL_HEIGHT,
 				title: variant.title,
-				compositeScore,
+				compositeScore: qaRejected ? -Infinity : compositeScore,
+				ctrScore,
+				readabilityScore,
+				headlineStrength: qaEval?.scores?.headlineStrength,
+				qa: qaEval?.qa || { failures: [], warnings: [] },
+				qaRejected,
 				luma: {
 					overall: overallLuma,
 					left: leftLuma,
@@ -5850,9 +6387,16 @@ async function generateThumbnailPackage({
 	}
 
 	if (!variantResults.length) throw new Error("thumbnail_generation_failed");
-	const scoredVariants = variantResults.filter(
+	const eligibleVariants = variantResults.filter((v) => !v.qaRejected);
+	const pool = eligibleVariants.length > 0 ? eligibleVariants : variantResults;
+	const scoredVariants = pool.filter(
 		(v) => Number.isFinite(v?.compositeScore) || Number.isFinite(v?.luma?.score)
 	);
+	if (!eligibleVariants.length && log) {
+		log("thumbnail qa: all variants rejected; falling back to best available", {
+			variants: variantResults.map((v) => v.variant),
+		});
+	}
 	const preferred =
 		scoredVariants.reduce((best, next) => {
 			if (!best) return next;
