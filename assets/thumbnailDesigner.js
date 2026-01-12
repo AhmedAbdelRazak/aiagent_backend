@@ -49,19 +49,19 @@ const THUMBNAIL_PRESENTER_SMILE_PATH = "";
 const THUMBNAIL_PRESENTER_NEUTRAL_PATH = "";
 const THUMBNAIL_PRESENTER_SURPRISED_PATH = "";
 const THUMBNAIL_PRESENTER_LIKENESS_MIN = clampNumber(0.82, 0.5, 0.98);
-const THUMBNAIL_PRESENTER_SCALE = clampNumber(1.1, 1.0, 1.25);
-const THUMBNAIL_PRESENTER_CROP_Y_PCT = clampNumber(0.22, 0, 0.5);
+const THUMBNAIL_PRESENTER_SCALE = clampNumber(1.18, 1.0, 1.25);
+const THUMBNAIL_PRESENTER_CROP_Y_PCT = clampNumber(0.18, 0, 0.5);
 const THUMBNAIL_PRESENTER_FACE_REGION = {
-	x: 0.3,
+	x: 0.55,
 	y: 0.05,
 	w: 0.4,
-	h: 0.55,
+	h: 0.6,
 };
 const THUMBNAIL_PRESENTER_EYES_REGION = {
-	x: 0.32,
-	y: 0.08,
-	w: 0.36,
-	h: 0.22,
+	x: 0.6,
+	y: 0.1,
+	w: 0.3,
+	h: 0.2,
 };
 const QA_PREVIEW_WIDTH = 320;
 const QA_PREVIEW_HEIGHT = 180;
@@ -99,6 +99,12 @@ const THUMBNAIL_TEXT_EDGE_DENSITY_MIN = 0.18;
 const THUMBNAIL_TEXT_EDGE_DENSITY_STRONG = 0.24;
 const THUMBNAIL_PANEL_EDGE_DENSITY_SOFTEN = 0.2;
 const THUMBNAIL_PANEL_EDGE_DENSITY_DROP = 0.24;
+const THUMBNAIL_SINGLE_FOCAL_LEFT_PCT = 0.46;
+const THUMBNAIL_SINGLE_FOCAL_OVERLAP_PCT = 0.14;
+const THUMBNAIL_SINGLE_FOCAL_PANEL_OPACITY = 0.04;
+const THUMBNAIL_SINGLE_FOCAL_TEXT_BOX_OPACITY = 0.38;
+const THUMBNAIL_SINGLE_FOCAL_TEXT_SIZE_PCT = 0.135;
+const THUMBNAIL_SINGLE_FOCAL_LEFT_LIFT = 0.08;
 const THUMBNAIL_HOOK_WORDS = [
 	"trailer",
 	"finale",
@@ -123,6 +129,37 @@ const THUMBNAIL_HOOK_WORDS = [
 	"tour",
 	"album",
 	"single",
+	"snub",
+	"snubs",
+	"snubbed",
+	"winners",
+	"winner",
+	"picks",
+	"nominee",
+	"nominees",
+	"nominations",
+	"host",
+];
+const THUMBNAIL_AWARDS_TOKENS = [
+	"golden globes",
+	"globes",
+	"oscars",
+	"oscar",
+	"emmys",
+	"emmy",
+	"grammys",
+	"grammy",
+	"tonys",
+	"tony",
+	"bafta",
+	"baftas",
+	"sag",
+	"awards",
+	"award show",
+	"red carpet",
+	"festival",
+	"cannes",
+	"critics choice",
 ];
 const THUMBNAIL_POWER_TOKENS = new Set([
 	"LEAKED",
@@ -141,6 +178,14 @@ const THUMBNAIL_POWER_TOKENS = new Set([
 	"WHAT",
 	"HAPPENED",
 	"CANCELED",
+	"SNUB",
+	"SNUBS",
+	"SNUBBED",
+	"CHAOS",
+	"RIGGED",
+	"PICKS",
+	"WINNERS",
+	"HOST",
 ]);
 const THUMBNAIL_CURIOSITY_TOKENS = new Set([
 	"WHY",
@@ -153,6 +198,14 @@ const THUMBNAIL_CURIOSITY_TOKENS = new Set([
 	"RETURNS",
 	"BACK",
 	"CANCELED",
+	"SNUB",
+	"SNUBS",
+	"SNUBBED",
+	"CHAOS",
+	"RIGGED",
+	"PICKS",
+	"WINNERS",
+	"HOST",
 ]);
 const QUESTION_START_TOKENS = new Set([
 	"did",
@@ -506,6 +559,13 @@ const SPECIFIC_HEADLINE_PHRASES = new Set([
 	"RETURNS",
 	"BACK",
 	"SHOCKING",
+	"BIG SNUB",
+	"SHOCKING PICKS",
+	"SHOCKING WINNERS",
+	"TOTAL CHAOS",
+	"HOST CHANGE",
+	"NEW HOST",
+	"RIGGED",
 ]);
 const THUMBNAIL_MERCH_DISALLOWED_HOSTS = [
 	"amazon.com",
@@ -797,7 +857,40 @@ function inferEntertainmentCategory(tokens = []) {
 		)
 	)
 		return "celebrity";
+	if (
+		[
+			"awards",
+			"award",
+			"globes",
+			"oscars",
+			"oscar",
+			"emmys",
+			"emmy",
+			"grammys",
+			"grammy",
+			"tonys",
+			"tony",
+			"bafta",
+			"baftas",
+		].some((t) => set.has(t))
+	)
+		return "awards";
 	return "general";
+}
+
+function hasAwardsSignal(text = "") {
+	const hay = String(text || "").toLowerCase();
+	if (!hay) return false;
+	return THUMBNAIL_AWARDS_TOKENS.some((tok) => hay.includes(tok));
+}
+
+function isSensitiveStoryText(text = "") {
+	const hay = String(text || "").toLowerCase();
+	if (!hay) return false;
+	for (const token of IMAGE_DEEMPHASIS_TOKENS) {
+		if (token && hay.includes(String(token))) return true;
+	}
+	return false;
 }
 
 function inferStoryIntent({ title = "", topics = [] } = {}) {
@@ -819,7 +912,9 @@ function inferStoryIntent({ title = "", topics = [] } = {}) {
 	}
 
 	if (
-		/(trailer|season|episode|cast|finale|ending|release|premiere)/.test(hay)
+		/(trailer|season|episode|cast|finale|ending|release|premiere|award|awards|golden globes|globes|oscars|oscar|emmys|emmy|grammys|grammy|tonys|tony|bafta|red carpet|festival)/.test(
+			hay
+		)
 	) {
 		return "entertainment";
 	}
@@ -2122,26 +2217,27 @@ function poseFromExpression(expression = "", text = "", intent = "") {
 	const lower = String(text || "").toLowerCase();
 	const isEntertainment =
 		String(intent || "").toLowerCase() === "entertainment";
+	const hasQuestion = /\?/.test(text);
 	const hasNegative =
 		/(death|died|dead|killed|suicide|murder|arrest|charged|trial|lawsuit|injury|injured|concussion|accident|crash|sad|tragic|funeral|hospital|scandal|abuse|assault|violence)/.test(
 			lower
 		);
 	const hasUrgent =
-		/(breaking|trending|update|new details|big update|latest|just in|alert|confirmed|reports|reported)/.test(
+		/(breaking|trending|update|new details|big update|latest|just in|alert|confirmed|reports|reported|leaked|leak)/.test(
 			lower
 		);
 	const hasSurprise =
-		/(shocking|leaked|leak|exposed|what happened|major twist|surprise|revealed)/.test(
+		/(shocking|exposed|what happened|what went wrong|major twist|surprise|revealed|snub|snubbed|snubs|rigged|chaos|backlash|controversy|wtf)/.test(
 			lower
 		);
 	const hasPositive =
-		/(returns|revival|win|wins|won|success|smile|happy|laugh|funny|hilarious|amazing|great|best|top|comeback|surprise)/.test(
+		/(returns|revival|win|wins|won|winner|winners|success|smile|happy|laugh|funny|hilarious|amazing|great|best|top|comeback|surprise)/.test(
 			lower
 		);
 	if (expr === "thoughtful") return "thoughtful";
 	if (expr === "warm" || expr === "excited") {
 		if (isEntertainment && !hasNegative) {
-			if (hasSurprise) return "surprised";
+			if (hasSurprise || hasQuestion) return "surprised";
 			if (hasUrgent) return "thoughtful";
 			if (hasPositive) return "smile";
 			return "surprised";
@@ -2150,13 +2246,13 @@ function poseFromExpression(expression = "", text = "", intent = "") {
 	}
 	if (expr === "serious" || expr === "neutral") {
 		if (hasNegative) return "neutral";
-		if (hasSurprise) return "surprised";
+		if (hasSurprise || (isEntertainment && hasQuestion)) return "surprised";
 		if (hasUrgent) return "thoughtful";
 		return "neutral";
 	}
 	if (hasNegative) return "neutral";
 	if (isEntertainment) {
-		if (hasSurprise) return "surprised";
+		if (hasSurprise || hasQuestion) return "surprised";
 		if (hasUrgent) return "thoughtful";
 		if (hasPositive) return "smile";
 		return "surprised";
@@ -2173,6 +2269,8 @@ function planThumbnailStyle({
 	seoTitle,
 	topics,
 	expression,
+	intent,
+	headline,
 }) {
 	const topicText = Array.isArray(topics)
 		? topics
@@ -2182,25 +2280,28 @@ function planThumbnailStyle({
 		: "";
 	const text = `${title || ""} ${shortTitle || ""} ${
 		seoTitle || ""
-	} ${topicText}`
+	} ${topicText} ${headline || ""}`
 		.trim()
 		.toLowerCase();
 	const tokens = tokenizeLabel(text);
 	const cat = inferEntertainmentCategory(tokens);
 	let accent = ACCENT_PALETTE.default;
-	if (cat === "film" || cat === "tv" || cat === "celebrity")
+	if (cat === "film" || cat === "tv" || cat === "celebrity" || cat === "awards")
 		accent = ACCENT_PALETTE.entertainment;
 	else if (/(ai|software|code|developer|programming|tech)/i.test(text))
 		accent = ACCENT_PALETTE.tech;
 	else if (/(money|finance|business|startup)/i.test(text))
 		accent = ACCENT_PALETTE.business;
 
-	const intent = inferStoryIntent({ title: title || seoTitle || "", topics });
+	const baseIntent =
+		typeof intent === "string" && intent.trim()
+			? intent.trim()
+			: inferStoryIntent({ title: title || seoTitle || "", topics });
 	const poseIntent =
-		intent === "general" &&
+		baseIntent === "general" &&
 		(cat === "film" || cat === "tv" || cat === "celebrity")
 			? "entertainment"
-			: intent;
+			: baseIntent;
 	return {
 		pose: poseFromExpression(expression, text, poseIntent),
 		accent,
@@ -2966,6 +3067,11 @@ function shouldDropBadge({ headline = "", badgeText = "", intent = "" } = {}) {
 	const normalizedBadge = String(badgeText || "").toUpperCase();
 	if (info.hasQuestion && info.hasPower) return true;
 	if (info.wordCount <= 3 && info.hasCuriosity) return true;
+	if (
+		["UPDATE", "TRENDING", "NEWS"].includes(normalizedBadge) &&
+		!info.hasCuriosity
+	)
+		return true;
 	if (
 		String(intent || "").toLowerCase() === "entertainment" &&
 		["UPDATE", "TRENDING"].includes(normalizedBadge)
@@ -3802,6 +3908,9 @@ function buildThumbnailText(
 		preferLines: 2,
 		maxLines: 2,
 	});
+	if (trimmedWords.length <= 2) {
+		fit.fontScale = clampNumber((fit.fontScale || 1) * 1.1, 1, 1.2);
+	}
 	const fitted = fit.text || trimmed;
 	const finalText = wantsQuestionMark ? ensureQuestionMark(fitted) : fitted;
 	return {
@@ -3985,6 +4094,12 @@ async function renderThumbnailOverlay({
 		: "";
 	let adjustedTextSizePct = textSizePct;
 	let textYOffset = baseTextYOffset;
+	const headlineWordCount = cleanThumbnailText(title)
+		.split(" ")
+		.filter(Boolean).length;
+	if (headlineWordCount <= 2) {
+		adjustedTextSizePct = clampNumber(textSizePct * 1.06, 0.08, 0.16);
+	}
 	if (hasSubline) {
 		textYOffset = clampNumber(baseTextYOffset + 0.01, 0.08, 0.24);
 	}
@@ -5291,6 +5406,18 @@ function isGenericHeadline(text = "") {
 	if (!words.length) return true;
 	if (words.length <= 3 && words.every((w) => GENERIC_HEADLINE_TOKENS.has(w)))
 		return true;
+	const hasPower = Array.from(THUMBNAIL_POWER_TOKENS).some((tok) =>
+		cleaned.includes(tok)
+	);
+	const hasCuriosity =
+		hasPower ||
+		Array.from(THUMBNAIL_CURIOSITY_TOKENS).some((tok) => cleaned.includes(tok));
+	if (
+		words.length <= 3 &&
+		(words.includes("UPDATE") || words.includes("NEWS")) &&
+		!hasCuriosity
+	)
+		return true;
 	return false;
 }
 
@@ -5378,9 +5505,21 @@ function deriveSpecificHeadline({ title = "", topics = [] } = {}) {
 	const rqRise = (t0?.relatedQueries?.risingSample || []).join(" ");
 	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ");
 	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
+	const sensitive = isSensitiveStoryText(hay);
 	if (/\bwhat happened to\b|\bwhat happened\b/.test(hay))
 		return "WHAT HAPPENED?";
 	if (/\bexplained\b|\bwhy\b/.test(hay)) return "EXPLAINED";
+	if (!sensitive && /\b(snub|snubbed|snubs)\b/.test(hay)) return "BIG SNUB?";
+	if (!sensitive && /\b(rigged|chaos|backlash|controversy|outrage)\b/.test(hay))
+		return "TOTAL CHAOS?";
+	if (!sensitive && /\b(host|hosting|hosted)\b/.test(hay))
+		return "HOST CHANGE?";
+	if (
+		!sensitive &&
+		/\b(winners?|picks?|nominees?|nominations?)\b/.test(hay) &&
+		/\b(shocking|surprise|unexpected|stunning)\b/.test(hay)
+	)
+		return "SHOCKING PICKS?";
 	if (/\bleak(ed)?\b/.test(hay)) return "LEAKED?";
 	if (/\bconfirmed\b|\bconfirm(ed)?\b/.test(hay)) return "CONFIRMED?";
 	if (/\bnew details\b|\bdetails emerge\b/.test(hay)) return "NEW DETAILS";
@@ -5478,20 +5617,37 @@ function pickEntertainmentHeadline({ title = "", topics = [], hay = "" } = {}) {
 	const personToken = looksLikePersonTopic(primaryTopicLabel)
 		? buildPersonIdentityToken(primaryTopicLabel)
 		: "";
+	const isAwards = hasAwardsSignal(hay);
+	const sensitive = isSensitiveStoryText(hay);
 	const hasLeak = /(leak|leaked)/.test(hay);
 	const hasConfirm = /(confirm|confirmed)/.test(hay);
 	const hasReturn = /(return|returns|comeback|back)\b/.test(hay);
 	const hasChange = /(changed|change|twist|turn|shift)/.test(hay);
 	const hasCancel = /(cancel|canceled|cancelled)/.test(hay);
 	const hasWhy = /\bwhy\b/.test(hay);
+	const hasSnub = /\b(snub|snubbed|snubs)\b/.test(hay);
+	const hasChaos = /\b(rigged|chaos|backlash|controversy|outrage)\b/.test(hay);
+	const hasHost = /\b(host|hosting|hosted)\b/.test(hay);
+	const hasWinners = /\b(winner|winners|wins|won)\b/.test(hay);
+	const hasNominees =
+		/\b(nominee|nominees|nomination|nominations|picks)\b/.test(hay);
+	const hasShock = /\b(shocking|surprise|unexpected|stunning|wild)\b/.test(hay);
 
 	if (hasLeak) return "LEAKED?";
 	if (hasConfirm) return "CONFIRMED?";
 	if (hasCancel) return "CANCELED?";
+	if (!sensitive && hasChaos) return "TOTAL CHAOS?";
+	if (!sensitive && hasSnub) return "BIG SNUB?";
+	if (!sensitive && hasHost && isAwards) return "HOST CHANGE?";
+	if (!sensitive && hasWinners && hasShock) return "SHOCKING WINNERS?";
+	if (!sensitive && hasNominees && hasShock) return "SHOCKING PICKS?";
+	if (!sensitive && hasNominees && isAwards) return "BIG PICKS?";
+	if (!sensitive && hasWinners && isAwards) return "WINNERS?";
 	if (hasReturn && personToken) return `${personToken} RETURNS?`;
 	if (hasReturn) return "RETURNS?";
 	if (hasChange) return "NEW TWIST?";
 	if (hasWhy) return "WHY?";
+	if (isAwards) return "NEW TWIST?";
 	return "WHAT CHANGED?";
 }
 
@@ -5521,6 +5677,7 @@ function deriveHeadlineAndBadge({
 	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ").toLowerCase();
 	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
 	const specificHeadline = deriveSpecificHeadline({ title, topics });
+	const sensitive = isSensitiveStoryText(hay);
 
 	let headline = "";
 	if (specificHeadline) headline = specificHeadline;
@@ -5532,13 +5689,16 @@ function deriveHeadlineAndBadge({
 	else if (intent === "legal" && /(court|filing)/.test(hay))
 		headline = "COURT FILE";
 	else if (/(reports|reported)/.test(hay)) headline = "NEW REPORTS";
-	else headline = intent === "entertainment" ? "NEW TWIST?" : "WHAT WE KNOW";
+	else headline = sensitive ? "WHAT HAPPENED?" : "WHAT CHANGED?";
 
 	let badgeText = "";
 	if (intent === "legal") badgeText = "REPORTS";
 	else if (intent === "entertainment")
 		badgeText = pickEntertainmentBadge({ hay, headline });
-	else badgeText = "UPDATE";
+	else if (/(breaking|just in)/.test(hay)) badgeText = "BREAKING";
+	else if (/(confirm|confirmed)/.test(hay)) badgeText = "CONFIRMED";
+	else if (/(new|latest|revealed|reported)/.test(hay)) badgeText = "NEW";
+	else badgeText = "";
 
 	return { headline, badgeText };
 }
@@ -5677,6 +5837,33 @@ function buildShortHookTitle({ title, shortTitle, seoTitle, topics }) {
 	});
 }
 
+function resolveThumbnailLayout({
+	panelCount = 0,
+	intent = "general",
+	preferSingleFocal = false,
+} = {}) {
+	let leftPanelPct = LEFT_PANEL_PCT;
+	let presenterOverlapPct = PRESENTER_OVERLAP_PCT;
+
+	if (preferSingleFocal || panelCount === 0) {
+		leftPanelPct = THUMBNAIL_SINGLE_FOCAL_LEFT_PCT;
+		presenterOverlapPct = THUMBNAIL_SINGLE_FOCAL_OVERLAP_PCT;
+	} else if (panelCount === 1) {
+		leftPanelPct = clampNumber(LEFT_PANEL_PCT - 0.03, 0.38, 0.62);
+		presenterOverlapPct = clampNumber(PRESENTER_OVERLAP_PCT + 0.02, 0.06, 0.18);
+	}
+
+	if (
+		String(intent || "").toLowerCase() === "entertainment" &&
+		panelCount === 0
+	) {
+		leftPanelPct = clampNumber(leftPanelPct - 0.02, 0.35, 0.6);
+		presenterOverlapPct = clampNumber(presenterOverlapPct + 0.01, 0.06, 0.18);
+	}
+
+	return { leftPanelPct, presenterOverlapPct };
+}
+
 function assertCloudinaryReady() {
 	if (
 		!process.env.CLOUDINARY_CLOUD_NAME ||
@@ -5734,56 +5921,6 @@ async function generateThumbnailPackage({
 	const presenterDetected = detectFileType(presenterLocalPath);
 	if (presenterDetected?.kind !== "image")
 		throw new Error("thumbnail_presenter_missing_or_invalid");
-	const stylePlan = planThumbnailStyle({
-		title,
-		shortTitle,
-		seoTitle,
-		topics,
-		expression,
-	});
-	const resolvedCutout = resolvePresenterCutoutPath(stylePlan.pose);
-	let presenterForCompose = resolvedCutout || presenterLocalPath;
-	if (resolvedCutout && presenterLocalPath) {
-		const likeness = comparePresenterSimilarity(
-			presenterLocalPath,
-			resolvedCutout
-		);
-		if (
-			Number.isFinite(likeness) &&
-			likeness < THUMBNAIL_PRESENTER_LIKENESS_MIN
-		) {
-			if (log)
-				log("thumbnail presenter cutout rejected (low likeness)", {
-					path: path.basename(resolvedCutout),
-					likeness: Number(likeness.toFixed(3)),
-					min: THUMBNAIL_PRESENTER_LIKENESS_MIN,
-				});
-			presenterForCompose = presenterLocalPath;
-		} else if (log && Number.isFinite(likeness)) {
-			log("thumbnail presenter cutout similarity", {
-				path: path.basename(resolvedCutout),
-				likeness: Number(likeness.toFixed(3)),
-			});
-		}
-	}
-	if (log)
-		log(
-			resolvedCutout && presenterForCompose !== presenterLocalPath
-				? "presenter cutout selected"
-				: "presenter fixed (no emotion variants)",
-			{
-				path: path.basename(presenterForCompose),
-				pose: stylePlan.pose,
-			}
-		);
-	const chosenDetected = detectFileType(presenterForCompose);
-	if (!chosenDetected || chosenDetected.kind !== "image")
-		throw new Error("thumbnail_presenter_missing_or_invalid");
-	if (chosenDetected.ext !== "png" && log) {
-		log("thumbnail presenter not png", {
-			ext: chosenDetected.ext || null,
-		});
-	}
 
 	const resolvedOverrideHeadline =
 		typeof overrideHeadline === "string" ? overrideHeadline.trim() : "";
@@ -5796,12 +5933,24 @@ async function generateThumbnailPackage({
 					title: title || seoTitle || "",
 					topics,
 			  });
-	const headlineMaxWords =
+	const topicCount = Array.isArray(topics) ? topics.length : 0;
+	const preferSingleFocal =
+		topicCount <= 1 &&
+		!(
+			Array.isArray(overrideTopicImageQueries) &&
+			overrideTopicImageQueries.length
+		);
+	const baseHeadlineMaxWords =
 		resolvedIntent === "entertainment" ? 3 : THUMBNAIL_TEXT_MAX_WORDS;
-	const punchyMaxWords =
+	const headlineMaxWords =
+		topicCount <= 1 ? Math.min(3, baseHeadlineMaxWords) : baseHeadlineMaxWords;
+	let punchyMaxWords =
 		resolvedIntent === "entertainment"
 			? Math.min(3, THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS)
 			: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS;
+	if (topicCount <= 1) {
+		punchyMaxWords = Math.min(punchyMaxWords, headlineMaxWords);
+	}
 	const hook = deriveHeadlineAndBadge({
 		title: title || seoTitle || "",
 		topics,
@@ -5842,7 +5991,6 @@ async function generateThumbnailPackage({
 		questionPunchy ||
 		hook?.headline ||
 		defaultPunchy;
-	const topicCount = Array.isArray(topics) ? topics.length : 0;
 	const primaryTopicLabel =
 		topics?.[0]?.displayTopic || topics?.[0]?.topic || "";
 	const topicKeywords = filterSpecificTopicTokens(
@@ -5942,6 +6090,59 @@ async function generateThumbnailPackage({
 			overrideBadgeText: resolvedOverrideBadgeText || null,
 		});
 
+	const stylePlan = planThumbnailStyle({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+		expression,
+		intent: resolvedIntent,
+		headline: punchyTitle || thumbTitle,
+	});
+	const resolvedCutout = resolvePresenterCutoutPath(stylePlan.pose);
+	let presenterForCompose = resolvedCutout || presenterLocalPath;
+	if (resolvedCutout && presenterLocalPath) {
+		const likeness = comparePresenterSimilarity(
+			presenterLocalPath,
+			resolvedCutout
+		);
+		if (
+			Number.isFinite(likeness) &&
+			likeness < THUMBNAIL_PRESENTER_LIKENESS_MIN
+		) {
+			if (log)
+				log("thumbnail presenter cutout rejected (low likeness)", {
+					path: path.basename(resolvedCutout),
+					likeness: Number(likeness.toFixed(3)),
+					min: THUMBNAIL_PRESENTER_LIKENESS_MIN,
+				});
+			presenterForCompose = presenterLocalPath;
+		} else if (log && Number.isFinite(likeness)) {
+			log("thumbnail presenter cutout similarity", {
+				path: path.basename(resolvedCutout),
+				likeness: Number(likeness.toFixed(3)),
+			});
+		}
+	}
+	if (log)
+		log(
+			resolvedCutout && presenterForCompose !== presenterLocalPath
+				? "presenter cutout selected"
+				: "presenter fixed (no emotion variants)",
+			{
+				path: path.basename(presenterForCompose),
+				pose: stylePlan.pose,
+			}
+		);
+	const chosenDetected = detectFileType(presenterForCompose);
+	if (!chosenDetected || chosenDetected.kind !== "image")
+		throw new Error("thumbnail_presenter_missing_or_invalid");
+	if (chosenDetected.ext !== "png" && log) {
+		log("thumbnail presenter not png", {
+			ext: chosenDetected.ext || null,
+		});
+	}
+
 	const topicImageTarget = Math.max(1, Math.min(topicCount || 1, 3));
 	const topicImagePaths = await collectThumbnailTopicImages({
 		topics,
@@ -5956,7 +6157,13 @@ async function generateThumbnailPackage({
 		overrideTopicImageQueries,
 		log,
 	});
-	const panelImagePaths = filterPanelTopicImages(topicImagePaths, { log });
+	const filteredPanelImages = filterPanelTopicImages(topicImagePaths, { log });
+	const panelImagePaths = preferSingleFocal ? [] : filteredPanelImages;
+	if (preferSingleFocal && filteredPanelImages.length && log) {
+		log("thumbnail panel images dropped (single focal)", {
+			count: filteredPanelImages.length,
+		});
+	}
 	const panelCount = Math.min(panelImagePaths.length, 3);
 	const panelWordLimits =
 		topicCount >= 3
@@ -5970,7 +6177,7 @@ async function generateThumbnailPackage({
 				? Number(entry.panelIndex)
 				: idx,
 		}));
-	const shouldFocusRing = (topicImagePaths || []).length === 0;
+	const shouldFocusRing = panelCount === 0 && !preferSingleFocal;
 	const backgroundTitle = resolvedOverrideHeadline
 		? title || seoTitle || thumbTitle
 		: thumbTitle;
@@ -6036,6 +6243,20 @@ async function generateThumbnailPackage({
 		}
 	}
 
+	const layoutBase = resolveThumbnailLayout({
+		panelCount,
+		intent: resolvedIntent,
+		preferSingleFocal,
+	});
+	const useSingleFocalOverlay = preferSingleFocal || panelCount === 0;
+	const singleFocalOverlay = useSingleFocalOverlay
+		? {
+				panelOpacity: THUMBNAIL_SINGLE_FOCAL_PANEL_OPACITY,
+				textBoxOpacity: THUMBNAIL_SINGLE_FOCAL_TEXT_BOX_OPACITY,
+				textSizePct: THUMBNAIL_SINGLE_FOCAL_TEXT_SIZE_PCT,
+				leftLift: THUMBNAIL_SINGLE_FOCAL_LEFT_LIFT,
+		  }
+		: {};
 	const primaryMaxWords = useIdentitySubline
 		? Math.min(3, headlineMaxWords)
 		: headlineMaxWords;
@@ -6056,6 +6277,7 @@ async function generateThumbnailPackage({
 		panelCount,
 		panelSubheaders,
 		...sublineOptions,
+		...singleFocalOverlay,
 	};
 	const variantBOverlayOptions = {
 		maxWords: Math.min(punchyMaxWords, primaryMaxWords),
@@ -6075,25 +6297,22 @@ async function generateThumbnailPackage({
 		{
 			key: "a",
 			title: thumbTitle,
-			layout: {},
+			layout: layoutBase,
 			overlayOptions: variantAOverlayOptions,
 		},
 		{
 			key: "b",
 			title: punchyTitle,
-			layout: {
-				leftPanelPct: THUMBNAIL_VARIANT_B_LEFT_PCT,
-				presenterOverlapPct: THUMBNAIL_VARIANT_B_OVERLAP_PCT,
+			layout: layoutBase,
+			overlayOptions: {
+				...variantBOverlayOptions,
+				...singleFocalOverlay,
 			},
-			overlayOptions: variantBOverlayOptions,
 		},
 		{
 			key: "c",
 			title: punchyTitle,
-			layout: {
-				leftPanelPct: THUMBNAIL_VARIANT_B_LEFT_PCT,
-				presenterOverlapPct: THUMBNAIL_VARIANT_B_OVERLAP_PCT,
-			},
+			layout: layoutBase,
 			overlayOptions: {
 				...variantBOverlayOptions,
 				brightness: 0.1,
@@ -6102,6 +6321,7 @@ async function generateThumbnailPackage({
 				vignette: 0.03,
 				leftLift: 0.08,
 				textBoxOpacity: 0.26,
+				...singleFocalOverlay,
 			},
 		},
 	];

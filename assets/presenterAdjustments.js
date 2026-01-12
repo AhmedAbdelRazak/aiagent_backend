@@ -6,6 +6,7 @@ const path = require("path");
 const axios = require("axios");
 const cloudinary = require("cloudinary").v2;
 const { OpenAI } = require("openai");
+const { EXPLICIT_SERIOUS_CUES } = require("./utils");
 
 let FormDataNode = null;
 try {
@@ -29,14 +30,26 @@ const ORCHESTRATOR_PRESENTER_REF_URL =
 
 const WARDROBE_VARIANTS = [
 	"dark charcoal matte button-up, open collar, no blazer",
-	"deep navy textured button-up, open collar, unstructured dark blazer",
 	"black band-collar button-up, no blazer",
+	"deep navy oxford button-up, open collar, no blazer",
+	"black button-up with standard placket, open collar, no blazer",
+	"black button-up with hidden placket, open collar, no blazer",
+	"deep forest green button-up, open collar, no blazer",
+	"dark burgundy button-up, open collar, no blazer",
+	"midnight teal button-up, open collar, no blazer",
+	"dark aubergine button-up, open collar, no blazer",
+	"graphite twill button-up, open collar, no blazer",
+	"charcoal herringbone button-up, open collar, no blazer",
+	"ink navy poplin button-up, open collar, no blazer",
+	"deep espresso button-up, open collar, no blazer",
+	"near-black button-up, open collar, no blazer",
+	"black micro-texture button-up, open collar, no blazer",
+	"deep slate button-up, open collar, no blazer",
+	"deep navy textured button-up, open collar, unstructured dark blazer",
 	"dark graphite micro-pattern button-up, open collar, soft knit blazer",
 	"dark slate button-up, open collar, open blazer with subtle texture",
 	"black button-up with subtle sheen, open collar, slim dark blazer",
-	"deep navy oxford button-up, open collar, no blazer",
 	"charcoal button-up with thin pinstripe, open collar, open blazer",
-	"black button-up with standard placket, open collar, no blazer",
 	"midnight-blue button-up, open collar, relaxed dark blazer",
 	"dark espresso button-up, open collar, tailored black blazer",
 	"deep charcoal twill button-up, open collar, structured dark blazer",
@@ -49,6 +62,69 @@ const WARDROBE_VARIANTS = [
 	"dark navy button-up, open collar, soft-structured black blazer",
 	"near-black button-up, open collar, clean dark blazer",
 ];
+const NO_BLAZER_PATTERN = /\bno blazer\b/i;
+const FORMAL_CATEGORY_KEYWORDS = new Set([
+	"politics",
+	"world",
+	"health",
+	"social",
+	"socialissues",
+	"crime",
+	"law",
+	"justice",
+	"government",
+	"public safety",
+]);
+const FORMAL_CONTEXT_PHRASES = [
+	"official statement",
+	"official report",
+	"official announcement",
+	"press conference",
+	"court",
+	"trial",
+	"verdict",
+	"sentenced",
+	"indictment",
+	"charged",
+	"arrest",
+	"lawsuit",
+	"sued",
+	"investigation",
+	"police",
+	"government",
+	"parliament",
+	"congress",
+	"senate",
+	"white house",
+	"policy",
+	"regulation",
+	"minister",
+	"president",
+	"prime minister",
+	"military",
+	"war",
+	"conflict",
+];
+const SERIOUS_CONTEXT_TOKENS = Array.from(
+	new Set([
+		...(EXPLICIT_SERIOUS_CUES || []),
+		"funeral",
+		"shooting",
+		"murder",
+		"assault",
+		"violence",
+		"cancer",
+		"illness",
+		"crash",
+		"fatal",
+		"fatalities",
+		"victim",
+		"victims",
+		"hospitalized",
+		"critical",
+		"emergency",
+	])
+).map((token) => String(token || "").toLowerCase());
 
 const openai = process.env.CHATGPT_API_TOKEN
 	? new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN })
@@ -131,7 +207,48 @@ function hashStringToInt(value = "") {
 	return hash;
 }
 
-function pickWardrobeVariant({ jobId, title, topics, avoidOutfits = [] }) {
+function buildWardrobeContextText({ title, topics, categoryLabel }) {
+	const topicText = Array.isArray(topics)
+		? topics
+				.map((t) => t.displayTopic || t.topic || "")
+				.filter(Boolean)
+				.join(" ")
+		: "";
+	return `${title || ""} ${topicText} ${categoryLabel || ""}`
+		.trim()
+		.toLowerCase();
+}
+
+function isFormalCategoryLabel(label = "") {
+	const normalized = String(label || "")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim();
+	if (!normalized) return false;
+	for (const keyword of FORMAL_CATEGORY_KEYWORDS) {
+		if (normalized.includes(keyword)) return true;
+	}
+	return false;
+}
+
+function isFormalContext({ title, topics, categoryLabel }) {
+	const context = buildWardrobeContextText({ title, topics, categoryLabel });
+	if (!context) return false;
+	if (isFormalCategoryLabel(categoryLabel)) return true;
+	if (SERIOUS_CONTEXT_TOKENS.some((token) => token && context.includes(token)))
+		return true;
+	if (FORMAL_CONTEXT_PHRASES.some((phrase) => context.includes(phrase)))
+		return true;
+	return false;
+}
+
+function pickWardrobeVariant({
+	jobId,
+	title,
+	topics,
+	categoryLabel,
+	avoidOutfits = [],
+}) {
 	const topicText = Array.isArray(topics)
 		? topics
 				.map((t) => t.displayTopic || t.topic || "")
@@ -147,10 +264,25 @@ function pickWardrobeVariant({ jobId, title, topics, avoidOutfits = [] }) {
 			)
 			.filter(Boolean)
 	);
-	const candidates = WARDROBE_VARIANTS.filter(
+	const prefersFormal = isFormalContext({ title, topics, categoryLabel });
+	const noBlazerVariants = WARDROBE_VARIANTS.filter((variant) =>
+		NO_BLAZER_PATTERN.test(variant)
+	);
+	const blazerVariants = WARDROBE_VARIANTS.filter(
+		(variant) => !NO_BLAZER_PATTERN.test(variant)
+	);
+	const primaryPool = prefersFormal ? blazerVariants : noBlazerVariants;
+	const candidates = primaryPool.filter(
 		(v) => !normalizedAvoid.has(String(v).toLowerCase())
 	);
-	const pool = candidates.length ? candidates : WARDROBE_VARIANTS;
+	const fallbackPool = WARDROBE_VARIANTS.filter(
+		(v) => !normalizedAvoid.has(String(v).toLowerCase())
+	);
+	const pool = candidates.length
+		? candidates
+		: fallbackPool.length
+		? fallbackPool
+		: WARDROBE_VARIANTS;
 	const jitter = `${Date.now()}-${Math.random()}`;
 	const seed = `${jobId || ""}|${title || ""}|${topicText}|${jitter}`;
 	const idx = hashStringToInt(seed) % pool.length;
@@ -161,7 +293,7 @@ function fallbackWardrobePrompt({ topicLine, wardrobeVariant }) {
 	return `
 Use @presenter_ref for exact framing, pose, lighting, desk, and studio environment.
 Change ONLY the outfit on the torso/upper body area to a dark, classy outfit. Outfit spec (use exactly): ${wardrobeVariant}.
-Outfit colors must be dark only (charcoal, black, deep navy). No bright or light colors.
+Outfit colors must be dark only (charcoal, black, deep navy, deep forest green, dark burgundy, oxblood, deep teal, dark aubergine). No bright or light colors.
 Outfit must be intact: no rips, tears, holes, or missing fabric; shirt placket straight and buttons aligned.
 Do NOT alter the face or head at all. Keep glasses, beard, hairline, skin texture, and facial features exactly as in @presenter_ref. Single face only, no ghosting.
 Studio background, desk, lighting, camera angle, and all props must remain EXACTLY the same.
@@ -200,12 +332,14 @@ async function buildOrchestratedPrompts({
 		jobId,
 		title,
 		topics,
+		categoryLabel,
 		avoidOutfits,
 	});
 	if (log)
 		log("wardrobe variation selected", {
 			variant: wardrobeVariant,
 			avoided: (avoidOutfits || []).length,
+			formalContext: isFormalContext({ title, topics, categoryLabel }),
 		});
 	if (!openai) {
 		const fallback = {
@@ -228,7 +362,7 @@ Return JSON only with key: wardrobePrompt.
 	- Use @presenter_ref as the only person reference.
 	- Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts, no retouching or smoothing.
 	- Keep studio/desk/background/camera/framing/lighting unchanged; no crop/zoom, no borders/letterboxing/vignettes, no added blur or processing.
-	- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; the prompt must include the cue explicitly and match it exactly (dark colors only, open collar, optional open blazer).
+	- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; include it exactly. If the cue says "no blazer", do not add a blazer. Use dark colors only and an open collar.
 - Outfit must be intact: no rips, tears, holes, missing fabric, or broken seams; shirt placket straight and buttons aligned.
 - Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
 - No extra objects and no added text/logos; no watermarks.

@@ -345,6 +345,18 @@ const MAX_NARRATION_OVERAGE_RATIO = clampNumber(1.5, 1.0, 1.8);
 const MAX_NARRATION_OVERAGE_SEC = clampNumber(30, 5, 60);
 const MAX_SUBTLE_VISUAL_EXPRESSIONS = clampNumber(2, 0, 2);
 const SUBTLE_VISUAL_EDGE_BUFFER = clampNumber(1, 0, 3);
+// Audio QA (quality-first voiceover)
+const AUDIO_QA_ENABLED = true;
+const AUDIO_QA_MAX_ATTEMPTS = clampNumber(3, 1, 4);
+const AUDIO_QA_INTERNAL_SILENCE_SEC = clampNumber(1.0, 0.4, 2.5);
+const AUDIO_QA_INTERNAL_SILENCE_DB = clampNumber(-40, -60, -25);
+const AUDIO_QA_EDGE_BUFFER_SEC = clampNumber(0.08, 0, 0.2);
+const AUDIO_QA_TRANSCRIBE = true;
+const AUDIO_QA_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
+const AUDIO_QA_MIN_WORDS = clampNumber(7, 4, 14);
+const AUDIO_QA_SIMILARITY_THRESHOLD = clampNumber(0.82, 0.7, 0.95);
+const AUDIO_QA_STRICT_STABILITY_BOOST = clampNumber(0.08, 0, 0.2);
+const AUDIO_QA_STRICT_STYLE_MAX = clampNumber(0.06, 0, 0.2);
 
 // Sync input prep
 const SYNC_SO_INPUT_FPS = 30;
@@ -4774,6 +4786,36 @@ const POLITICAL_TONE_TOKENS = [
 	"attack",
 ];
 
+const ENTERTAINMENT_REACTION_CUES = [
+	"honestly",
+	"frankly",
+	"to me",
+	"i think",
+	"i feel",
+	"it feels",
+	"that feels",
+	"i like",
+	"i love",
+	"i'm into",
+	"i am into",
+	"i'm curious",
+	"i am curious",
+	"i'm surprised",
+	"i am surprised",
+	"i'll be honest",
+];
+
+function isEntertainmentTopicText(text = "") {
+	const hay = String(text || "").toLowerCase();
+	if (!hay) return false;
+	return ENTERTAINMENT_KEYWORDS.some((k) => hay.includes(k));
+}
+
+function hasEntertainmentReactionCue(text = "") {
+	const hay = String(text || "").toLowerCase();
+	return ENTERTAINMENT_REACTION_CUES.some((tok) => hay.includes(tok));
+}
+
 function isSensitiveTopicText(text = "") {
 	const t = String(text || "").toLowerCase();
 	if (!t) return false;
@@ -4834,6 +4876,8 @@ function coerceExpressionForNaturalness(
 		if (explicit === "excited") return "excited";
 		return explicit;
 	}
+	const entertainment = isEntertainmentTopicText(`${text} ${topicLabel}`);
+	if (entertainment && hasEntertainmentReactionCue(text)) return "warm";
 	if (mood === "serious") return "neutral";
 	if (base === "excited") return "warm";
 	if (base === "warm" || base === "thoughtful") return base;
@@ -4920,12 +4964,50 @@ function buildSubtleVideoExpressionPlan(
 	if (mood === "serious") return plan;
 
 	const seed = jobId ? seedFromJobId(jobId) : 0;
-	const indices = pickSubtleExpressionIndices(total, seed);
-	if (!indices.length) return plan;
+	let indices = pickSubtleExpressionIndices(total, seed);
+	const edgeBuffer = Math.max(
+		0,
+		Math.floor(Number(SUBTLE_VISUAL_EDGE_BUFFER) || 0)
+	);
+	const maxCount = Math.max(
+		0,
+		Math.floor(Number(MAX_SUBTLE_VISUAL_EXPRESSIONS) || 0)
+	);
+	const entertainmentIndices = [];
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i] || {};
+		const hay = `${seg.text || ""} ${seg.topicLabel || ""}`;
+		if (isSensitiveTopicText(hay)) continue;
+		if (isEntertainmentTopicText(hay)) entertainmentIndices.push(i);
+	}
+	if (!indices.length && !entertainmentIndices.length) return plan;
+
+	if (entertainmentIndices.length && maxCount > 0) {
+		const eligibleEntertainment = entertainmentIndices.filter(
+			(i) => i >= edgeBuffer && i <= total - edgeBuffer - 1
+		);
+		const pickFrom = eligibleEntertainment.length
+			? eligibleEntertainment
+			: entertainmentIndices;
+		const hasEntertainmentIndex = indices.some((i) =>
+			entertainmentIndices.includes(i)
+		);
+		if (!hasEntertainmentIndex && pickFrom.length) {
+			const pick =
+				pickFrom[Math.abs(Number(seed) || 0) % pickFrom.length] ?? pickFrom[0];
+			if (indices.length >= maxCount && indices.length > 0) {
+				indices[indices.length - 1] = pick;
+			} else {
+				indices.push(pick);
+			}
+			indices = Array.from(new Set(indices)).sort((a, b) => a - b);
+		}
+	}
 
 	const normalized = segments.map((s) =>
 		normalizeExpression(s.expression, mood)
 	);
+	const entertainmentSet = new Set(entertainmentIndices);
 	for (const idx of indices) {
 		const seg = segments[idx] || {};
 		const sensitive = isSensitiveTopicText(
@@ -4940,6 +5022,7 @@ function buildSubtleVideoExpressionPlan(
 			plan[idx] = FORCE_NEUTRAL_VOICEOVER ? "warm" : "excited";
 		else if (preferred === "thoughtful") plan[idx] = "thoughtful";
 		else if (preferred === "warm") plan[idx] = "warm";
+		else if (entertainmentSet.has(idx)) plan[idx] = "warm";
 		else plan[idx] = "neutral";
 	}
 	return plan;
@@ -6563,15 +6646,17 @@ ${topicIntentLines}
 Style rules (IMPORTANT):
 - Keep pacing steady and conversational; no sudden speed-ups.
 - Slightly brisk, natural American delivery; avoid drawn-out phrasing.
-- Keep the delivery consistently neutral and professional across ALL segments; avoid hypey, excited, or dramatic phrasing.
+- Keep the delivery consistently calm and professional across ALL segments; avoid hypey, excited, or dramatic phrasing. For entertainment topics only, allow one subtle reactionary aside (one short clause) with a light smile.
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
 - Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic), but stay professional.
+- For entertainment topics (film, TV, music, awards), add ONE short reactionary opinion per topic from the presenter (one short clause). Keep it subtle and grounded; no hype.
 - Use contractions. Punchy sentences. A little playful, but not cringe.
 - Avoid staccato punctuation. Do NOT put commas between single words.
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
 - Avoid exclamation points; use calm, steady punctuation.
 - Lead with the answer, then add context (what happened, why it matters, what to watch for).
 - Make each segment feel like a mini reveal: include one standout detail, twist, or implication likely new to viewers.
+- Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
 - Use specific nouns (people, places, titles) over vague phrases like "big news" or "fans are excited".
 - Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
 - Prioritize genuinely interesting facts (history, timeline, behind-the-scenes, credible rumors, estimates) without overstating.
@@ -6608,6 +6693,7 @@ Style rules (IMPORTANT):
 - Provide "shortTitle": 2-5 words, punchy and easy to read.
 - For each segment, include "expression" from: neutral, warm, serious, excited, thoughtful.
 - Default to neutral for most segments. Use warm/thoughtful sparingly (1-2 middle segments max) and keep it subtle.
+- If you include the entertainment reactionary aside, set expression to "warm" for that segment.
 - If the topic is sad or serious, use neutral (no exaggerated sadness).
 - If the topic is political or a real-world tragedy, keep expression neutral (no smiles).
 - ONLY if a topic is about a TV show, film, or fictional character, frame it as plot/character discussion, not real-life tragedy.
@@ -7398,21 +7484,89 @@ async function synthesizeTtsWav({
 	modelOrder,
 }) {
 	const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
-	const mp3 = path.join(tmpDir, `${safeLabel}_${jobId}.mp3`);
-	const wav = path.join(tmpDir, `${safeLabel}_${jobId}.wav`);
-	const cleanText = stripAllFillers(text);
-	const usedModelId = await elevenLabsTTS({
-		text: cleanText,
-		outMp3Path: mp3,
-		voiceId,
-		voiceSettings,
-		modelId,
-		modelOrder,
-	});
-	await mp3ToCleanWav(mp3, wav);
-	safeUnlink(mp3);
-	const durationSec = await probeDurationSeconds(wav);
-	return { wavPath: wav, durationSec, modelId: usedModelId, text: cleanText };
+	const baseText = stripAllFillers(text);
+	const maxAttempts = AUDIO_QA_ENABLED ? AUDIO_QA_MAX_ATTEMPTS : 1;
+	let best = null;
+	let bestScore = -Infinity;
+
+	for (let attempt = 0; attempt < maxAttempts; attempt++) {
+		const attemptLabel = attempt ? `${safeLabel}_a${attempt}` : safeLabel;
+		const mp3 = path.join(tmpDir, `${attemptLabel}_${jobId}.mp3`);
+		const wav = path.join(tmpDir, `${attemptLabel}_${jobId}.wav`);
+		const ttsText = attempt === 0 ? baseText : tightenTtsText(baseText);
+		const attemptVoiceSettings = tightenVoiceSettings(voiceSettings, attempt);
+
+		const usedModelId = await elevenLabsTTS({
+			text: ttsText,
+			outMp3Path: mp3,
+			voiceId,
+			voiceSettings: attemptVoiceSettings,
+			modelId,
+			modelOrder,
+		});
+		await mp3ToCleanWav(mp3, wav);
+		safeUnlink(mp3);
+		const durationSec = await probeDurationSeconds(wav);
+		const qa = AUDIO_QA_ENABLED
+			? await analyzeAudioQuality({
+					wavPath: wav,
+					expectedText: ttsText,
+					jobId,
+					label: safeLabel,
+			  })
+			: { pass: true, issues: [] };
+
+		if (jobId && AUDIO_QA_ENABLED) {
+			logJob(jobId, "tts audio qa", {
+				label: safeLabel,
+				attempt,
+				pass: qa.pass,
+				issues: qa.issues,
+				maxInternalSilenceSec: Number(
+					(qa.maxInternalSilenceSec || 0).toFixed(3)
+				),
+				similarity: Number((qa.similarity || 0).toFixed(3)),
+			});
+		}
+
+		if (qa.pass) {
+			if (best?.wavPath && best.wavPath !== wav) safeUnlink(best.wavPath);
+			return {
+				wavPath: wav,
+				durationSec,
+				modelId: usedModelId,
+				text: ttsText,
+				qa,
+			};
+		}
+
+		const score =
+			(qa.similarity || 0) -
+			(qa.maxInternalSilenceSec || 0) * 0.5 -
+			(qa.issues?.length || 0);
+		if (!best || score > bestScore) {
+			if (best?.wavPath && best.wavPath !== wav) safeUnlink(best.wavPath);
+			best = {
+				wavPath: wav,
+				durationSec,
+				modelId: usedModelId,
+				text: ttsText,
+				qa,
+			};
+			bestScore = score;
+		} else {
+			safeUnlink(wav);
+		}
+	}
+
+	if (best) return best;
+	return {
+		wavPath: "",
+		durationSec: 0,
+		modelId: "",
+		text: baseText,
+		qa: { pass: false, issues: ["tts_failed"] },
+	};
 }
 
 async function fitWavToTargetDuration({
@@ -7657,11 +7811,99 @@ async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
 	return { seoTitle, seoDescription, tags, languageLabel };
 }
 
+const SMALL_NUMBER_WORDS = [
+	"zero",
+	"one",
+	"two",
+	"three",
+	"four",
+	"five",
+	"six",
+	"seven",
+	"eight",
+	"nine",
+	"ten",
+	"eleven",
+	"twelve",
+	"thirteen",
+	"fourteen",
+	"fifteen",
+	"sixteen",
+	"seventeen",
+	"eighteen",
+	"nineteen",
+];
+const TENS_NUMBER_WORDS = [
+	"",
+	"",
+	"twenty",
+	"thirty",
+	"forty",
+	"fifty",
+	"sixty",
+	"seventy",
+	"eighty",
+	"ninety",
+];
+
+function twoDigitNumberToWords(value) {
+	const n = Number(value);
+	if (!Number.isFinite(n)) return "";
+	const v = Math.round(n);
+	if (v < 0 || v >= 100) return "";
+	if (v < 20) return SMALL_NUMBER_WORDS[v];
+	const tens = Math.floor(v / 10);
+	const ones = v % 10;
+	return ones
+		? `${TENS_NUMBER_WORDS[tens]} ${SMALL_NUMBER_WORDS[ones]}`
+		: TENS_NUMBER_WORDS[tens];
+}
+
+function yearToWords(year) {
+	const y = Number(year);
+	if (!Number.isFinite(y)) return "";
+	if (y >= 2000 && y <= 2009) {
+		const tail = y % 100;
+		return tail
+			? `two thousand ${twoDigitNumberToWords(tail)}`
+			: "two thousand";
+	}
+	if (y >= 2010 && y <= 2099) {
+		const tail = y % 100;
+		return `twenty ${twoDigitNumberToWords(tail)}`.trim();
+	}
+	if (y >= 1900 && y <= 1999) {
+		const tail = y % 100;
+		if (tail === 0) return "nineteen hundred";
+		return `nineteen ${twoDigitNumberToWords(tail)}`.trim();
+	}
+	return String(year);
+}
+
+function normalizeNumbersForSpeech(text = "") {
+	let t = String(text || "");
+	t = t.replace(/\b([A-Za-z]{2,})\+\b/g, "$1 plus");
+	t = t.replace(/\b(19\d{2}|20\d{2})\b/g, (m) => yearToWords(m));
+	return t;
+}
+
+function tightenTtsText(text = "") {
+	let t = String(text || "");
+	t = t.replace(/[;:]/g, ".");
+	t = t.replace(/,\s*/g, " ");
+	t = t.replace(/\s*--\s*/g, " ");
+	t = t.replace(/[()]/g, " ");
+	t = t.replace(/\s+/g, " ").trim();
+	return t;
+}
+
 function cleanForTTS(text = "") {
 	let t = String(text || "");
 	if (FORCE_NEUTRAL_VOICEOVER) t = softenNeutralPunctuation(t);
 	// remove URLs/emails
 	t = t.replace(/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi, " ");
+	// normalize numeric speech cues (years, plus sign)
+	t = normalizeNumbersForSpeech(t);
 	// normalize excessive punctuation while preserving natural pauses
 	t = t.replace(/\.{4,}/g, "...");
 	t = t.replace(/([!?]){2,}/g, "$1");
@@ -7912,6 +8154,176 @@ async function applyGlobalAtempoToWav(inWav, outWav, atempo) {
 		{ timeoutMs: 120000 }
 	);
 	return outWav;
+}
+
+function tightenVoiceSettings(settings = {}, attempt = 0) {
+	const base = settings || {};
+	if (!attempt) return base;
+	const stability = Number(base.stability ?? ELEVEN_TTS_STABILITY);
+	const style = Number(base.style ?? ELEVEN_TTS_STYLE);
+	return {
+		...base,
+		stability: clampNumber(
+			stability + AUDIO_QA_STRICT_STABILITY_BOOST * attempt,
+			0.1,
+			1
+		),
+		style: clampNumber(Math.min(style, AUDIO_QA_STRICT_STYLE_MAX), 0, 0.35),
+	};
+}
+
+function buildExpectedQaTokens(text = "") {
+	const base = tokenizeQaText(text);
+	const normalized = tokenizeQaText(normalizeNumbersForSpeech(text));
+	return uniqueStrings([...base, ...normalized]);
+}
+
+function hasFillerWords(text = "") {
+	if (!text) return false;
+	const rx = new RegExp(FILLER_WORD_REGEX.source, "i");
+	return rx.test(String(text || ""));
+}
+
+async function transcribeAudioForQa(audioPath, jobId, label) {
+	if (!AUDIO_QA_TRANSCRIBE) return "";
+	if (!openai?.audio?.transcriptions?.create) return "";
+	const models = [AUDIO_QA_TRANSCRIBE_MODEL, "whisper-1"]
+		.filter(Boolean)
+		.filter((v, i, arr) => arr.indexOf(v) === i);
+	let lastErr = null;
+	for (const model of models) {
+		try {
+			const resp = await openai.audio.transcriptions.create({
+				file: fs.createReadStream(audioPath),
+				model,
+				response_format: "text",
+				temperature: 0,
+			});
+			if (typeof resp === "string") return resp.trim();
+			return String(resp?.text || "").trim();
+		} catch (e) {
+			lastErr = e;
+		}
+	}
+	if (jobId && lastErr) {
+		logJob(jobId, "audio qa transcription failed", {
+			label,
+			error: lastErr.message,
+		});
+	}
+	return "";
+}
+
+async function detectInternalSilence(
+	wavPath,
+	{
+		minSilenceSec = AUDIO_QA_INTERNAL_SILENCE_SEC,
+		noiseDb = AUDIO_QA_INTERNAL_SILENCE_DB,
+		edgeBufferSec = AUDIO_QA_EDGE_BUFFER_SEC,
+	} = {}
+) {
+	const durationSec = await probeDurationSeconds(wavPath);
+	if (!durationSec || !Number.isFinite(durationSec)) {
+		return { durationSec: 0, maxInternalSilenceSec: 0, internalSilences: [] };
+	}
+	const res = await spawnBin(
+		ffmpegPath,
+		[
+			"-i",
+			wavPath,
+			"-af",
+			`silencedetect=noise=${Number(noiseDb)}dB:d=${Number(minSilenceSec)}`,
+			"-f",
+			"null",
+			"-",
+		],
+		"silence_detect",
+		{ timeoutMs: 60000 }
+	);
+	const stderr = String(res?.stderr || "");
+	const lines = stderr.split(/\r?\n/);
+	const silences = [];
+	let currentStart = null;
+
+	for (const line of lines) {
+		const startMatch = line.match(/silence_start:\s*([0-9.]+)/);
+		if (startMatch) {
+			currentStart = Number(startMatch[1]);
+		}
+		const endMatch = line.match(
+			/silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)/
+		);
+		if (endMatch) {
+			const end = Number(endMatch[1]);
+			const duration = Number(endMatch[2]);
+			const start =
+				Number.isFinite(currentStart) && currentStart >= 0
+					? currentStart
+					: end - duration;
+			silences.push({ start, end, duration });
+			currentStart = null;
+		}
+	}
+
+	const edge = Math.max(0, Number(edgeBufferSec) || 0);
+	const internal = silences.filter(
+		(s) => s.start > edge && s.end < durationSec - edge
+	);
+	const maxInternal = internal.reduce(
+		(max, s) => Math.max(max, Number(s.duration) || 0),
+		0
+	);
+
+	return {
+		durationSec,
+		maxInternalSilenceSec: maxInternal,
+		internalSilences: internal,
+	};
+}
+
+async function analyzeAudioQuality({ wavPath, expectedText, jobId, label }) {
+	const result = {
+		pass: true,
+		issues: [],
+		maxInternalSilenceSec: 0,
+		similarity: 1,
+		transcript: "",
+	};
+	try {
+		const silence = await detectInternalSilence(wavPath);
+		result.maxInternalSilenceSec = silence.maxInternalSilenceSec || 0;
+		if (silence.maxInternalSilenceSec >= AUDIO_QA_INTERNAL_SILENCE_SEC) {
+			result.issues.push("long_internal_silence");
+		}
+	} catch (e) {
+		result.issues.push("silence_detect_failed");
+	}
+
+	try {
+		if (AUDIO_QA_TRANSCRIBE && countWords(expectedText) >= AUDIO_QA_MIN_WORDS) {
+			const transcript = await transcribeAudioForQa(wavPath, jobId, label);
+			result.transcript = transcript;
+			if (!transcript) {
+				result.issues.push("transcription_empty");
+			} else {
+				if (hasFillerWords(transcript)) result.issues.push("filler_detected");
+				const expectedTokens = buildExpectedQaTokens(expectedText);
+				const actualTokens = tokenizeQaText(transcript);
+				if (expectedTokens.length && actualTokens.length) {
+					const similarity = overlapRatio(expectedTokens, actualTokens);
+					result.similarity = similarity;
+					if (similarity < AUDIO_QA_SIMILARITY_THRESHOLD) {
+						result.issues.push("transcript_mismatch");
+					}
+				}
+			}
+		}
+	} catch (e) {
+		result.issues.push("transcription_failed");
+	}
+
+	result.pass = result.issues.length === 0;
+	return result;
 }
 
 /* ---------------------------------------------------------------
@@ -10842,12 +11254,6 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 
 				const breathState = { used: 0 };
 				for (const seg of segments) {
-					const mp3 = path.join(tmpDir, `tts_${jobId}_${seg.index}.mp3`);
-					const cleanWav = path.join(
-						tmpDir,
-						`tts_clean_${jobId}_${seg.index}.wav`
-					);
-
 					const rawText = seg.text;
 					const cleanText = sanitizeSegmentText(rawText);
 					const breathedText = injectMicroBreath(cleanText, breathState);
@@ -10869,26 +11275,31 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						modelId: ttsModelId || "auto",
 						textChanged,
 					});
-					const usedModelId = await elevenLabsTTS({
+					const tts = await synthesizeTtsWav({
 						text: breathedText,
-						outMp3Path: mp3,
+						tmpDir,
+						jobId,
+						label: `seg_${seg.index}`,
 						voiceId: effectiveVoiceId,
 						voiceSettings,
 						modelId: ttsModelId || undefined,
 						modelOrder: ttsModelOrder,
 					});
-					if (!ttsModelId && usedModelId) ttsModelId = usedModelId;
-					await mp3ToCleanWav(mp3, cleanWav);
-					safeUnlink(mp3);
-
-					const d = await probeDurationSeconds(cleanWav);
+					if (!ttsModelId && tts?.modelId) ttsModelId = tts.modelId;
+					if (!tts?.wavPath)
+						throw new Error("Voice audio generation failed (empty segment)");
+					const d =
+						Number(tts.durationSec) ||
+						(await probeDurationSeconds(tts.wavPath));
 					logJob(jobId, "tts segment ready", {
 						segment: seg.index,
 						attempt,
 						cleanDur: Number(d.toFixed(3)),
-						modelId: usedModelId || ttsModelId || "auto",
+						modelId: tts?.modelId || ttsModelId || "auto",
+						qaPass: tts?.qa?.pass ?? null,
+						qaIssues: Array.isArray(tts?.qa?.issues) ? tts.qa.issues : [],
 					});
-					cleanedWavs.push({ index: seg.index, wav: cleanWav, cleanDur: d });
+					cleanedWavs.push({ index: seg.index, wav: tts.wavPath, cleanDur: d });
 					sumCleanDur += d;
 				}
 			}
@@ -11020,8 +11431,10 @@ Topic assignment by segment (do NOT change order): ${topicsLine}
 Rules:
 - Keep the same topic and tone (US audience, fun, not formal).
 - Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic).
+- For entertainment topics (film, TV, music, awards), add ONE short reactionary opinion per topic (one short clause). Keep it subtle and grounded; no hype.
 - Keep EXACTLY ${segments.length} segments.
 - Preserve smooth transitions.
+- Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
 - For Topic 2+ only, if a segment is the first for a new topic, start it with an explicit transition line naming the topic. Do NOT use that transition for Topic 1.
 - Improve clarity and specificity; avoid vague filler phrasing or repeating the question.
@@ -11030,7 +11443,7 @@ Rules:
 - Add one fresh, concrete detail or implication per segment when possible.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
-- Keep the overall delivery neutral and professional; avoid excited phrasing and exclamation points.
+- Keep the overall delivery calm and professional; avoid excited phrasing and exclamation points. For entertainment topics only, allow one subtle reactionary aside (one short clause) with a light smile.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Preserve source attributions already in the text; keep at least one brief attribution per topic when possible.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
