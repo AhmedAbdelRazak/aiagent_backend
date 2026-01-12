@@ -5382,6 +5382,20 @@ function buildTopicImageQueries({ signals, intent }) {
 	}
 
 	if (intent === "entertainment") {
+		const awardsRe =
+			/\b(award|awards|golden globes|globes|oscars|oscar|emmys|emmy|grammys|grammy|bafta|baftas|red carpet)\b/i;
+		if (awardsRe.test(core) || awardsRe.test(topic)) {
+			return uniqueStrings(
+				[
+					`${core} trophy`,
+					`${core} awards stage`,
+					`${core} red carpet`,
+					`${core} ballroom`,
+					`${core} ceremony`,
+				],
+				{ limit: 6 }
+			);
+		}
 		return uniqueStrings(
 			[
 				`${core} portrait`,

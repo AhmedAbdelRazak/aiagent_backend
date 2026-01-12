@@ -8,6 +8,14 @@ const axios = require("axios");
 const cloudinary = require("cloudinary").v2;
 const { TOPIC_STOP_WORDS, GENERIC_TOPIC_TOKENS } = require("../assets/utils");
 
+let FormDataNode = null;
+try {
+	// eslint-disable-next-line import/no-extraneous-dependencies
+	FormDataNode = require("form-data");
+} catch {
+	FormDataNode = null;
+}
+
 let ffmpegPath = "";
 try {
 	// eslint-disable-next-line import/no-extraneous-dependencies
@@ -49,6 +57,7 @@ const THUMBNAIL_PRESENTER_SMILE_PATH = "";
 const THUMBNAIL_PRESENTER_NEUTRAL_PATH = "";
 const THUMBNAIL_PRESENTER_SURPRISED_PATH = "";
 const THUMBNAIL_PRESENTER_LIKENESS_MIN = clampNumber(0.82, 0.5, 0.98);
+const THUMBNAIL_PRESENTER_EMOTION_LIKENESS_MIN = clampNumber(0.8, 0.65, 0.98);
 const THUMBNAIL_PRESENTER_SCALE = clampNumber(1.22, 1.0, 1.25);
 const THUMBNAIL_PRESENTER_CROP_Y_PCT = clampNumber(0.18, 0, 0.5);
 const THUMBNAIL_PRESENTER_FACE_REGION = {
@@ -901,6 +910,36 @@ function buildTopicLabelText(topics = []) {
 		.join(" ");
 }
 
+function buildTopicVisualCue({ title = "", topics = [] } = {}) {
+	const hay = `${title} ${buildTopicLabelText(topics)}`.toLowerCase();
+	if (!hay.trim()) return "";
+	if (hasAwardsSignal(hay))
+		return "award trophy, red carpet ropes, stage lights, glamorous ballroom";
+	if (/(movie|film|trailer|series|tv|streaming|box office)/.test(hay))
+		return "film reel, clapperboard, cinema lights";
+	if (/(music|album|song|tour|concert|festival)/.test(hay))
+		return "concert stage lights, microphone, music studio";
+	if (
+		/(sports|nba|nfl|soccer|football|match|tournament|league|olympic)/.test(hay)
+	)
+		return "stadium lights, field lines, ball silhouette";
+	if (
+		/(finance|stock|stocks|market|nasdaq|dow|crypto|bitcoin|economy|inflation)/.test(
+			hay
+		)
+	)
+		return "market chart glow, trading screens, exchange floor";
+	if (
+		/(politic|election|government|policy|senate|congress|white house|parliament|minister)/.test(
+			hay
+		)
+	)
+		return "podium microphones, government building silhouette";
+	if (/(tech|ai|robot|software|app|startup|chip|silicon|device)/.test(hay))
+		return "circuit pattern, futuristic UI panels";
+	return "";
+}
+
 const STRONG_BADGE_TOKENS = new Set([
 	"BREAKING",
 	"CONFIRMED",
@@ -911,7 +950,9 @@ const STRONG_BADGE_TOKENS = new Set([
 ]);
 
 function isStrongBadgeText(text = "") {
-	const cleaned = String(text || "").trim().toUpperCase();
+	const cleaned = String(text || "")
+		.trim()
+		.toUpperCase();
 	if (!cleaned) return false;
 	for (const token of STRONG_BADGE_TOKENS) {
 		if (cleaned.includes(token)) return true;
@@ -1860,13 +1901,17 @@ function buildRunwayThumbnailPrompt({ title, topics }) {
 		  compactFocus ||
 		  cleanThumbnailText(title || "") ||
 		  "the topic";
+	const visualCue = buildTopicVisualCue({ title, topics });
+	const visualCueLine = visualCue
+		? `Include a single, clearly recognizable, non-human object or setting related to: ${visualCue}. Keep it subtle but legible, positioned toward the left side.`
+		: `Include a single, clearly recognizable, non-human object or setting tied to: ${topicFocus}. Keep it subtle but legible, positioned toward the left side.`;
 
 	const prompt = `
 Premium studio background plate for a YouTube thumbnail.
 No people, no faces, no logos, no watermarks, no candles, no signage or typography.
 Lighting: BRIGHT, high-key studio lighting with lifted shadows (avoid deep blacks), clean highlights, crisp detail, balanced contrast (not moody, not low-key).
-Left ~40% is clean AND BRIGHTER for later overlays and panels; keep it uncluttered with a smooth gradient backdrop.
-Subtle, tasteful topic atmosphere inspired by: ${topicFocus}.
+Left ~40% reserved for overlay text; keep it bright, clean, and uncluttered while still showing one clear object/setting.
+${visualCueLine}
 Soft bokeh depth, gentle studio glow, subtle teal + violet color wash.
 No dark corners, no heavy vignette, no gloomy cinematic look.
 Elegant, vibrant but controlled color palette, clean subject separation feel.
@@ -2141,6 +2186,65 @@ function runwayHeadersJson() {
 	};
 }
 
+async function runwayCreateEphemeralUpload({ filePath, filename }) {
+	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
+	if (!fs.existsSync(filePath))
+		throw new Error("file missing for runway upload");
+
+	const baseName = filename || path.basename(filePath || "asset.bin");
+	const init = await axios.post(
+		"https://api.dev.runwayml.com/v1/uploads",
+		{ filename: baseName, type: "ephemeral" },
+		{
+			headers: runwayHeadersJson(),
+			timeout: 20000,
+			validateStatus: (s) => s < 500,
+		}
+	);
+	if (init.status >= 300) {
+		const msg =
+			typeof init.data === "string"
+				? init.data
+				: JSON.stringify(init.data || {});
+		throw new Error(
+			`Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`
+		);
+	}
+	const { uploadUrl, fields, runwayUri } = init.data || {};
+	if (!uploadUrl || !fields || !runwayUri)
+		throw new Error("Runway upload init returned incomplete response");
+
+	if (FormDataNode) {
+		const form = new FormDataNode();
+		Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
+		form.append("file", fs.createReadStream(filePath));
+		const r = await axios.post(uploadUrl, form, {
+			headers: form.getHeaders(),
+			maxBodyLength: Infinity,
+			maxContentLength: Infinity,
+			timeout: 30000,
+			validateStatus: (s) => s < 500,
+		});
+		if (r.status >= 300) throw new Error(`Runway upload failed (${r.status})`);
+		return runwayUri;
+	}
+
+	if (typeof fetch === "function" && typeof FormData !== "undefined") {
+		const form = new FormData();
+		Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
+		const buf = fs.readFileSync(filePath);
+		const blob = new Blob([buf]);
+		form.append("file", blob, baseName);
+		const resp = await fetch(uploadUrl, { method: "POST", body: form });
+		if (!resp.ok) throw new Error(`Runway upload failed (${resp.status})`);
+		return runwayUri;
+	}
+
+	throw new Error(
+		"Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'"
+	);
+}
+
 async function pollRunwayTask(taskId, label) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${taskId}`;
 	for (let i = 0; i < RUNWAY_IMAGE_MAX_POLL_ATTEMPTS; i++) {
@@ -2232,6 +2336,62 @@ async function downloadRunwayImageToPath({ uri, outPath }) {
 	return outPath;
 }
 
+async function generatePresenterEmotionVariant({
+	jobId,
+	tmpDir,
+	presenterImagePath,
+	pose,
+	log,
+}) {
+	if (!RUNWAY_API_KEY) return "";
+	if (!presenterImagePath || !fs.existsSync(presenterImagePath)) return "";
+	const resolvedPose = String(pose || "neutral").toLowerCase();
+	if (!resolvedPose || resolvedPose === "neutral") return "";
+	ensureDir(tmpDir);
+	const prompt = presenterEmotionPrompt({ pose: resolvedPose });
+	if (!prompt) return "";
+	const ratio = upscaleRunwayRatio(THUMBNAIL_RATIO);
+	const seed = seedFromText(
+		`${jobId || "presenter"}_${resolvedPose}_${fileHash(presenterImagePath)}`
+	);
+	let presenterUri = "";
+	try {
+		presenterUri = await runwayCreateEphemeralUpload({
+			filePath: presenterImagePath,
+			filename: path.basename(presenterImagePath),
+		});
+	} catch (e) {
+		if (log)
+			log("thumbnail presenter upload failed", {
+				error: e?.message || String(e),
+			});
+		return "";
+	}
+	if (log)
+		log("thumbnail presenter emotion prompt", {
+			pose: resolvedPose,
+			ratio,
+			prompt: String(prompt).slice(0, 220),
+		});
+	const outputUri = await runwayTextToImage({
+		promptText: prompt,
+		ratio,
+		referenceImages: [{ uri: presenterUri, tag: "presenter_ref" }],
+		seed,
+	});
+	const outPath = path.join(
+		tmpDir,
+		`presenter_emotion_${jobId || crypto.randomUUID()}_${resolvedPose}.png`
+	);
+	await downloadRunwayImageToPath({ uri: outputUri, outPath });
+	const dt = detectFileType(outPath);
+	if (dt?.kind !== "image") {
+		safeUnlink(outPath);
+		return "";
+	}
+	return outPath;
+}
+
 function sha1(s) {
 	return crypto.createHash("sha1").update(String(s)).digest("hex").slice(0, 12);
 }
@@ -2277,6 +2437,7 @@ function poseFromExpression(expression = "", text = "", intent = "") {
 		if (hasNegative) return "neutral";
 		if (hasSurprise || (isEntertainment && hasQuestion)) return "surprised";
 		if (hasUrgent) return "thoughtful";
+		if (isEntertainment) return "smile";
 		return "neutral";
 	}
 	if (hasNegative) return "neutral";
@@ -2342,7 +2503,7 @@ function presenterPosePrompt({ pose }) {
 		return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: mild surprised with a soft smile, NOT exaggerated, not screaming.
+Expression: very subtle surprised with a soft smile, NOT exaggerated, not screaming.
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 No distortions, no extra people, sharp and clean.
 `.trim();
@@ -2351,7 +2512,7 @@ No distortions, no extra people, sharp and clean.
 		return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: thoughtful and calm, natural focus, closed mouth, not exaggerated.
+Expression: thoughtful and calm, subtle wondering look, closed mouth, not exaggerated.
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 Sharp, clean edges, no distortions.
 `.trim();
@@ -2360,7 +2521,7 @@ Sharp, clean edges, no distortions.
 		return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: neutral but engaged (calm, confident).
+Expression: neutral but engaged (calm, confident), very subtle.
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 Sharp, clean edges, no distortions.
 `.trim();
@@ -2368,9 +2529,32 @@ Sharp, clean edges, no distortions.
 	return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: warm natural smile (subtle, friendly, not exaggerated).
+Expression: warm natural smile (subtle, friendly, not exaggerated), slight laugh.
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 Sharp, clean edges, no distortions.
+`.trim();
+}
+
+function presenterEmotionPrompt({ pose }) {
+	let expressionLine =
+		"Expression: neutral but engaged (calm, confident), very subtle.";
+	if (pose === "surprised") {
+		expressionLine =
+			"Expression: very subtle surprise, slight eyebrow lift, soft mouth, not exaggerated.";
+	} else if (pose === "thoughtful") {
+		expressionLine =
+			"Expression: thoughtful and wondering, subtle focus, closed mouth, not exaggerated.";
+	} else if (pose === "smile") {
+		expressionLine =
+			"Expression: slight smile or slight laugh, lips gently upturned, no exaggerated grin.";
+	}
+	return `
+Use @presenter_ref as the only person reference.
+Keep the same person and identity: eyes, nose, lips, glasses, beard, hairline, and skin texture must remain unchanged.
+Keep wardrobe, background, desk, lighting, camera angle, framing, and color grade exactly the same.
+Change ONLY the facial expression to be subtle; do not change pose or add props.
+${expressionLine}
+No extra objects, no text, no logos, no watermarks, no distortions.
 `.trim();
 }
 
@@ -2608,7 +2792,7 @@ function samplePreviewLumaStats(filePath, region = null) {
 	}
 }
 
-function sampleEdgeDensity(filePath, region = null) {
+function sampleEdgeDensity(filePath, region = null, edgeOptions = {}) {
 	let crop = "";
 	if (region) {
 		const rx = Math.max(0, Math.round(region.x || 0));
@@ -2617,9 +2801,17 @@ function sampleEdgeDensity(filePath, region = null) {
 		const rh = Math.max(1, Math.round(region.h || 1));
 		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
 	}
+	const low = Number.isFinite(Number(edgeOptions.low))
+		? clampNumber(Number(edgeOptions.low), 0.02, 0.3)
+		: 0.1;
+	const high = Number.isFinite(Number(edgeOptions.high))
+		? clampNumber(Number(edgeOptions.high), low + 0.05, 0.6)
+		: 0.4;
 	const filter =
 		`${crop}scale=256:256:flags=area,` +
-		"edgedetect=low=0.1:high=0.4,format=gray,scale=32:32:flags=area";
+		`edgedetect=low=${low.toFixed(3)}:high=${high.toFixed(
+			3
+		)},format=gray,scale=32:32:flags=area`;
 	const args = [
 		"-hide_banner",
 		"-loglevel",
@@ -3254,8 +3446,14 @@ function evaluateThumbnailVariant({
 
 	const headlineEdge = sampleEdgeDensity(filePath, headlineRegion);
 	const leftEdge = sampleEdgeDensity(filePath, leftRegion);
-	const faceEdge = sampleEdgeDensity(filePath, faceRegion);
-	const eyesEdge = sampleEdgeDensity(filePath, eyesRegion);
+	const faceEdge = sampleEdgeDensity(filePath, faceRegion, {
+		low: 0.06,
+		high: 0.24,
+	});
+	const eyesEdge = sampleEdgeDensity(filePath, eyesRegion, {
+		low: 0.06,
+		high: 0.24,
+	});
 	const headlineStats = samplePreviewLumaStats(filePath, headlinePreview);
 	const leftLuma = samplePreviewLuma(filePath, leftPreview);
 
@@ -3300,10 +3498,15 @@ function evaluateThumbnailVariant({
 	if (Number.isFinite(headlineEdge) && headlineEdge >= QA_HEADLINE_EDGE_MAX) {
 		failures.push("headline_cluttered");
 	}
-	if (Number.isFinite(faceEdge) && faceEdge < QA_FACE_EDGE_MIN) {
+	const faceEdgeMin =
+		panelCount === 0
+			? Math.max(0.07, QA_FACE_EDGE_MIN * 0.65)
+			: QA_FACE_EDGE_MIN;
+	if (Number.isFinite(faceEdge) && faceEdge < faceEdgeMin) {
 		failures.push("face_not_prominent");
 	}
-	if (Number.isFinite(eyesEdge) && eyesEdge < QA_FACE_EDGE_MIN * 0.85) {
+	const eyesEdgeMin = Math.max(0.05, faceEdgeMin * 0.8);
+	if (Number.isFinite(eyesEdge) && eyesEdge < eyesEdgeMin) {
 		warnings.push("eyes_soft");
 	}
 	if (
@@ -3495,8 +3698,8 @@ async function composeThumbnailBase({
 	filters.push(
 		`[1:v]scale=${presenterWScaled}:${presenterHScaled}:force_original_aspect_ratio=increase:flags=lanczos,` +
 			`crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)*${THUMBNAIL_PRESENTER_CROP_Y_PCT},format=rgba,` +
-			`eq=contrast=1.08:saturation=1.05:brightness=0.04:gamma=0.95,` +
-			`unsharp=3:3:0.45[presenter]`
+			`eq=contrast=1.12:saturation=1.06:brightness=0.05:gamma=0.95,` +
+			`unsharp=5:5:0.6[presenter]`
 	);
 	if (presenterHasAlpha) {
 		filters.push("[presenter]split=2[p][ps]");
@@ -5538,7 +5741,8 @@ function deriveSpecificHeadline({ title = "", topics = [] } = {}) {
 	const sensitive = isSensitiveStoryText(hay);
 	if (/\bwhat happened to\b|\bwhat happened\b/.test(hay))
 		return "WHAT HAPPENED?";
-	if (/\bexplained\b|\bwhy\b/.test(hay)) return "EXPLAINED";
+	if (!hasAwardsSignal(hay) && /\bexplained\b|\bwhy\b/.test(hay))
+		return "EXPLAINED";
 	if (!sensitive && /\b(snub|snubbed|snubs)\b/.test(hay)) return "BIG SNUB?";
 	if (!sensitive && /\b(rigged|chaos|backlash|controversy|outrage)\b/.test(hay))
 		return "TOTAL CHAOS?";
@@ -6156,7 +6360,8 @@ async function generateThumbnailPackage({
 		headline: punchyTitle || thumbTitle,
 	});
 	const resolvedCutout = resolvePresenterCutoutPath(stylePlan.pose);
-	let presenterForCompose = resolvedCutout || presenterLocalPath;
+	let presenterForCompose = presenterLocalPath;
+	let emotionVariantPath = "";
 	if (resolvedCutout && presenterLocalPath) {
 		const likeness = comparePresenterSimilarity(
 			presenterLocalPath,
@@ -6172,19 +6377,64 @@ async function generateThumbnailPackage({
 					likeness: Number(likeness.toFixed(3)),
 					min: THUMBNAIL_PRESENTER_LIKENESS_MIN,
 				});
-			presenterForCompose = presenterLocalPath;
-		} else if (log && Number.isFinite(likeness)) {
-			log("thumbnail presenter cutout similarity", {
-				path: path.basename(resolvedCutout),
-				likeness: Number(likeness.toFixed(3)),
+		} else {
+			presenterForCompose = resolvedCutout;
+			if (log && Number.isFinite(likeness)) {
+				log("thumbnail presenter cutout similarity", {
+					path: path.basename(resolvedCutout),
+					likeness: Number(likeness.toFixed(3)),
+				});
+			}
+		}
+	} else {
+		try {
+			emotionVariantPath = await generatePresenterEmotionVariant({
+				jobId,
+				tmpDir,
+				presenterImagePath: presenterLocalPath,
+				pose: stylePlan.pose,
+				log,
 			});
+		} catch (e) {
+			if (log)
+				log("thumbnail presenter emotion failed", {
+					error: e?.message || String(e),
+				});
+		}
+		if (emotionVariantPath && presenterLocalPath) {
+			const likeness = comparePresenterSimilarity(
+				presenterLocalPath,
+				emotionVariantPath
+			);
+			if (
+				Number.isFinite(likeness) &&
+				likeness < THUMBNAIL_PRESENTER_EMOTION_LIKENESS_MIN
+			) {
+				if (log)
+					log("thumbnail presenter emotion rejected (low likeness)", {
+						path: path.basename(emotionVariantPath),
+						likeness: Number(likeness.toFixed(3)),
+						min: THUMBNAIL_PRESENTER_EMOTION_LIKENESS_MIN,
+					});
+				safeUnlink(emotionVariantPath);
+			} else {
+				presenterForCompose = emotionVariantPath;
+				if (log && Number.isFinite(likeness)) {
+					log("thumbnail presenter emotion similarity", {
+						path: path.basename(emotionVariantPath),
+						likeness: Number(likeness.toFixed(3)),
+					});
+				}
+			}
 		}
 	}
 	if (log)
 		log(
-			resolvedCutout && presenterForCompose !== presenterLocalPath
-				? "presenter cutout selected"
-				: "presenter fixed (no emotion variants)",
+			presenterForCompose !== presenterLocalPath
+				? resolvedCutout
+					? "presenter cutout selected"
+					: "presenter emotion selected"
+				: "presenter fixed (base)",
 			{
 				path: path.basename(presenterForCompose),
 				pose: stylePlan.pose,
