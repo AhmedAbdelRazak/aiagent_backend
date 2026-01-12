@@ -8,14 +8,6 @@ const axios = require("axios");
 const cloudinary = require("cloudinary").v2;
 const { TOPIC_STOP_WORDS, GENERIC_TOPIC_TOKENS } = require("../assets/utils");
 
-let FormDataNode = null;
-try {
-	// eslint-disable-next-line import/no-extraneous-dependencies
-	FormDataNode = require("form-data");
-} catch {
-	FormDataNode = null;
-}
-
 let ffmpegPath = "";
 try {
 	// eslint-disable-next-line import/no-extraneous-dependencies
@@ -35,7 +27,7 @@ const DEFAULT_CANVAS_WIDTH = 1280;
 const DEFAULT_CANVAS_HEIGHT = 720;
 const LEFT_PANEL_PCT = 0.55;
 const PANEL_MARGIN_PCT = 0.035;
-const PRESENTER_OVERLAP_PCT = 0.09;
+const PRESENTER_OVERLAP_PCT = 0.06;
 
 const THUMBNAIL_RATIO = "1280:720";
 const THUMBNAIL_WIDTH = 1280;
@@ -43,7 +35,7 @@ const THUMBNAIL_HEIGHT = 720;
 const THUMBNAIL_TEXT_MAX_WORDS = 4;
 const THUMBNAIL_TEXT_BASE_MAX_CHARS = 12;
 const THUMBNAIL_VARIANT_B_LEFT_PCT = 0.55;
-const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.1;
+const THUMBNAIL_VARIANT_B_OVERLAP_PCT = 0.06;
 const THUMBNAIL_VARIANT_B_PANEL_PCT = 0.18;
 const THUMBNAIL_VARIANT_B_TEXT_BOX_PCT = 0.38;
 const THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS = 3;
@@ -57,31 +49,22 @@ const THUMBNAIL_PRESENTER_SMILE_PATH = "";
 const THUMBNAIL_PRESENTER_NEUTRAL_PATH = "";
 const THUMBNAIL_PRESENTER_SURPRISED_PATH = "";
 const THUMBNAIL_PRESENTER_LIKENESS_MIN = clampNumber(0.82, 0.5, 0.98);
-const THUMBNAIL_PRESENTER_EMOTION_LIKENESS_MIN = clampNumber(0.8, 0.65, 0.98);
-const THUMBNAIL_PRESENTER_SCALE = clampNumber(1.22, 1.0, 1.25);
-const THUMBNAIL_PRESENTER_CROP_Y_PCT = clampNumber(0.18, 0, 0.5);
 const THUMBNAIL_PRESENTER_FACE_REGION = {
-	x: 0.5,
+	x: 0.3,
 	y: 0.05,
-	w: 0.38,
-	h: 0.6,
+	w: 0.4,
+	h: 0.55,
 };
 const THUMBNAIL_PRESENTER_EYES_REGION = {
-	x: 0.54,
-	y: 0.1,
-	w: 0.26,
-	h: 0.18,
+	x: 0.32,
+	y: 0.08,
+	w: 0.36,
+	h: 0.22,
 };
 const QA_PREVIEW_WIDTH = 320;
 const QA_PREVIEW_HEIGHT = 180;
 const QA_LUMA_MIN = 0.34;
 const QA_LUMA_LEFT_MIN = 0.33;
-const QA_HEADLINE_STD_MIN = 0.085;
-const QA_HEADLINE_STD_GOOD = 0.14;
-const QA_HEADLINE_EDGE_MAX = 0.25;
-const QA_FACE_EDGE_MIN = 0.12;
-const QA_FACE_DOMINANCE_MIN = 0.06;
-const QA_LEFT_EDGE_MAX = 0.25;
 const THUMBNAIL_TEXT_MARGIN_PCT = 0.05;
 const THUMBNAIL_TEXT_SIZE_PCT = 0.12;
 const THUMBNAIL_TEXT_LINE_SPACING_PCT = 0.2;
@@ -103,27 +86,15 @@ const THUMBNAIL_TOPIC_MIN_BYTES = 90000;
 const THUMBNAIL_IMAGE_MIN_BYTES_PER_MPX = 9000;
 const THUMBNAIL_TOPIC_MAX_DOWNLOADS = 8;
 const THUMBNAIL_MIN_BYTES = 12000;
-const THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX = 0;
+const THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX = 26;
 const THUMBNAIL_TEXT_EDGE_DENSITY_MIN = 0.18;
 const THUMBNAIL_TEXT_EDGE_DENSITY_STRONG = 0.24;
-const THUMBNAIL_PANEL_EDGE_DENSITY_SOFTEN = 0.2;
-const THUMBNAIL_PANEL_EDGE_DENSITY_DROP = 0.24;
-const THUMBNAIL_SINGLE_FOCAL_LEFT_PCT = 0.46;
-const THUMBNAIL_SINGLE_FOCAL_OVERLAP_PCT = 0.14;
-const THUMBNAIL_SINGLE_FOCAL_PANEL_OPACITY = 0.04;
-const THUMBNAIL_SINGLE_FOCAL_TEXT_BOX_OPACITY = 0.38;
-const THUMBNAIL_SINGLE_FOCAL_TEXT_SIZE_PCT = 0.135;
-const THUMBNAIL_SINGLE_FOCAL_LEFT_LIFT = 0.08;
 const THUMBNAIL_HOOK_WORDS = [
 	"trailer",
 	"finale",
 	"ending",
 	"cast",
 	"update",
-	"twist",
-	"leak",
-	"leaked",
-	"secret",
 	"explained",
 	"revealed",
 	"confirmed",
@@ -138,84 +109,7 @@ const THUMBNAIL_HOOK_WORDS = [
 	"tour",
 	"album",
 	"single",
-	"snub",
-	"snubs",
-	"snubbed",
-	"winners",
-	"winner",
-	"picks",
-	"nominee",
-	"nominees",
-	"nominations",
-	"host",
 ];
-const THUMBNAIL_AWARDS_TOKENS = [
-	"golden globes",
-	"globes",
-	"oscars",
-	"oscar",
-	"emmys",
-	"emmy",
-	"grammys",
-	"grammy",
-	"tonys",
-	"tony",
-	"bafta",
-	"baftas",
-	"sag",
-	"awards",
-	"award show",
-	"red carpet",
-	"festival",
-	"cannes",
-	"critics choice",
-];
-const THUMBNAIL_POWER_TOKENS = new Set([
-	"LEAKED",
-	"CONFIRMED",
-	"SECRET",
-	"WHY",
-	"RETURNS",
-	"RETURN",
-	"BACK",
-	"CHANGED",
-	"TWIST",
-	"REAL",
-	"REASON",
-	"SHOCKING",
-	"NEW",
-	"WHAT",
-	"HAPPENED",
-	"CANCELED",
-	"SNUB",
-	"SNUBS",
-	"SNUBBED",
-	"CHAOS",
-	"RIGGED",
-	"PICKS",
-	"WINNERS",
-	"HOST",
-]);
-const THUMBNAIL_CURIOSITY_TOKENS = new Set([
-	"WHY",
-	"WHAT",
-	"CHANGED",
-	"LEAKED",
-	"SECRET",
-	"CONFIRMED",
-	"TWIST",
-	"RETURNS",
-	"BACK",
-	"CANCELED",
-	"SNUB",
-	"SNUBS",
-	"SNUBBED",
-	"CHAOS",
-	"RIGGED",
-	"PICKS",
-	"WINNERS",
-	"HOST",
-]);
 const QUESTION_START_TOKENS = new Set([
 	"did",
 	"does",
@@ -485,13 +379,6 @@ const TEXT_OVERLAY_PENALTY_TOKENS = [
 	"cover art",
 	"title card",
 	"poster",
-	"collage",
-	"fanart",
-	"fan art",
-	"key art",
-	"keyart",
-	"meme",
-	"cover",
 	"logo",
 	"quote",
 	"caption",
@@ -561,20 +448,6 @@ const SPECIFIC_HEADLINE_PHRASES = new Set([
 	"BIG UPDATE",
 	"SHOCKING TURN",
 	"EXPLAINED",
-	"NEW TWIST",
-	"WHAT CHANGED",
-	"REAL REASON",
-	"SECRET",
-	"RETURNS",
-	"BACK",
-	"SHOCKING",
-	"BIG SNUB",
-	"SHOCKING PICKS",
-	"SHOCKING WINNERS",
-	"TOTAL CHAOS",
-	"HOST CHANGE",
-	"NEW HOST",
-	"RIGGED",
 ]);
 const THUMBNAIL_MERCH_DISALLOWED_HOSTS = [
 	"amazon.com",
@@ -866,98 +739,7 @@ function inferEntertainmentCategory(tokens = []) {
 		)
 	)
 		return "celebrity";
-	if (
-		[
-			"awards",
-			"award",
-			"globes",
-			"oscars",
-			"oscar",
-			"emmys",
-			"emmy",
-			"grammys",
-			"grammy",
-			"tonys",
-			"tony",
-			"bafta",
-			"baftas",
-		].some((t) => set.has(t))
-	)
-		return "awards";
 	return "general";
-}
-
-function hasAwardsSignal(text = "") {
-	const hay = String(text || "").toLowerCase();
-	if (!hay) return false;
-	return THUMBNAIL_AWARDS_TOKENS.some((tok) => hay.includes(tok));
-}
-
-function isSensitiveStoryText(text = "") {
-	const hay = String(text || "").toLowerCase();
-	if (!hay) return false;
-	for (const token of IMAGE_DEEMPHASIS_TOKENS) {
-		if (token && hay.includes(String(token))) return true;
-	}
-	return false;
-}
-
-function buildTopicLabelText(topics = []) {
-	const list = Array.isArray(topics) ? topics : [];
-	return list
-		.map((t) => t?.displayTopic || t?.topic || "")
-		.filter(Boolean)
-		.join(" ");
-}
-
-function buildTopicVisualCue({ title = "", topics = [] } = {}) {
-	const hay = `${title} ${buildTopicLabelText(topics)}`.toLowerCase();
-	if (!hay.trim()) return "";
-	if (hasAwardsSignal(hay))
-		return "award trophy, red carpet ropes, stage lights, glamorous ballroom";
-	if (/(movie|film|trailer|series|tv|streaming|box office)/.test(hay))
-		return "film reel, clapperboard, cinema lights";
-	if (/(music|album|song|tour|concert|festival)/.test(hay))
-		return "concert stage lights, microphone, music studio";
-	if (
-		/(sports|nba|nfl|soccer|football|match|tournament|league|olympic)/.test(hay)
-	)
-		return "stadium lights, field lines, ball silhouette";
-	if (
-		/(finance|stock|stocks|market|nasdaq|dow|crypto|bitcoin|economy|inflation)/.test(
-			hay
-		)
-	)
-		return "market chart glow, trading screens, exchange floor";
-	if (
-		/(politic|election|government|policy|senate|congress|white house|parliament|minister)/.test(
-			hay
-		)
-	)
-		return "podium microphones, government building silhouette";
-	if (/(tech|ai|robot|software|app|startup|chip|silicon|device)/.test(hay))
-		return "circuit pattern, futuristic UI panels";
-	return "";
-}
-
-const STRONG_BADGE_TOKENS = new Set([
-	"BREAKING",
-	"CONFIRMED",
-	"LEAKED",
-	"EXCLUSIVE",
-	"OFFICIAL",
-	"NEW",
-]);
-
-function isStrongBadgeText(text = "") {
-	const cleaned = String(text || "")
-		.trim()
-		.toUpperCase();
-	if (!cleaned) return false;
-	for (const token of STRONG_BADGE_TOKENS) {
-		if (cleaned.includes(token)) return true;
-	}
-	return false;
 }
 
 function inferStoryIntent({ title = "", topics = [] } = {}) {
@@ -966,10 +748,7 @@ function inferStoryIntent({ title = "", topics = [] } = {}) {
 	const rqRise = t0?.relatedQueries?.risingSample || [];
 	const kw = t0?.keywords || [];
 
-	const topicText = buildTopicLabelText(topics);
-	const hay = `${title} ${topicText} ${rqTop.join(" ")} ${rqRise.join(
-		" "
-	)} ${kw.join(" ")}`
+	const hay = `${title} ${rqTop.join(" ")} ${rqRise.join(" ")} ${kw.join(" ")}`
 		.toLowerCase()
 		.trim();
 
@@ -982,9 +761,7 @@ function inferStoryIntent({ title = "", topics = [] } = {}) {
 	}
 
 	if (
-		/(trailer|season|episode|cast|finale|ending|release|premiere|award|awards|golden globes|globes|oscars|oscar|emmys|emmy|grammys|grammy|tonys|tony|bafta|red carpet|festival)/.test(
-			hay
-		)
+		/(trailer|season|episode|cast|finale|ending|release|premiere)/.test(hay)
 	) {
 		return "entertainment";
 	}
@@ -1148,7 +925,7 @@ const THUMBNAIL_PREFERRED_SOURCE_TOKENS = [
 function scoreSourceAffinity(url = "", contextLink = "") {
 	const hay = `${url} ${contextLink}`.toLowerCase();
 	for (const token of THUMBNAIL_PREFERRED_SOURCE_TOKENS) {
-		if (hay.includes(token)) return 0.45;
+		if (hay.includes(token)) return 0.35;
 	}
 	return 0;
 }
@@ -1193,9 +970,11 @@ function lowQualityTextPenalty({
 	isPersonTopic = false,
 } = {}) {
 	const hay = `${url} ${source} ${title}`.toLowerCase();
-	let penalty = LOW_QUALITY_IMAGE_TOKENS.some((t) => hay.includes(t)) ? 0.3 : 0;
+	let penalty = LOW_QUALITY_IMAGE_TOKENS.some((t) => hay.includes(t))
+		? 0.25
+		: 0;
 	if (TEXT_OVERLAY_PENALTY_TOKENS.some((t) => hay.includes(t))) {
-		penalty = Math.max(penalty, isPersonTopic ? 0.5 : 0.35);
+		penalty = Math.max(penalty, isPersonTopic ? 0.38 : 0.2);
 	}
 	return Math.min(penalty, 0.6);
 }
@@ -1498,57 +1277,6 @@ function normalizeImageUrlKey(url = "") {
 			.split("#")[0]
 			.toLowerCase();
 	}
-}
-
-function aspectForRatio(ratio) {
-	if (!ratio) return null;
-	const parts = String(ratio)
-		.split(":")
-		.map((p) => parseFloat(p));
-	if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
-	return parts[0] >= parts[1] ? "landscape" : "portrait";
-}
-
-function pickTrendImagesForRatio(trendStory, ratio, desiredCount = 6) {
-	if (!trendStory) return [];
-	const aspect = aspectForRatio(ratio) || "landscape";
-	const exact =
-		trendStory.imagesByAspect &&
-		Array.isArray(trendStory.imagesByAspect[ratio]) &&
-		trendStory.imagesByAspect[ratio].length
-			? trendStory.imagesByAspect[ratio]
-			: [];
-	const fallbackKey = aspect === "portrait" ? "720:1280" : "1280:720";
-	const fallback =
-		trendStory.imagesByAspect &&
-		Array.isArray(trendStory.imagesByAspect[fallbackKey])
-			? trendStory.imagesByAspect[fallbackKey]
-			: [];
-	const articleImages = Array.isArray(trendStory.articles)
-		? trendStory.articles.map((a) => a?.image).filter(Boolean)
-		: [];
-
-	const pools = [
-		...exact,
-		...fallback,
-		trendStory.image,
-		...(Array.isArray(trendStory.images) ? trendStory.images : []),
-		...articleImages,
-		...(trendStory.imagesByAspect?.square || []),
-		...(trendStory.imagesByAspect?.unknown || []),
-	];
-
-	const seen = new Set();
-	const picked = [];
-	for (const url of pools) {
-		if (!url || typeof url !== "string") continue;
-		if (!/^https?:\/\//i.test(url)) continue;
-		if (seen.has(url)) continue;
-		seen.add(url);
-		picked.push(url);
-		if (picked.length >= desiredCount) break;
-	}
-	return picked;
 }
 
 async function headContentType(url, timeoutMs = 8000) {
@@ -1952,17 +1680,13 @@ function buildRunwayThumbnailPrompt({ title, topics }) {
 		  compactFocus ||
 		  cleanThumbnailText(title || "") ||
 		  "the topic";
-	const visualCue = buildTopicVisualCue({ title, topics });
-	const visualCueLine = visualCue
-		? `Include a single, clearly recognizable, non-human object or setting related to: ${visualCue}. Keep it subtle but legible, positioned toward the left side.`
-		: `Include a single, clearly recognizable, non-human object or setting tied to: ${topicFocus}. Keep it subtle but legible, positioned toward the left side.`;
 
 	const prompt = `
 Premium studio background plate for a YouTube thumbnail.
 No people, no faces, no logos, no watermarks, no candles, no signage or typography.
 Lighting: BRIGHT, high-key studio lighting with lifted shadows (avoid deep blacks), clean highlights, crisp detail, balanced contrast (not moody, not low-key).
-Left ~40% reserved for overlay text; keep it bright, clean, and uncluttered while still showing one clear object/setting.
-${visualCueLine}
+Left ~40% is clean AND BRIGHTER for later overlays and panels; keep it uncluttered with a smooth gradient backdrop.
+Subtle, tasteful topic atmosphere inspired by: ${topicFocus}.
 Soft bokeh depth, gentle studio glow, subtle teal + violet color wash.
 No dark corners, no heavy vignette, no gloomy cinematic look.
 Elegant, vibrant but controlled color palette, clean subject separation feel.
@@ -2237,65 +1961,6 @@ function runwayHeadersJson() {
 	};
 }
 
-async function runwayCreateEphemeralUpload({ filePath, filename }) {
-	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
-	if (!fs.existsSync(filePath))
-		throw new Error("file missing for runway upload");
-
-	const baseName = filename || path.basename(filePath || "asset.bin");
-	const init = await axios.post(
-		"https://api.dev.runwayml.com/v1/uploads",
-		{ filename: baseName, type: "ephemeral" },
-		{
-			headers: runwayHeadersJson(),
-			timeout: 20000,
-			validateStatus: (s) => s < 500,
-		}
-	);
-	if (init.status >= 300) {
-		const msg =
-			typeof init.data === "string"
-				? init.data
-				: JSON.stringify(init.data || {});
-		throw new Error(
-			`Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`
-		);
-	}
-	const { uploadUrl, fields, runwayUri } = init.data || {};
-	if (!uploadUrl || !fields || !runwayUri)
-		throw new Error("Runway upload init returned incomplete response");
-
-	if (FormDataNode) {
-		const form = new FormDataNode();
-		Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
-		form.append("file", fs.createReadStream(filePath));
-		const r = await axios.post(uploadUrl, form, {
-			headers: form.getHeaders(),
-			maxBodyLength: Infinity,
-			maxContentLength: Infinity,
-			timeout: 30000,
-			validateStatus: (s) => s < 500,
-		});
-		if (r.status >= 300) throw new Error(`Runway upload failed (${r.status})`);
-		return runwayUri;
-	}
-
-	if (typeof fetch === "function" && typeof FormData !== "undefined") {
-		const form = new FormData();
-		Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
-		const buf = fs.readFileSync(filePath);
-		const blob = new Blob([buf]);
-		form.append("file", blob, baseName);
-		const resp = await fetch(uploadUrl, { method: "POST", body: form });
-		if (!resp.ok) throw new Error(`Runway upload failed (${resp.status})`);
-		return runwayUri;
-	}
-
-	throw new Error(
-		"Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'"
-	);
-}
-
 async function pollRunwayTask(taskId, label) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${taskId}`;
 	for (let i = 0; i < RUNWAY_IMAGE_MAX_POLL_ATTEMPTS; i++) {
@@ -2387,62 +2052,6 @@ async function downloadRunwayImageToPath({ uri, outPath }) {
 	return outPath;
 }
 
-async function generatePresenterEmotionVariant({
-	jobId,
-	tmpDir,
-	presenterImagePath,
-	pose,
-	log,
-}) {
-	if (!RUNWAY_API_KEY) return "";
-	if (!presenterImagePath || !fs.existsSync(presenterImagePath)) return "";
-	const resolvedPose = String(pose || "neutral").toLowerCase();
-	if (!resolvedPose || resolvedPose === "neutral") return "";
-	ensureDir(tmpDir);
-	const prompt = presenterEmotionPrompt({ pose: resolvedPose });
-	if (!prompt) return "";
-	const ratio = upscaleRunwayRatio(THUMBNAIL_RATIO);
-	const seed = seedFromText(
-		`${jobId || "presenter"}_${resolvedPose}_${fileHash(presenterImagePath)}`
-	);
-	let presenterUri = "";
-	try {
-		presenterUri = await runwayCreateEphemeralUpload({
-			filePath: presenterImagePath,
-			filename: path.basename(presenterImagePath),
-		});
-	} catch (e) {
-		if (log)
-			log("thumbnail presenter upload failed", {
-				error: e?.message || String(e),
-			});
-		return "";
-	}
-	if (log)
-		log("thumbnail presenter emotion prompt", {
-			pose: resolvedPose,
-			ratio,
-			prompt: String(prompt).slice(0, 220),
-		});
-	const outputUri = await runwayTextToImage({
-		promptText: prompt,
-		ratio,
-		referenceImages: [{ uri: presenterUri, tag: "presenter_ref" }],
-		seed,
-	});
-	const outPath = path.join(
-		tmpDir,
-		`presenter_emotion_${jobId || crypto.randomUUID()}_${resolvedPose}.png`
-	);
-	await downloadRunwayImageToPath({ uri: outputUri, outPath });
-	const dt = detectFileType(outPath);
-	if (dt?.kind !== "image") {
-		safeUnlink(outPath);
-		return "";
-	}
-	return outPath;
-}
-
 function sha1(s) {
 	return crypto.createHash("sha1").update(String(s)).digest("hex").slice(0, 12);
 }
@@ -2452,52 +2061,34 @@ function fileHash(p) {
 	return crypto.createHash("sha1").update(buf).digest("hex").slice(0, 12);
 }
 
-function poseFromExpression(expression = "", text = "", intent = "") {
+function poseFromExpression(expression = "", text = "") {
 	const expr = String(expression || "").toLowerCase();
 	const lower = String(text || "").toLowerCase();
-	const isEntertainment =
-		String(intent || "").toLowerCase() === "entertainment";
-	const hasQuestion = /\?/.test(text);
 	const hasNegative =
 		/(death|died|dead|killed|suicide|murder|arrest|charged|trial|lawsuit|injury|injured|concussion|accident|crash|sad|tragic|funeral|hospital|scandal|abuse|assault|violence)/.test(
 			lower
 		);
 	const hasUrgent =
-		/(breaking|trending|update|new details|big update|latest|just in|alert|confirmed|reports|reported|leaked|leak)/.test(
+		/(breaking|trending|update|new details|big update|latest|just in|alert|confirmed|reports|reported)/.test(
 			lower
 		);
 	const hasSurprise =
-		/(shocking|exposed|what happened|what went wrong|major twist|surprise|revealed|snub|snubbed|snubs|rigged|chaos|backlash|controversy|wtf)/.test(
+		/(shocking|leaked|leak|exposed|what happened|major twist|surprise|revealed)/.test(
 			lower
 		);
 	const hasPositive =
-		/(returns|revival|win|wins|won|winner|winners|success|smile|happy|laugh|funny|hilarious|amazing|great|best|top|comeback|surprise)/.test(
+		/(returns|revival|win|wins|won|success|smile|happy|laugh|funny|hilarious|amazing|great|best|top|comeback|surprise)/.test(
 			lower
 		);
 	if (expr === "thoughtful") return "thoughtful";
-	if (expr === "warm" || expr === "excited") {
-		if (isEntertainment && !hasNegative) {
-			if (hasSurprise || hasQuestion) return "surprised";
-			if (hasUrgent) return "thoughtful";
-			if (hasPositive) return "smile";
-			return "surprised";
-		}
-		return "smile";
-	}
+	if (expr === "warm" || expr === "excited") return "smile";
 	if (expr === "serious" || expr === "neutral") {
 		if (hasNegative) return "neutral";
-		if (hasSurprise || (isEntertainment && hasQuestion)) return "surprised";
+		if (hasSurprise) return "surprised";
 		if (hasUrgent) return "thoughtful";
-		if (isEntertainment) return "smile";
 		return "neutral";
 	}
 	if (hasNegative) return "neutral";
-	if (isEntertainment) {
-		if (hasSurprise || hasQuestion) return "surprised";
-		if (hasUrgent) return "thoughtful";
-		if (hasPositive) return "smile";
-		return "surprised";
-	}
 	if (hasSurprise) return "surprised";
 	if (hasUrgent) return "thoughtful";
 	if (hasPositive) return "smile";
@@ -2510,8 +2101,6 @@ function planThumbnailStyle({
 	seoTitle,
 	topics,
 	expression,
-	intent,
-	headline,
 }) {
 	const topicText = Array.isArray(topics)
 		? topics
@@ -2521,30 +2110,21 @@ function planThumbnailStyle({
 		: "";
 	const text = `${title || ""} ${shortTitle || ""} ${
 		seoTitle || ""
-	} ${topicText} ${headline || ""}`
+	} ${topicText}`
 		.trim()
 		.toLowerCase();
 	const tokens = tokenizeLabel(text);
 	const cat = inferEntertainmentCategory(tokens);
 	let accent = ACCENT_PALETTE.default;
-	if (cat === "film" || cat === "tv" || cat === "celebrity" || cat === "awards")
+	if (cat === "film" || cat === "tv" || cat === "celebrity")
 		accent = ACCENT_PALETTE.entertainment;
 	else if (/(ai|software|code|developer|programming|tech)/i.test(text))
 		accent = ACCENT_PALETTE.tech;
 	else if (/(money|finance|business|startup)/i.test(text))
 		accent = ACCENT_PALETTE.business;
 
-	const baseIntent =
-		typeof intent === "string" && intent.trim()
-			? intent.trim()
-			: inferStoryIntent({ title: title || seoTitle || "", topics });
-	const poseIntent =
-		baseIntent === "general" &&
-		(cat === "film" || cat === "tv" || cat === "celebrity")
-			? "entertainment"
-			: baseIntent;
 	return {
-		pose: poseFromExpression(expression, text, poseIntent),
+		pose: poseFromExpression(expression, text),
 		accent,
 	};
 }
@@ -2554,7 +2134,7 @@ function presenterPosePrompt({ pose }) {
 		return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: very subtle surprised with a soft smile, NOT exaggerated, not screaming.
+Expression: mild surprised with a soft smile, NOT exaggerated, not screaming.
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 No distortions, no extra people, sharp and clean.
 `.trim();
@@ -2563,7 +2143,7 @@ No distortions, no extra people, sharp and clean.
 		return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: thoughtful and calm, subtle wondering look, closed mouth, not exaggerated.
+Expression: thoughtful and calm, natural focus, closed mouth, not exaggerated.
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 Sharp, clean edges, no distortions.
 `.trim();
@@ -2572,7 +2152,7 @@ Sharp, clean edges, no distortions.
 		return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: neutral but engaged (calm, confident), very subtle.
+Expression: neutral but engaged (calm, confident).
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 Sharp, clean edges, no distortions.
 `.trim();
@@ -2580,32 +2160,9 @@ Sharp, clean edges, no distortions.
 	return `
 Isolate the same person from the reference photo as a clean cutout (transparent background).
 Same identity, glasses, beard, suit and shirt.
-Expression: warm natural smile (subtle, friendly, not exaggerated), slight laugh.
+Expression: warm natural smile (subtle, friendly, not exaggerated).
 Eyes: natural, forward-looking, aligned; no crossed eyes or odd gaze.
 Sharp, clean edges, no distortions.
-`.trim();
-}
-
-function presenterEmotionPrompt({ pose }) {
-	let expressionLine =
-		"Expression: neutral but engaged (calm, confident), very subtle.";
-	if (pose === "surprised") {
-		expressionLine =
-			"Expression: very subtle surprise, slight eyebrow lift, soft mouth, not exaggerated.";
-	} else if (pose === "thoughtful") {
-		expressionLine =
-			"Expression: thoughtful and wondering, subtle focus, closed mouth, not exaggerated.";
-	} else if (pose === "smile") {
-		expressionLine =
-			"Expression: slight smile or slight laugh, lips gently upturned, no exaggerated grin.";
-	}
-	return `
-Use @presenter_ref as the only person reference.
-Keep the same person and identity: eyes, nose, lips, glasses, beard, hairline, and skin texture must remain unchanged.
-Keep wardrobe, background, desk, lighting, camera angle, framing, and color grade exactly the same.
-Change ONLY the facial expression to be subtle; do not change pose or add props.
-${expressionLine}
-No extra objects, no text, no logos, no watermarks, no distortions.
 `.trim();
 }
 
@@ -2843,7 +2400,7 @@ function samplePreviewLumaStats(filePath, region = null) {
 	}
 }
 
-function sampleEdgeDensity(filePath, region = null, edgeOptions = {}) {
+function sampleEdgeDensity(filePath, region = null) {
 	let crop = "";
 	if (region) {
 		const rx = Math.max(0, Math.round(region.x || 0));
@@ -2852,17 +2409,9 @@ function sampleEdgeDensity(filePath, region = null, edgeOptions = {}) {
 		const rh = Math.max(1, Math.round(region.h || 1));
 		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
 	}
-	const low = Number.isFinite(Number(edgeOptions.low))
-		? clampNumber(Number(edgeOptions.low), 0.02, 0.3)
-		: 0.1;
-	const high = Number.isFinite(Number(edgeOptions.high))
-		? clampNumber(Number(edgeOptions.high), low + 0.05, 0.6)
-		: 0.4;
 	const filter =
 		`${crop}scale=256:256:flags=area,` +
-		`edgedetect=low=${low.toFixed(3)}:high=${high.toFixed(
-			3
-		)},format=gray,scale=32:32:flags=area`;
+		"edgedetect=low=0.1:high=0.4,format=gray,scale=32:32:flags=area";
 	const args = [
 		"-hide_banner",
 		"-loglevel",
@@ -3042,35 +2591,21 @@ async function normalizeTopicImageIfNeeded({
 	const strongTextLikely =
 		Number.isFinite(edgeDensity) &&
 		edgeDensity >= THUMBNAIL_TEXT_EDGE_DENSITY_STRONG;
-	const clutterSoft =
-		Number.isFinite(edgeDensity) &&
-		edgeDensity >= THUMBNAIL_PANEL_EDGE_DENSITY_SOFTEN;
-	const clutterHard =
-		Number.isFinite(edgeDensity) &&
-		edgeDensity >= THUMBNAIL_PANEL_EDGE_DENSITY_DROP;
 	const needsSoften =
 		shouldSoftenTopicImage({
 			byteSize,
 			width,
 			height,
 			lowQualityPenalty,
-		}) ||
-		textLikely ||
-		clutterSoft;
+		}) || textLikely;
 	if (!needsNeutralize && !needsSoften) return inputPath;
 	const outPath = path.join(tmpDir, `thumb_topic_norm_${jobId}_${index}.jpg`);
 	const filters = [];
 	if (needsSoften) {
 		const strongSoften =
 			(Number.isFinite(lowQualityPenalty) && lowQualityPenalty >= 0.35) ||
-			strongTextLikely ||
-			clutterHard;
-		const blur = clutterHard
-			? "boxblur=4:1"
-			: strongSoften
-			? "boxblur=3:1"
-			: "boxblur=2:1";
-		filters.push(blur);
+			strongTextLikely;
+		filters.push(strongSoften ? "boxblur=3:1" : "boxblur=2:1");
 		filters.push(
 			strongSoften
 				? "eq=contrast=0.98:saturation=0.86:brightness=-0.035"
@@ -3113,61 +2648,9 @@ async function normalizeTopicImageIfNeeded({
 			edgeDensity: Number.isFinite(edgeDensity)
 				? Number(edgeDensity.toFixed(3))
 				: null,
-			clutterSoft,
-			clutterHard,
 		});
 	}
 	return outPath;
-}
-
-function filterPanelTopicImages(imagePaths = [], { log } = {}) {
-	const kept = [];
-	const dropped = [];
-	for (const p of imagePaths || []) {
-		if (!p || !fs.existsSync(p)) continue;
-		const dims = ffprobeDimensions(p);
-		const edgeDensity = sampleEdgeDensity(p);
-		const minEdge = Math.min(dims?.width || 0, dims?.height || 0);
-		const bytes = fs.statSync(p).size || 0;
-		const bytesPerMpx = bytesPerMegaPixel(bytes, dims?.width, dims?.height);
-		const tooCluttered =
-			Number.isFinite(edgeDensity) &&
-			edgeDensity >= THUMBNAIL_PANEL_EDGE_DENSITY_DROP;
-		if (tooCluttered) {
-			dropped.push({
-				path: p,
-				edgeDensity,
-				minEdge,
-				bytesPerMpx,
-			});
-			continue;
-		}
-		kept.push({
-			path: p,
-			edgeDensity,
-			minEdge,
-			bytesPerMpx,
-		});
-	}
-	if (log && dropped.length) {
-		log("thumbnail panel images dropped (clutter)", {
-			count: dropped.length,
-			paths: dropped.map((d) => path.basename(d.path)),
-			edgeDensity: dropped.map((d) =>
-				Number.isFinite(d.edgeDensity) ? Number(d.edgeDensity.toFixed(3)) : null
-			),
-		});
-	}
-	if (log && kept.length) {
-		log("thumbnail panel images kept", {
-			count: kept.length,
-			paths: kept.map((d) => path.basename(d.path)),
-			edgeDensity: kept.map((d) =>
-				Number.isFinite(d.edgeDensity) ? Number(d.edgeDensity.toFixed(3)) : null
-			),
-		});
-	}
-	return kept.map((k) => k.path);
 }
 
 function getQaLeftSampleRegion() {
@@ -3185,30 +2668,6 @@ function getHeadlineQaRegion() {
 		y: 0,
 		w: Math.round(QA_PREVIEW_WIDTH * 0.52),
 		h: Math.round(QA_PREVIEW_HEIGHT * 0.36),
-	};
-}
-
-function scalePreviewRegionToImage(region, width, height) {
-	const w = Math.max(1, Number(width) || 1);
-	const h = Math.max(1, Number(height) || 1);
-	const scaleX = w / QA_PREVIEW_WIDTH;
-	const scaleY = h / QA_PREVIEW_HEIGHT;
-	return {
-		x: Math.round((region?.x || 0) * scaleX),
-		y: Math.round((region?.y || 0) * scaleY),
-		w: Math.max(1, Math.round((region?.w || 1) * scaleX)),
-		h: Math.max(1, Math.round((region?.h || 1) * scaleY)),
-	};
-}
-
-function pctRegionToImage(region, width, height) {
-	const w = Math.max(1, Number(width) || 1);
-	const h = Math.max(1, Number(height) || 1);
-	return {
-		x: Math.round((region?.x || 0) * w),
-		y: Math.round((region?.y || 0) * h),
-		w: Math.max(1, Math.round((region?.w || 1) * w)),
-		h: Math.max(1, Math.round((region?.h || 1) * h)),
 	};
 }
 
@@ -3309,284 +2768,29 @@ function scoreThumbnailLuma({ overall, left }) {
 	return score;
 }
 
-function analyzeHeadline(headline = "") {
-	const cleaned = cleanThumbnailText(headline);
-	const words = cleaned.split(" ").filter(Boolean);
-	const upper = words.map((w) => w.toUpperCase()).join(" ");
-	const hasQuestion = /\?/.test(headline);
-	const hasPower = Array.from(THUMBNAIL_POWER_TOKENS).some((tok) =>
-		upper.includes(tok)
-	);
-	const hasCuriosity =
-		hasPower ||
-		Array.from(THUMBNAIL_CURIOSITY_TOKENS).some((tok) => upper.includes(tok));
-	const isGeneric = isGenericHeadline(headline);
-	return {
-		cleaned,
-		upper,
-		words,
-		wordCount: words.length,
-		hasQuestion,
-		hasPower,
-		hasCuriosity,
-		isGeneric,
-	};
-}
-
-function shouldDropBadge({ headline = "", badgeText = "", intent = "" } = {}) {
-	if (!badgeText) return true;
-	const info = analyzeHeadline(headline);
-	const normalizedBadge = String(badgeText || "").toUpperCase();
-	if (info.hasQuestion && info.hasPower) return true;
-	if (info.wordCount <= 3 && info.hasCuriosity) return true;
-	if (
-		["UPDATE", "TRENDING", "NEWS"].includes(normalizedBadge) &&
-		!info.hasCuriosity
-	)
-		return true;
-	if (
-		String(intent || "").toLowerCase() === "entertainment" &&
-		["UPDATE", "TRENDING"].includes(normalizedBadge)
-	) {
-		return true;
-	}
-	return false;
-}
-
-function scoreHeadlineStrength({
-	headline = "",
-	intent = "",
+function scoreVariantComposite({
+	lumaScore,
+	hasBadge,
+	headlineWordCount,
+	headlineLen,
+	headline,
 	topicKeywords = [],
-} = {}) {
-	const info = analyzeHeadline(headline);
-	let score = 0.5;
-	if (info.wordCount <= 3) score += 0.22;
-	else if (info.wordCount === 4) score += 0.08;
-	else if (info.wordCount >= 6) score -= 0.22;
-	if (info.hasQuestion) score += 0.12;
-	if (info.hasPower) score += 0.15;
-	if (info.hasCuriosity) score += 0.08;
-	if (info.isGeneric) score -= 0.22;
-	if (
-		String(intent || "").toLowerCase() === "entertainment" &&
-		!info.hasCuriosity
-	)
-		score -= 0.12;
+}) {
+	let score = Number.isFinite(lumaScore) ? lumaScore : -Infinity;
+	if (hasBadge) score += 0.05;
+	if (headlineWordCount <= 3) score += 0.04;
+	if (headlineLen <= 14) score += 0.02;
+	if (headlineWordCount >= 4 || headlineLen >= 18) score -= 0.03;
+	if (headline && isGenericHeadline(headline)) score -= 0.05;
+	if (headline && headline.includes("?")) score += 0.08;
 	if (headline && Array.isArray(topicKeywords) && topicKeywords.length) {
-		const lower = info.cleaned.toLowerCase();
+		const lower = cleanThumbnailText(headline).toLowerCase();
 		const hit = topicKeywords.some((tok) =>
 			lower.includes(String(tok || "").toLowerCase())
 		);
-		if (hit) score += 0.05;
+		if (hit) score += 0.06;
 	}
-	return {
-		...info,
-		score: clampNumber(score, 0, 1),
-	};
-}
-
-function scoreFaceDominance({ faceEdge, leftEdge } = {}) {
-	const faceEdgeScore = Number.isFinite(faceEdge)
-		? clampNumber((faceEdge - QA_FACE_EDGE_MIN) / 0.18, 0, 1)
-		: 0;
-	const dominanceScore =
-		Number.isFinite(faceEdge) && Number.isFinite(leftEdge)
-			? clampNumber((faceEdge - leftEdge - QA_FACE_DOMINANCE_MIN) / 0.18, 0, 1)
-			: 0;
-	return clampNumber(faceEdgeScore * 0.55 + dominanceScore * 0.45, 0, 1);
-}
-
-function scoreFocalSimplicity({ headlineEdge, leftEdge } = {}) {
-	const headlineEdgeScore = Number.isFinite(headlineEdge)
-		? 1 - clampNumber((headlineEdge - 0.16) / 0.14, 0, 1)
-		: 0.5;
-	const leftEdgeScore = Number.isFinite(leftEdge)
-		? 1 - clampNumber((leftEdge - 0.18) / 0.16, 0, 1)
-		: 0.5;
-	return clampNumber(headlineEdgeScore * 0.6 + leftEdgeScore * 0.4, 0, 1);
-}
-
-function scoreReadability({ headlineStd, headlineEdge, leftLuma } = {}) {
-	let stdScore = 0.4;
-	if (Number.isFinite(headlineStd)) {
-		if (headlineStd >= QA_HEADLINE_STD_GOOD) stdScore = 1;
-		else if (headlineStd <= QA_HEADLINE_STD_MIN) stdScore = 0.2;
-		else {
-			const t =
-				(headlineStd - QA_HEADLINE_STD_MIN) /
-				(QA_HEADLINE_STD_GOOD - QA_HEADLINE_STD_MIN);
-			stdScore = clampNumber(0.2 + t * 0.8, 0, 1);
-		}
-	}
-	const leftScore = Number.isFinite(leftLuma)
-		? clampNumber(1 - Math.abs(leftLuma - QA_LUMA_LEFT_MIN) / 0.14, 0, 1)
-		: 0.5;
-	const edgePenalty = Number.isFinite(headlineEdge)
-		? clampNumber((headlineEdge - 0.18) / 0.18, 0, 1)
-		: 0;
-	return clampNumber(
-		stdScore * 0.6 + leftScore * 0.4 - edgePenalty * 0.15,
-		0,
-		1
-	);
-}
-
-function scoreVariantCtr({
-	headlineScore,
-	faceScore,
-	focalScore,
-	hasBadge,
-	panelCount,
-	leftEdge,
-} = {}) {
-	let score =
-		clampNumber(headlineScore, 0, 1) * 0.5 +
-		clampNumber(faceScore, 0, 1) * 0.3 +
-		clampNumber(focalScore, 0, 1) * 0.2;
-	if (hasBadge) score += 0.03;
-	if (
-		panelCount > 0 &&
-		Number.isFinite(leftEdge) &&
-		leftEdge >= THUMBNAIL_PANEL_EDGE_DENSITY_SOFTEN
-	) {
-		score -= 0.06;
-	}
-	return clampNumber(score, 0, 1);
-}
-
-function scoreVariantComposite({ ctrScore, readabilityScore, lumaScore } = {}) {
-	const luma = Number.isFinite(lumaScore) ? clampNumber(lumaScore, 0, 1) : 0;
-	return (
-		clampNumber(ctrScore, 0, 1) * 0.45 +
-		clampNumber(readabilityScore, 0, 1) * 0.35 +
-		luma * 0.2
-	);
-}
-
-function evaluateThumbnailVariant({
-	filePath,
-	headline,
-	intent,
-	topicKeywords = [],
-	panelCount = 0,
-	hasBadge = false,
-} = {}) {
-	const dims = ffprobeDimensions(filePath);
-	const headlinePreview = getHeadlineQaRegion();
-	const leftPreview = getQaLeftSampleRegion();
-	const headlineRegion = scalePreviewRegionToImage(
-		headlinePreview,
-		dims?.width || THUMBNAIL_WIDTH,
-		dims?.height || THUMBNAIL_HEIGHT
-	);
-	const leftRegion = scalePreviewRegionToImage(
-		leftPreview,
-		dims?.width || THUMBNAIL_WIDTH,
-		dims?.height || THUMBNAIL_HEIGHT
-	);
-	const faceRegion = pctRegionToImage(
-		THUMBNAIL_PRESENTER_FACE_REGION,
-		dims?.width || THUMBNAIL_WIDTH,
-		dims?.height || THUMBNAIL_HEIGHT
-	);
-	const eyesRegion = pctRegionToImage(
-		THUMBNAIL_PRESENTER_EYES_REGION,
-		dims?.width || THUMBNAIL_WIDTH,
-		dims?.height || THUMBNAIL_HEIGHT
-	);
-
-	const headlineEdge = sampleEdgeDensity(filePath, headlineRegion);
-	const leftEdge = sampleEdgeDensity(filePath, leftRegion);
-	const faceEdge = sampleEdgeDensity(filePath, faceRegion, {
-		low: 0.06,
-		high: 0.24,
-	});
-	const eyesEdge = sampleEdgeDensity(filePath, eyesRegion, {
-		low: 0.06,
-		high: 0.24,
-	});
-	const headlineStats = samplePreviewLumaStats(filePath, headlinePreview);
-	const leftLuma = samplePreviewLuma(filePath, leftPreview);
-
-	const headlineInfo = scoreHeadlineStrength({
-		headline,
-		intent,
-		topicKeywords,
-	});
-	const faceScore = scoreFaceDominance({ faceEdge, leftEdge });
-	const focalScore = scoreFocalSimplicity({ headlineEdge, leftEdge });
-	const readabilityScore = scoreReadability({
-		headlineStd: headlineStats?.std,
-		headlineEdge,
-		leftLuma,
-	});
-	const ctrScore = scoreVariantCtr({
-		headlineScore: headlineInfo.score,
-		faceScore,
-		focalScore,
-		hasBadge,
-		panelCount,
-		leftEdge,
-	});
-
-	const failures = [];
-	const warnings = [];
-	if (!headlineInfo.wordCount) failures.push("headline_missing");
-	if (headlineInfo.wordCount > 4) warnings.push("headline_too_long");
-	if (headlineInfo.isGeneric) warnings.push("headline_generic");
-	if (
-		String(intent || "").toLowerCase() === "entertainment" &&
-		!headlineInfo.hasCuriosity
-	) {
-		warnings.push("headline_lacks_curiosity");
-	}
-	if (
-		Number.isFinite(headlineStats?.std) &&
-		headlineStats.std < QA_HEADLINE_STD_MIN
-	) {
-		failures.push("headline_low_contrast");
-	}
-	if (Number.isFinite(headlineEdge) && headlineEdge >= QA_HEADLINE_EDGE_MAX) {
-		failures.push("headline_cluttered");
-	}
-	const faceEdgeMin =
-		panelCount === 0
-			? Math.max(0.07, QA_FACE_EDGE_MIN * 0.65)
-			: QA_FACE_EDGE_MIN;
-	if (Number.isFinite(faceEdge) && faceEdge < faceEdgeMin) {
-		failures.push("face_not_prominent");
-	}
-	const eyesEdgeMin = Math.max(0.05, faceEdgeMin * 0.8);
-	if (Number.isFinite(eyesEdge) && eyesEdge < eyesEdgeMin) {
-		warnings.push("eyes_soft");
-	}
-	if (
-		Number.isFinite(faceEdge) &&
-		Number.isFinite(leftEdge) &&
-		faceEdge - leftEdge < QA_FACE_DOMINANCE_MIN
-	) {
-		warnings.push("face_not_dominant");
-	}
-	if (Number.isFinite(leftEdge) && leftEdge > QA_LEFT_EDGE_MAX) {
-		warnings.push("left_cluttered");
-	}
-	if (Number.isFinite(leftLuma) && leftLuma < QA_LUMA_LEFT_MIN) {
-		warnings.push("left_dim");
-	}
-
-	return {
-		headlineInfo,
-		headlineStats,
-		edges: { headlineEdge, leftEdge, faceEdge, eyesEdge },
-		scores: {
-			headlineStrength: headlineInfo.score,
-			faceScore,
-			focalScore,
-			readabilityScore,
-			ctrScore,
-		},
-		qa: { failures, warnings },
-	};
+	return score;
 }
 
 async function generateFallbackBackground({
@@ -3674,9 +2878,6 @@ async function composeThumbnailBase({
 	let presenterW = Math.max(2, W - leftW + overlap);
 	presenterW = makeEven(Math.min(W, presenterW));
 	const presenterX = Math.max(0, Math.min(W - presenterW, leftW - overlap));
-	const presenterScale = clampNumber(THUMBNAIL_PRESENTER_SCALE, 1.0, 1.25);
-	const presenterWScaled = makeEven(Math.round(presenterW * presenterScale));
-	const presenterHScaled = makeEven(Math.round(H * presenterScale));
 
 	const topics = Array.isArray(topicImagePaths)
 		? topicImagePaths.filter(Boolean).slice(0, 3)
@@ -3686,7 +2887,7 @@ async function composeThumbnailBase({
 	const panelMargin = hasSinglePanel ? 0 : margin;
 	const singleTopPad = clampNumber(
 		THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX,
-		0,
+		18,
 		Math.round(H * 0.06)
 	);
 	const topPad = hasSinglePanel ? Math.round(singleTopPad) : 0;
@@ -3747,10 +2948,10 @@ async function composeThumbnailBase({
 	].filter(Boolean);
 	filters.push(`[base0]${baseFx.join(",")}[base]`);
 	filters.push(
-		`[1:v]scale=${presenterWScaled}:${presenterHScaled}:force_original_aspect_ratio=increase:flags=lanczos,` +
-			`crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)*${THUMBNAIL_PRESENTER_CROP_Y_PCT},format=rgba,` +
-			`eq=contrast=1.12:saturation=1.06:brightness=0.05:gamma=0.95,` +
-			`unsharp=5:5:0.6[presenter]`
+		`[1:v]scale=${presenterW}:${H}:force_original_aspect_ratio=increase:flags=lanczos,` +
+			`crop=${presenterW}:${H}:(iw-ow)/2:(ih-oh)/2,format=rgba,` +
+			`eq=contrast=1.05:saturation=1.04:brightness=0.035:gamma=0.95,` +
+			`unsharp=3:3:0.45[presenter]`
 	);
 	if (presenterHasAlpha) {
 		filters.push("[presenter]split=2[p][ps]");
@@ -3779,8 +2980,8 @@ async function composeThumbnailBase({
 					`format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+					`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
 					`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
 					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
@@ -3792,8 +2993,8 @@ async function composeThumbnailBase({
 					`eq=contrast=1.03:saturation=1.05:brightness=0.03,format=rgba[panel1bg]`
 			);
 			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+					`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
 					`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
 					`unsharp=3:3:0.35,format=rgba[panel1fg]`
 			);
@@ -3817,8 +3018,8 @@ async function composeThumbnailBase({
 				`eq=contrast=1.03:saturation=1.05:brightness=0.03,format=rgba[panel2bg]`
 		);
 		filters.push(
-			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+			`[${panel2Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+				`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
 				`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
 				`unsharp=3:3:0.35,format=rgba[panel2fg]`
 		);
@@ -3841,8 +3042,8 @@ async function composeThumbnailBase({
 				`eq=contrast=1.03:saturation=1.05:brightness=0.03,format=rgba[panel3bg]`
 		);
 		filters.push(
-			`[${panel3Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-				`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+			`[${panel3Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+				`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
 				`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
 				`unsharp=3:3:0.35,format=rgba[panel3fg]`
 		);
@@ -4191,9 +3392,6 @@ function buildThumbnailText(
 		preferLines: 2,
 		maxLines: 2,
 	});
-	if (trimmedWords.length <= 2) {
-		fit.fontScale = clampNumber((fit.fontScale || 1) * 1.1, 1, 1.2);
-	}
 	const fitted = fit.text || trimmed;
 	const finalText = wantsQuestionMark ? ensureQuestionMark(fitted) : fitted;
 	return {
@@ -4377,12 +3575,6 @@ async function renderThumbnailOverlay({
 		: "";
 	let adjustedTextSizePct = textSizePct;
 	let textYOffset = baseTextYOffset;
-	const headlineWordCount = cleanThumbnailText(title)
-		.split(" ")
-		.filter(Boolean).length;
-	if (headlineWordCount <= 2) {
-		adjustedTextSizePct = clampNumber(textSizePct * 1.06, 0.08, 0.16);
-	}
 	if (hasSubline) {
 		textYOffset = clampNumber(baseTextYOffset + 0.01, 0.08, 0.24);
 	}
@@ -5233,30 +4425,6 @@ async function collectThumbnailTopicImages({
 			});
 		}
 
-		const feedSeedUrls = uniqueStrings(
-			[
-				...pickTrendImagesForRatio(t?.trendStory, THUMBNAIL_RATIO, 6),
-				...pickTrendImagesForRatio(t, THUMBNAIL_RATIO, 4),
-			].filter(Boolean),
-			{ limit: 10 }
-		);
-		if (feedSeedUrls.length && log) {
-			log("thumbnail topic images feed seeds", {
-				topic: label,
-				count: feedSeedUrls.length,
-			});
-		}
-		for (const url of feedSeedUrls) {
-			pushCandidate(url, {
-				source: t?.trendStory?.articles?.[0]?.url || label,
-				title: t?.trendStory?.articles?.[0]?.title || label,
-				priority: 0.9,
-				criteria,
-				isPersonTopic,
-				topicIndex,
-			});
-		}
-
 		const seedUrls = uniqueStrings(
 			[
 				t?.trendStory?.image,
@@ -5713,18 +4881,6 @@ function isGenericHeadline(text = "") {
 	if (!words.length) return true;
 	if (words.length <= 3 && words.every((w) => GENERIC_HEADLINE_TOKENS.has(w)))
 		return true;
-	const hasPower = Array.from(THUMBNAIL_POWER_TOKENS).some((tok) =>
-		cleaned.includes(tok)
-	);
-	const hasCuriosity =
-		hasPower ||
-		Array.from(THUMBNAIL_CURIOSITY_TOKENS).some((tok) => cleaned.includes(tok));
-	if (
-		words.length <= 3 &&
-		(words.includes("UPDATE") || words.includes("NEWS")) &&
-		!hasCuriosity
-	)
-		return true;
 	return false;
 }
 
@@ -5811,24 +4967,10 @@ function deriveSpecificHeadline({ title = "", topics = [] } = {}) {
 	const t0 = topics?.[0] || {};
 	const rqRise = (t0?.relatedQueries?.risingSample || []).join(" ");
 	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ");
-	const topicText = buildTopicLabelText(topics);
-	const hay = `${title} ${topicText} ${rqTop} ${rqRise}`.toLowerCase();
-	const sensitive = isSensitiveStoryText(hay);
+	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
 	if (/\bwhat happened to\b|\bwhat happened\b/.test(hay))
 		return "WHAT HAPPENED?";
-	if (!hasAwardsSignal(hay) && /\bexplained\b|\bwhy\b/.test(hay))
-		return "EXPLAINED";
-	if (!sensitive && /\b(snub|snubbed|snubs)\b/.test(hay)) return "BIG SNUB?";
-	if (!sensitive && /\b(rigged|chaos|backlash|controversy|outrage)\b/.test(hay))
-		return "TOTAL CHAOS?";
-	if (!sensitive && /\b(host|hosting|hosted)\b/.test(hay))
-		return "HOST CHANGE?";
-	if (
-		!sensitive &&
-		/\b(winners?|picks?|nominees?|nominations?)\b/.test(hay) &&
-		/\b(shocking|surprise|unexpected|stunning)\b/.test(hay)
-	)
-		return "SHOCKING PICKS?";
+	if (/\bexplained\b|\bwhy\b/.test(hay)) return "EXPLAINED";
 	if (/\bleak(ed)?\b/.test(hay)) return "LEAKED?";
 	if (/\bconfirmed\b|\bconfirm(ed)?\b/.test(hay)) return "CONFIRMED?";
 	if (/\bnew details\b|\bdetails emerge\b/.test(hay)) return "NEW DETAILS";
@@ -5918,62 +5060,6 @@ function deriveQuestionHeadlinePlan({
 	return null;
 }
 
-function pickEntertainmentHeadline({ title = "", topics = [], hay = "" } = {}) {
-	const primaryTopicLabel =
-		Array.isArray(topics) && topics.length
-			? topics[0]?.displayTopic || topics[0]?.topic || ""
-			: "";
-	const personToken = looksLikePersonTopic(primaryTopicLabel)
-		? buildPersonIdentityToken(primaryTopicLabel)
-		: "";
-	const isAwards = hasAwardsSignal(hay);
-	const sensitive = isSensitiveStoryText(hay);
-	const hasLeak = /(leak|leaked)/.test(hay);
-	const hasConfirm = /(confirm|confirmed)/.test(hay);
-	const hasReturn = /(return|returns|comeback|back)\b/.test(hay);
-	const hasChange = /(changed|change|twist|turn|shift)/.test(hay);
-	const hasCancel = /(cancel|canceled|cancelled)/.test(hay);
-	const hasWhy = /\bwhy\b/.test(hay);
-	const hasSnub = /\b(snub|snubbed|snubs)\b/.test(hay);
-	const hasChaos = /\b(rigged|chaos|backlash|controversy|outrage)\b/.test(hay);
-	const hasHost = /\b(host|hosting|hosted)\b/.test(hay);
-	const hasWinners = /\b(winner|winners|wins|won)\b/.test(hay);
-	const hasNominees =
-		/\b(nominee|nominees|nomination|nominations|picks)\b/.test(hay);
-	const hasShock = /\b(shocking|surprise|unexpected|stunning|wild)\b/.test(hay);
-
-	if (hasLeak) return "LEAKED?";
-	if (hasConfirm) return "CONFIRMED?";
-	if (hasCancel) return "CANCELED?";
-	if (!sensitive && hasChaos) return "TOTAL CHAOS?";
-	if (!sensitive && hasSnub) return "BIG SNUB?";
-	if (!sensitive && hasHost && isAwards) return "HOST CHANGE?";
-	if (!sensitive && hasWinners && hasShock) return "SHOCKING WINNERS?";
-	if (!sensitive && hasNominees && hasShock) return "SHOCKING PICKS?";
-	if (!sensitive && hasNominees && isAwards) return "BIG PICKS?";
-	if (!sensitive && hasWinners && isAwards) return "WINNERS?";
-	if (hasReturn && personToken) return `${personToken} RETURNS?`;
-	if (hasReturn) return "RETURNS?";
-	if (hasChange) return "NEW TWIST?";
-	if (hasWhy) return "WHY?";
-	if (isAwards) return "NEW TWIST?";
-	return "WHAT CHANGED?";
-}
-
-function pickEntertainmentBadge({ hay = "", headline = "" } = {}) {
-	const upperHeadline = String(headline || "").toUpperCase();
-	const hasQuestion = /\?/.test(upperHeadline);
-	const hasPower = Array.from(THUMBNAIL_POWER_TOKENS).some((tok) =>
-		upperHeadline.includes(tok)
-	);
-	if (hasQuestion && hasPower) return "";
-	if (/(leak|leaked)/.test(hay)) return "LEAKED";
-	if (/(confirm|confirmed)/.test(hay)) return "CONFIRMED";
-	if (/(breaking|just in)/.test(hay)) return "BREAKING";
-	if (/(new|latest|update|revealed)/.test(hay)) return "NEW";
-	return "";
-}
-
 function deriveHeadlineAndBadge({
 	title = "",
 	topics = [],
@@ -5984,31 +5070,23 @@ function deriveHeadlineAndBadge({
 		.join(" ")
 		.toLowerCase();
 	const rqTop = (t0?.relatedQueries?.topSample || []).join(" ").toLowerCase();
-	const topicText = buildTopicLabelText(topics);
-	const hay = `${title} ${topicText} ${rqTop} ${rqRise}`.toLowerCase();
+	const hay = `${title} ${rqTop} ${rqRise}`.toLowerCase();
 	const specificHeadline = deriveSpecificHeadline({ title, topics });
-	const sensitive = isSensitiveStoryText(hay);
 
 	let headline = "";
 	if (specificHeadline) headline = specificHeadline;
 	else if (intent === "serious_update") headline = "WHAT HAPPENED?";
-	else if (intent === "entertainment")
-		headline = pickEntertainmentHeadline({ title, topics, hay });
 	else if (intent === "legal" && /conservatorship/.test(hay))
 		headline = "LEGAL MOVE";
 	else if (intent === "legal" && /(court|filing)/.test(hay))
 		headline = "COURT FILE";
 	else if (/(reports|reported)/.test(hay)) headline = "NEW REPORTS";
-	else headline = sensitive ? "WHAT HAPPENED?" : "WHAT CHANGED?";
+	else headline = "WHAT WE KNOW";
 
 	let badgeText = "";
 	if (intent === "legal") badgeText = "REPORTS";
-	else if (intent === "entertainment")
-		badgeText = pickEntertainmentBadge({ hay, headline });
-	else if (/(breaking|just in)/.test(hay)) badgeText = "BREAKING";
-	else if (/(confirm|confirmed)/.test(hay)) badgeText = "CONFIRMED";
-	else if (/(new|latest|revealed|reported)/.test(hay)) badgeText = "NEW";
-	else badgeText = "";
+	else if (intent === "entertainment") badgeText = "TRENDING";
+	else badgeText = "UPDATE";
 
 	return { headline, badgeText };
 }
@@ -6147,33 +5225,6 @@ function buildShortHookTitle({ title, shortTitle, seoTitle, topics }) {
 	});
 }
 
-function resolveThumbnailLayout({
-	panelCount = 0,
-	intent = "general",
-	preferSingleFocal = false,
-} = {}) {
-	let leftPanelPct = LEFT_PANEL_PCT;
-	let presenterOverlapPct = PRESENTER_OVERLAP_PCT;
-
-	if (preferSingleFocal || panelCount === 0) {
-		leftPanelPct = THUMBNAIL_SINGLE_FOCAL_LEFT_PCT;
-		presenterOverlapPct = THUMBNAIL_SINGLE_FOCAL_OVERLAP_PCT;
-	} else if (panelCount === 1) {
-		leftPanelPct = clampNumber(LEFT_PANEL_PCT - 0.03, 0.38, 0.62);
-		presenterOverlapPct = clampNumber(PRESENTER_OVERLAP_PCT + 0.02, 0.06, 0.18);
-	}
-
-	if (
-		String(intent || "").toLowerCase() === "entertainment" &&
-		panelCount === 0
-	) {
-		leftPanelPct = clampNumber(leftPanelPct - 0.02, 0.35, 0.6);
-		presenterOverlapPct = clampNumber(presenterOverlapPct + 0.01, 0.06, 0.18);
-	}
-
-	return { leftPanelPct, presenterOverlapPct };
-}
-
 function assertCloudinaryReady() {
 	if (
 		!process.env.CLOUDINARY_CLOUD_NAME ||
@@ -6231,61 +5282,45 @@ async function generateThumbnailPackage({
 	const presenterDetected = detectFileType(presenterLocalPath);
 	if (presenterDetected?.kind !== "image")
 		throw new Error("thumbnail_presenter_missing_or_invalid");
-
-	const rawOverrideHeadline =
-		typeof overrideHeadline === "string" ? overrideHeadline.trim() : "";
-	const rawOverrideBadgeText =
-		typeof overrideBadgeText === "string" ? overrideBadgeText.trim() : "";
-	const overrideHeadlineAllowed =
-		Boolean(rawOverrideHeadline) && !isGenericHeadline(rawOverrideHeadline);
-	const resolvedOverrideHeadline = overrideHeadlineAllowed
-		? rawOverrideHeadline
-		: "";
-	const resolvedOverrideBadgeText = overrideHeadlineAllowed
-		? rawOverrideBadgeText
-		: isStrongBadgeText(rawOverrideBadgeText)
-		? rawOverrideBadgeText
-		: "";
-	const overrideIntentRaw =
-		typeof overrideIntent === "string" ? overrideIntent.trim() : "";
-	const overrideIntentKey = overrideIntentRaw.toLowerCase();
-	const inferredIntent = inferStoryIntent({
-		title: title || seoTitle || "",
+	const stylePlan = planThumbnailStyle({
+		title,
+		shortTitle,
+		seoTitle,
 		topics,
+		expression,
 	});
-	const resolvedIntent =
-		overrideIntentKey && !["general", "multi"].includes(overrideIntentKey)
-			? overrideIntentKey
-			: inferredIntent;
-	const shortTitleSafe =
-		typeof shortTitle === "string" &&
-		rawOverrideHeadline &&
-		!overrideHeadlineAllowed &&
-		shortTitle.trim().toLowerCase() === rawOverrideHeadline.toLowerCase()
-			? ""
-			: shortTitle;
-	const topicCount = Array.isArray(topics) ? topics.length : 0;
-	const topicLabelText = buildTopicLabelText(topics);
-	const entertainmentSignal =
-		resolvedIntent === "entertainment" ||
-		hasAwardsSignal(`${title} ${topicLabelText}`);
-	const hasOverrideImages =
-		Array.isArray(overrideTopicImageQueries) &&
-		overrideTopicImageQueries.length;
-	const preferSingleFocal = entertainmentSignal
-		? true
-		: topicCount <= 1 && !hasOverrideImages;
-	const baseHeadlineMaxWords =
-		resolvedIntent === "entertainment" ? 3 : THUMBNAIL_TEXT_MAX_WORDS;
-	const headlineMaxWords =
-		topicCount <= 1 ? Math.min(3, baseHeadlineMaxWords) : baseHeadlineMaxWords;
-	let punchyMaxWords =
-		resolvedIntent === "entertainment"
-			? Math.min(3, THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS)
-			: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS;
-	if (topicCount <= 1) {
-		punchyMaxWords = Math.min(punchyMaxWords, headlineMaxWords);
+	const resolvedCutout = resolvePresenterCutoutPath(stylePlan.pose);
+	const presenterForCompose = resolvedCutout || presenterLocalPath;
+	if (log)
+		log(
+			resolvedCutout
+				? "presenter cutout selected"
+				: "presenter fixed (no emotion variants)",
+			{
+				path: path.basename(presenterForCompose),
+				pose: stylePlan.pose,
+			}
+		);
+	const chosenDetected = detectFileType(presenterForCompose);
+	if (!chosenDetected || chosenDetected.kind !== "image")
+		throw new Error("thumbnail_presenter_missing_or_invalid");
+	if (chosenDetected.ext !== "png" && log) {
+		log("thumbnail presenter not png", {
+			ext: chosenDetected.ext || null,
+		});
 	}
+
+	const resolvedOverrideHeadline =
+		typeof overrideHeadline === "string" ? overrideHeadline.trim() : "";
+	const resolvedOverrideBadgeText =
+		typeof overrideBadgeText === "string" ? overrideBadgeText.trim() : "";
+	const resolvedIntent =
+		typeof overrideIntent === "string" && overrideIntent.trim()
+			? overrideIntent.trim()
+			: inferStoryIntent({
+					title: title || seoTitle || "",
+					topics,
+			  });
 	const hook = deriveHeadlineAndBadge({
 		title: title || seoTitle || "",
 		topics,
@@ -6293,25 +5328,23 @@ async function generateThumbnailPackage({
 	});
 	const questionPlan = deriveQuestionHeadlinePlan({
 		title,
-		shortTitle: shortTitleSafe,
+		shortTitle,
 		seoTitle,
 		topics,
-		maxWords: headlineMaxWords,
-		punchyMaxWords,
+		maxWords: THUMBNAIL_TEXT_MAX_WORDS,
+		punchyMaxWords: THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS,
 	});
-	const defaultTitle = buildSeoHeadline({
+	const defaultTitle = selectThumbnailTitle({
 		title,
-		shortTitle: shortTitleSafe,
+		shortTitle,
 		seoTitle,
 		topics,
-		maxWords: headlineMaxWords,
 	});
-	const defaultPunchy = buildSeoHeadline({
+	const defaultPunchy = buildShortHookTitle({
 		title,
-		shortTitle: shortTitleSafe,
+		shortTitle,
 		seoTitle,
 		topics,
-		maxWords: punchyMaxWords,
 	});
 	const questionHeadline = questionPlan?.headline || "";
 	const questionPunchy = questionPlan?.punchy || "";
@@ -6326,6 +5359,7 @@ async function generateThumbnailPackage({
 		questionPunchy ||
 		hook?.headline ||
 		defaultPunchy;
+	const topicCount = Array.isArray(topics) ? topics.length : 0;
 	const primaryTopicLabel =
 		topics?.[0]?.displayTopic || topics?.[0]?.topic || "";
 	const topicKeywords = filterSpecificTopicTokens(
@@ -6342,38 +5376,26 @@ async function generateThumbnailPackage({
 			cleanThumbnailText(thumbTitle).toLowerCase();
 	if (!resolvedOverrideHeadline && isGenericHeadline(thumbTitle)) {
 		if (!useIdentitySubline) {
-			const topicHeadline = buildTopicPhrase(topics, headlineMaxWords);
+			const topicHeadline = buildTopicPhrase(topics, THUMBNAIL_TEXT_MAX_WORDS);
 			if (topicHeadline) thumbTitle = topicHeadline;
 			else if (!isGenericHeadline(defaultTitle)) thumbTitle = defaultTitle;
 		}
 	}
 	if (!resolvedOverrideHeadline && isGenericHeadline(punchyTitle)) {
 		if (!useIdentitySubline) {
-			const topicPunchy = buildTopicPhrase(topics, punchyMaxWords);
+			const topicPunchy = buildTopicPhrase(
+				topics,
+				THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS
+			);
 			if (topicPunchy) punchyTitle = topicPunchy;
 			else if (!isGenericHeadline(defaultPunchy)) punchyTitle = defaultPunchy;
 		}
 	}
-	let badgeText =
+	const badgeText =
 		resolvedOverrideBadgeText ||
 		(topicCount > 1
-			? resolvedIntent === "entertainment"
-				? ""
-				: "UPDATE"
-			: questionPlan?.badgeText || hook?.badgeText || "");
-	if (
-		shouldDropBadge({
-			headline: thumbTitle,
-			badgeText,
-			intent: resolvedIntent,
-		}) ||
-		shouldDropBadge({
-			headline: punchyTitle,
-			badgeText,
-			intent: resolvedIntent,
-		})
-	)
-		badgeText = "";
+			? "UPDATE"
+			: questionPlan?.badgeText || hook?.badgeText || "UPDATE");
 	const personIdentity = looksLikePersonTopic(primaryTopicLabel)
 		? buildPersonIdentityToken(primaryTopicLabel)
 		: "";
@@ -6388,7 +5410,7 @@ async function generateThumbnailPackage({
 			thumbTitle = mergeIdentityIntoHeadline(
 				personIdentity,
 				thumbTitle,
-				headlineMaxWords
+				THUMBNAIL_TEXT_MAX_WORDS
 			);
 		}
 		const punchyHasTopic = headlineHasAnyToken(punchyTitle, topicKeywords);
@@ -6399,7 +5421,7 @@ async function generateThumbnailPackage({
 			punchyTitle = buildIdentityPunchyHeadline(
 				personIdentity,
 				punchyTitle,
-				punchyMaxWords
+				THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS
 			);
 		}
 	}
@@ -6417,112 +5439,10 @@ async function generateThumbnailPackage({
 			headline: thumbTitle,
 			punchy: punchyTitle,
 			badgeText,
-			headlineMaxWords,
-			punchyMaxWords,
-			badgeDropped: !badgeText,
 			subline: sublineText || null,
 			overrideHeadline: resolvedOverrideHeadline || null,
 			overrideBadgeText: resolvedOverrideBadgeText || null,
 		});
-
-	const stylePlan = planThumbnailStyle({
-		title,
-		shortTitle: shortTitleSafe,
-		seoTitle,
-		topics,
-		expression,
-		intent: resolvedIntent,
-		headline: punchyTitle || thumbTitle,
-	});
-	const resolvedCutout = resolvePresenterCutoutPath(stylePlan.pose);
-	let presenterForCompose = presenterLocalPath;
-	let emotionVariantPath = "";
-	if (resolvedCutout && presenterLocalPath) {
-		const likeness = comparePresenterSimilarity(
-			presenterLocalPath,
-			resolvedCutout
-		);
-		if (
-			Number.isFinite(likeness) &&
-			likeness < THUMBNAIL_PRESENTER_LIKENESS_MIN
-		) {
-			if (log)
-				log("thumbnail presenter cutout rejected (low likeness)", {
-					path: path.basename(resolvedCutout),
-					likeness: Number(likeness.toFixed(3)),
-					min: THUMBNAIL_PRESENTER_LIKENESS_MIN,
-				});
-		} else {
-			presenterForCompose = resolvedCutout;
-			if (log && Number.isFinite(likeness)) {
-				log("thumbnail presenter cutout similarity", {
-					path: path.basename(resolvedCutout),
-					likeness: Number(likeness.toFixed(3)),
-				});
-			}
-		}
-	} else {
-		try {
-			emotionVariantPath = await generatePresenterEmotionVariant({
-				jobId,
-				tmpDir,
-				presenterImagePath: presenterLocalPath,
-				pose: stylePlan.pose,
-				log,
-			});
-		} catch (e) {
-			if (log)
-				log("thumbnail presenter emotion failed", {
-					error: e?.message || String(e),
-				});
-		}
-		if (emotionVariantPath && presenterLocalPath) {
-			const likeness = comparePresenterSimilarity(
-				presenterLocalPath,
-				emotionVariantPath
-			);
-			if (
-				Number.isFinite(likeness) &&
-				likeness < THUMBNAIL_PRESENTER_EMOTION_LIKENESS_MIN
-			) {
-				if (log)
-					log("thumbnail presenter emotion rejected (low likeness)", {
-						path: path.basename(emotionVariantPath),
-						likeness: Number(likeness.toFixed(3)),
-						min: THUMBNAIL_PRESENTER_EMOTION_LIKENESS_MIN,
-					});
-				safeUnlink(emotionVariantPath);
-			} else {
-				presenterForCompose = emotionVariantPath;
-				if (log && Number.isFinite(likeness)) {
-					log("thumbnail presenter emotion similarity", {
-						path: path.basename(emotionVariantPath),
-						likeness: Number(likeness.toFixed(3)),
-					});
-				}
-			}
-		}
-	}
-	if (log)
-		log(
-			presenterForCompose !== presenterLocalPath
-				? resolvedCutout
-					? "presenter cutout selected"
-					: "presenter emotion selected"
-				: "presenter fixed (base)",
-			{
-				path: path.basename(presenterForCompose),
-				pose: stylePlan.pose,
-			}
-		);
-	const chosenDetected = detectFileType(presenterForCompose);
-	if (!chosenDetected || chosenDetected.kind !== "image")
-		throw new Error("thumbnail_presenter_missing_or_invalid");
-	if (chosenDetected.ext !== "png" && log) {
-		log("thumbnail presenter not png", {
-			ext: chosenDetected.ext || null,
-		});
-	}
 
 	const topicImageTarget = Math.max(1, Math.min(topicCount || 1, 3));
 	const topicImagePaths = await collectThumbnailTopicImages({
@@ -6538,14 +5458,7 @@ async function generateThumbnailPackage({
 		overrideTopicImageQueries,
 		log,
 	});
-	const filteredPanelImages = filterPanelTopicImages(topicImagePaths, { log });
-	const panelImagePaths = preferSingleFocal ? [] : filteredPanelImages;
-	if (preferSingleFocal && filteredPanelImages.length && log) {
-		log("thumbnail panel images dropped (single focal)", {
-			count: filteredPanelImages.length,
-		});
-	}
-	const panelCount = Math.min(panelImagePaths.length, 3);
+	const panelCount = Math.min(topicImagePaths.length, 3);
 	const panelWordLimits =
 		topicCount >= 3
 			? { minWords: 5, maxWords: 7 }
@@ -6558,7 +5471,7 @@ async function generateThumbnailPackage({
 				? Number(entry.panelIndex)
 				: idx,
 		}));
-	const shouldFocusRing = panelCount === 0 && !preferSingleFocal;
+	const shouldFocusRing = (topicImagePaths || []).length === 0;
 	const backgroundTitle = resolvedOverrideHeadline
 		? title || seoTitle || thumbTitle
 		: thumbTitle;
@@ -6624,23 +5537,9 @@ async function generateThumbnailPackage({
 		}
 	}
 
-	const layoutBase = resolveThumbnailLayout({
-		panelCount,
-		intent: resolvedIntent,
-		preferSingleFocal,
-	});
-	const useSingleFocalOverlay = preferSingleFocal || panelCount === 0;
-	const singleFocalOverlay = useSingleFocalOverlay
-		? {
-				panelOpacity: THUMBNAIL_SINGLE_FOCAL_PANEL_OPACITY,
-				textBoxOpacity: THUMBNAIL_SINGLE_FOCAL_TEXT_BOX_OPACITY,
-				textSizePct: THUMBNAIL_SINGLE_FOCAL_TEXT_SIZE_PCT,
-				leftLift: THUMBNAIL_SINGLE_FOCAL_LEFT_LIFT,
-		  }
-		: {};
 	const primaryMaxWords = useIdentitySubline
-		? Math.min(3, headlineMaxWords)
-		: headlineMaxWords;
+		? Math.min(3, THUMBNAIL_TEXT_MAX_WORDS)
+		: THUMBNAIL_TEXT_MAX_WORDS;
 	const sublineOptions = sublineText
 		? {
 				sublineText,
@@ -6658,10 +5557,9 @@ async function generateThumbnailPackage({
 		panelCount,
 		panelSubheaders,
 		...sublineOptions,
-		...singleFocalOverlay,
 	};
 	const variantBOverlayOptions = {
-		maxWords: Math.min(punchyMaxWords, primaryMaxWords),
+		maxWords: Math.min(THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS, primaryMaxWords),
 		baseChars: THUMBNAIL_VARIANT_B_BASE_CHARS,
 		contrast: THUMBNAIL_VARIANT_B_CONTRAST,
 		panelOpacity: THUMBNAIL_VARIANT_B_PANEL_PCT,
@@ -6678,22 +5576,25 @@ async function generateThumbnailPackage({
 		{
 			key: "a",
 			title: thumbTitle,
-			layout: layoutBase,
+			layout: {},
 			overlayOptions: variantAOverlayOptions,
 		},
 		{
 			key: "b",
 			title: punchyTitle,
-			layout: layoutBase,
-			overlayOptions: {
-				...variantBOverlayOptions,
-				...singleFocalOverlay,
+			layout: {
+				leftPanelPct: THUMBNAIL_VARIANT_B_LEFT_PCT,
+				presenterOverlapPct: THUMBNAIL_VARIANT_B_OVERLAP_PCT,
 			},
+			overlayOptions: variantBOverlayOptions,
 		},
 		{
 			key: "c",
 			title: punchyTitle,
-			layout: layoutBase,
+			layout: {
+				leftPanelPct: THUMBNAIL_VARIANT_B_LEFT_PCT,
+				presenterOverlapPct: THUMBNAIL_VARIANT_B_OVERLAP_PCT,
+			},
 			overlayOptions: {
 				...variantBOverlayOptions,
 				brightness: 0.1,
@@ -6702,7 +5603,6 @@ async function generateThumbnailPackage({
 				vignette: 0.03,
 				leftLift: 0.08,
 				textBoxOpacity: 0.26,
-				...singleFocalOverlay,
 			},
 		},
 	];
@@ -6717,7 +5617,7 @@ async function generateThumbnailPackage({
 			await composeThumbnailBase({
 				baseImagePath: bgResult.path,
 				presenterImagePath: presenterForCompose,
-				topicImagePaths: panelImagePaths,
+				topicImagePaths,
 				outPath: baseImage,
 				width: THUMBNAIL_WIDTH,
 				height: THUMBNAIL_HEIGHT,
@@ -6821,6 +5721,15 @@ async function generateThumbnailPackage({
 				overlayOptions: finalOverlayOptions,
 			});
 			ensureThumbnailFile(finalPath);
+			const headlineStats = samplePreviewLumaStats(
+				finalPath,
+				getHeadlineQaRegion()
+			);
+			if (log && headlineStats)
+				log("thumbnail headline stats", {
+					variant: variant.key,
+					...headlineStats,
+				});
 			const qa = await applyThumbnailQaAdjustments(finalPath, { log });
 			if (log) log("thumbnail qa result", { variant: variant.key, ...qa });
 			ensureThumbnailFile(finalPath);
@@ -6894,69 +5803,27 @@ async function generateThumbnailPackage({
 				});
 
 			const headline = variant.title || "";
-			const hasBadge = Boolean(tunedOverlayOptions.badgeText);
-			const qaEval = evaluateThumbnailVariant({
-				filePath: finalPath,
-				headline,
-				intent: resolvedIntent,
-				topicKeywords,
-				panelCount,
-				hasBadge,
-			});
-			const ctrScore = qaEval?.scores?.ctrScore;
-			const readabilityScore = qaEval?.scores?.readabilityScore;
+			const headlineWords = cleanThumbnailText(headline)
+				.split(" ")
+				.filter(Boolean);
 			const compositeScore = scoreVariantComposite({
-				ctrScore,
-				readabilityScore,
 				lumaScore,
+				hasBadge: Boolean(tunedOverlayOptions.badgeText),
+				headlineWordCount: headlineWords.length,
+				headlineLen: headline.length,
+				headline,
+				topicKeywords,
 			});
-			const qaRejected = Boolean(qaEval?.qa?.failures?.length);
 			if (log)
-				log("thumbnail qa evaluation", {
+				log("thumbnail composite score", {
 					variant: variant.key,
-					headline,
-					intent: resolvedIntent,
-					headlineWordCount: qaEval?.headlineInfo?.wordCount || 0,
-					headlineHasCuriosity: Boolean(qaEval?.headlineInfo?.hasCuriosity),
-					headlineHasPower: Boolean(qaEval?.headlineInfo?.hasPower),
-					headlineGeneric: Boolean(qaEval?.headlineInfo?.isGeneric),
 					lumaScore: scoreLog,
-					ctrScore: Number.isFinite(ctrScore)
-						? Number(ctrScore.toFixed(3))
-						: null,
-					readabilityScore: Number.isFinite(readabilityScore)
-						? Number(readabilityScore.toFixed(3))
-						: null,
 					compositeScore: Number.isFinite(compositeScore)
 						? Number(compositeScore.toFixed(3))
 						: null,
-					headlineStd: Number.isFinite(qaEval?.headlineStats?.std)
-						? Number(qaEval.headlineStats.std.toFixed(3))
-						: null,
-					headlineEdge: Number.isFinite(qaEval?.edges?.headlineEdge)
-						? Number(qaEval.edges.headlineEdge.toFixed(3))
-						: null,
-					faceEdge: Number.isFinite(qaEval?.edges?.faceEdge)
-						? Number(qaEval.edges.faceEdge.toFixed(3))
-						: null,
-					eyesEdge: Number.isFinite(qaEval?.edges?.eyesEdge)
-						? Number(qaEval.edges.eyesEdge.toFixed(3))
-						: null,
-					leftEdge: Number.isFinite(qaEval?.edges?.leftEdge)
-						? Number(qaEval.edges.leftEdge.toFixed(3))
-						: null,
+					headline,
 					badge: tunedOverlayOptions.badgeText || "",
-					panelCount,
-					failures: qaEval?.qa?.failures || [],
-					warnings: qaEval?.qa?.warnings || [],
-					qaRejected,
 				});
-			if (qaRejected && log) {
-				log("thumbnail qa failed; variant rejected", {
-					variant: variant.key,
-					failures: qaEval?.qa?.failures || [],
-				});
-			}
 
 			variantResults.push({
 				variant: variant.key,
@@ -6966,12 +5833,7 @@ async function generateThumbnailPackage({
 				width: THUMBNAIL_WIDTH,
 				height: THUMBNAIL_HEIGHT,
 				title: variant.title,
-				compositeScore: qaRejected ? -Infinity : compositeScore,
-				ctrScore,
-				readabilityScore,
-				headlineStrength: qaEval?.scores?.headlineStrength,
-				qa: qaEval?.qa || { failures: [], warnings: [] },
-				qaRejected,
+				compositeScore,
 				luma: {
 					overall: overallLuma,
 					left: leftLuma,
@@ -6988,16 +5850,9 @@ async function generateThumbnailPackage({
 	}
 
 	if (!variantResults.length) throw new Error("thumbnail_generation_failed");
-	const eligibleVariants = variantResults.filter((v) => !v.qaRejected);
-	const pool = eligibleVariants.length > 0 ? eligibleVariants : variantResults;
-	const scoredVariants = pool.filter(
+	const scoredVariants = variantResults.filter(
 		(v) => Number.isFinite(v?.compositeScore) || Number.isFinite(v?.luma?.score)
 	);
-	if (!eligibleVariants.length && log) {
-		log("thumbnail qa: all variants rejected; falling back to best available", {
-			variants: variantResults.map((v) => v.variant),
-		});
-	}
 	const preferred =
 		scoredVariants.reduce((best, next) => {
 			if (!best) return next;
