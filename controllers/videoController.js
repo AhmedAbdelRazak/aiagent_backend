@@ -10712,6 +10712,7 @@ exports.createVideo = async (req, res) => {
 		/* 4. Search & upload Trends images to Cloudinary (single target ratio) */
 		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
 		let trendImagesForRatio = [];
+		const originByKey = new Map();
 		if (allowTrendsImageSearch) {
 			const articleLinks =
 				trendStory && Array.isArray(trendStory.articles)
@@ -10850,7 +10851,7 @@ exports.createVideo = async (req, res) => {
 				combinedCandidates = mergeCandidates([combinedCandidates, qaFallback]);
 			}
 
-			const originByKey = new Map();
+			originByKey.clear();
 			const recordOrigin = (list = []) => {
 				for (const cand of list || []) {
 					const url = cand?.url;
