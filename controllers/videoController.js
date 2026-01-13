@@ -10376,7 +10376,8 @@ exports.createVideo = async (req, res) => {
 		const requireScheduledTrends = isScheduledJob && category !== "Top5";
 		const shouldFetchTrendStory =
 			category !== "Top5" && (!hasVideoImage || isScheduledJob);
-		const allowTrendsImageSearch = category !== "Top5" && !hasVideoImage;
+		const allowTrendsImageSearch =
+			category !== "Top5" && (!hasVideoImage || isScheduledJob);
 
 		// 1) Try Trends story first (Top5 skips; scheduled runs force Trends even with overrides)
 		if (shouldFetchTrendStory) {
