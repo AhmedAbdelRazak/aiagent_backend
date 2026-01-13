@@ -2162,7 +2162,18 @@ function tmpFile(tag, ext = "") {
 async function downloadImageToTemp(url, ext = ".jpg") {
 	const tmp = tmpFile("trend_raw", ext);
 	const writer = fs.createWriteStream(tmp);
-	const resp = await axios.get(url, { responseType: "stream" });
+	const resp = await axios.get(url, {
+		responseType: "stream",
+		timeout: 15000,
+		maxRedirects: 3,
+		headers: {
+			"User-Agent":
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+			Accept: "image/avif,image/webp,image/*,*/*;q=0.8",
+			Referer: "https://www.google.com/",
+		},
+		validateStatus: (s) => s < 500,
+	});
 	await new Promise((resolve, reject) => {
 		resp.data.pipe(writer).on("finish", resolve).on("error", reject);
 	});
@@ -7722,7 +7733,39 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 			msg.includes("Maximum image size is 25 Megapixels") ||
 			msg.includes("File size too large");
 		if (!sizeIssue) {
-			throw e;
+			console.warn(
+				"[Cloudinary] Remote fetch failed, retrying via local download",
+				{ url }
+			);
+			const rawPath = await downloadImageToTemp(url, ".jpg");
+			try {
+				const result = await cloudinary.uploader.upload(rawPath, {
+					...baseOpts,
+					transformation: transform,
+					quality: "auto:good",
+					fetch_format: "auto",
+				});
+				console.log("[Cloudinary] Seed image uploaded (local)", {
+					public_id: result.public_id,
+					width: result.width,
+					height: result.height,
+					format: result.format,
+				});
+				return {
+					public_id: result.public_id,
+					url: result.secure_url,
+				};
+			} catch (err) {
+				console.warn(
+					"[Cloudinary] Local upload failed; skipping image",
+					err?.message || err
+				);
+				throw e;
+			} finally {
+				try {
+					fs.unlinkSync(rawPath);
+				} catch (_) {}
+			}
 		}
 
 		console.warn(
@@ -10542,6 +10585,22 @@ exports.createVideo = async (req, res) => {
 				ranked.map((c) => c.url).filter(Boolean),
 				targetPoolSize
 			);
+			if (
+				!trendImagesForRatio.length &&
+				trendStory &&
+				Array.isArray(trendStory.images) &&
+				trendStory.images.length
+			) {
+				trendImagesForRatio = filterUploadCandidates(
+					trendStory.images,
+					targetPoolSize
+				);
+				if (trendImagesForRatio.length) {
+					console.log("[Trending] using raw Trends images fallback", {
+						count: trendImagesForRatio.length,
+					});
+				}
+			}
 			console.log("[Trending] image pool ready", {
 				count: trendImagesForRatio.length,
 				target: targetPoolSize,
@@ -10571,7 +10630,14 @@ exports.createVideo = async (req, res) => {
 						cloudinaryUrl: up.url,
 					});
 				} catch (e) {
-					console.warn("[Cloudinary] upload failed ?", e.message);
+					console.warn("[Cloudinary] upload failed, using original URL", {
+						url,
+						error: e?.message || e,
+					});
+					trendImagePairs.push({
+						originalUrl: url,
+						cloudinaryUrl: null,
+					});
 				}
 			}
 			if (!trendImagePairs.length) {
@@ -10632,7 +10698,9 @@ exports.createVideo = async (req, res) => {
 				segLens,
 				trendStory,
 				trendImagesForPlanning: hasTrendImages
-					? trendImagePairs.map((p) => p.cloudinaryUrl)
+					? trendImagePairs
+							.map((p) => p.cloudinaryUrl || p.originalUrl)
+							.filter(Boolean)
 					: null,
 				articleText: trendArticleText,
 				top5Outline,
