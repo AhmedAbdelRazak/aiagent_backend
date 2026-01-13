@@ -75,6 +75,7 @@ const CBS_SEARCH_SELECTOR_TIMEOUT_MS = 12_000;
 const CBS_SEARCH_MAX_RESULTS = 12;
 const CBS_SEARCH_MAX_ARTICLES = 3;
 const CBS_SEARCH_MIN_SCORE = 2;
+const CBS_SEARCH_MAX_AGE_DAYS = 365;
 const CBS_SEARCH_BASE_URL = "https://www.cbsnews.com/search/";
 const POTENTIAL_IMAGE_CAPTCHA_HINTS = [
 	"captcha",
@@ -419,10 +420,27 @@ function buildBbcSearchUrl(query = "") {
 	return `${BBC_SEARCH_BASE_URL}?${params.toString()}`;
 }
 
+function sanitizeCbsSearchQuery(raw = "", maxLen = 90) {
+	const cleaned = normalizeSearchQuery(raw);
+	if (!cleaned) return "";
+	let value = cleaned
+		.replace(/#[A-Za-z0-9_]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.replace(/(?:today|yesterday|tomorrow)$/i, "")
+		.trim();
+	value = limitQueryLength(value, maxLen);
+	const tokens = value.split(" ").filter(Boolean);
+	if (tokens.length > 10) {
+		value = tokens.slice(0, 10).join(" ");
+	}
+	return value;
+}
+
 function buildCbsSearchQueriesForStory(story) {
 	const candidates = [];
 	const add = (value) => {
-		const normalized = limitQueryLength(normalizeSearchQuery(value), 90);
+		const normalized = sanitizeCbsSearchQuery(value, 90);
 		if (normalized) candidates.push(normalized);
 	};
 
@@ -463,6 +481,11 @@ function isLikelyCbsArticleUrl(rawUrl = "") {
 	if (lower.includes("/search")) return false;
 	if (lower.includes("#search-form")) return false;
 	return true;
+}
+
+function isCbsVideoUrl(rawUrl = "") {
+	const lower = String(rawUrl || "").toLowerCase();
+	return lower.includes("/video/") || lower.includes("/videos/");
 }
 
 function scoreTextMatch(text = "", terms = {}) {
@@ -1698,6 +1721,8 @@ async function scrapePotentialImagesFromArticle(
 		});
 		log("Potential images filter", {
 			url: articleUrl,
+			story: storyTitle || "",
+			article: articleTitle || "",
 			raw: rawImages.length,
 			kept: filtered.length,
 		});
@@ -2186,7 +2211,7 @@ async function scrapeBbcSearchImages({
 }
 
 async function scrapeCbsSearchResults(query) {
-	const safeQuery = String(query || "").trim();
+	const safeQuery = sanitizeCbsSearchQuery(query, 90);
 	if (!safeQuery) return [];
 
 	const page = await (await getBrowser()).newPage();
@@ -2317,12 +2342,16 @@ async function scrapeCbsSearchResults(query) {
 			if (results.length >= CBS_SEARCH_MAX_RESULTS) break;
 		}
 
+		const nonVideo = results.filter((item) => !isCbsVideoUrl(item.url));
+		const filteredResults = nonVideo.length ? nonVideo : results;
+
 		log("CBS search results", {
 			url: searchUrl,
-			count: results.length,
+			count: filteredResults.length,
+			nonVideo: nonVideo.length,
 		});
 
-		return results;
+		return filteredResults;
 	} catch (err) {
 		log("CBS search failed", {
 			url: searchUrl,
@@ -2343,7 +2372,7 @@ async function scrapeCbsSearchImages({
 	globalSeen,
 	limit = POTENTIAL_IMAGE_MIN_PER_STORY,
 } = {}) {
-	const safeQuery = String(query || "").trim();
+	const safeQuery = sanitizeCbsSearchQuery(query, 90);
 	if (!safeQuery) return [];
 
 	const results = await scrapeCbsSearchResults(safeQuery);
@@ -2364,6 +2393,10 @@ async function scrapeCbsSearchImages({
 			: queryTerms;
 	const scored = results.map((item) => {
 		const title = sanitizeHeadlineForMatch(item.title);
+		const timestamp = parseCbsDateToTimestamp(item.dateText);
+		const ageMinutes = Number.isFinite(timestamp)
+			? Math.max(0, Math.round((Date.now() - timestamp) / 60000))
+			: null;
 		const phraseMatch = hasPhraseMatch(title, queryTerms.phrases);
 		const tokenHits = countTokenHits(title, strongQueryTokens);
 		const queryOk =
@@ -2372,18 +2405,35 @@ async function scrapeCbsSearchImages({
 			? scoreTextMatch(title, baseTerms) +
 			  scoreTextMatch(title, focusTerms || {})
 			: 0;
-		return { ...item, title, score, tokenHits };
+		return { ...item, title, score, tokenHits, ageMinutes };
 	});
-	scored.sort((a, b) => b.score - a.score);
+	const scoredFiltered = (() => {
+		const maxAgeMinutes = CBS_SEARCH_MAX_AGE_DAYS * 24 * 60;
+		const fresh = scored.filter(
+			(item) =>
+				item.ageMinutes == null || item.ageMinutes <= maxAgeMinutes
+		);
+		const nonVideo = fresh.filter((item) => !isCbsVideoUrl(item.url));
+		return nonVideo.length ? nonVideo : fresh;
+	})();
+	scoredFiltered.sort((a, b) => {
+		if (b.score !== a.score) return b.score - a.score;
+		if (a.ageMinutes == null && b.ageMinutes != null) return 1;
+		if (a.ageMinutes != null && b.ageMinutes == null) return -1;
+		if (a.ageMinutes != null && b.ageMinutes != null) {
+			if (a.ageMinutes !== b.ageMinutes) return a.ageMinutes - b.ageMinutes;
+		}
+		return 0;
+	});
 
 	const minScore = CBS_SEARCH_MIN_SCORE;
-	const candidates = scored.filter((item) => item.score >= minScore);
+	const candidates = scoredFiltered.filter((item) => item.score >= minScore);
 	if (!candidates.length) {
 		log("CBS search skip", {
 			query: safeQuery,
 			reason: "no-strong-match",
-			maxScore: scored[0]?.score || 0,
-			maxTokenHits: scored[0]?.tokenHits || 0,
+			maxScore: scoredFiltered[0]?.score || 0,
+			maxTokenHits: scoredFiltered[0]?.tokenHits || 0,
 		});
 		return [];
 	}
