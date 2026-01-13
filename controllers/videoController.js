@@ -10713,6 +10713,7 @@ exports.createVideo = async (req, res) => {
 		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
 		let trendImagesForRatio = [];
 		const originByKey = new Map();
+		const potentialUrlKeys = new Set();
 		if (allowTrendsImageSearch) {
 			const articleLinks =
 				trendStory && Array.isArray(trendStory.articles)
@@ -10732,7 +10733,7 @@ exports.createVideo = async (req, res) => {
 			const targetPoolSize = Math.min(6, Math.max(4, segLens.length || 6));
 			const pageSignalCache = new Map();
 			const seedCandidates = [];
-			const potentialUrlKeys = new Set();
+			potentialUrlKeys.clear();
 			if (trendStory) {
 				const potentialCandidates = normalizeTrendPotentialImages(
 					trendStory.potentialImages || []
