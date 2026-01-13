@@ -1318,6 +1318,40 @@ function safeSlug(text = "", max = 60) {
 		.slice(0, max);
 }
 
+function normalizeTrendPotentialImages(list = []) {
+	if (!Array.isArray(list)) return [];
+	const out = [];
+	const seen = new Set();
+	for (const item of list) {
+		if (!item) continue;
+		const url = String(
+			item.imageurl ||
+				item.imageUrl ||
+				item.url ||
+				item.link ||
+				item.originalUrl ||
+				""
+		).trim();
+		if (!isHttpUrl(url) || isLikelyThumbnailUrl(url)) continue;
+		const key = normalizeImageUrlKey(url);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push({
+			url,
+			source: String(
+				item.source || item.pageUrl || item.contextLink || ""
+			).trim(),
+			title: String(
+				item.description || item.title || item.caption || ""
+			).trim(),
+			width: item.width || null,
+			height: item.height || null,
+			origin: "trend",
+		});
+	}
+	return out;
+}
+
 function normalizeTrendStory(raw = {}) {
 	const baseTitle = String(
 		raw.trendDialogTitle ||
@@ -1368,6 +1402,7 @@ function normalizeTrendStory(raw = {}) {
 		],
 		{ limit: 10 }
 	).filter((u) => isHttpUrl(u));
+	const potentialImages = normalizeTrendPotentialImages(raw.potentialImages);
 	const keywords = uniqueStrings(
 		[
 			...searchPhrases,
@@ -1396,6 +1431,7 @@ function normalizeTrendStory(raw = {}) {
 		trendScore: Number(raw.trendScore) || 0,
 		image,
 		images,
+		potentialImages,
 		articles,
 		keywords,
 	};
@@ -1406,6 +1442,7 @@ async function fetchTrendsStories({
 	geo = LONG_VIDEO_TRENDS_GEO,
 	language = "English",
 	baseUrl,
+	topicCount,
 } = {}) {
 	const categoryId = resolveTrendsCategoryId(categoryLabel);
 	const params = new URLSearchParams({
@@ -1414,7 +1451,12 @@ async function fetchTrendsStories({
 		language,
 		category: String(categoryId),
 		includeImages: "1",
+		includePotentialImages: "1",
+		long: "1",
 	});
+	if (Number.isFinite(Number(topicCount))) {
+		params.set("topics", String(Math.max(1, Math.min(3, Number(topicCount)))));
+	}
 	const candidates = buildTrendsApiCandidates(baseUrl);
 	for (let i = 0; i < candidates.length; i++) {
 		const url = `${candidates[i]}?${params.toString()}`;
@@ -2036,6 +2078,7 @@ async function selectTopics({
 		geo: LONG_VIDEO_TRENDS_GEO,
 		language,
 		baseUrl,
+		topicCount: desired,
 	});
 	if (!trendStories.length) {
 		if (LONG_VIDEO_REQUIRE_TRENDS) {
@@ -3364,15 +3407,9 @@ async function prepareImageSegments({
 		};
 	}
 
-	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) {
-		logJob(jobId, "image segments skipped (CSE missing)");
-		return {
-			timeline: timeline.map((seg) =>
-				seg.visualType === "image" ? { ...seg, visualType: "presenter" } : seg
-			),
-			segmentImagePaths: new Map(),
-			imagePlanSummary: [],
-		};
+	const cseAvailable = Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
+	if (!cseAvailable) {
+		logJob(jobId, "image segments CSE disabled; using seed images only");
 	}
 
 	const queryCache = new Map();
@@ -3390,36 +3427,51 @@ async function prepareImageSegments({
 
 	for (let i = 0; i < (topics || []).length; i++) {
 		const t = topics[i] || {};
+		const story = t.trendStory || {};
 		const label = String(t.displayTopic || t.topic || "").trim();
 		const keywordHints = uniqueStrings(
 			[
 				...(Array.isArray(t.keywords) ? t.keywords : []),
-				...(t.trendStory?.searchPhrases || []),
-				...(t.trendStory?.entityNames || []),
+				...(story.searchPhrases || []),
+				...(story.entityNames || []),
 			],
 			{ limit: 10 }
 		);
-		const articleTitles = (t.trendStory?.articles || [])
+		const articleTitles = (story.articles || [])
 			.map((a) => a.title)
 			.filter(Boolean);
-		const articleUrls = (t.trendStory?.articles || [])
+		const articleUrls = (story.articles || [])
 			.map((a) => a.url)
 			.filter((u) => isHttpUrl(u));
+		const potentialUrls = uniqueStrings(
+			(Array.isArray(story.potentialImages) ? story.potentialImages : [])
+				.map((p) => p?.url)
+				.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
+			{ limit: 14 }
+		);
+		const potentialKeys = new Set(
+			potentialUrls.map((u) => normalizeImageUrlKey(u))
+		);
 		const seedUrls = uniqueStrings(
 			[
-				t.trendStory?.image,
-				...(Array.isArray(t.trendStory?.images) ? t.trendStory.images : []),
-				...(t.trendStory?.articles || [])
+				...(Array.isArray(t.images) ? t.images : []),
+				t.image,
+				story.image,
+				...(Array.isArray(story.images) ? story.images : []),
+				...(story.articles || [])
 					.map((a) => a.image)
 					.filter((u) => isHttpUrl(u)),
 			],
-			{ limit: 10 }
-		);
+			{ limit: 12 }
+		)
+			.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
+			.filter((u) => !potentialKeys.has(normalizeImageUrlKey(u)));
 		topicMetaByIndex.set(i, {
 			label,
 			keywordHints,
 			articleTitles,
 			articleUrls,
+			potentialUrls,
 			seedUrls,
 		});
 	}
@@ -3434,6 +3486,23 @@ async function prepareImageSegments({
 	const segmentImagePaths = new Map();
 	const imagePlanSummary = [];
 	const updated = [];
+	const imageSourceSummary = {
+		segments: 0,
+		plannedUrls: 0,
+		potentialUrls: 0,
+		seedUrls: 0,
+		plannedAvailable: 0,
+		cseQueryCalls: 0,
+		cseTopicCalls: 0,
+		cseCacheHits: 0,
+		cseUrls: 0,
+		pickedTotal: 0,
+		pickedPlanned: 0,
+		pickedPotential: 0,
+		pickedCse: 0,
+		pickedSeed: 0,
+		pickedFallback: 0,
+	};
 
 	for (const seg of timeline) {
 		if (seg.visualType !== "image") {
@@ -3474,28 +3543,70 @@ async function prepareImageSegments({
 			segmentTokens,
 		});
 
+		const plannedSegmentUrls = dedupeUrlsPreserveOrder(
+			Array.isArray(seg.imageUrls) ? seg.imageUrls : []
+		).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
+		const potentialUrls = Array.isArray(meta.potentialUrls)
+			? meta.potentialUrls.filter(
+					(u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)
+			  )
+			: [];
+		const seedUrls = Array.isArray(meta.seedUrls)
+			? meta.seedUrls.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
+			: [];
+
+		const plannedUrlKeys = new Set(
+			plannedSegmentUrls.map((u) => normalizeImageUrlKey(u))
+		);
+		const potentialUrlKeys = new Set(
+			potentialUrls.map((u) => normalizeImageUrlKey(u))
+		);
+		const seedUrlKeys = new Set(seedUrls.map((u) => normalizeImageUrlKey(u)));
+
+		let candidates = dedupeUrlsPreserveOrder([
+			...plannedSegmentUrls,
+			...potentialUrls,
+			...seedUrls,
+		]);
+		const plannedAvailable = candidates.filter((url) => {
+			const key = normalizeImageUrlKey(url);
+			return !usedUrlsGlobal.has(key);
+		});
+		const allowCseTopUp =
+			cseAvailable && plannedAvailable.length < desiredCount;
+
+		let segmentCseQueryCalls = 0;
+		let segmentCseTopicCalls = 0;
+		let segmentCseCacheHits = 0;
+
 		const fromQueryUrls = [];
-		for (const qVariant of queryVariants) {
-			const cacheKey = `q::${qVariant}`;
-			let urls = queryCache.get(cacheKey);
-			if (!urls) {
-				urls = await fetchCseImagesForQuery(
-					qVariant,
-					topicTokens,
-					Math.max(12, desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
-					jobId,
-					{ maxPages: CSE_MAX_PAGES }
-				);
-				queryCache.set(cacheKey, urls);
+		if (allowCseTopUp) {
+			for (const qVariant of queryVariants) {
+				const cacheKey = `q::${qVariant}`;
+				let urls = queryCache.get(cacheKey);
+				if (!urls) {
+					segmentCseQueryCalls += 1;
+					urls = await fetchCseImagesForQuery(
+						qVariant,
+						topicTokens,
+						Math.max(12, desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
+						jobId,
+						{ maxPages: CSE_MAX_PAGES }
+					);
+					queryCache.set(cacheKey, urls);
+				} else {
+					segmentCseCacheHits += 1;
+				}
+				fromQueryUrls.push(...(urls || []));
 			}
-			fromQueryUrls.push(...(urls || []));
 		}
 
 		let fromTopicUrls = [];
-		if (effectiveTopicLabel) {
+		if (allowCseTopUp && effectiveTopicLabel) {
 			const topicKey = `topic::${topicIndex}`;
 			fromTopicUrls = topicCache.get(topicKey) || [];
 			if (!fromTopicUrls.length) {
+				segmentCseTopicCalls += 1;
 				const topicExtras = uniqueStrings(
 					[...queryVariants, ...(segmentTokens || [])],
 					{ limit: 12 }
@@ -3513,24 +3624,31 @@ async function prepareImageSegments({
 					}
 				);
 				topicCache.set(topicKey, fromTopicUrls);
+			} else {
+				segmentCseCacheHits += 1;
 			}
 		}
 
-		let candidates = dedupeUrlsPreserveOrder([
-			...fromQueryUrls,
-			...fromTopicUrls,
-			...(Array.isArray(meta.seedUrls) ? meta.seedUrls : []),
-		]);
+		if (allowCseTopUp && (fromQueryUrls.length || fromTopicUrls.length)) {
+			candidates = dedupeUrlsPreserveOrder([
+				...candidates,
+				...fromQueryUrls,
+				...fromTopicUrls,
+			]);
+		}
 
 		logJob(jobId, "segment image candidates", {
 			segment: seg.index,
 			query,
 			topicLabel: effectiveTopicLabel,
 			queryVariants: queryVariants.length,
+			planned: plannedSegmentUrls.length,
+			potential: potentialUrls.length,
+			seeded: seedUrls.length,
 			fromQuery: fromQueryUrls.length,
 			fromTopic: fromTopicUrls.length,
-			seeded: Array.isArray(meta.seedUrls) ? meta.seedUrls.length : 0,
 			total: candidates.length,
+			cseTopUp: allowCseTopUp,
 		});
 
 		if (
@@ -3582,7 +3700,7 @@ async function prepareImageSegments({
 					topicLabel: effectiveTopicLabel,
 					limit: Math.max(6, desiredCount * 2),
 					articleUrls: meta.articleUrls,
-					seedUrls: meta.seedUrls,
+					seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
 				});
 				fallbackCache.set(fallbackKey, fallbackUrls);
 			}
@@ -3650,7 +3768,7 @@ async function prepareImageSegments({
 					topicLabel: effectiveTopicLabel,
 					limit: Math.max(6, desiredCount * 2),
 					articleUrls: meta.articleUrls,
-					seedUrls: meta.seedUrls,
+					seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
 				}));
 			fallbackCache.set(fallbackKey, fallbackUrls);
 			const fallbackPicks = pickSegmentImageUrls(
@@ -3693,6 +3811,59 @@ async function prepareImageSegments({
 			});
 		}
 
+		const cseUrlKeys = new Set(
+			[...fromQueryUrls, ...fromTopicUrls].map((u) => normalizeImageUrlKey(u))
+		);
+		let pickedPlanned = 0;
+		let pickedPotential = 0;
+		let pickedCse = 0;
+		let pickedSeed = 0;
+		let pickedFallback = 0;
+		for (const url of pickedUrls) {
+			const key = normalizeImageUrlKey(url);
+			if (plannedUrlKeys.has(key)) pickedPlanned += 1;
+			else if (potentialUrlKeys.has(key)) pickedPotential += 1;
+			else if (cseUrlKeys.has(key)) pickedCse += 1;
+			else if (seedUrlKeys.has(key)) pickedSeed += 1;
+			else pickedFallback += 1;
+		}
+
+		logJob(jobId, "segment image source stats", {
+			segment: seg.index,
+			query,
+			topicLabel: effectiveTopicLabel,
+			planned: plannedSegmentUrls.length,
+			potential: potentialUrls.length,
+			seeded: seedUrls.length,
+			plannedAvailable: plannedAvailable.length,
+			cseQueryCalls: segmentCseQueryCalls,
+			cseTopicCalls: segmentCseTopicCalls,
+			cseCacheHits: segmentCseCacheHits,
+			cseUrls: fromQueryUrls.length + fromTopicUrls.length,
+			pickedTotal: pickedUrls.length,
+			pickedPlanned,
+			pickedPotential,
+			pickedCse,
+			pickedSeed,
+			pickedFallback,
+		});
+
+		imageSourceSummary.segments += 1;
+		imageSourceSummary.plannedUrls += plannedSegmentUrls.length;
+		imageSourceSummary.potentialUrls += potentialUrls.length;
+		imageSourceSummary.seedUrls += seedUrls.length;
+		imageSourceSummary.plannedAvailable += plannedAvailable.length;
+		imageSourceSummary.cseQueryCalls += segmentCseQueryCalls;
+		imageSourceSummary.cseTopicCalls += segmentCseTopicCalls;
+		imageSourceSummary.cseCacheHits += segmentCseCacheHits;
+		imageSourceSummary.cseUrls += fromQueryUrls.length + fromTopicUrls.length;
+		imageSourceSummary.pickedTotal += pickedUrls.length;
+		imageSourceSummary.pickedPlanned += pickedPlanned;
+		imageSourceSummary.pickedPotential += pickedPotential;
+		imageSourceSummary.pickedCse += pickedCse;
+		imageSourceSummary.pickedSeed += pickedSeed;
+		imageSourceSummary.pickedFallback += pickedFallback;
+
 		let cloudinaryUrls = [];
 		if (localPaths.length) {
 			cloudinaryUrls = await uploadSegmentImagesToCloudinary({
@@ -3727,6 +3898,10 @@ async function prepareImageSegments({
 			imageUrls: pickedUrls,
 			imageCloudinaryUrls: cloudinaryUrls,
 		});
+	}
+
+	if (imageSourceSummary.segments) {
+		logJob(jobId, "segment image source summary", imageSourceSummary);
 	}
 
 	return { timeline: updated, segmentImagePaths, imagePlanSummary };

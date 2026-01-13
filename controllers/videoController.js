@@ -6498,6 +6498,7 @@ async function fetchHighQualityImagesForTopic({
 			title: link,
 			topicMatchCount: gate.count,
 			anchorHit: gate.anchorHit,
+			origin: "og",
 		});
 		dedupeSet.add(og);
 	}
@@ -6577,6 +6578,7 @@ async function fetchHighQualityImagesForTopic({
 					title,
 					topicMatchCount: gate.count,
 					anchorHit: gate.anchorHit,
+					origin: "cse",
 				});
 				dedupeSet.add(url);
 				if (candidates.length >= maxCandidates) break;
@@ -6636,6 +6638,7 @@ async function fetchHighQualityImagesForTopic({
 					title: "",
 					topicMatchCount: matchInfo.count,
 					anchorHit: false,
+					origin: "google-images",
 				});
 				dedupeSet.add(url);
 				if (candidates.length >= maxCandidates) break;
@@ -6967,6 +6970,65 @@ async function prepareSegmentImagePairsForShorts({
 		allowRunwaySegments,
 	});
 	const pairs = Array.isArray(trendImagePairs) ? trendImagePairs.slice() : [];
+	const potentialUrlKeys = new Set(
+		normalizeTrendPotentialImages(trendStory?.potentialImages || [])
+			.map((c) => normalizeImageKey(c.url))
+			.filter(Boolean)
+	);
+	for (const pair of pairs) {
+		if (!pair) continue;
+		const raw = pair.originalUrl || pair.cloudinaryUrl || "";
+		if (!raw) continue;
+		const key = normalizeImageKey(raw);
+		if (potentialUrlKeys.has(key)) {
+			pair.origin = "potential";
+		} else if (!pair.origin) {
+			pair.origin = "trend";
+		}
+	}
+	const logImageSourceSummary = (segmentsToUse) => {
+		const sourceSummary = {
+			segments: segmentsToUse.length,
+			assigned: 0,
+			potential: 0,
+			cse: 0,
+			googleImages: 0,
+			trend: 0,
+			other: 0,
+		};
+		const sourceDetail = [];
+		for (let i = 0; i < segmentsToUse.length; i++) {
+			const seg = segmentsToUse[i];
+			if (
+				!Number.isInteger(seg.imageIndex) ||
+				seg.imageIndex < 0 ||
+				seg.imageIndex >= pairs.length
+			) {
+				continue;
+			}
+			const pair = pairs[seg.imageIndex] || {};
+			const url = pair.originalUrl || pair.cloudinaryUrl || "";
+			const key = normalizeImageKey(url);
+			let source = pair.origin || "other";
+			if (potentialUrlKeys.has(key)) {
+				source = "potential";
+			}
+			sourceSummary.assigned += 1;
+			if (source === "potential") sourceSummary.potential += 1;
+			else if (source === "cse") sourceSummary.cse += 1;
+			else if (source === "google-images") sourceSummary.googleImages += 1;
+			else if (source === "trend") sourceSummary.trend += 1;
+			else sourceSummary.other += 1;
+			sourceDetail.push({
+				segment: seg.index || i + 1,
+				source,
+			});
+		}
+		console.log("[Shorts] segment image source summary", sourceSummary);
+		console.log("[Shorts] segment image source detail", {
+			segments: sourceDetail,
+		});
+	};
 	const skipRunwaySegments = allowRunwaySegments && hadPlanImages;
 	const forceStaticOnRunwaySegments = allowRunwaySegments && !hadPlanImages;
 	if (skipSearch) {
@@ -7018,6 +7080,7 @@ async function prepareSegmentImagePairsForShorts({
 			images: pairs.length,
 			skipRunwaySegments,
 		});
+		logImageSourceSummary(safeSegments);
 		return { segments: safeSegments, trendImagePairs: pairs };
 	}
 	const urlToIndex = new Map();
@@ -7372,6 +7435,15 @@ async function prepareSegmentImagePairsForShorts({
 			qaHits: qaCandidates.length,
 		});
 
+		const candidateOriginByKey = new Map();
+		for (const cand of candidates) {
+			if (!cand?.url) continue;
+			const key = normalizeImageKey(cand.url);
+			if (candidateOriginByKey.has(key)) continue;
+			const origin = cand.origin || "";
+			candidateOriginByKey.set(key, origin);
+		}
+
 		const candidateUrlsRaw = candidates.map((c) => c.url).filter(Boolean);
 		const candidateUrls = filterBlockedUrls(candidateUrlsRaw);
 		const candidatePool = candidateUrls.length
@@ -7427,6 +7499,10 @@ async function prepareSegmentImagePairsForShorts({
 				);
 				if (!picked) return false;
 				try {
+					const pickedKey = normalizeImageKey(picked);
+					const origin =
+						candidateOriginByKey.get(pickedKey) ||
+						(potentialUrlKeys.has(pickedKey) ? "potential" : "search");
 					const up = await uploadTrendImageToCloudinary(
 						picked,
 						ratio,
@@ -7434,7 +7510,7 @@ async function prepareSegmentImagePairsForShorts({
 							seg.index || i + 1
 						}`
 					);
-					pairs.push({ originalUrl: picked, cloudinaryUrl: up.url });
+					pairs.push({ originalUrl: picked, cloudinaryUrl: up.url, origin });
 					const newIdx = pairs.length - 1;
 					urlToIndex.set(normalizeImageKey(picked), newIdx);
 					seg.imageIndex = newIdx;
@@ -7599,10 +7675,22 @@ async function prepareSegmentImagePairsForShorts({
 			const candidatePool = candidateUrls.length
 				? candidateUrls
 				: candidateUrlsRaw;
+			const candidateOriginByKey = new Map();
+			for (const cand of qaCandidates) {
+				if (!cand?.url) continue;
+				const key = normalizeImageKey(cand.url);
+				if (candidateOriginByKey.has(key)) continue;
+				const origin = cand.origin || "";
+				candidateOriginByKey.set(key, origin);
+			}
 			const picked = pickSegmentImageUrl(candidatePool, usedUrlKeys, usedHosts);
 			if (!picked) continue;
 
 			try {
+				const pickedKey = normalizeImageKey(picked);
+				const origin =
+					candidateOriginByKey.get(pickedKey) ||
+					(potentialUrlKeys.has(pickedKey) ? "potential" : "search");
 				const up = await uploadTrendImageToCloudinary(
 					picked,
 					ratio,
@@ -7610,7 +7698,7 @@ async function prepareSegmentImagePairsForShorts({
 						seg.index || i + 1
 					}`
 				);
-				pairs.push({ originalUrl: picked, cloudinaryUrl: up.url });
+				pairs.push({ originalUrl: picked, cloudinaryUrl: up.url, origin });
 				const newIdx = pairs.length - 1;
 				urlToIndex.set(normalizeImageKey(picked), newIdx);
 				indexCounts.set(seg.imageIndex, count - 1);
@@ -7648,6 +7736,7 @@ async function prepareSegmentImagePairsForShorts({
 			uniqueRatio: Number(uniqueRatio.toFixed(2)),
 		});
 	}
+	logImageSourceSummary(safeSegments);
 	console.log("[Shorts] segment image refinement summary", {
 		...stats,
 		finalPairs: pairs.length,
@@ -10642,11 +10731,15 @@ exports.createVideo = async (req, res) => {
 			const targetPoolSize = Math.min(6, Math.max(4, segLens.length || 6));
 			const pageSignalCache = new Map();
 			const seedCandidates = [];
+			const potentialUrlKeys = new Set();
 			if (trendStory) {
 				const potentialCandidates = normalizeTrendPotentialImages(
 					trendStory.potentialImages || []
 				);
 				if (potentialCandidates.length) {
+					for (const cand of potentialCandidates) {
+						if (cand?.url) potentialUrlKeys.add(normalizeImageKey(cand.url));
+					}
 					seedCandidates.push(...potentialCandidates);
 				}
 				const seedUrls = pickTrendImagesForRatio(trendStory, ratio, 14);
@@ -10757,6 +10850,20 @@ exports.createVideo = async (req, res) => {
 				combinedCandidates = mergeCandidates([combinedCandidates, qaFallback]);
 			}
 
+			const originByKey = new Map();
+			const recordOrigin = (list = []) => {
+				for (const cand of list || []) {
+					const url = cand?.url;
+					if (!url) continue;
+					const key = normalizeImageKey(url);
+					if (originByKey.has(key)) continue;
+					const origin = cand.origin || "";
+					originByKey.set(key, origin);
+				}
+			};
+			recordOrigin(combinedCandidates);
+			recordOrigin(normalizedSeeds);
+
 			const ranked = combinedCandidates.slice().sort((a, b) => {
 				const aW = Number(a.width) || 0;
 				const aH = Number(a.height) || 0;
@@ -10825,6 +10932,11 @@ exports.createVideo = async (req, res) => {
 			const uploadLimit = Math.min(6, trendImagesForRatio.length); // 5 needed + 1 backup
 			for (let i = 0; i < uploadLimit; i++) {
 				const url = trendImagesForRatio[i];
+				const key = normalizeImageKey(url);
+				const originHint = originByKey.get(key) || "";
+				const origin = potentialUrlKeys.has(key)
+					? "potential"
+					: originHint || "trend";
 				try {
 					const up = await uploadTrendImageToCloudinary(
 						url,
@@ -10834,6 +10946,7 @@ exports.createVideo = async (req, res) => {
 					trendImagePairs.push({
 						originalUrl: url,
 						cloudinaryUrl: up.url,
+						origin,
 					});
 				} catch (e) {
 					console.warn("[Cloudinary] upload failed, using original URL", {
@@ -10843,6 +10956,7 @@ exports.createVideo = async (req, res) => {
 					trendImagePairs.push({
 						originalUrl: url,
 						cloudinaryUrl: null,
+						origin,
 					});
 				}
 			}
