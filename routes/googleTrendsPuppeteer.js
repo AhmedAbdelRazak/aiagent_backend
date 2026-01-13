@@ -1,4 +1,4 @@
-﻿/* routes/googleTrendsPuppeteer.js — bullet‑proof, updated 2025‑11‑28 */
+﻿/* routes/googleTrendsPuppeteer.js � bullet-proof, updated 2025-11-28 */
 /* eslint-disable no-console, max-len */
 
 require("dotenv").config();
@@ -13,14 +13,16 @@ const puppeteer = require("puppeteer-extra");
 const Stealth = require("puppeteer-extra-plugin-stealth");
 const OpenAI = require("openai");
 const googleTrends = require("google-trends-api");
+const Video = require("../models/Video");
+const { googleTrendingCategoriesId } = require("../assets/utils");
 
 puppeteer.use(Stealth());
 
 const router = express.Router();
 
-const ROW_LIMIT = 8; // how many rising‑search rows we scrape
-const ROW_TIMEOUT_MS = 12_000; // per‑row timeout (ms)
-const PROTOCOL_TIMEOUT = 120_000; // whole‑browser cap (ms)
+const ROW_LIMIT = 8; // how many rising-search rows we scrape
+const ROW_TIMEOUT_MS = 12_000; // per-row timeout (ms)
+const PROTOCOL_TIMEOUT = 120_000; // whole-browser cap (ms)
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
 const log = (...m) => console.log("[Trends]", ...m);
 const ffmpegPath =
@@ -43,6 +45,7 @@ const TRENDS_SIGNAL_RETRY_DELAY_MS = 350;
 const TRENDS_SIGNAL_TIME_FALLBACKS = ["now 7-d", "today 1-m"];
 const RELATED_QUERIES_LIMIT = 12;
 const TRENDS_CACHE_TTL_MS = 5 * 60 * 1000;
+const RECENT_VIDEO_LOOKBACK_DAYS = 3;
 const POTENTIAL_IMAGE_TOPIC_LIMIT = ROW_LIMIT;
 const POTENTIAL_IMAGE_MIN_PER_STORY = 4;
 const POTENTIAL_IMAGE_TOPUP_TOPIC_LIMIT = 5;
@@ -177,6 +180,154 @@ function clampInt(value, min, max) {
 	return Math.max(min, Math.min(max, Math.round(n)));
 }
 
+function normalizeRecentTopicKey(value = "") {
+	return String(value || "")
+		.toLowerCase()
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function normalizeObjectId(value = "") {
+	const raw = String(value || "").trim();
+	return /^[a-f0-9]{24}$/i.test(raw) ? raw : "";
+}
+
+function buildRecentTopicSet(videos = []) {
+	const used = new Set();
+	for (const video of Array.isArray(videos) ? videos : []) {
+		const candidates = [
+			video?.topic,
+			video?.seoTitle,
+			...(Array.isArray(video?.topics) ? video.topics : []),
+		].filter(Boolean);
+		for (const candidate of candidates) {
+			const norm = normalizeRecentTopicKey(candidate);
+			if (!norm) continue;
+			used.add(norm);
+			const tokens = norm.split(" ").filter(Boolean);
+			if (tokens.length >= 2) {
+				const firstTwo = tokens.slice(0, 2).join(" ");
+				if (firstTwo.length >= 4) used.add(firstTwo);
+			}
+			if (tokens.length >= 3) {
+				const firstThree = tokens.slice(0, 3).join(" ");
+				if (firstThree.length >= 6) used.add(firstThree);
+			}
+		}
+	}
+	return used;
+}
+
+function buildRecentTopicMatcher(recentTopics) {
+	if (!recentTopics || recentTopics.size === 0) return () => false;
+	const usedList = Array.from(recentTopics);
+	return (term) => {
+		const normalized = normalizeRecentTopicKey(term);
+		if (!normalized) return false;
+		if (recentTopics.has(normalized)) return true;
+		return usedList.some(
+			(used) => used && (used.includes(normalized) || normalized.includes(used))
+		);
+	};
+}
+
+function resolveVideoCategoriesFromQuery(value = "") {
+	const raw = String(value || "").trim();
+	if (!raw) return [];
+	if (!/^\d+$/.test(raw)) return [raw];
+	const id = Number(raw);
+	if (!Number.isFinite(id) || id === 0) return [];
+	const matches = googleTrendingCategoriesId
+		.filter((entry) => Array.isArray(entry.ids))
+		.filter((entry) => entry.ids.some((item) => Number(item) === id))
+		.map((entry) => entry.category)
+		.filter(Boolean);
+	return uniqueStrings(matches);
+}
+
+async function loadRecentVideoTopics({ userId, category, isLongVideo } = {}) {
+	const cutoff = new Date(
+		Date.now() - RECENT_VIDEO_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
+	);
+	const query = { createdAt: { $gte: cutoff } };
+	if (typeof isLongVideo === "boolean") query.isLongVideo = isLongVideo;
+	if (userId) query.user = userId;
+
+	const categories = resolveVideoCategoriesFromQuery(category);
+	if (categories.length === 1) query.category = categories[0];
+	else if (categories.length > 1) query.category = { $in: categories };
+
+	try {
+		const recent = await Video.find(query)
+			.select("topic seoTitle topics")
+			.lean();
+		return buildRecentTopicSet(recent);
+	} catch (err) {
+		log("Recent topics lookup failed", {
+			error: err.message || String(err),
+		});
+		return new Set();
+	}
+}
+
+function filterStoriesByRecentTopics(stories = [], recentTopics) {
+	const list = Array.isArray(stories) ? stories : [];
+	if (!recentTopics || recentTopics.size === 0) return list;
+	const usedList = Array.from(recentTopics);
+
+	const isTermUsed = (term) => {
+		const normalized = normalizeRecentTopicKey(term);
+		if (!normalized) return false;
+		if (recentTopics.has(normalized)) return true;
+		return usedList.some(
+			(used) => used && (used.includes(normalized) || normalized.includes(used))
+		);
+	};
+
+	return list.filter((story) => {
+		const candidates = [
+			story?.trendDialogTitle,
+			story?.title,
+			story?.rawTitle,
+			story?.trendSearchTerm,
+			story?.seoTitle,
+			story?.youtubeShortTitle,
+			...(Array.isArray(story?.entityNames) ? story.entityNames : []),
+			...(Array.isArray(story?.searchPhrases) ? story.searchPhrases : []),
+			...(Array.isArray(story?.articles)
+				? story.articles.map((a) => a?.title)
+				: []),
+		];
+		return !candidates.some((candidate) => isTermUsed(candidate));
+	});
+}
+
+async function applyRecentTopicFilter(
+	payload,
+	{ userId, category, isLongVideo, topicsLimit } = {}
+) {
+	if (!payload || typeof payload !== "object") return payload;
+	const baseStories = Array.isArray(payload.stories) ? payload.stories : [];
+	let filteredStories = baseStories;
+
+	const recentTopics = await loadRecentVideoTopics({
+		userId,
+		category,
+		isLongVideo,
+	});
+	if (recentTopics && recentTopics.size) {
+		filteredStories = filterStoriesByRecentTopics(baseStories, recentTopics);
+	}
+	if (topicsLimit) {
+		filteredStories = filteredStories.slice(0, topicsLimit);
+	}
+
+	return {
+		...payload,
+		stories: filteredStories,
+	};
+}
+
 function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -212,7 +363,7 @@ function isLikelyThumbnailUrl(u = "") {
 	return false;
 }
 
-/* ───────────────────────────────────────────── OpenAI client + helpers */
+/* --------------------------------------------- OpenAI client + helpers */
 
 let openai = null;
 const CHATGPT_API_TOKEN =
@@ -1026,7 +1177,7 @@ async function enrichStoriesWithTrendSignals(stories, { geo, hours } = {}) {
 	return out;
 }
 /**
- * Use GPT‑5.1 to generate SEO‑optimized blog + Shorts titles per story.
+ * Use GPT-5.1 to generate SEO-optimized blog + Shorts titles per story.
  * If anything fails, we just return the original stories unchanged.
  */
 async function enhanceStoriesWithOpenAI(
@@ -1131,10 +1282,10 @@ async function enhanceStoriesWithOpenAI(
 	}
 }
 
-/* ───────────────────────────────────────────────────────────── helpers */
+/* ------------------------------------------------------------- helpers */
 
 const urlFor = ({ geo, hours, category, sort }) => {
-	// Clamp hours 1–168 and actually use the requested window.
+	// Clamp hours 1�168 and actually use the requested window.
 	// const hrs = Math.min(Math.max(Number(hours) || 24, 1), 168);
 
 	const params = new URLSearchParams({
@@ -1156,7 +1307,7 @@ const urlFor = ({ geo, hours, category, sort }) => {
 	return `https://trends.google.com/trending?${params.toString()}`;
 };
 
-/* ───────────────────────────────────────────────────── cached browser */
+/* ----------------------------------------------------- cached browser */
 
 let browser; // one instance per container / PM2 worker
 
@@ -1180,7 +1331,7 @@ async function getBrowser() {
 	return browser;
 }
 
-/* ───────────────────────────────────── article image helpers (Node side) */
+/* ------------------------------------- article image helpers (Node side) */
 
 async function fetchHtmlWithTimeout(url, timeoutMs) {
 	// Older Node may not have global fetch; if so we just skip enrichment.
@@ -1312,7 +1463,7 @@ async function hydrateArticleImages(stories) {
 	);
 }
 
-/* ───────────────────────────────────────────────────────────── scraper */
+/* ------------------------------------------------------------- scraper */
 
 /* potential image helpers (Puppeteer) */
 
@@ -1395,6 +1546,7 @@ function guessDimensionsFromUrl(rawUrl = "") {
 		if (Number.isFinite(width)) output.width = width;
 		if (Number.isFinite(height)) output.height = height;
 	}
+
 	try {
 		const parsed = new URL(rawUrl);
 		const readInt = (key) => {
@@ -2849,7 +3001,7 @@ async function scrapeGoogleImages({
 	}
 }
 
-async function scrape({ geo, hours, category, sort }) {
+async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
 	const page = await (await getBrowser()).newPage();
 	page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
 
@@ -2875,6 +3027,152 @@ async function scrape({ geo, hours, category, sort }) {
 
 	const stories = [];
 	const seenTerms = new Set();
+	const topicLimit = clampInt(limit ?? ROW_LIMIT, 1, ROW_LIMIT);
+	const isRecentTopic = buildRecentTopicMatcher(skipTerms);
+
+	const processRow = async ({ id, term }) => {
+		if (!term) return;
+		const normTerm = term.toLowerCase().trim();
+		if (seenTerms.has(normTerm)) {
+			log(`Skip duplicate term "${term}"`);
+			return;
+		}
+
+		const result = await page.evaluate(
+			// eslint-disable-next-line no-undef
+			async (rowId, rowTerm, rowMs) => {
+				const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+				const deadline = Date.now() + rowMs;
+
+				const clickRow = () => {
+					const tr = document.querySelector(`tr[data-row-id="${rowId}"]`);
+					const cell = tr?.querySelector("td:nth-child(2)");
+					if (!cell) return false;
+					cell.scrollIntoView({ block: "center" });
+					cell.click();
+					console.log(`Clicked ${rowTerm}`);
+					return true;
+				};
+
+				if (!clickRow()) return { status: "row-not-found" };
+
+				while (Date.now() < deadline) {
+					const dialog = document.querySelector(
+						'div[aria-modal="true"][role="dialog"][aria-label]'
+					);
+
+					if (dialog) {
+						const label = dialog.getAttribute("aria-label") || "";
+						const heading =
+							dialog.querySelector('[role="heading"]')?.textContent.trim() ||
+							dialog.querySelector("h1,h2,h3")?.textContent.trim() ||
+							"";
+						const normalizedLabel = label.trim().toLowerCase();
+						const normalizedTerm = rowTerm.trim().toLowerCase();
+
+						// Some dialogs prepend extra words; accept prefix match.
+						const isMatch =
+							normalizedLabel === normalizedTerm ||
+							normalizedLabel.startsWith(normalizedTerm);
+
+						if (isMatch) {
+							let anchors = [];
+							const t2 = Date.now() + 1_000;
+							while (Date.now() < t2) {
+								anchors = [
+									...dialog.querySelectorAll(
+										'a[target="_blank"][href^="http"]'
+									),
+								];
+								if (anchors.length) break;
+								// eslint-disable-next-line no-await-in-loop
+								await sleep(120);
+							}
+
+							const arts = anchors.slice(0, 6).map((a) => ({
+								title:
+									a.querySelector('[role="heading"]')?.textContent.trim() ||
+									a.querySelector("div.Q0LBCe")?.textContent.trim() ||
+									a.textContent.trim(),
+								url: a.href,
+								image: a.querySelector("img")?.src || null,
+							}));
+
+							// Close the dialog (handle layout variants).
+							(
+								dialog.querySelector(
+									'div[aria-label="Close search"], div[aria-label="Close"], button.pYTkkf-Bz112c-LgbsSe'
+								) || document.querySelector('div[aria-label="Close"]')
+							)?.click() ||
+								document.dispatchEvent(
+									new KeyboardEvent("keydown", { key: "Escape" })
+								);
+
+							return {
+								status: "ok",
+								dialogTitle: heading || label || rowTerm,
+								image: arts[0]?.image || null,
+								articles: arts,
+							};
+						}
+					}
+
+					// If dialog vanished (virtual scroll) => reclick.
+					if (!dialog) clickRow();
+					// eslint-disable-next-line no-await-in-loop
+					await sleep(200);
+				}
+
+				return { status: "timeout" };
+			},
+			id,
+			term,
+			ROW_TIMEOUT_MS
+		);
+
+		log(`Result for "${term}":`, result.status);
+
+		if (result.status === "ok") {
+			seenTerms.add(normTerm);
+
+			const rawTitle = term;
+			const dialogTitle = String(result.dialogTitle || "").trim();
+			const primaryTitle = dialogTitle || rawTitle;
+			const articles = Array.isArray(result.articles)
+				? result.articles.map((a) => ({
+						title: String(a.title || "").trim(),
+						url: a.url,
+						image: a.image || null,
+				  }))
+				: [];
+			const searchPhrases = uniqueStrings(
+				[primaryTitle, rawTitle, ...articles.map((a) => a.title)],
+				{ limit: 6 }
+			);
+			const entityNames = uniqueStrings([primaryTitle, rawTitle]);
+
+			stories.push({
+				title: primaryTitle,
+				rawTitle,
+				trendDialogTitle: dialogTitle || null,
+				searchPhrases,
+				image: result.image,
+				entityNames,
+				articles,
+			});
+		}
+
+		// Wait until dialog truly closed before next loop.
+		try {
+			await page.waitForFunction(
+				() => !document.querySelector('div[aria-modal="true"][role="dialog"]'),
+				{ timeout: 5_000 }
+			);
+			await page.waitForTimeout(250);
+		} catch (e) {
+			// ignored
+		}
+	};
 
 	try {
 		await page.goto(targetURL, { waitUntil: "domcontentloaded" });
@@ -2895,149 +3193,23 @@ async function scrape({ geo, hours, category, sort }) {
 		);
 		log("Row list:", rows);
 
-		for (const { id, term } of rows) {
-			if (!term) continue;
-			const normTerm = term.toLowerCase().trim();
-			if (seenTerms.has(normTerm)) {
-				log(`Skip duplicate term "${term}"`);
+		const deferredRows = [];
+		for (const row of rows) {
+			if (stories.length >= topicLimit) break;
+			if (!row?.term) continue;
+			if (isRecentTopic(row.term)) {
+				deferredRows.push(row);
 				continue;
 			}
+			// eslint-disable-next-line no-await-in-loop
+			await processRow(row);
+		}
 
-			const result = await page.evaluate(
-				// eslint-disable-next-line no-undef
-				async (rowId, rowTerm, rowMs) => {
-					const sleep = (ms) =>
-						new Promise((resolve) => setTimeout(resolve, ms));
-					const deadline = Date.now() + rowMs;
-
-					const clickRow = () => {
-						const tr = document.querySelector(`tr[data-row-id="${rowId}"]`);
-						const cell = tr?.querySelector("td:nth-child(2)");
-						if (!cell) return false;
-						cell.scrollIntoView({ block: "center" });
-						cell.click();
-						console.log(`Clicked ${rowTerm}`);
-						return true;
-					};
-
-					if (!clickRow()) return { status: "row-not-found" };
-
-					while (Date.now() < deadline) {
-						const dialog = document.querySelector(
-							'div[aria-modal="true"][role="dialog"][aria-label]'
-						);
-
-						if (dialog) {
-							const label = dialog.getAttribute("aria-label") || "";
-							const heading =
-								dialog.querySelector('[role="heading"]')?.textContent.trim() ||
-								dialog.querySelector("h1,h2,h3")?.textContent.trim() ||
-								"";
-							const normalizedLabel = label.trim().toLowerCase();
-							const normalizedTerm = rowTerm.trim().toLowerCase();
-
-							// Some dialogs prepend extra words; accept prefix match.
-							const isMatch =
-								normalizedLabel === normalizedTerm ||
-								normalizedLabel.startsWith(normalizedTerm);
-
-							if (isMatch) {
-								let anchors = [];
-								const t2 = Date.now() + 1_000;
-								while (Date.now() < t2) {
-									anchors = [
-										...dialog.querySelectorAll(
-											'a[target="_blank"][href^="http"]'
-										),
-									];
-									if (anchors.length) break;
-									// eslint-disable-next-line no-await-in-loop
-									await sleep(120);
-								}
-
-								const arts = anchors.slice(0, 6).map((a) => ({
-									title:
-										a.querySelector('[role="heading"]')?.textContent.trim() ||
-										a.querySelector("div.Q0LBCe")?.textContent.trim() ||
-										a.textContent.trim(),
-									url: a.href,
-									image: a.querySelector("img")?.src || null,
-								}));
-
-								// Close the dialog (handle layout variants).
-								(
-									dialog.querySelector(
-										'div[aria-label="Close search"], div[aria-label="Close"], button.pYTkkf-Bz112c-LgbsSe'
-									) || document.querySelector('div[aria-label="Close"]')
-								)?.click() ||
-									document.dispatchEvent(
-										new KeyboardEvent("keydown", { key: "Escape" })
-									);
-
-								return {
-									status: "ok",
-									dialogTitle: heading || label || rowTerm,
-									image: arts[0]?.image || null,
-									articles: arts,
-								};
-							}
-						}
-
-						// If dialog vanished (virtual scroll) → reclick.
-						if (!dialog) clickRow();
-						// eslint-disable-next-line no-await-in-loop
-						await sleep(200);
-					}
-
-					return { status: "timeout" };
-				},
-				id,
-				term,
-				ROW_TIMEOUT_MS
-			);
-
-			log(`Result for "${term}":`, result.status);
-
-			if (result.status === "ok") {
-				seenTerms.add(normTerm);
-
-				const rawTitle = term;
-				const dialogTitle = String(result.dialogTitle || "").trim();
-				const primaryTitle = dialogTitle || rawTitle;
-				const articles = Array.isArray(result.articles)
-					? result.articles.map((a) => ({
-							title: String(a.title || "").trim(),
-							url: a.url,
-							image: a.image || null,
-					  }))
-					: [];
-				const searchPhrases = uniqueStrings(
-					[primaryTitle, rawTitle, ...articles.map((a) => a.title)],
-					{ limit: 6 }
-				);
-				const entityNames = uniqueStrings([primaryTitle, rawTitle]);
-
-				stories.push({
-					title: primaryTitle,
-					rawTitle,
-					trendDialogTitle: dialogTitle || null,
-					searchPhrases,
-					image: result.image,
-					entityNames,
-					articles,
-				});
-			}
-
-			// Wait until dialog truly closed before next loop.
-			try {
-				await page.waitForFunction(
-					() =>
-						!document.querySelector('div[aria-modal="true"][role="dialog"]'),
-					{ timeout: 5_000 }
-				);
-				await page.waitForTimeout(250);
-			} catch (e) {
-				// ignored
+		if (stories.length < topicLimit && deferredRows.length) {
+			for (const row of deferredRows) {
+				if (stories.length >= topicLimit) break;
+				// eslint-disable-next-line no-await-in-loop
+				await processRow(row);
 			}
 		}
 	} finally {
@@ -3047,7 +3219,7 @@ async function scrape({ geo, hours, category, sort }) {
 	return stories;
 }
 
-/* ───────────────────────────────────────────────────────────── express API */
+/* ------------------------------------------------------------- express API */
 
 router.get("/google-images", async (req, res) => {
 	const query = String(req.query.q || req.query.query || "").trim();
@@ -3085,7 +3257,7 @@ router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
 	if (!/^[A-Z]{2}$/.test(geo)) {
 		return res.status(400).json({
-			error: "`geo` must be an ISO‑3166 alpha‑2 country code",
+			error: "`geo` must be an ISO-3166 alpha-2 country code",
 		});
 	}
 
@@ -3105,6 +3277,27 @@ router.get("/google-trends", async (req, res) => {
 	const skipSignals = ["1", "true", "yes", "on"].includes(
 		String(req.query.skipSignals || "").toLowerCase()
 	);
+	const topicsParamPresent = Object.prototype.hasOwnProperty.call(
+		req.query,
+		"topics"
+	);
+	const rawTopicsLimit = Number(req.query.topics);
+	const topicsLimit = Number.isFinite(rawTopicsLimit)
+		? clampInt(rawTopicsLimit, 1, ROW_LIMIT)
+		: null;
+	const useLimitedScrape = Boolean(topicsParamPresent && topicsLimit);
+	const shouldUseCache = !useLimitedScrape;
+	const longParamPresent = Object.prototype.hasOwnProperty.call(
+		req.query,
+		"long"
+	);
+	const isLongVideo = ["1", "true", "yes", "on"].includes(
+		String(req.query.long || "").toLowerCase()
+	);
+	const applyRecentFilter = topicsParamPresent || longParamPresent;
+	const userId = normalizeObjectId(
+		req.query.userId || req.query.user || req.user?._id || req.user?.id || ""
+	);
 	const cacheKey = buildTrendsCacheKey({
 		geo,
 		hours,
@@ -3119,21 +3312,45 @@ router.get("/google-trends", async (req, res) => {
 	for (const [key, entry] of trendsCache.entries()) {
 		if (!entry || entry.expiresAt <= now) trendsCache.delete(key);
 	}
-	const cached = trendsCache.get(cacheKey);
-	if (cached && cached.expiresAt > now) {
-		log("Trends cache hit", { geo, hours, category, sort });
-		return res.json(cached.payload);
+	if (shouldUseCache) {
+		const cached = trendsCache.get(cacheKey);
+		if (cached && cached.expiresAt > now) {
+			log("Trends cache hit", { geo, hours, category, sort });
+			if (!applyRecentFilter) {
+				return res.json(cached.payload);
+			}
+			const filteredPayload = await applyRecentTopicFilter(cached.payload, {
+				userId,
+				category,
+				isLongVideo,
+				topicsLimit,
+			});
+			return res.json(filteredPayload);
+		}
 	}
 
 	try {
+		const recentTopics =
+			useLimitedScrape && applyRecentFilter
+				? await loadRecentVideoTopics({
+						userId,
+						category,
+						isLongVideo,
+				  })
+				: null;
 		let stories = await scrape({
 			geo,
 			hours,
 			category,
 			sort,
+			limit: useLimitedScrape ? topicsLimit : ROW_LIMIT,
+			skipTerms: useLimitedScrape ? recentTopics : null,
 		});
+		if (useLimitedScrape && topicsLimit && stories.length > topicsLimit) {
+			stories = stories.slice(0, topicsLimit);
+		}
 
-		// Ask GPT‑5.1 for better blog + YouTube titles.
+		// Ask GPT-5.1 for better blog + YouTube titles.
 		//    This is optional and skipped if CHATGPT_API_TOKEN / OPENAI_API_KEY
 		//    is not configured or the call fails.
 		if (!skipOpenAI) {
@@ -3157,7 +3374,9 @@ router.get("/google-trends", async (req, res) => {
 
 		if (includePotentialImages) {
 			stories = await enrichStoriesWithPotentialImages(stories, {
-				topicLimit: POTENTIAL_IMAGE_TOPIC_LIMIT,
+				topicLimit: useLimitedScrape
+					? topicsLimit
+					: POTENTIAL_IMAGE_TOPIC_LIMIT,
 				minImagesPerStory: POTENTIAL_IMAGE_MIN_PER_STORY,
 				targetImagesPerStory: POTENTIAL_IMAGE_MAX_PER_STORY,
 				topUpTopics: isEntertainment ? POTENTIAL_IMAGE_TOPUP_TOPIC_LIMIT : 0,
@@ -3204,11 +3423,22 @@ router.get("/google-trends", async (req, res) => {
 			category,
 			stories,
 		};
-		trendsCache.set(cacheKey, {
-			expiresAt: Date.now() + TRENDS_CACHE_TTL_MS,
-			payload,
+		if (shouldUseCache) {
+			trendsCache.set(cacheKey, {
+				expiresAt: Date.now() + TRENDS_CACHE_TTL_MS,
+				payload,
+			});
+		}
+		if (!applyRecentFilter || useLimitedScrape) {
+			return res.json(payload);
+		}
+		const filteredPayload = await applyRecentTopicFilter(payload, {
+			userId,
+			category,
+			isLongVideo,
+			topicsLimit,
 		});
-		return res.json(payload);
+		return res.json(filteredPayload);
 	} catch (err) {
 		console.error(err);
 		return res.status(500).json({

@@ -4298,9 +4298,22 @@ async function fetchTrendingStory(
 	geo = "US",
 	usedTopics = new Set(),
 	language = DEFAULT_LANGUAGE,
-	{ requireStory = false, scheduleId = null } = {}
+	{
+		requireStory = false,
+		scheduleId = null,
+		userId = null,
+		topicsLimit = 1,
+		isLongVideo = false,
+	} = {}
 ) {
 	const id = resolveTrendsCategoryId(category);
+	const safeTopics = Number.isFinite(Number(topicsLimit))
+		? Math.max(1, Math.min(Math.round(Number(topicsLimit)), 8))
+		: 1;
+	const rawUserId = String(userId || "").trim();
+	const safeUserId = mongoose.Types.ObjectId.isValid(rawUserId)
+		? rawUserId
+		: "";
 	const baseUrl =
 		`${TRENDS_API_URL}?` +
 		qs.stringify({
@@ -4309,6 +4322,10 @@ async function fetchTrendingStory(
 			hours: 48,
 			language,
 			includePotentialImages: 1,
+			includeImages: 1,
+			topics: safeTopics,
+			long: isLongVideo ? 1 : 0,
+			...(safeUserId ? { userId: safeUserId } : {}),
 		});
 
 	const normTitle = (t) =>
@@ -4817,12 +4834,28 @@ Do not mention years before ${CURRENT_YEAR}.
 async function pullTrendsTopicList(
 	category,
 	geo = "US",
-	language = DEFAULT_LANGUAGE
+	language = DEFAULT_LANGUAGE,
+	{ userId = null, topicsLimit = 10, isLongVideo = false } = {}
 ) {
 	const id = resolveTrendsCategoryId(category);
+	const safeTopics = Number.isFinite(Number(topicsLimit))
+		? Math.max(1, Math.min(Math.round(Number(topicsLimit)), 12))
+		: 10;
+	const rawUserId = String(userId || "").trim();
+	const safeUserId = mongoose.Types.ObjectId.isValid(rawUserId)
+		? rawUserId
+		: "";
 	const baseUrl =
 		`${TRENDS_API_URL}?` +
-		qs.stringify({ geo, category: id, hours: 48, language });
+		qs.stringify({
+			geo,
+			category: id,
+			hours: 48,
+			language,
+			topics: safeTopics,
+			long: isLongVideo ? 1 : 0,
+			...(safeUserId ? { userId: safeUserId } : {}),
+		});
 
 	try {
 		const { data } = await axios.get(baseUrl, {
@@ -4843,14 +4876,22 @@ async function pullTrendsTopicList(
 	}
 }
 
-async function pickTrendingTopicFresh(category, language, country) {
+async function pickTrendingTopicFresh(
+	category,
+	language,
+	country,
+	{ userId = null, isLongVideo = false } = {}
+) {
 	const geo =
 		country && country.toLowerCase() !== "all countries"
 			? country.toUpperCase()
 			: "US";
 
 	try {
-		const trends = await pullTrendsTopicList(category, geo, language);
+		const trends = await pullTrendsTopicList(category, geo, language, {
+			userId,
+			isLongVideo,
+		});
 		if (Array.isArray(trends) && trends.length) return trends;
 	} catch (e) {
 		console.warn("[Trending] fallback list from Trends failed ?", e.message);
@@ -10314,6 +10355,9 @@ exports.createVideo = async (req, res) => {
 						scheduleJobMeta?._id ||
 						scheduleJobMeta?.id ||
 						null,
+					userId: user?._id || user?.id || null,
+					topicsLimit: 1,
+					isLongVideo: false,
 				}
 			);
 			if (trendStory && trendStory.title && !hasCustomPrompt) {
@@ -10374,7 +10418,10 @@ exports.createVideo = async (req, res) => {
 					? fallbackPool[0].topic
 					: choose(ALL_TOP5_TOPICS);
 			} else {
-				const list = await pickTrendingTopicFresh(category, language, country);
+				const list = await pickTrendingTopicFresh(category, language, country, {
+					userId: user?._id || user?.id || null,
+					isLongVideo: false,
+				});
 				topic = list.find((t) => !usedTopics.has(t)) || list[0];
 			}
 		}
