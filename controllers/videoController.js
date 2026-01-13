@@ -1136,9 +1136,22 @@ function stripTrendMetaPrefix(text = "") {
 function cleanAnchorCandidate(text = "") {
 	const cleaned = String(text || "")
 		.replace(/["'(){}\[\]]/g, "")
+		.replace(/[,:;]+/g, " ")
 		.replace(/\s+/g, " ")
 		.trim();
 	return stripTrendMetaPrefix(cleaned);
+}
+
+function trimAnchorClause(anchor = "") {
+	const cleaned = String(anchor || "").trim();
+	if (!cleaned) return "";
+	const clauseMatch = cleaned.match(
+		/\b(who|that|which|after|when|while|as|because|with|over|about|before)\b/i
+	);
+	if (!clauseMatch) return cleaned;
+	const idx = cleaned.toLowerCase().indexOf(clauseMatch[0].toLowerCase());
+	if (idx <= 0) return cleaned;
+	return cleaned.slice(0, idx).trim();
 }
 
 function detectFictionalContext(text = "") {
@@ -1280,7 +1293,8 @@ function pickShortsAnchorPhrase(topic = "", trendStory, contextStrings = []) {
 	if (!best) return fallback;
 	const words = best.split(/\s+/).filter(Boolean);
 	const trimmed = words.slice(0, 6).join(" ");
-	return trimmed || fallback;
+	const shortened = trimAnchorClause(trimmed);
+	return shortened || trimmed || fallback;
 }
 
 function pickIntentEvidenceLine(contextStrings = [], anchor = "", topic = "") {
@@ -1417,9 +1431,12 @@ function ensureAnchorInShortsSegments(
 	const first = segments[0];
 	const text = String(first?.scriptText || "").trim();
 	if (!text) return segments;
-	const anchorLower = anchor.toLowerCase();
+	const cleanedAnchor = cleanAnchorCandidate(anchor);
+	const safeAnchor = trimAnchorClause(cleanedAnchor) || cleanedAnchor || anchor;
+	if (!safeAnchor) return segments;
+	const anchorLower = safeAnchor.toLowerCase();
 	if (text.toLowerCase().includes(anchorLower)) return segments;
-	const merged = mergeAnchorIntoLeadText(text, anchor, domain);
+	const merged = mergeAnchorIntoLeadText(text, safeAnchor, domain);
 	const updated = segments.slice();
 	updated[0] = { ...first, scriptText: merged };
 	return updated;
@@ -2437,6 +2454,9 @@ function normalizePunctuationForTTS(text = "") {
 		.replace(/[\u201C\u201D]/g, '"')
 		.replace(/[\u2013\u2014]/g, "-");
 
+	// Strip quote marks around standalone words/phrases for smoother TTS
+	cleaned = cleaned.replace(/(^|\s)["']([^"']{1,80})["'](?=\s|$)/g, "$1$2");
+
 	// Remove URLs and emails that ElevenLabs will spell awkwardly
 	cleaned = cleaned.replace(/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi, " ");
 
@@ -2492,6 +2512,55 @@ function normalizeScriptForTTS(text = "", language = DEFAULT_LANGUAGE) {
 	return cleanForTTS(improved, langNote);
 }
 
+const TTS_NUMBER_WORD_RE =
+	/\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:\s+(?:one|two|three|four|five|six|seven|eight|nine))?\b/gi;
+const TTS_NUMBER_DIGIT_RE = /\b\d{1,3}(?:\.\d+)?\b/g;
+const TTS_AGE_SIGNAL_RE =
+	/\b(age|aged|years?\s+old|died|dies|dead|death|killed)\b/i;
+
+function extractNumberTokensForTTS(text = "") {
+	const lower = String(text || "").toLowerCase();
+	const tokens = new Set();
+	const digits = lower.match(TTS_NUMBER_DIGIT_RE) || [];
+	for (const d of digits) tokens.add(d);
+	const words = lower.match(TTS_NUMBER_WORD_RE) || [];
+	for (const w of words) tokens.add(String(w || "").trim());
+	return Array.from(tokens).filter(Boolean);
+}
+
+function pruneRedundantAgeSentences(text = "") {
+	const raw = String(text || "").trim();
+	if (!raw) return raw;
+	const chunks = raw.match(/[^.!?]+[.!?]*/g) || [raw];
+	if (chunks.length < 2) return raw;
+
+	const seenAgeNumbers = new Set();
+	const kept = [];
+
+	for (const chunk of chunks) {
+		const sentence = String(chunk || "").trim();
+		if (!sentence) continue;
+		const nums = extractNumberTokensForTTS(sentence);
+		const hasAgeSignal = TTS_AGE_SIGNAL_RE.test(sentence);
+		const isDup = hasAgeSignal && nums.some((n) => seenAgeNumbers.has(n));
+		if (isDup) continue;
+		if (hasAgeSignal) nums.forEach((n) => seenAgeNumbers.add(n));
+		kept.push(sentence);
+	}
+
+	const joined = kept.join(" ").replace(/\s+/g, " ").trim();
+	return joined || raw;
+}
+
+function tightenNarrationForTTS(text = "") {
+	const raw = String(text || "").trim();
+	if (!raw) return raw;
+	let updated = pruneRedundantAgeSentences(raw);
+	updated = updated.replace(/\s+/g, " ").trim();
+	if (!updated) return raw;
+	return normalizeSegmentCompletion(updated);
+}
+
 function normalizeForDedup(text = "") {
 	return String(text || "")
 		.toLowerCase()
@@ -2522,10 +2591,15 @@ function mergeAnchorIntoLeadText(text = "", anchor = "", domain = "real") {
 	const rawText = String(text || "").trim();
 	const rawAnchor = String(anchor || "").trim();
 	if (!rawText || !rawAnchor) return rawText;
-	if (rawText.toLowerCase().includes(rawAnchor.toLowerCase())) return rawText;
+	const safeAnchor = cleanAnchorCandidate(rawAnchor) || rawAnchor;
+	if (!safeAnchor) return rawText;
+	if (rawText.toLowerCase().includes(safeAnchor.toLowerCase())) return rawText;
+
+	const verbLeadRe =
+		/^(created|creates|died|dies|dead|was|is|are|were|has|have|had|says|said|announced|announces|revealed|reveals|confirmed|confirms|faces|joins|joined|wins?|won|lost|loses|pleads|pleaded|files?|filed|sues?|sued|accused|charged)\b/i;
 
 	const textTokens = tokenizeForDedup(rawText);
-	const anchorTokens = tokenizeForDedup(rawAnchor);
+	const anchorTokens = tokenizeForDedup(safeAnchor);
 	let prefixLen = 0;
 	while (
 		prefixLen < Math.min(textTokens.length, anchorTokens.length) &&
@@ -2539,18 +2613,29 @@ function mergeAnchorIntoLeadText(text = "", anchor = "", domain = "real") {
 			rawText,
 			textTokens.slice(0, prefixLen)
 		);
-		if (!remainder) return rawAnchor;
+		if (!remainder) return safeAnchor;
+		const cleanedRemainder = remainder.replace(/^[,.;!?]\s*/, "");
 		if (domain === "fictional") {
-			const cleaned = remainder.replace(/^[,.;!?]\s*/, "");
+			const cleaned = cleanedRemainder;
 			const lead = /^in\s+/i.test(cleaned) ? "" : "In ";
-			return `${lead}${rawAnchor}, ${cleaned}`.replace(/\s+/g, " ").trim();
+			return `${lead}${safeAnchor}, ${cleaned}`.replace(/\s+/g, " ").trim();
+		}
+		if (verbLeadRe.test(cleanedRemainder)) {
+			return `${safeAnchor} ${cleanedRemainder}`.replace(/\s+/g, " ").trim();
 		}
 		const joiner = /^[,.;!?]/.test(remainder) ? "" : ". ";
-		return `${rawAnchor}${joiner}${remainder}`.replace(/\s+/g, " ").trim();
+		return `${safeAnchor}${joiner}${cleanedRemainder}`
+			.replace(/\s+/g, " ")
+			.trim();
+	}
+
+	const cleanedLead = rawText.replace(/^[,.;!?]\s*/, "");
+	if (domain !== "fictional" && verbLeadRe.test(cleanedLead)) {
+		return `${safeAnchor} ${cleanedLead}`.replace(/\s+/g, " ").trim();
 	}
 
 	const prefix =
-		domain === "fictional" ? `In ${rawAnchor}, ` : `${rawAnchor}: `;
+		domain === "fictional" ? `In ${safeAnchor}, ` : `${safeAnchor}: `;
 	return `${prefix}${rawText}`.replace(/\s+/g, " ").trim();
 }
 
@@ -2598,9 +2683,11 @@ function finalizeSegmentsForTTS(segments = [], { language } = {}) {
 	return segments.map((seg) => {
 		if (!seg) return seg;
 		const normalized = normalizeScriptForTTS(seg.scriptText || "", langNote);
-		return normalized === seg.scriptText
+		const tightened = tightenNarrationForTTS(normalized);
+		const finalText = tightened || normalized;
+		return finalText === seg.scriptText
 			? seg
-			: { ...seg, scriptText: normalized };
+			: { ...seg, scriptText: finalText };
 	});
 }
 
