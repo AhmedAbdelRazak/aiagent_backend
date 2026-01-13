@@ -1,4 +1,4 @@
-/* routes/googleTrendsPuppeteer.js ? bullet-proof, updated 2025-11-28 */
+﻿/* routes/googleTrendsPuppeteer.js ? bullet-proof, updated 2025-11-28 */
 /* eslint-disable no-console, max-len */
 
 require("dotenv").config();
@@ -24,6 +24,7 @@ const ROW_LIMIT = 8; // how many rising-search rows we scrape
 const ROW_TIMEOUT_MS = 12_000; // per-row timeout (ms)
 const PROTOCOL_TIMEOUT = 120_000; // whole-browser cap (ms)
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
+const ARTICLE_FETCH_BLOCKLIST_HOSTS = ["washingtonpost.com", "nytimes.com"];
 const log = (...m) => console.log("[Trends]", ...m);
 const ffmpegPath =
 	process.env.FFMPEG_PATH ||
@@ -1333,7 +1334,20 @@ async function getBrowser() {
 
 /* ------------------------------------- article image helpers (Node side) */
 
+function isBlockedArticleFetchUrl(url = "") {
+	if (!url) return false;
+	try {
+		const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+		return ARTICLE_FETCH_BLOCKLIST_HOSTS.some(
+			(b) => host === b || host.endsWith("." + b)
+		);
+	} catch {
+		return false;
+	}
+}
+
 async function fetchHtmlWithTimeout(url, timeoutMs) {
+	if (isBlockedArticleFetchUrl(url)) return null;
 	// Older Node may not have global fetch; if so we just skip enrichment.
 	if (typeof fetch !== "function") return null;
 
@@ -3398,7 +3412,10 @@ router.get("/google-trends", async (req, res) => {
 			potentialImages: Array.isArray(s.potentialImages)
 				? s.potentialImages
 				: [],
-			image: includeImages && s.image && !isLikelyThumbnailUrl(s.image) ? s.image : null,
+			image:
+				includeImages && s.image && !isLikelyThumbnailUrl(s.image)
+					? s.image
+					: null,
 			images: includeImages
 				? uniqueStrings(
 						[
@@ -3411,7 +3428,9 @@ router.get("/google-trends", async (req, res) => {
 			articles: (s.articles || []).map((a) => ({
 				title: a.title,
 				url: a.url,
-				...(includeImages && a.image && !isLikelyThumbnailUrl(a.image) ? { image: a.image } : {}),
+				...(includeImages && a.image && !isLikelyThumbnailUrl(a.image)
+					? { image: a.image }
+					: {}),
 			})),
 		}));
 
@@ -3449,4 +3468,3 @@ router.get("/google-trends", async (req, res) => {
 });
 
 module.exports = router;
-

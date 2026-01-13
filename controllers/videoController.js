@@ -1,5 +1,6 @@
 /** @format */
-/* videoController.js — high-motion, trends-driven edition (enhanced, multi-image) *
+/* videoController.js — high-motion, trends-driven edition (enhanced, multi-image)
+ *
 ? Uses multiple Google Trends images per video for visual variety (hero + article images) *
 ? GPT is encouraged to rotate images; hard fallback enforces round-robin variety if GPT doesn't *
 ? Cloudinary normalises aspect ratio & cleanly crops images before Runway (no extra AI upscaling) *
@@ -228,6 +229,7 @@ const ARTICLE_FETCH_HEADERS = Object.freeze({
 	"Accept-Language": "en-US,en;q=0.9",
 	Referer: "https://www.google.com/",
 });
+const ARTICLE_TEXT_BLOCKLIST_HOSTS = ["washingtonpost.com", "nytimes.com"];
 const OG_FETCH_CACHE = new Map();
 const OG_CACHEABLE_STATUSES = new Set([401, 403, 404]);
 const CSE_IMAGE_CACHE = new Map();
@@ -4676,8 +4678,21 @@ async function fetchTrendingStory(
 	}
 }
 
+function shouldSkipArticleText(url = "") {
+	if (!url) return false;
+	try {
+		const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+		return ARTICLE_TEXT_BLOCKLIST_HOSTS.some(
+			(b) => host === b || host.endsWith("." + b)
+		);
+	} catch {
+		return false;
+	}
+}
+
 async function scrapeArticleText(url) {
 	if (!url) return null;
+	if (shouldSkipArticleText(url)) return null;
 	try {
 		const { data: html } = await axios.get(url, {
 			timeout: 10000,
@@ -6872,6 +6887,16 @@ async function prepareSegmentImagePairsForShorts({
 			return { segments: safeSegments, trendImagePairs: pairs };
 		}
 		const assignable = [];
+		const usedIndexes = new Set();
+		for (const seg of safeSegments) {
+			if (
+				Number.isInteger(seg?.imageIndex) &&
+				seg.imageIndex >= 0 &&
+				seg.imageIndex < pairs.length
+			) {
+				usedIndexes.add(seg.imageIndex);
+			}
+		}
 		for (let i = 0; i < safeSegments.length; i++) {
 			if (skipRunwaySegments && i < 2 && hadPlanImages) continue;
 			if (forceStaticOnRunwaySegments && i < 2) {
@@ -6879,17 +6904,26 @@ async function prepareSegmentImagePairsForShorts({
 			}
 			assignable.push(i);
 		}
-		const pool = Array.from({ length: pairs.length }, (_, idx) => idx);
+		const fullPool = Array.from({ length: pairs.length }, (_, idx) => idx);
+		let pool = fullPool.filter((idx) => !usedIndexes.has(idx));
+		let rr = 0;
 		let lastPick = null;
 		for (let i = 0; i < assignable.length; i++) {
-			let pick = pool[i % pool.length];
-			if (pool.length > 1 && pick === lastPick) {
-				pick = pool[(i + 1) % pool.length];
+			let pick;
+			if (pool.length) {
+				pick = pool.shift();
+			} else {
+				pick = fullPool[rr % fullPool.length];
+				if (fullPool.length > 1 && pick === lastPick) {
+					pick = fullPool[(rr + 1) % fullPool.length];
+				}
+				rr += 1;
 			}
 			const segIdx = assignable[i];
 			safeSegments[segIdx].imageIndex = pick;
 			safeSegments[segIdx].referenceImageUrl =
 				pairs[pick]?.originalUrl || pairs[pick]?.cloudinaryUrl || "";
+			usedIndexes.add(pick);
 			lastPick = pick;
 		}
 		console.log("[Shorts] segment image assignment (trend pool only)", {
@@ -8840,7 +8874,12 @@ async function generateStaticClipFromImage({
 	targetDuration,
 	zoomPan = false,
 }) {
-	const candidates = [imgUrlOriginal, imgUrlCloudinary].filter(Boolean);
+	const candidates = [];
+	for (const url of [imgUrlOriginal, imgUrlCloudinary]) {
+		if (!url) continue;
+		if (candidates.includes(url)) continue;
+		candidates.push(url);
+	}
 	if (!candidates.length) throw new Error("Missing image URL for static clip");
 
 	console.log(
@@ -12445,5 +12484,3 @@ exports.listVideos = async (req, res, next) => {
 		next(err);
 	}
 };
-
-
