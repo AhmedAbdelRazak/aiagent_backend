@@ -1,4 +1,4 @@
-﻿/** @format */
+/** @format */
 /* videoController.js — high-motion, trends-driven edition (enhanced, multi-image) *
 ? Uses multiple Google Trends images per video for visual variety (hero + article images) *
 ? GPT is encouraged to rotate images; hard fallback enforces round-robin variety if GPT doesn't *
@@ -185,6 +185,29 @@ const CSE_MAX_PAGE_SIZE = 10;
 const CSE_MAX_PAGES = 4;
 const CSE_MIN_IMAGE_SHORT_EDGE = 720;
 const CSE_RELAXED_MIN_IMAGE_SHORT_EDGE = 480;
+const CSE_CACHE_TTL_MS = Math.max(
+	0,
+	Number(process.env.CSE_CACHE_TTL_MS || 6 * 60 * 60 * 1000)
+);
+const CSE_CACHE_MAX_ENTRIES = Math.max(
+	50,
+	Number(process.env.CSE_CACHE_MAX_ENTRIES || 800)
+);
+const CSE_SEGMENT_MAX_PAGES = Math.max(
+	1,
+	Number(process.env.CSE_SEGMENT_MAX_PAGES || 1)
+);
+const CSE_SEGMENT_QUERY_LIMIT = Math.max(
+	2,
+	Number(process.env.CSE_SEGMENT_QUERY_LIMIT || 4)
+);
+const CSE_SEGMENT_STOP_AFTER = Math.max(
+	10,
+	Number(process.env.CSE_SEGMENT_STOP_AFTER || 40)
+);
+const CSE_SEGMENT_IMG_SIZES = parseCseSizeList(
+	process.env.CSE_SEGMENT_IMG_SIZES
+) || [CSE_PREFERRED_IMG_SIZE, CSE_FALLBACK_IMG_SIZE];
 
 const VALID_RATIOS = [
 	"1280:720",
@@ -207,6 +230,7 @@ const ARTICLE_FETCH_HEADERS = Object.freeze({
 });
 const OG_FETCH_CACHE = new Map();
 const OG_CACHEABLE_STATUSES = new Set([401, 403, 404]);
+const CSE_IMAGE_CACHE = new Map();
 
 /**
  * WORDS_PER_SEC: cap used when asking GPT for max words.
@@ -495,6 +519,76 @@ const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
 const toBool = (v) => v === true || v === "true" || v === 1 || v === "1";
 const looksLikeAITopic = (t) => AI_TOPIC_RE.test(String(t || ""));
+
+function parseCseSizeList(value) {
+	const raw = String(value || "")
+		.split(",")
+		.map((v) => v.trim())
+		.filter(Boolean);
+	if (!raw.length) return null;
+	const allowed = new Set([
+		CSE_ULTRA_IMG_SIZE,
+		CSE_PREFERRED_IMG_SIZE,
+		CSE_FALLBACK_IMG_SIZE,
+	]);
+	const filtered = raw.filter((v) => allowed.has(v));
+	return filtered.length ? filtered : null;
+}
+
+function createCseMeter() {
+	const byPhase = new Map();
+	return {
+		total: 0,
+		byPhase,
+		inc(phase = "unknown") {
+			this.total += 1;
+			const key = phase || "unknown";
+			byPhase.set(key, (byPhase.get(key) || 0) + 1);
+		},
+		snapshot() {
+			const phases = {};
+			for (const [k, v] of byPhase.entries()) phases[k] = v;
+			return { total: this.total, phases };
+		},
+	};
+}
+
+function markCseQuery(meter, phase) {
+	if (!meter || typeof meter.inc !== "function") return;
+	meter.inc(phase);
+}
+
+function buildCseCacheKey(q, imgSize, perPage, pageCap) {
+	const safeQ = String(q || "")
+		.trim()
+		.toLowerCase();
+	const size = imgSize || "default";
+	return `${safeQ}::${size}::${perPage}::${pageCap}`;
+}
+
+function getCseCache(key) {
+	if (!CSE_CACHE_TTL_MS || CSE_CACHE_TTL_MS <= 0) return null;
+	const entry = CSE_IMAGE_CACHE.get(key);
+	if (!entry) return null;
+	if (Date.now() - entry.ts > CSE_CACHE_TTL_MS) {
+		CSE_IMAGE_CACHE.delete(key);
+		return null;
+	}
+	return entry.items || null;
+}
+
+function setCseCache(key, items) {
+	if (!CSE_CACHE_TTL_MS || CSE_CACHE_TTL_MS <= 0) return;
+	if (!key || !Array.isArray(items) || !items.length) return;
+	CSE_IMAGE_CACHE.set(key, { ts: Date.now(), items });
+	if (CSE_IMAGE_CACHE.size <= CSE_CACHE_MAX_ENTRIES) return;
+	const overflow = CSE_IMAGE_CACHE.size - CSE_CACHE_MAX_ENTRIES;
+	for (let i = 0; i < overflow; i++) {
+		const firstKey = CSE_IMAGE_CACHE.keys().next().value;
+		if (!firstKey) break;
+		CSE_IMAGE_CACHE.delete(firstKey);
+	}
+}
 
 const LANGUAGE_ALIASES = Object.freeze({
 	en: "English",
@@ -1795,6 +1889,35 @@ function pickTrendImagesForRatio(trendStory, ratio, desiredCount = 5) {
 		if (picked.length >= desiredCount) break;
 	}
 	return picked.slice(0, desiredCount);
+}
+
+function normalizeTrendPotentialImages(list = []) {
+	if (!Array.isArray(list)) return [];
+	const out = [];
+	for (const item of list) {
+		if (!item) continue;
+		const url = String(
+			item.imageurl ||
+				item.imageUrl ||
+				item.url ||
+				item.link ||
+				item.originalUrl ||
+				""
+		).trim();
+		if (!url || !/^https?:\/\//i.test(url)) continue;
+		out.push({
+			url,
+			source: String(
+				item.source || item.pageUrl || item.contextLink || ""
+			).trim(),
+			title: String(
+				item.description || item.title || item.caption || ""
+			).trim(),
+			width: item.width || null,
+			height: item.height || null,
+		});
+	}
+	return out;
 }
 
 function sanitizeAudienceFacingText(text, { allowAITopic = false } = {}) {
@@ -4314,9 +4437,27 @@ async function fetchTrendingStory(
 		const entityNames = cleanStrings(
 			Array.isArray(s.entityNames) ? s.entityNames : [rawTitle, dialogTitle]
 		);
-		const providedImages = Array.isArray(s.images)
-			? s.images.filter((u) => typeof u === "string" && /^https?:\/\//i.test(u))
-			: [];
+		const potentialImageCandidates = normalizeTrendPotentialImages(
+			s.potentialImages || s.potentialImageCandidates || []
+		);
+		const providedImages = (() => {
+			const out = [];
+			const seen = new Set();
+			const addUrl = (url) => {
+				if (!url || typeof url !== "string") return;
+				if (!/^https?:\/\//i.test(url)) return;
+				if (seen.has(url)) return;
+				seen.add(url);
+				out.push(url);
+			};
+			for (const cand of potentialImageCandidates) {
+				if (cand?.url) addUrl(cand.url);
+			}
+			if (Array.isArray(s.images)) {
+				for (const url of s.images) addUrl(url);
+			}
+			return out;
+		})();
 		const imagesByAspect =
 			s.imagesByAspect && typeof s.imagesByAspect === "object"
 				? {
@@ -4366,6 +4507,7 @@ async function fetchTrendingStory(
 				imageComment,
 				viralImageBriefs: viralBriefs,
 				images: providedImages,
+				potentialImages: potentialImageCandidates,
 				imagesByAspect,
 				imageSummary: s.imageSummary || null,
 				articles: sanitizedArticles,
@@ -4407,6 +4549,7 @@ async function fetchTrendingStory(
 				imageComment,
 				viralImageBriefs: viralBriefs,
 				images: [],
+				potentialImages: potentialImageCandidates,
 				imagesByAspect,
 				imageSummary: s.imageSummary || null,
 				articles: sanitizedArticles,
@@ -4464,6 +4607,7 @@ async function fetchTrendingStory(
 			imageComment,
 			viralImageBriefs: viralBriefs,
 			images,
+			potentialImages: potentialImageCandidates,
 			imagesByAspect,
 			imageSummary: s.imageSummary || null,
 			articles: sanitizedArticles,
@@ -5390,7 +5534,7 @@ async function pickBestImageFromSearch(
 	return null;
 }
 
-async function fetchTop5LiveContext(outline = [], topic = "") {
+async function fetchTop5LiveContext(outline = [], topic = "", cseMeter = null) {
 	if (!canUseGoogleSearch()) {
 		console.warn(
 			"[Top5] Google Custom Search credentials missing - skipping live context"
@@ -5403,6 +5547,7 @@ async function fetchTop5LiveContext(outline = [], topic = "") {
 		if (!item || !item.label) continue;
 		const q = [topic, item.label].filter(Boolean).join(" ");
 		try {
+			markCseQuery(cseMeter, "top5_live_context");
 			const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
 				params: {
 					key: GOOGLE_CSE_KEY,
@@ -5557,7 +5702,7 @@ function buildLiveContextQueries(
 
 async function fetchLiveCseItems(
 	query,
-	{ limit = 3, dateRestrict = null } = {}
+	{ limit = 3, dateRestrict = null, cseMeter = null, csePhase = "" } = {}
 ) {
 	const num = Math.max(1, Math.min(Number(limit) || 3, 10));
 	try {
@@ -5569,6 +5714,7 @@ async function fetchLiveCseItems(
 			safe: "active",
 		};
 		if (dateRestrict) params.dateRestrict = dateRestrict;
+		markCseQuery(cseMeter, csePhase || "live_context");
 		const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
 			params,
 			timeout: GOOGLE_CSE_TIMEOUT_MS,
@@ -5587,7 +5733,7 @@ async function fetchLiveCseItems(
 async function fetchLiveContextForTopic(
 	topic = "",
 	limit = 3,
-	{ category = "", trendStory = null } = {}
+	{ category = "", trendStory = null, cseMeter = null } = {}
 ) {
 	if (!canUseGoogleSearch() || !topic) return [];
 	const max = Math.max(1, Math.min(Number(limit) || 3, 5));
@@ -5602,6 +5748,8 @@ async function fetchLiveContextForTopic(
 			const items = await fetchLiveCseItems(q, {
 				limit: Math.min(6, max + 1),
 				dateRestrict,
+				cseMeter,
+				csePhase: "live_context",
 			});
 			if (!items.length) continue;
 			for (const it of items) {
@@ -5693,7 +5841,14 @@ async function fetchOgImage(url) {
 
 async function fetchCseImageItems(
 	queries,
-	{ imgSize = null, maxPages = CSE_MAX_PAGES, pageSize = null } = {}
+	{
+		imgSize = null,
+		maxPages = CSE_MAX_PAGES,
+		pageSize = null,
+		stopAfter = null,
+		cseMeter = null,
+		csePhase = "",
+	} = {}
 ) {
 	if (!canUseGoogleSearch()) return { items: [], rateLimited: false };
 	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
@@ -5709,10 +5864,41 @@ async function fetchCseImageItems(
 	const pageCap = Math.min(CSE_MAX_PAGES, Math.max(1, Number(maxPages) || 1));
 
 	for (const q of list) {
+		const cacheKey = buildCseCacheKey(
+			q,
+			imgSize || CSE_PREFERRED_IMG_SIZE,
+			perPage,
+			pageCap
+		);
+		const cached = getCseCache(cacheKey);
+		if (cached && cached.length) {
+			for (const it of cached) {
+				const link = it.link || "";
+				if (!link) continue;
+				const key = normalizeImageKey(link);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				results.push({
+					link,
+					title: String(it.title || "").trim(),
+					snippet: String(it.snippet || "").trim(),
+					image: it.image || null,
+					displayLink: it.displayLink || "",
+				});
+				if (stopAfter && results.length >= stopAfter) {
+					return { items: results, rateLimited };
+				}
+			}
+			continue;
+		}
+
+		const queryItems = [];
+		const querySeen = new Set();
 		let pageStart = 1;
 		let pagesFetched = 0;
 		while (pagesFetched < pageCap) {
 			try {
+				markCseQuery(cseMeter, csePhase || "cse_image");
 				const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
 					params: {
 						key: GOOGLE_CSE_KEY,
@@ -5736,6 +5922,16 @@ async function fetchCseImageItems(
 					const link = it.link || "";
 					if (!link) continue;
 					const key = normalizeImageKey(link);
+					if (!querySeen.has(key)) {
+						querySeen.add(key);
+						queryItems.push({
+							link,
+							title: String(it.title || "").trim(),
+							snippet: String(it.snippet || "").trim(),
+							image: it.image || null,
+							displayLink: it.displayLink || "",
+						});
+					}
 					if (seen.has(key)) continue;
 					seen.add(key);
 					results.push({
@@ -5745,6 +5941,10 @@ async function fetchCseImageItems(
 						image: it.image || null,
 						displayLink: it.displayLink || "",
 					});
+					if (stopAfter && results.length >= stopAfter) {
+						setCseCache(cacheKey, queryItems);
+						return { items: results, rateLimited };
+					}
 				}
 			} catch (e) {
 				const status = e?.response?.status;
@@ -5757,7 +5957,9 @@ async function fetchCseImageItems(
 				await new Promise((r) => setTimeout(r, 120));
 			}
 		}
+		if (queryItems.length) setCseCache(cacheKey, queryItems);
 		if (rateLimited) break;
+		if (stopAfter && results.length >= stopAfter) break;
 	}
 
 	return { items: results, rateLimited };
@@ -5847,10 +6049,14 @@ function normalizeImageCandidates(list = []) {
 			}
 			const url = item.url || item.link || item.originalUrl || "";
 			if (!url) return null;
+			const width = item.width || item.imageWidth || item.w || null;
+			const height = item.height || item.imageHeight || item.h || null;
 			return {
 				url,
 				source: item.source || item.contextLink || "",
 				title: item.title || "",
+				width,
+				height,
 				topicMatchCount: item.topicMatchCount || 0,
 				anchorHit: Boolean(item.anchorHit),
 			};
@@ -6041,7 +6247,14 @@ async function fetchHighQualityImagesForTopic({
 	phraseAnchors = [],
 	requireAnchorPhrase = false,
 	returnMeta = false,
+	allowCse = true,
 	googleVariantLimit = null,
+	cseMaxPages = null,
+	cseImgSizes = null,
+	cseQueryLimit = null,
+	cseStopAfter = null,
+	cseMeter = null,
+	csePhase = "",
 }) {
 	const candidates = [];
 	const dedupeSet = new Set();
@@ -6125,27 +6338,36 @@ async function fetchHighQualityImagesForTopic({
 	}
 
 	// 2) Google CSE search
-	if (canUseGoogleSearch()) {
+	const canUseCse = allowCse && canUseGoogleSearch();
+	if (canUseCse) {
 		const combinedQueries = uniqueStrings([...queries, ...fallbackQueries], {
-			limit: 10,
+			limit: Math.max(1, Number(cseQueryLimit) || 10),
 		});
-		const sizeVariants = [
-			CSE_ULTRA_IMG_SIZE,
-			CSE_PREFERRED_IMG_SIZE,
-			CSE_FALLBACK_IMG_SIZE,
-		];
+		const sizeVariants =
+			Array.isArray(cseImgSizes) && cseImgSizes.length
+				? cseImgSizes
+				: [CSE_ULTRA_IMG_SIZE, CSE_PREFERRED_IMG_SIZE, CSE_FALLBACK_IMG_SIZE];
 		const minShortEdge = Math.max(
 			minEdgeForRatio(ratio) || 0,
 			strictTopicMatch
 				? CSE_MIN_IMAGE_SHORT_EDGE
 				: CSE_RELAXED_MIN_IMAGE_SHORT_EDGE
 		);
+		const cappedPages = Math.max(
+			1,
+			Number.isFinite(Number(cseMaxPages))
+				? Math.min(CSE_MAX_PAGES, Number(cseMaxPages))
+				: CSE_MAX_PAGES
+		);
 
 		for (const imgSize of sizeVariants) {
 			if (cseRateLimited) break;
 			const { items, rateLimited } = await fetchCseImageItems(combinedQueries, {
 				imgSize,
-				maxPages: CSE_MAX_PAGES,
+				maxPages: cappedPages,
+				stopAfter: cseStopAfter,
+				cseMeter,
+				csePhase,
 			});
 			if (rateLimited) {
 				cseRateLimited = true;
@@ -6196,6 +6418,8 @@ async function fetchHighQualityImagesForTopic({
 			}
 			if (candidates.length >= maxCandidates) break;
 		}
+	} else if (!allowCse) {
+		console.log("[ImageSearch] CSE disabled for this request", { topic });
 	} else {
 		console.warn("[ImageSearch] Google CSE disabled (missing key/cx)");
 	}
@@ -6559,13 +6783,17 @@ async function prepareSegmentImagePairsForShorts({
 	topicIntent = null,
 	allowRunwaySegments = false,
 	hadPlanImages = false,
+	allowCse = true,
+	skipSegmentSearch = false,
+	cseMeter = null,
 } = {}) {
 	if (!Array.isArray(segments) || !segments.length)
 		return { segments, trendImagePairs };
 
 	const safeSegments = segments.map((s) => ({ ...s }));
-	const hasCse = canUseGoogleSearch();
+	const hasCse = allowCse && canUseGoogleSearch();
 	const googleImagesFallback = buildGoogleImagesApiCandidates().length > 0;
+	const skipSearch = Boolean(skipSegmentSearch);
 	console.log("[Shorts] segment image refinement start", {
 		segments: safeSegments.length,
 		hasCse,
@@ -6574,6 +6802,40 @@ async function prepareSegmentImagePairsForShorts({
 		allowRunwaySegments,
 	});
 	const pairs = Array.isArray(trendImagePairs) ? trendImagePairs.slice() : [];
+	const skipRunwaySegments = allowRunwaySegments && hadPlanImages;
+	const forceStaticOnRunwaySegments = allowRunwaySegments && !hadPlanImages;
+	if (skipSearch) {
+		if (!pairs.length) {
+			return { segments: safeSegments, trendImagePairs: pairs };
+		}
+		const assignable = [];
+		for (let i = 0; i < safeSegments.length; i++) {
+			if (skipRunwaySegments && i < 2 && hadPlanImages) continue;
+			if (forceStaticOnRunwaySegments && i < 2) {
+				safeSegments[i].forceStatic = true;
+			}
+			assignable.push(i);
+		}
+		const pool = Array.from({ length: pairs.length }, (_, idx) => idx);
+		let lastPick = null;
+		for (let i = 0; i < assignable.length; i++) {
+			let pick = pool[i % pool.length];
+			if (pool.length > 1 && pick === lastPick) {
+				pick = pool[(i + 1) % pool.length];
+			}
+			const segIdx = assignable[i];
+			safeSegments[segIdx].imageIndex = pick;
+			safeSegments[segIdx].referenceImageUrl =
+				pairs[pick]?.originalUrl || pairs[pick]?.cloudinaryUrl || "";
+			lastPick = pick;
+		}
+		console.log("[Shorts] segment image assignment (trend pool only)", {
+			segments: safeSegments.length,
+			images: pairs.length,
+			skipRunwaySegments,
+		});
+		return { segments: safeSegments, trendImagePairs: pairs };
+	}
 	const urlToIndex = new Map();
 	const usedUrlKeys = new Set();
 	const usedHosts = new Set();
@@ -6677,8 +6939,6 @@ async function prepareSegmentImagePairsForShorts({
 		12
 	);
 	let addedPairs = 0;
-	const skipRunwaySegments = allowRunwaySegments && hadPlanImages;
-	const forceStaticOnRunwaySegments = allowRunwaySegments && !hadPlanImages;
 	const stats = {
 		segmentsTotal: safeSegments.length,
 		segmentsEvaluated: 0,
@@ -6816,6 +7076,13 @@ async function prepareSegmentImagePairsForShorts({
 					requireAnchorPhrase: false,
 					returnMeta: true,
 					googleVariantLimit: segmentGoogleVariantLimit,
+					allowCse: hasCse,
+					cseMaxPages: CSE_SEGMENT_MAX_PAGES,
+					cseImgSizes: CSE_SEGMENT_IMG_SIZES,
+					cseQueryLimit: CSE_SEGMENT_QUERY_LIMIT,
+					cseStopAfter: CSE_SEGMENT_STOP_AFTER,
+					cseMeter,
+					csePhase: "segment_images",
 				});
 				queryCache.set(cacheKey, urls);
 			}
@@ -6888,6 +7155,13 @@ async function prepareSegmentImagePairsForShorts({
 					requireAnchorPhrase: false,
 					returnMeta: true,
 					googleVariantLimit: segmentGoogleVariantLimit,
+					allowCse: hasCse,
+					cseMaxPages: CSE_SEGMENT_MAX_PAGES,
+					cseImgSizes: CSE_SEGMENT_IMG_SIZES,
+					cseQueryLimit: CSE_SEGMENT_QUERY_LIMIT,
+					cseStopAfter: CSE_SEGMENT_STOP_AFTER,
+					cseMeter,
+					csePhase: "segment_images",
 				});
 				const normalized = dedupeImageCandidates(
 					normalizeImageCandidates(fallback),
@@ -7122,6 +7396,7 @@ async function prepareSegmentImagePairsForShorts({
 				requireAnchorPhrase: false,
 				returnMeta: true,
 				googleVariantLimit: segmentGoogleVariantLimit,
+				allowCse: hasCse,
 			});
 			const normalized = dedupeImageCandidates(
 				normalizeImageCandidates(fallback),
@@ -7199,7 +7474,12 @@ async function prepareSegmentImagePairsForShorts({
 	return { segments: safeSegments, trendImagePairs: pairs };
 }
 
-async function fetchTop5ImagePool(outline = [], topic = "", ratio = null) {
+async function fetchTop5ImagePool(
+	outline = [],
+	topic = "",
+	ratio = null,
+	cseMeter = null
+) {
 	if (!canUseGoogleSearch()) {
 		console.warn(
 			"[Top5] Google Custom Search credentials missing - skipping live image pool"
@@ -7231,6 +7511,7 @@ async function fetchTop5ImagePool(outline = [], topic = "", ratio = null) {
 			.filter(Boolean)
 			.join(" ");
 		try {
+			markCseQuery(cseMeter, "top5_image_pool");
 			const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
 				params: {
 					key: GOOGLE_CSE_KEY,
@@ -7320,7 +7601,8 @@ async function fetchTop5ReplacementImage(
 	label,
 	topic,
 	ratio,
-	avoidSet = new Set()
+	avoidSet = new Set(),
+	cseMeter = null
 ) {
 	const canUseCse = canUseGoogleSearch();
 	if (!canUseCse && !GOOGLE_IMAGES_SEARCH_ENABLED) return null;
@@ -7337,6 +7619,7 @@ async function fetchTop5ReplacementImage(
 
 	if (canUseCse) {
 		try {
+			markCseQuery(cseMeter, "top5_replace_image");
 			const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
 				params: {
 					key: GOOGLE_CSE_KEY,
@@ -9819,6 +10102,7 @@ exports.createVideo = async (req, res) => {
 
 	const ratio = ratioIn;
 	const duration = +durIn;
+	const cseMeter = createCseMeter();
 
 	/* SSE bootstrap */
 	res.setHeader("Content-Type", "text/event-stream");
@@ -10047,6 +10331,7 @@ exports.createVideo = async (req, res) => {
 			liveWebContext = await fetchLiveContextForTopic(topic, 3, {
 				category,
 				trendStory,
+				cseMeter,
 			});
 		}
 		const storyAngle = inferShortsStoryAngle({
@@ -10115,109 +10400,176 @@ exports.createVideo = async (req, res) => {
 			const tokenSet = specificTopicTokens.length
 				? specificTopicTokens
 				: strongTopicTokens;
-			const requireTokenMatch = tokenSet.length > 0;
 			const anchorPhrases = buildAnchorPhrasesFromStory(trendStory);
-			const requireAnchorPhrase = anchorPhrases.length > 0;
-			trendImagesForRatio = await fetchHighQualityImagesForTopic({
-				topic,
-				ratio,
-				articleLinks,
-				desiredCount: 7,
-				limit: 16,
-				topicTokens: tokenSet,
-				requireAnyToken: requireTokenMatch,
-				negativeTitleRe:
-					/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
-				strictTopicMatch: true,
-				phraseAnchors: anchorPhrases,
-				requireAnchorPhrase,
-			});
-			if (trendImagesForRatio.length < 5) {
-				console.log(
-					"[Trending] image search (strict) count",
-					trendImagesForRatio.length
+			const anchorTokens = topicTokensFromTitle(
+				trendStory?.trendSearchTerm || trendStory?.title || topic
+			);
+			const negativeTitleRe =
+				/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i;
+			const targetPoolSize = Math.min(6, Math.max(4, segLens.length || 6));
+			const pageSignalCache = new Map();
+			const seedCandidates = [];
+			if (trendStory) {
+				const potentialCandidates = normalizeTrendPotentialImages(
+					trendStory.potentialImages || []
 				);
-				const relaxed = await fetchHighQualityImagesForTopic({
+				if (potentialCandidates.length) {
+					seedCandidates.push(...potentialCandidates);
+				}
+				const seedUrls = pickTrendImagesForRatio(trendStory, ratio, 14);
+				for (const url of seedUrls) {
+					if (!url) continue;
+					seedCandidates.push({
+						url,
+						source: trendStory.trendSearchTerm || trendStory.title || "",
+						title: trendStory.title || "",
+					});
+				}
+			}
+			const normalizedSeeds = dedupeImageCandidates(
+				normalizeImageCandidates(seedCandidates),
+				24
+			);
+			let qaSeedCandidates = [];
+			if (normalizedSeeds.length) {
+				qaSeedCandidates = await qaSegmentImageCandidates(normalizedSeeds, {
+					segmentTokens: [],
+					anchorTokens,
+					topicTokens: tokenSet,
+					strict: true,
+					pageSignalCache,
+				});
+				if (!qaSeedCandidates.length) {
+					qaSeedCandidates = await qaSegmentImageCandidates(normalizedSeeds, {
+						segmentTokens: [],
+						anchorTokens,
+						topicTokens: tokenSet,
+						strict: false,
+						pageSignalCache,
+					});
+				}
+			}
+
+			const mergeCandidates = (lists = []) => {
+				const out = [];
+				const seen = new Set();
+				for (const list of lists) {
+					for (const cand of list || []) {
+						const url = cand?.url;
+						if (!url) continue;
+						const key = normalizeImageKey(url);
+						if (seen.has(key)) continue;
+						seen.add(key);
+						out.push(cand);
+					}
+				}
+				return out;
+			};
+
+			let combinedCandidates = qaSeedCandidates;
+			const needsCseTopUp = combinedCandidates.length < 3;
+			if (needsCseTopUp) {
+				console.log("[Trending] image pool below minimum, enabling fallback", {
+					count: combinedCandidates.length,
+					target: 4,
+				});
+				const requireTokenMatch = tokenSet.length > 0;
+				const fallback = await fetchHighQualityImagesForTopic({
 					topic,
 					ratio,
 					articleLinks,
-					desiredCount: 7,
-					limit: 16,
+					desiredCount: 4,
+					limit: 10,
 					topicTokens: tokenSet,
 					requireAnyToken: requireTokenMatch,
-					negativeTitleRe:
-						/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
+					negativeTitleRe,
 					strictTopicMatch: true,
 					phraseAnchors: anchorPhrases,
-					requireAnchorPhrase: false,
+					requireAnchorPhrase: anchorPhrases.length > 0,
+					allowCse: true,
+					cseMeter,
+					csePhase: "trend_pool_topup",
 				});
-				trendImagesForRatio = dedupeImageUrls(
-					[...trendImagesForRatio, ...relaxed],
-					16
+				const normalizedFallback = dedupeImageCandidates(
+					normalizeImageCandidates(fallback),
+					18
 				);
-			}
-			trendImagesForRatio = prioritizeTokenMatchedUrls(
-				filterUploadCandidates(trendImagesForRatio, 7),
-				tokenSet
-			);
-			console.log(
-				"[Trending] image search (relaxed/prioritized) count",
-				trendImagesForRatio.length
-			);
-			// Last-resort: if nothing survived strict/relaxed filters, do a token-anchored grab
-			if (!trendImagesForRatio.length && tokenSet.length) {
-				try {
-					const loose = await fetchHighQualityImagesForTopic({
-						topic,
-						ratio,
-						articleLinks,
-						desiredCount: 8,
-						limit: 14,
+				let qaFallback = await qaSegmentImageCandidates(normalizedFallback, {
+					segmentTokens: [],
+					anchorTokens,
+					topicTokens: tokenSet,
+					strict: true,
+					pageSignalCache,
+				});
+				if (!qaFallback.length) {
+					qaFallback = await qaSegmentImageCandidates(normalizedFallback, {
+						segmentTokens: [],
+						anchorTokens,
 						topicTokens: tokenSet,
-						requireAnyToken: true,
-						negativeTitleRe:
-							/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
-						strictTopicMatch: false,
-						phraseAnchors: anchorPhrases,
-						requireAnchorPhrase: false,
+						strict: false,
+						pageSignalCache,
 					});
-					trendImagesForRatio = dedupeImageUrls(loose, 14);
-					console.log(
-						"[Trending] image search (token-anchored) count",
-						trendImagesForRatio.length
-					);
-				} catch (e) {
-					console.warn(
-						"[Trending] token-anchored image search failed ?",
-						e.message
-					);
 				}
+				combinedCandidates = mergeCandidates([combinedCandidates, qaFallback]);
 			}
-			// Scheduled runs: ensure we aggressively try one more broad search if still empty
-			if (requireScheduledTrends && !trendImagesForRatio.length) {
+
+			if (requireScheduledTrends && !combinedCandidates.length) {
 				try {
 					const broad = await fetchHighQualityImagesForTopic({
 						topic,
 						ratio,
 						articleLinks: [],
-						desiredCount: 10,
-						limit: 18,
+						desiredCount: 6,
+						limit: 12,
 						topicTokens: tokenSet,
 						requireAnyToken: tokenSet.length > 0,
-						negativeTitleRe:
-							/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i,
+						negativeTitleRe,
 						strictTopicMatch: false,
 						phraseAnchors: anchorPhrases,
 						requireAnchorPhrase: false,
+						allowCse: true,
+						cseMeter,
+						csePhase: "trend_pool_broad",
 					});
-					trendImagesForRatio = dedupeImageUrls(broad, 18);
-					console.log("[Trending] broad fallback images (scheduled)", {
-						count: trendImagesForRatio.length,
+					const normalizedBroad = dedupeImageCandidates(
+						normalizeImageCandidates(broad),
+						16
+					);
+					const qaBroad = await qaSegmentImageCandidates(normalizedBroad, {
+						segmentTokens: [],
+						anchorTokens,
+						topicTokens: tokenSet,
+						strict: false,
+						pageSignalCache,
 					});
+					combinedCandidates = mergeCandidates([combinedCandidates, qaBroad]);
 				} catch (e) {
 					console.warn("[Trending] broad fallback search failed ?", e.message);
 				}
 			}
+
+			const ranked = combinedCandidates.slice().sort((a, b) => {
+				const aW = Number(a.width) || 0;
+				const aH = Number(a.height) || 0;
+				const bW = Number(b.width) || 0;
+				const bH = Number(b.height) || 0;
+				const aMatch = aspectMatchesRatio(ratio, aW, aH) ? 1 : 0;
+				const bMatch = aspectMatchesRatio(ratio, bW, bH) ? 1 : 0;
+				if (aMatch !== bMatch) return bMatch - aMatch;
+				const aEdge = aW && aH ? Math.min(aW, aH) : 0;
+				const bEdge = bW && bH ? Math.min(bW, bH) : 0;
+				if (aEdge !== bEdge) return bEdge - aEdge;
+				return (b.qaScore || 0) - (a.qaScore || 0);
+			});
+			trendImagesForRatio = filterUploadCandidates(
+				ranked.map((c) => c.url).filter(Boolean),
+				targetPoolSize
+			);
+			console.log("[Trending] image pool ready", {
+				count: trendImagesForRatio.length,
+				target: targetPoolSize,
+				usedFallback: needsCseTopUp,
+			});
 		}
 		const canUseTrendsImages =
 			allowTrendsImageSearch && trendStory && trendImagesForRatio.length > 0;
@@ -10433,6 +10785,8 @@ exports.createVideo = async (req, res) => {
 			language,
 		});
 		if (category !== "Top5" && allowTrendsImageSearch) {
+			const skipSegmentSearch = trendImagePairs.length > 0;
+			const allowCseForSegments = trendImagePairs.length === 0;
 			const refined = await prepareSegmentImagePairsForShorts({
 				segments,
 				topic,
@@ -10443,10 +10797,16 @@ exports.createVideo = async (req, res) => {
 				topicIntent,
 				allowRunwaySegments: useSora && !forceStaticVisuals,
 				hadPlanImages,
+				allowCse: allowCseForSegments,
+				skipSegmentSearch,
+				cseMeter,
 			});
 			segments = refined.segments;
 			trendImagePairs = refined.trendImagePairs;
 			hasTrendImages = trendImagePairs.length > 0;
+		}
+		if (cseMeter.total) {
+			console.log("[CSE] query usage", cseMeter.snapshot());
 		}
 
 		if (segments.length) {

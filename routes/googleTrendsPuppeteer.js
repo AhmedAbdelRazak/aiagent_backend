@@ -1,4 +1,4 @@
-﻿/* routes/googleTrendsPuppeteer.js â€” bulletâ€‘proof, updated 2025â€‘11â€‘28 */
+﻿/* routes/googleTrendsPuppeteer.js — bullet‑proof, updated 2025‑11‑28 */
 /* eslint-disable no-console, max-len */
 
 require("dotenv").config();
@@ -18,9 +18,9 @@ puppeteer.use(Stealth());
 
 const router = express.Router();
 
-const ROW_LIMIT = 8; // how many risingâ€‘search rows we scrape
-const ROW_TIMEOUT_MS = 12_000; // perâ€‘row timeout (ms)
-const PROTOCOL_TIMEOUT = 120_000; // wholeâ€‘browser cap (ms)
+const ROW_LIMIT = 8; // how many rising‑search rows we scrape
+const ROW_TIMEOUT_MS = 12_000; // per‑row timeout (ms)
+const PROTOCOL_TIMEOUT = 120_000; // whole‑browser cap (ms)
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
 const log = (...m) => console.log("[Trends]", ...m);
 const ffmpegPath =
@@ -43,6 +43,112 @@ const TRENDS_SIGNAL_RETRY_DELAY_MS = 350;
 const TRENDS_SIGNAL_TIME_FALLBACKS = ["now 7-d", "today 1-m"];
 const RELATED_QUERIES_LIMIT = 12;
 const TRENDS_CACHE_TTL_MS = 5 * 60 * 1000;
+const POTENTIAL_IMAGE_TOPIC_LIMIT = ROW_LIMIT;
+const POTENTIAL_IMAGE_MIN_PER_STORY = 4;
+const POTENTIAL_IMAGE_TOPUP_TOPIC_LIMIT = 5;
+const POTENTIAL_IMAGE_ARTICLE_LIMIT = 3;
+const POTENTIAL_IMAGE_PER_ARTICLE_LIMIT = 6;
+const POTENTIAL_IMAGE_MAX_PER_STORY = 10;
+const POTENTIAL_IMAGE_MIN_WIDTH = 320;
+const POTENTIAL_IMAGE_MIN_HEIGHT = 180;
+const POTENTIAL_IMAGE_SELECTOR_TIMEOUT_MS = 8000;
+const POTENTIAL_IMAGE_TIMEOUT_MS = 25_000;
+const POTENTIAL_IMAGE_SCROLLS = 3;
+const POTENTIAL_IMAGE_SCROLL_DELAY_MS = 450;
+const POTENTIAL_IMAGE_VALIDATE_TIMEOUT_MS = 4500;
+const VOGUE_SEARCH_SCROLLS = 3;
+const VOGUE_SEARCH_SCROLL_DELAY_MS = 650;
+const VOGUE_SEARCH_SELECTOR_TIMEOUT_MS = 10_000;
+const VOGUE_SEARCH_MAX_RESULTS = 10;
+const VOGUE_SEARCH_BASE_URL = "https://www.vogue.com/search";
+const VOGUE_SEARCH_SORT = "score desc";
+const BBC_SEARCH_SCROLLS = 3;
+const BBC_SEARCH_SCROLL_DELAY_MS = 650;
+const BBC_SEARCH_SELECTOR_TIMEOUT_MS = 10_000;
+const BBC_SEARCH_MAX_RESULTS = 12;
+const BBC_SEARCH_MAX_ARTICLES = 3;
+const BBC_SEARCH_MIN_SCORE = 2;
+const BBC_SEARCH_BASE_URL = "https://www.bbc.com/search";
+const CBS_SEARCH_SCROLLS = 3;
+const CBS_SEARCH_SCROLL_DELAY_MS = 650;
+const CBS_SEARCH_SELECTOR_TIMEOUT_MS = 12_000;
+const CBS_SEARCH_MAX_RESULTS = 12;
+const CBS_SEARCH_MAX_ARTICLES = 3;
+const CBS_SEARCH_MIN_SCORE = 2;
+const CBS_SEARCH_BASE_URL = "https://www.cbsnews.com/search/";
+const POTENTIAL_IMAGE_CAPTCHA_HINTS = [
+	"captcha",
+	"verify you are a human",
+	"unusual traffic",
+	"are you a robot",
+	"robot check",
+	"access denied",
+	"blocked",
+	"cloudflare",
+	"attention required",
+];
+const POTENTIAL_IMAGE_BAD_HINTS = [
+	"logo",
+	"icon",
+	"sprite",
+	"favicon",
+	"avatar",
+	"profile",
+	"badge",
+	"button",
+	"thumbnail",
+	"thumb",
+	"placeholder",
+	"spacer",
+	"pixel",
+	"banner",
+	"ads",
+	"advert",
+	"promo",
+	"tracking",
+	"loader",
+	"spinner",
+	"live_cards",
+	"video-door",
+	"author",
+	"bio",
+	"byline",
+	"headshot",
+	"staff",
+	"newsletter",
+	"subscribe",
+];
+const ENTERTAINMENT_CATEGORY_IDS = new Set(["4"]);
+const IMAGE_STOPWORDS = new Set([
+	"the",
+	"and",
+	"or",
+	"of",
+	"in",
+	"on",
+	"for",
+	"to",
+	"a",
+	"an",
+	"with",
+	"at",
+	"by",
+	"from",
+	"about",
+	"into",
+	"after",
+	"before",
+	"over",
+	"under",
+	"new",
+	"latest",
+	"update",
+	"updates",
+	"official",
+	"photo",
+	"photos",
+	"video",
+]);
 const trendsCache = new Map();
 
 function tmpFile(tag, ext = "") {
@@ -80,6 +186,7 @@ function buildTrendsCacheKey({
 	category,
 	sort,
 	includeImages,
+	includePotentialImages,
 	skipOpenAI,
 	skipSignals,
 }) {
@@ -89,6 +196,7 @@ function buildTrendsCacheKey({
 		category: category || "",
 		sort: sort || "",
 		includeImages: Boolean(includeImages),
+		includePotentialImages: Boolean(includePotentialImages),
 		skipOpenAI: Boolean(skipOpenAI),
 		skipSignals: Boolean(skipSignals),
 	});
@@ -103,7 +211,7 @@ function isLikelyThumbnailUrl(u = "") {
 	return false;
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ OpenAI client + helpers */
+/* ───────────────────────────────────────────── OpenAI client + helpers */
 
 let openai = null;
 const CHATGPT_API_TOKEN =
@@ -228,6 +336,436 @@ function normalizeTrendKeyword(keyword = "") {
 function buildTrendKeywordVariants(keyword = "") {
 	const normalized = normalizeTrendKeyword(keyword);
 	return uniqueStrings([keyword, normalized], { limit: 3 }).filter(Boolean);
+}
+
+function normalizeMatchText(value = "") {
+	return normalizeTrendKeyword(value).toLowerCase();
+}
+
+function sanitizeHeadlineForMatch(raw = "") {
+	return String(raw || "")
+		.replace(/\u00a0/g, " ")
+		.replace(/\b(?:today|yesterday|tomorrow)\b/gi, "")
+		.replace(
+			/\d+\s*(?:minutes?|mins?|min|hours?|hrs?|hr|days?|day|weeks?|week)\s*ago\b/gi,
+			""
+		)
+		.replace(/\s*[\u2022\u00b7\u25cf\|\-\u2013\u2014]\s+.+$/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function normalizeSearchQuery(raw = "") {
+	const cleaned = sanitizeHeadlineForMatch(raw);
+	return cleaned.replace(/\s+/g, " ").trim();
+}
+
+function limitQueryLength(value = "", maxLen = 100) {
+	const trimmed = String(value || "").trim();
+	if (!trimmed) return "";
+	if (trimmed.length <= maxLen) return trimmed;
+	const sliced = trimmed.slice(0, maxLen);
+	return sliced.replace(/\s+\S*$/, "").trim();
+}
+
+function buildVogueSearchQueriesForStory(story) {
+	const candidates = [];
+	const add = (value) => {
+		const normalized = limitQueryLength(normalizeSearchQuery(value), 100);
+		if (normalized) candidates.push(normalized);
+	};
+
+	const articles = Array.isArray(story?.articles) ? story.articles : [];
+	for (const article of articles.slice(0, 2)) {
+		add(article?.title);
+	}
+	add(story?.title);
+	add(story?.rawTitle);
+	add(story?.trendDialogTitle);
+
+	return uniqueStrings(candidates, { limit: 5 });
+}
+
+function buildVogueSearchUrl(query = "") {
+	const params = new URLSearchParams({
+		q: query,
+		sort: VOGUE_SEARCH_SORT,
+	});
+	return `${VOGUE_SEARCH_BASE_URL}?${params.toString()}`;
+}
+
+function buildBbcSearchQueriesForStory(story) {
+	const candidates = [];
+	const add = (value) => {
+		const normalized = limitQueryLength(normalizeSearchQuery(value), 90);
+		if (normalized) candidates.push(normalized);
+	};
+
+	add(story?.title);
+	add(story?.rawTitle);
+	add(story?.trendDialogTitle);
+	const articles = Array.isArray(story?.articles) ? story.articles : [];
+	for (const article of articles.slice(0, 2)) {
+		add(article?.title);
+	}
+
+	return uniqueStrings(candidates, { limit: 4 });
+}
+
+function buildBbcSearchUrl(query = "") {
+	const params = new URLSearchParams({
+		q: query,
+	});
+	return `${BBC_SEARCH_BASE_URL}?${params.toString()}`;
+}
+
+function buildCbsSearchQueriesForStory(story) {
+	const candidates = [];
+	const add = (value) => {
+		const normalized = limitQueryLength(normalizeSearchQuery(value), 90);
+		if (normalized) candidates.push(normalized);
+	};
+
+	add(story?.title);
+	add(story?.rawTitle);
+	add(story?.trendDialogTitle);
+	const articles = Array.isArray(story?.articles) ? story.articles : [];
+	for (const article of articles.slice(0, 2)) {
+		add(article?.title);
+	}
+
+	return uniqueStrings(candidates, { limit: 4 });
+}
+
+function buildCbsSearchUrl(query = "") {
+	const params = new URLSearchParams({
+		q: query,
+	});
+	return `${CBS_SEARCH_BASE_URL}?${params.toString()}`;
+}
+
+function isLikelyBbcArticleUrl(rawUrl = "") {
+	const lower = String(rawUrl || "").toLowerCase();
+	if (
+		!lower.startsWith("https://www.bbc.com/") &&
+		!lower.startsWith("https://www.bbc.co.uk/")
+	) {
+		return false;
+	}
+	if (lower.includes("/search")) return false;
+	if (lower.includes("/account")) return false;
+	return true;
+}
+
+function isLikelyCbsArticleUrl(rawUrl = "") {
+	const lower = String(rawUrl || "").toLowerCase();
+	if (!lower.startsWith("https://www.cbsnews.com/")) return false;
+	if (lower.includes("/search")) return false;
+	if (lower.includes("#search-form")) return false;
+	return true;
+}
+
+function scoreTextMatch(text = "", terms = {}) {
+	const normalized = normalizeMatchText(text);
+	if (!normalized) return 0;
+	let score = 0;
+	for (const phrase of terms.phrases || []) {
+		if (phrase && normalized.includes(phrase)) score += 5;
+	}
+	for (const token of terms.tokens || []) {
+		if (token && normalized.includes(token)) score += 1;
+	}
+	return score;
+}
+
+function countTokenHits(text = "", tokens = []) {
+	const normalized = normalizeMatchText(text);
+	if (!normalized) return 0;
+	const hits = new Set();
+	for (const token of tokens || []) {
+		if (!token) continue;
+		if (token.length < 3) continue;
+		if (normalized.includes(token)) hits.add(token);
+	}
+	return hits.size;
+}
+
+function hasPhraseMatch(text = "", phrases = []) {
+	const normalized = normalizeMatchText(text);
+	if (!normalized) return false;
+	for (const phrase of phrases || []) {
+		if (phrase && normalized.includes(phrase)) return true;
+	}
+	return false;
+}
+
+function parseCbsDateToTimestamp(value = "") {
+	const raw = String(value || "").trim();
+	if (!raw) return null;
+	const lower = raw.toLowerCase();
+	if (lower.includes("just now")) return Date.now();
+	if (lower.includes("today")) return Date.now();
+	if (lower.includes("yesterday")) {
+		return Date.now() - 24 * 60 * 60 * 1000;
+	}
+
+	const relMatch = lower.match(
+		/(\d+)\s*(mins?|minutes?|m|hrs?|hours?|h|days?|d|weeks?|w)\s*ago/
+	);
+	if (relMatch) {
+		const valueNum = Number(relMatch[1]);
+		if (!Number.isFinite(valueNum)) return null;
+		const unit = relMatch[2];
+		let minutes = valueNum;
+		if (/^h/.test(unit)) minutes = valueNum * 60;
+		else if (/^d/.test(unit)) minutes = valueNum * 60 * 24;
+		else if (/^w/.test(unit)) minutes = valueNum * 60 * 24 * 7;
+		return Date.now() - minutes * 60 * 1000;
+	}
+
+	let parsed = Date.parse(raw);
+	if (!Number.isNaN(parsed)) return parsed;
+	const year = new Date().getFullYear();
+	parsed = Date.parse(`${raw} ${year}`);
+	if (!Number.isNaN(parsed)) return parsed;
+	return null;
+}
+
+function isEntertainmentCategory(category) {
+	const key = String(category || "").trim();
+	return ENTERTAINMENT_CATEGORY_IDS.has(key);
+}
+
+function buildMatchTerms(...values) {
+	const list = [];
+	for (const value of values) {
+		if (Array.isArray(value)) {
+			list.push(...value);
+		} else {
+			list.push(value);
+		}
+	}
+
+	const phrases = uniqueStrings(
+		list
+			.map((val) => normalizeMatchText(sanitizeHeadlineForMatch(val)))
+			.filter(Boolean),
+		{ limit: 24 }
+	);
+
+	const tokens = [];
+	for (const phrase of phrases) {
+		for (const token of phrase.split(" ")) {
+			const trimmed = token.trim();
+			if (!trimmed) continue;
+			if (trimmed.length < 2) continue;
+			if (IMAGE_STOPWORDS.has(trimmed)) continue;
+			tokens.push(trimmed);
+		}
+	}
+
+	return {
+		phrases,
+		tokens: uniqueStrings(tokens, { limit: 60 }),
+	};
+}
+
+function matchesAnyTerm(text = "", terms = {}) {
+	const normalized = normalizeMatchText(text);
+	if (!normalized) return false;
+	for (const phrase of terms.phrases || []) {
+		if (phrase && normalized.includes(phrase)) return true;
+	}
+	for (const token of terms.tokens || []) {
+		if (token && normalized.includes(token)) return true;
+	}
+	return false;
+}
+
+function matchesAnyTermStrict(text = "", terms = {}) {
+	const normalized = normalizeMatchText(text);
+	if (!normalized) return false;
+	for (const phrase of terms.phrases || []) {
+		if (phrase && normalized.includes(phrase)) return true;
+	}
+	let hitCount = 0;
+	for (const token of terms.tokens || []) {
+		if (!token) continue;
+		if (token.length < 3) continue;
+		if (normalized.includes(token)) {
+			hitCount += 1;
+			if (hitCount >= 2) return true;
+		}
+	}
+	return false;
+}
+
+function getUrlPathForMatch(rawUrl = "") {
+	try {
+		const parsed = new URL(rawUrl);
+		return `${parsed.pathname}`.toLowerCase();
+	} catch {
+		return String(rawUrl || "").toLowerCase();
+	}
+}
+
+function classifyImageUrl(rawUrl = "") {
+	if (!rawUrl) return "bad";
+	let parsed;
+	try {
+		parsed = new URL(rawUrl);
+	} catch {
+		return "bad";
+	}
+	const lower = rawUrl.toLowerCase();
+	if (lower.startsWith("data:") || lower.startsWith("blob:")) return "bad";
+	const path = parsed.pathname.toLowerCase();
+	const extMatch = /\.(jpe?g|png|webp|gif|avif|bmp|tiff|svg)$/.test(path);
+	if (extMatch) return "good";
+
+	const host = parsed.hostname.toLowerCase();
+	const hostHints = [
+		"cdn",
+		"static",
+		"media",
+		"img",
+		"image",
+		"images",
+		"assets",
+		"akamai",
+		"cloudfront",
+		"fastly",
+		"gstatic",
+		"ggpht",
+		"fbcdn",
+		"instagram",
+		"twimg",
+		"scontent",
+		"ytimg",
+	];
+	const pathHints = [
+		"/images/",
+		"/image/",
+		"/img/",
+		"/photos/",
+		"/photo/",
+		"/media/",
+		"/uploads/",
+		"/upload/",
+		"/thumb",
+		"/thmb/",
+		"/assets/",
+		"/static/",
+		"/cdn/",
+		"/gcdn/",
+		"/authoring/",
+	];
+	const hasHostHint = hostHints.some((hint) => host.includes(hint));
+	const hasPathHint = pathHints.some((hint) => path.includes(hint));
+	if (hasHostHint || hasPathHint) return "maybe";
+
+	const hasFormat =
+		parsed.searchParams.has("format") ||
+		parsed.searchParams.has("fm") ||
+		parsed.searchParams.has("auto") ||
+		parsed.searchParams.has("quality");
+	const looksLikeArticlePath =
+		/(\/|^)(story|news|article|video|entertainment|sports|tv|movies|celebrity|politics)(\/|$)/.test(
+			path
+		);
+	if (looksLikeArticlePath && !hasFormat) return "bad";
+	if (looksLikeArticlePath && hasFormat) return "maybe";
+	return hasFormat ? "maybe" : "bad";
+}
+
+async function validateImageUrl(
+	rawUrl,
+	timeoutMs = POTENTIAL_IMAGE_VALIDATE_TIMEOUT_MS
+) {
+	if (typeof fetch !== "function") return true;
+	const supportsAbort =
+		typeof AbortController !== "undefined" &&
+		typeof AbortController === "function";
+
+	const fetchWithTimeout = async (url, options = {}) => {
+		const controller = supportsAbort ? new AbortController() : null;
+		let timeoutId;
+		try {
+			const promise = fetch(url, {
+				redirect: "follow",
+				signal: controller ? controller.signal : undefined,
+				...options,
+			});
+			let response;
+			if (controller) {
+				const timeoutPromise = new Promise((_, reject) => {
+					timeoutId = setTimeout(() => {
+						controller.abort();
+						reject(new Error("timeout"));
+					}, timeoutMs);
+				});
+				response = await Promise.race([promise, timeoutPromise]);
+			} else {
+				response = await promise;
+			}
+			return response;
+		} catch {
+			return null;
+		} finally {
+			if (timeoutId) clearTimeout(timeoutId);
+		}
+	};
+
+	const head = await fetchWithTimeout(rawUrl, {
+		method: "HEAD",
+		headers: {
+			Accept: "image/*",
+		},
+	});
+	if (head && head.ok) {
+		const contentType = head.headers.get("content-type") || "";
+		if (contentType.toLowerCase().startsWith("image/")) return true;
+	}
+
+	const rangeGet = await fetchWithTimeout(rawUrl, {
+		method: "GET",
+		headers: {
+			Accept: "image/*",
+			Range: "bytes=0-0",
+		},
+	});
+	if (rangeGet && rangeGet.ok) {
+		const contentType = rangeGet.headers.get("content-type") || "";
+		if (contentType.toLowerCase().startsWith("image/")) return true;
+	}
+	return false;
+}
+
+async function validatePotentialImages(images = []) {
+	if (!Array.isArray(images) || !images.length) return [];
+	if (typeof fetch !== "function") return images;
+	const out = [];
+	for (const img of images) {
+		const quality = img.urlQuality || classifyImageUrl(img.imageurl);
+		if (quality === "bad") continue;
+		if (quality === "good") {
+			out.push(img);
+			continue;
+		}
+		// eslint-disable-next-line no-await-in-loop
+		const ok = await validateImageUrl(img.imageurl);
+		if (ok) out.push(img);
+	}
+	return out;
+}
+
+function truncateText(value = "", maxLen = 140) {
+	const trimmed = String(value || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!trimmed) return "";
+	if (trimmed.length <= maxLen) return trimmed;
+	return `${trimmed.slice(0, Math.max(0, maxLen - 3)).trim()}...`;
 }
 
 function withTimeout(promise, timeoutMs) {
@@ -465,7 +1003,7 @@ async function enrichStoriesWithTrendSignals(stories, { geo, hours } = {}) {
 	return out;
 }
 /**
- * Use GPTâ€‘5.1 to generate SEOâ€‘optimized blog + Shorts titles per story.
+ * Use GPT‑5.1 to generate SEO‑optimized blog + Shorts titles per story.
  * If anything fails, we just return the original stories unchanged.
  */
 async function enhanceStoriesWithOpenAI(
@@ -570,10 +1108,10 @@ async function enhanceStoriesWithOpenAI(
 	}
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ helpers */
+/* ───────────────────────────────────────────────────────────── helpers */
 
 const urlFor = ({ geo, hours, category, sort }) => {
-	// Clamp hours 1â€“168 and actually use the requested window.
+	// Clamp hours 1–168 and actually use the requested window.
 	// const hrs = Math.min(Math.max(Number(hours) || 24, 1), 168);
 
 	const params = new URLSearchParams({
@@ -595,7 +1133,7 @@ const urlFor = ({ geo, hours, category, sort }) => {
 	return `https://trends.google.com/trending?${params.toString()}`;
 };
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ cached browser */
+/* ───────────────────────────────────────────────────── cached browser */
 
 let browser; // one instance per container / PM2 worker
 
@@ -619,7 +1157,7 @@ async function getBrowser() {
 	return browser;
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ article image helpers (Node side) */
+/* ───────────────────────────────────── article image helpers (Node side) */
 
 async function fetchHtmlWithTimeout(url, timeoutMs) {
 	// Older Node may not have global fetch; if so we just skip enrichment.
@@ -751,7 +1289,1415 @@ async function hydrateArticleImages(stories) {
 	);
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ scraper */
+/* ───────────────────────────────────────────────────────────── scraper */
+
+/* potential image helpers (Puppeteer) */
+
+function normalizeImageUrlKey(rawUrl = "") {
+	try {
+		const parsed = new URL(rawUrl);
+		return `${parsed.origin}${parsed.pathname}`.toLowerCase();
+	} catch {
+		return String(rawUrl || "").toLowerCase();
+	}
+}
+
+function normalizePossibleUrl(rawUrl = "", baseUrl = "") {
+	const value = String(rawUrl || "").trim();
+	if (!value) return "";
+	if (value.startsWith("//")) return `https:${value}`;
+	if (/^https?:\/\//i.test(value)) return value;
+	if (!baseUrl) return value;
+	try {
+		return new URL(value, baseUrl).toString();
+	} catch {
+		return value;
+	}
+}
+
+function selectBestSrcFromSrcset(srcset = "") {
+	const entries = String(srcset || "")
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+	let bestUrl = "";
+	let bestScore = 0;
+	for (const entry of entries) {
+		const parts = entry.split(/\s+/);
+		const url = parts[0];
+		if (!url) continue;
+		let score = 0;
+		const size = (parts[1] || "").toLowerCase();
+		if (size) {
+			const parsed = parseFloat(size);
+			if (Number.isFinite(parsed)) {
+				score = size.endsWith("w") ? parsed : parsed * 1000;
+			}
+		}
+		if (!bestUrl || score >= bestScore) {
+			bestUrl = url;
+			bestScore = score;
+		}
+	}
+	return bestUrl;
+}
+
+function pickBestImageUrl(raw = {}, baseUrl = "") {
+	const candidates = [];
+	const srcsetBest =
+		selectBestSrcFromSrcset(raw.srcset) ||
+		selectBestSrcFromSrcset(raw.dataSrcset);
+	if (srcsetBest) candidates.push(srcsetBest);
+	if (raw.dataSrc) candidates.push(raw.dataSrc);
+	if (raw.src) candidates.push(raw.src);
+
+	for (const candidate of candidates) {
+		const normalized = normalizePossibleUrl(candidate, baseUrl);
+		if (!normalized) continue;
+		if (normalized.startsWith("data:") || normalized.startsWith("blob:")) {
+			continue;
+		}
+		if (/^https?:\/\//i.test(normalized)) return normalized;
+	}
+	return "";
+}
+
+function guessDimensionsFromUrl(rawUrl = "") {
+	const output = { width: 0, height: 0 };
+	if (!rawUrl) return output;
+	const sizeMatch = String(rawUrl).match(/(\d{2,4})[xX](\d{2,4})/);
+	if (sizeMatch) {
+		const width = Number(sizeMatch[1]);
+		const height = Number(sizeMatch[2]);
+		if (Number.isFinite(width)) output.width = width;
+		if (Number.isFinite(height)) output.height = height;
+	}
+	try {
+		const parsed = new URL(rawUrl);
+		const readInt = (key) => {
+			const val = parsed.searchParams.get(key);
+			const parsedVal = Number(val);
+			return Number.isFinite(parsedVal) ? parsedVal : 0;
+		};
+		output.width =
+			output.width ||
+			readInt("w") ||
+			readInt("width") ||
+			readInt("mw") ||
+			readInt("maxw") ||
+			readInt("resize");
+		output.height =
+			output.height || readInt("h") || readInt("height") || readInt("mh");
+	} catch {
+		// ignore URL parse failures
+	}
+	return output;
+}
+
+function resolveImageDimensions(raw = {}, rawUrl = "") {
+	let width = Number(raw.width) || 0;
+	let height = Number(raw.height) || 0;
+	if (!width || !height) {
+		const guessed = guessDimensionsFromUrl(rawUrl);
+		if (!width && guessed.width) width = guessed.width;
+		if (!height && guessed.height) height = guessed.height;
+	}
+	return { width, height };
+}
+
+function isLikelyNonContentImage({ url, alt, className, id } = {}) {
+	const haystack = [url, alt, className, id]
+		.map((val) => String(val || "").toLowerCase())
+		.join(" ");
+	if (!haystack) return false;
+	if (haystack.includes(".svg") || haystack.includes("image/svg")) return true;
+	return POTENTIAL_IMAGE_BAD_HINTS.some((hint) => haystack.includes(hint));
+}
+
+function buildImageContext(raw = {}) {
+	const parts = [
+		raw.alt,
+		raw.title,
+		raw.ariaLabel,
+		raw.figcaption,
+		raw.dataCaption,
+	];
+	if (raw.figureText && String(raw.figureText).trim().length <= 160) {
+		parts.push(raw.figureText);
+	}
+	return parts
+		.map((val) =>
+			String(val || "")
+				.replace(/\s+/g, " ")
+				.trim()
+		)
+		.filter(Boolean)
+		.join(" ");
+}
+
+function buildImageDescription(context, { storyTitle, articleTitle } = {}) {
+	const cleaned = truncateText(context, 140);
+	if (cleaned) return cleaned;
+	const fallback = truncateText(articleTitle || storyTitle || "", 120);
+	return fallback ? `Related image: ${fallback}` : "Related image";
+}
+
+function scorePotentialImageCandidate({
+	contextMatch,
+	inArticle,
+	width,
+	height,
+	hasCaption,
+} = {}) {
+	let score = 0;
+	if (contextMatch) score += 4;
+	if (inArticle) score += 2;
+	if (hasCaption) score += 1;
+	const maxDim = Math.max(Number(width) || 0, Number(height) || 0);
+	if (maxDim >= 1600) score += 3;
+	else if (maxDim >= 1200) score += 2;
+	else if (maxDim >= 800) score += 1;
+	return score;
+}
+
+function selectPotentialImagesFromRaw(rawImages, options = {}) {
+	const {
+		articleUrl,
+		baseUrl,
+		sourceUrl,
+		matchTerms,
+		focusTerms,
+		storyTitle,
+		articleTitle,
+		storySeen,
+		globalSeen,
+		perArticleLimit = POTENTIAL_IMAGE_PER_ARTICLE_LIMIT,
+	} = options;
+	if (!Array.isArray(rawImages) || !rawImages.length) return [];
+
+	const resolvedBaseUrl = baseUrl || articleUrl;
+	const defaultSource = normalizePossibleUrl(
+		sourceUrl || articleUrl,
+		resolvedBaseUrl
+	);
+
+	const candidates = [];
+	for (const raw of rawImages) {
+		const imageUrl = pickBestImageUrl(raw, resolvedBaseUrl);
+		if (!imageUrl) continue;
+		if (!/^https?:\/\//i.test(imageUrl)) continue;
+		if (isLikelyThumbnailUrl(imageUrl)) continue;
+		if (
+			isLikelyNonContentImage({
+				url: imageUrl,
+				alt: raw.alt,
+				className: raw.className,
+				id: raw.id,
+			})
+		) {
+			continue;
+		}
+
+		const urlQuality = classifyImageUrl(imageUrl);
+		if (urlQuality === "bad") continue;
+
+		const { width, height } = resolveImageDimensions(raw, imageUrl);
+		if (
+			width &&
+			height &&
+			(width < POTENTIAL_IMAGE_MIN_WIDTH || height < POTENTIAL_IMAGE_MIN_HEIGHT)
+		) {
+			continue;
+		}
+
+		const context = buildImageContext(raw);
+		const contextMatch = matchesAnyTermStrict(context, matchTerms);
+		const urlMatch = matchesAnyTermStrict(
+			getUrlPathForMatch(imageUrl),
+			matchTerms
+		);
+		const focusActive = Boolean(
+			focusTerms &&
+				((focusTerms.phrases || []).length || (focusTerms.tokens || []).length)
+		);
+		const focusMatch = !focusActive
+			? true
+			: matchesAnyTermStrict(context, focusTerms) ||
+			  matchesAnyTermStrict(getUrlPathForMatch(imageUrl), focusTerms);
+		if (!focusMatch) continue;
+		if (!contextMatch && !urlMatch) continue;
+
+		const score = scorePotentialImageCandidate({
+			contextMatch: contextMatch || urlMatch,
+			inArticle: raw.inArticle,
+			width,
+			height,
+			hasCaption: Boolean(raw.figcaption),
+		});
+
+		candidates.push({
+			imageurl: imageUrl,
+			description: buildImageDescription(context, { storyTitle, articleTitle }),
+			source:
+				normalizePossibleUrl(raw.sourceUrl || defaultSource, resolvedBaseUrl) ||
+				defaultSource,
+			width: width ? String(width) : "",
+			height: height ? String(height) : "",
+			score,
+			urlQuality,
+		});
+	}
+
+	candidates.sort((a, b) => {
+		if (b.score !== a.score) return b.score - a.score;
+		return (Number(b.width) || 0) - (Number(a.width) || 0);
+	});
+
+	const results = [];
+	const pageSeen = new Set();
+	for (const candidate of candidates) {
+		const key = normalizeImageUrlKey(candidate.imageurl);
+		if (pageSeen.has(key)) continue;
+		if (storySeen && storySeen.has(key)) continue;
+		if (globalSeen && globalSeen.has(key)) continue;
+		pageSeen.add(key);
+		if (storySeen) storySeen.add(key);
+		if (globalSeen) globalSeen.add(key);
+		const { score, urlQuality, ...payload } = candidate;
+		results.push(payload);
+		if (results.length >= perArticleLimit) break;
+	}
+
+	return results;
+}
+
+async function scrapePotentialImagesFromArticle(
+	articleUrl,
+	{
+		matchTerms,
+		focusTerms,
+		storyTitle,
+		articleTitle,
+		storySeen,
+		globalSeen,
+		perArticleLimit,
+	} = {}
+) {
+	if (!articleUrl) return [];
+	const page = await (await getBrowser()).newPage();
+	page.setDefaultNavigationTimeout(POTENTIAL_IMAGE_TIMEOUT_MS);
+	await page.setUserAgent(BROWSER_UA);
+
+	await page.setRequestInterception(true);
+	page.on("request", (req) => {
+		const type = req.resourceType();
+		if (type === "font") return req.abort();
+		return req.continue();
+	});
+
+	try {
+		const response = await page.goto(articleUrl, {
+			waitUntil: "domcontentloaded",
+			timeout: POTENTIAL_IMAGE_TIMEOUT_MS,
+		});
+		log("Potential images navigate", {
+			url: articleUrl,
+			status: response ? response.status() : "no-response",
+		});
+
+		try {
+			await page.waitForSelector("img", {
+				timeout: POTENTIAL_IMAGE_SELECTOR_TIMEOUT_MS,
+			});
+		} catch {
+			// Continue even if images are slow to load.
+		}
+
+		await autoScrollPage(page, {
+			scrolls: POTENTIAL_IMAGE_SCROLLS,
+			delayMs: POTENTIAL_IMAGE_SCROLL_DELAY_MS,
+		});
+		await delay(250);
+
+		const blockSignal = await page
+			.evaluate(() => {
+				const title = document.title || "";
+				const bodyText = document.body?.innerText || "";
+				return {
+					title: title.slice(0, 140),
+					text: bodyText.slice(0, 800),
+				};
+			})
+			.catch(() => null);
+		if (blockSignal) {
+			const combined = `${blockSignal.title} ${blockSignal.text}`.toLowerCase();
+			const blocked = POTENTIAL_IMAGE_CAPTCHA_HINTS.some((hint) =>
+				combined.includes(hint)
+			);
+			if (blocked) {
+				log("Potential images blocked hint", {
+					url: articleUrl,
+					title: blockSignal.title,
+				});
+			}
+		}
+
+		const rawImages = await page.evaluate(() => {
+			const out = [];
+			const tidy = (value, limit = 260) =>
+				String(value || "")
+					.replace(/\s+/g, " ")
+					.trim()
+					.slice(0, limit);
+			const imgs = Array.from(document.images || []);
+			for (const img of imgs) {
+				const rect = img.getBoundingClientRect();
+				const figure = img.closest("figure");
+				const figcaption = figure
+					? tidy(figure.querySelector("figcaption")?.innerText || "", 240)
+					: "";
+				const figureText = figure ? tidy(figure.innerText || "", 240) : "";
+				out.push({
+					src: img.currentSrc || img.src || "",
+					alt: tidy(img.getAttribute("alt") || "", 240),
+					title: tidy(img.getAttribute("title") || "", 180),
+					ariaLabel: tidy(img.getAttribute("aria-label") || "", 180),
+					dataCaption: tidy(img.getAttribute("data-caption") || "", 240),
+					width: img.naturalWidth || Math.round(rect.width) || 0,
+					height: img.naturalHeight || Math.round(rect.height) || 0,
+					dataSrc:
+						img.getAttribute("data-src") ||
+						img.getAttribute("data-lazy-src") ||
+						img.getAttribute("data-original") ||
+						img.getAttribute("data-url") ||
+						"",
+					srcset: img.getAttribute("srcset") || "",
+					dataSrcset:
+						img.getAttribute("data-srcset") ||
+						img.getAttribute("data-lazy-srcset") ||
+						"",
+					className: img.className || "",
+					id: img.id || "",
+					inArticle: Boolean(img.closest("article") || img.closest("main")),
+					figcaption,
+					figureText,
+				});
+			}
+			return out;
+		});
+
+		let filtered = selectPotentialImagesFromRaw(rawImages, {
+			articleUrl,
+			matchTerms,
+			focusTerms,
+			storyTitle,
+			articleTitle,
+			storySeen,
+			globalSeen,
+			perArticleLimit,
+		});
+		log("Potential images filter", {
+			url: articleUrl,
+			raw: rawImages.length,
+			kept: filtered.length,
+		});
+
+		const validated = await validatePotentialImages(filtered);
+		if (validated.length !== filtered.length) {
+			log("Potential images validate", {
+				url: articleUrl,
+				kept: validated.length,
+				dropped: filtered.length - validated.length,
+			});
+		}
+		filtered = validated;
+
+		if (!filtered.length) {
+			const meta = await page
+				.evaluate(() => {
+					const readMeta = (selector) =>
+						document.querySelector(selector)?.getAttribute("content") || "";
+					return {
+						title:
+							readMeta('meta[property="og:title"]') ||
+							readMeta('meta[name="twitter:title"]') ||
+							document.title ||
+							"",
+						ogImage:
+							readMeta('meta[property="og:image:secure_url"]') ||
+							readMeta('meta[property="og:image"]') ||
+							readMeta('meta[name="twitter:image:src"]') ||
+							readMeta('meta[name="twitter:image"]') ||
+							"",
+					};
+				})
+				.catch(() => null);
+			const metaTitle = sanitizeHeadlineForMatch(meta?.title || "");
+			const ogImage = meta?.ogImage || "";
+			const focusActive = Boolean(
+				focusTerms &&
+					((focusTerms.phrases || []).length ||
+						(focusTerms.tokens || []).length)
+			);
+			const metaTerms = focusActive ? focusTerms : matchTerms;
+			if (metaTitle && ogImage && matchesAnyTermStrict(metaTitle, metaTerms)) {
+				const resolved = normalizePossibleUrl(ogImage, articleUrl);
+				const key = normalizeImageUrlKey(resolved);
+				const alreadySeen =
+					(storySeen && storySeen.has(key)) ||
+					(globalSeen && globalSeen.has(key));
+				if (
+					resolved &&
+					!alreadySeen &&
+					!isLikelyThumbnailUrl(resolved) &&
+					!isLikelyNonContentImage({ url: resolved })
+				) {
+					const quality = classifyImageUrl(resolved);
+					let ok = quality !== "bad";
+					if (ok && quality === "maybe" && typeof fetch === "function") {
+						ok = await validateImageUrl(resolved);
+					}
+					if (ok) {
+						if (storySeen) storySeen.add(key);
+						if (globalSeen) globalSeen.add(key);
+						filtered = [
+							{
+								imageurl: resolved,
+								description: buildImageDescription(metaTitle, {
+									storyTitle,
+									articleTitle,
+								}),
+								source: articleUrl,
+								width: "",
+								height: "",
+							},
+						];
+						log("Potential images og fallback", {
+							url: articleUrl,
+							title: metaTitle,
+						});
+					}
+				}
+			}
+		}
+		return filtered;
+	} catch (err) {
+		log(
+			"Potential images scrape failed:",
+			articleUrl,
+			err.message || String(err)
+		);
+		return [];
+	} finally {
+		await page.close().catch(() => {});
+	}
+}
+
+async function scrapeVogueSearchImages({
+	query,
+	matchTerms,
+	focusTerms,
+	storyTitle,
+	storySeen,
+	globalSeen,
+	limit = VOGUE_SEARCH_MAX_RESULTS,
+} = {}) {
+	const safeQuery = String(query || "").trim();
+	if (!safeQuery) return [];
+
+	const page = await (await getBrowser()).newPage();
+	page.setDefaultNavigationTimeout(POTENTIAL_IMAGE_TIMEOUT_MS);
+	await page.setUserAgent(BROWSER_UA);
+
+	await page.setRequestInterception(true);
+	page.on("request", (req) => {
+		const type = req.resourceType();
+		if (type === "font") return req.abort();
+		return req.continue();
+	});
+
+	const searchUrl = buildVogueSearchUrl(safeQuery);
+	log("Vogue search start", { query: safeQuery, url: searchUrl });
+
+	try {
+		const response = await page.goto(searchUrl, {
+			waitUntil: "domcontentloaded",
+			timeout: POTENTIAL_IMAGE_TIMEOUT_MS,
+		});
+		log("Vogue search navigate", {
+			url: searchUrl,
+			status: response ? response.status() : "no-response",
+		});
+
+		try {
+			await page.waitForSelector("img", {
+				timeout: VOGUE_SEARCH_SELECTOR_TIMEOUT_MS,
+			});
+		} catch {
+			// Continue even if images are slow to load.
+		}
+
+		await autoScrollPage(page, {
+			scrolls: VOGUE_SEARCH_SCROLLS,
+			delayMs: VOGUE_SEARCH_SCROLL_DELAY_MS,
+		});
+		await delay(250);
+
+		const blockSignal = await page
+			.evaluate(() => {
+				const title = document.title || "";
+				const bodyText = document.body?.innerText || "";
+				return {
+					title: title.slice(0, 140),
+					text: bodyText.slice(0, 800),
+				};
+			})
+			.catch(() => null);
+		if (blockSignal) {
+			const combined = `${blockSignal.title} ${blockSignal.text}`.toLowerCase();
+			const blocked = POTENTIAL_IMAGE_CAPTCHA_HINTS.some((hint) =>
+				combined.includes(hint)
+			);
+			if (blocked) {
+				log("Vogue search blocked hint", {
+					url: searchUrl,
+					title: blockSignal.title,
+				});
+			}
+		}
+
+		const rawImages = await page.evaluate(() => {
+			const out = [];
+			const tidy = (value, limit = 260) =>
+				String(value || "")
+					.replace(/\s+/g, " ")
+					.trim()
+					.slice(0, limit);
+			const imgs = Array.from(document.images || []);
+			for (const img of imgs) {
+				const rect = img.getBoundingClientRect();
+				const card =
+					img.closest("article") ||
+					img.closest('[data-testid*="search"]') ||
+					img.closest('[data-testid*="Search"]') ||
+					img.closest("div");
+				const link = card?.querySelector("a[href]") || img.closest("a[href]");
+				const headline = card?.querySelector("h1,h2,h3")?.textContent || "";
+				const kicker = card?.querySelector("p")?.textContent || "";
+				const caption = tidy(headline || kicker, 240);
+				out.push({
+					src: img.currentSrc || img.src || "",
+					alt: tidy(img.getAttribute("alt") || "", 240),
+					title: tidy(img.getAttribute("title") || "", 180),
+					ariaLabel: tidy(img.getAttribute("aria-label") || "", 180),
+					dataCaption: caption,
+					width: img.naturalWidth || Math.round(rect.width) || 0,
+					height: img.naturalHeight || Math.round(rect.height) || 0,
+					dataSrc:
+						img.getAttribute("data-src") ||
+						img.getAttribute("data-lazy-src") ||
+						img.getAttribute("data-original") ||
+						img.getAttribute("data-url") ||
+						"",
+					srcset: img.getAttribute("srcset") || "",
+					dataSrcset:
+						img.getAttribute("data-srcset") ||
+						img.getAttribute("data-lazy-srcset") ||
+						"",
+					className: img.className || "",
+					id: img.id || "",
+					inArticle: Boolean(card),
+					figcaption: "",
+					figureText: caption,
+					sourceUrl: link ? link.href : "",
+				});
+			}
+			return out;
+		});
+
+		let filtered = selectPotentialImagesFromRaw(rawImages, {
+			articleUrl: searchUrl,
+			baseUrl: searchUrl,
+			sourceUrl: searchUrl,
+			matchTerms,
+			focusTerms,
+			storyTitle,
+			articleTitle: safeQuery,
+			storySeen,
+			globalSeen,
+			perArticleLimit: clampInt(limit, 1, VOGUE_SEARCH_MAX_RESULTS),
+		});
+		log("Vogue search filter", {
+			url: searchUrl,
+			raw: rawImages.length,
+			kept: filtered.length,
+		});
+
+		const validated = await validatePotentialImages(filtered);
+		if (validated.length !== filtered.length) {
+			log("Vogue search validate", {
+				url: searchUrl,
+				kept: validated.length,
+				dropped: filtered.length - validated.length,
+			});
+		}
+		filtered = validated;
+
+		return filtered;
+	} catch (err) {
+		log("Vogue search failed", {
+			url: searchUrl,
+			error: err.message || String(err),
+		});
+		return [];
+	} finally {
+		await page.close().catch(() => {});
+	}
+}
+
+async function scrapeBbcSearchResults(query) {
+	const safeQuery = String(query || "").trim();
+	if (!safeQuery) return [];
+
+	const page = await (await getBrowser()).newPage();
+	page.setDefaultNavigationTimeout(POTENTIAL_IMAGE_TIMEOUT_MS);
+	await page.setUserAgent(BROWSER_UA);
+
+	await page.setRequestInterception(true);
+	page.on("request", (req) => {
+		const type = req.resourceType();
+		if (type === "font") return req.abort();
+		return req.continue();
+	});
+
+	const searchUrl = buildBbcSearchUrl(safeQuery);
+	log("BBC search start", { query: safeQuery, url: searchUrl });
+
+	try {
+		const response = await page.goto(searchUrl, {
+			waitUntil: "domcontentloaded",
+			timeout: POTENTIAL_IMAGE_TIMEOUT_MS,
+		});
+		log("BBC search navigate", {
+			url: searchUrl,
+			status: response ? response.status() : "no-response",
+		});
+
+		try {
+			await page.waitForSelector("a[href]", {
+				timeout: BBC_SEARCH_SELECTOR_TIMEOUT_MS,
+			});
+		} catch {
+			// Continue even if results are slow to load.
+		}
+
+		await autoScrollPage(page, {
+			scrolls: BBC_SEARCH_SCROLLS,
+			delayMs: BBC_SEARCH_SCROLL_DELAY_MS,
+		});
+		await delay(250);
+
+		const blockSignal = await page
+			.evaluate(() => {
+				const title = document.title || "";
+				const bodyText = document.body?.innerText || "";
+				return {
+					title: title.slice(0, 140),
+					text: bodyText.slice(0, 800),
+				};
+			})
+			.catch(() => null);
+		if (blockSignal) {
+			const combined = `${blockSignal.title} ${blockSignal.text}`.toLowerCase();
+			const blocked = POTENTIAL_IMAGE_CAPTCHA_HINTS.some((hint) =>
+				combined.includes(hint)
+			);
+			if (blocked) {
+				log("BBC search blocked hint", {
+					url: searchUrl,
+					title: blockSignal.title,
+				});
+			}
+		}
+
+		const rawResults = await page.evaluate(() => {
+			const out = [];
+			const tidy = (value, limit = 220) =>
+				String(value || "")
+					.replace(/\s+/g, " ")
+					.trim()
+					.slice(0, limit);
+
+			const cards = Array.from(
+				document.querySelectorAll('[data-testid="newport-card"]')
+			);
+			for (const card of cards) {
+				const link = card.querySelector("a[href]");
+				const headline =
+					card.querySelector('[data-testid="card-headline"]') ||
+					card.querySelector("h1,h2,h3");
+				const title = tidy(headline?.textContent || "", 200);
+				const href = link?.href || "";
+				if (href && title) out.push({ title, url: href });
+			}
+
+			const anchors = Array.from(document.querySelectorAll("main a[href]"));
+			for (const anchor of anchors) {
+				const headline =
+					anchor.querySelector("h1,h2,h3") || anchor.querySelector("span");
+				const title = tidy(headline?.textContent || anchor.textContent, 200);
+				const href = anchor.href || "";
+				if (href && title && title.length >= 6) {
+					out.push({ title, url: href });
+				}
+			}
+
+			return out;
+		});
+
+		const seen = new Set();
+		const results = [];
+		for (const item of rawResults) {
+			const url = String(item?.url || "");
+			const title = String(item?.title || "").trim();
+			if (!url || !title) continue;
+			if (!isLikelyBbcArticleUrl(url)) continue;
+			const key = url.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			results.push({ title, url });
+			if (results.length >= BBC_SEARCH_MAX_RESULTS) break;
+		}
+
+		log("BBC search results", {
+			url: searchUrl,
+			count: results.length,
+		});
+
+		return results;
+	} catch (err) {
+		log("BBC search failed", {
+			url: searchUrl,
+			error: err.message || String(err),
+		});
+		return [];
+	} finally {
+		await page.close().catch(() => {});
+	}
+}
+
+async function scrapeBbcSearchImages({
+	query,
+	matchTerms,
+	focusTerms,
+	storyTitle,
+	storySeen,
+	globalSeen,
+	limit = POTENTIAL_IMAGE_MIN_PER_STORY,
+} = {}) {
+	const safeQuery = String(query || "").trim();
+	if (!safeQuery) return [];
+
+	const results = await scrapeBbcSearchResults(safeQuery);
+	if (!results.length) return [];
+
+	const queryTerms = buildMatchTerms(safeQuery);
+	const strongQueryTokens = (queryTerms.tokens || []).filter(
+		(token) => token && token.length >= 3
+	);
+	const minQueryHits = strongQueryTokens.length
+		? strongQueryTokens.length >= 2
+			? 2
+			: 1
+		: 0;
+	const baseTerms =
+		matchTerms && (matchTerms.phrases || matchTerms.tokens)
+			? matchTerms
+			: queryTerms;
+	const scored = results.map((item) => {
+		const title = sanitizeHeadlineForMatch(item.title);
+		const timestamp = parseCbsDateToTimestamp(item.dateText);
+		const ageMinutes = Number.isFinite(timestamp)
+			? Math.max(0, Math.round((Date.now() - timestamp) / 60000))
+			: null;
+		const phraseMatch = hasPhraseMatch(title, queryTerms.phrases);
+		const tokenHits = countTokenHits(title, strongQueryTokens);
+		const queryOk =
+			phraseMatch || (minQueryHits > 0 && tokenHits >= minQueryHits);
+		const score = queryOk
+			? scoreTextMatch(title, baseTerms) +
+			  scoreTextMatch(title, focusTerms || {})
+			: 0;
+		return { ...item, title, score, tokenHits, ageMinutes };
+	});
+	scored.sort((a, b) => {
+		if (b.score !== a.score) return b.score - a.score;
+		if (a.ageMinutes == null && b.ageMinutes != null) return 1;
+		if (a.ageMinutes != null && b.ageMinutes == null) return -1;
+		if (a.ageMinutes != null && b.ageMinutes != null) {
+			if (a.ageMinutes !== b.ageMinutes) return a.ageMinutes - b.ageMinutes;
+		}
+		return 0;
+	});
+
+	const minScore = BBC_SEARCH_MIN_SCORE;
+	const candidates = scored.filter((item) => item.score >= minScore);
+	if (!candidates.length) {
+		log("BBC search skip", {
+			query: safeQuery,
+			reason: "no-strong-match",
+			maxScore: scored[0]?.score || 0,
+			maxTokenHits: scored[0]?.tokenHits || 0,
+		});
+		return [];
+	}
+	const finalCandidates = candidates.slice(0, BBC_SEARCH_MAX_ARTICLES);
+
+	log("BBC search pick", {
+		query: safeQuery,
+		picked: finalCandidates.map((item) => ({
+			title: item.title,
+			url: item.url,
+			score: item.score,
+		})),
+	});
+
+	const images = [];
+	for (const item of finalCandidates) {
+		if (images.length >= limit) break;
+		const searchMatchTerms = buildMatchTerms(safeQuery, item.title, storyTitle);
+		// eslint-disable-next-line no-await-in-loop
+		const scraped = await scrapePotentialImagesFromArticle(item.url, {
+			matchTerms: searchMatchTerms,
+			focusTerms,
+			storyTitle,
+			articleTitle: item.title,
+			storySeen,
+			globalSeen,
+			perArticleLimit: Math.max(1, limit - images.length),
+		});
+		for (const img of scraped) {
+			images.push(img);
+			if (images.length >= limit) break;
+		}
+	}
+
+	return images;
+}
+
+async function scrapeCbsSearchResults(query) {
+	const safeQuery = String(query || "").trim();
+	if (!safeQuery) return [];
+
+	const page = await (await getBrowser()).newPage();
+	page.setDefaultNavigationTimeout(POTENTIAL_IMAGE_TIMEOUT_MS);
+	await page.setUserAgent(BROWSER_UA);
+
+	await page.setRequestInterception(true);
+	page.on("request", (req) => {
+		const type = req.resourceType();
+		if (type === "font") return req.abort();
+		return req.continue();
+	});
+
+	const searchUrl = buildCbsSearchUrl(safeQuery);
+	log("CBS search start", { query: safeQuery, url: searchUrl });
+
+	try {
+		const response = await page.goto(searchUrl, {
+			waitUntil: "domcontentloaded",
+			timeout: POTENTIAL_IMAGE_TIMEOUT_MS,
+		});
+		log("CBS search navigate", {
+			url: searchUrl,
+			status: response ? response.status() : "no-response",
+		});
+		try {
+			await page.waitForSelector(".search-results", {
+				timeout: CBS_SEARCH_SELECTOR_TIMEOUT_MS,
+			});
+		} catch {
+			// Continue even if results are slow to load.
+		}
+
+		await autoScrollPage(page, {
+			scrolls: CBS_SEARCH_SCROLLS,
+			delayMs: CBS_SEARCH_SCROLL_DELAY_MS,
+		});
+		await delay(250);
+
+		const blockSignal = await page
+			.evaluate(() => {
+				const title = document.title || "";
+				const bodyText = document.body?.innerText || "";
+				return {
+					title: title.slice(0, 140),
+					text: bodyText.slice(0, 800),
+				};
+			})
+			.catch(() => null);
+		if (blockSignal) {
+			const combined = `${blockSignal.title} ${blockSignal.text}`.toLowerCase();
+			const blocked = POTENTIAL_IMAGE_CAPTCHA_HINTS.some((hint) =>
+				combined.includes(hint)
+			);
+			if (blocked) {
+				log("CBS search blocked hint", {
+					url: searchUrl,
+					title: blockSignal.title,
+				});
+			}
+		}
+
+		const rawResults = await page.evaluate(() => {
+			const out = [];
+			const tidy = (value, limit = 220) =>
+				String(value || "")
+					.replace(/\s+/g, " ")
+					.trim()
+					.slice(0, limit);
+
+			const container =
+				document.querySelector("section.search-results") ||
+				document.querySelector(".search-results") ||
+				document.querySelector("main");
+			const cards = Array.from(
+				container?.querySelectorAll("article.item") || []
+			);
+			for (const card of cards) {
+				const link =
+					card.querySelector("a.item__anchor[href]") ||
+					card.querySelector("a[href]");
+				const headline =
+					card.querySelector(".item__hed") || card.querySelector("h4,h3,h2,h1");
+				const dateNode =
+					card.querySelector(".item__date") ||
+					card.querySelector(".item__metadata .item__date");
+				const title = tidy(headline?.textContent || "", 200);
+				const dateText = tidy(dateNode?.textContent || "", 60);
+				const href = link?.href || "";
+				if (href && title) out.push({ title, url: href, dateText });
+			}
+
+			const anchors = Array.from(
+				(container || document).querySelectorAll("article.item a[href]")
+			);
+			for (const anchor of anchors) {
+				const card = anchor.closest("article.item");
+				const headline =
+					card?.querySelector(".item__hed") ||
+					anchor.querySelector("h4,h3,h2,h1") ||
+					anchor.querySelector("span");
+				const dateNode =
+					card?.querySelector(".item__date") ||
+					card?.querySelector(".item__metadata .item__date");
+				const title = tidy(headline?.textContent || anchor.textContent, 200);
+				const dateText = tidy(dateNode?.textContent || "", 60);
+				const href = anchor.href || "";
+				if (href && title && title.length >= 6) {
+					out.push({ title, url: href, dateText });
+				}
+			}
+
+			return out;
+		});
+
+		const seen = new Set();
+		const results = [];
+		for (const item of rawResults) {
+			const url = String(item?.url || "");
+			const title = String(item?.title || "").trim();
+			const dateText = String(item?.dateText || "").trim();
+			if (!url || !title) continue;
+			if (!isLikelyCbsArticleUrl(url)) continue;
+			const key = url.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			results.push({ title, url, dateText });
+			if (results.length >= CBS_SEARCH_MAX_RESULTS) break;
+		}
+
+		log("CBS search results", {
+			url: searchUrl,
+			count: results.length,
+		});
+
+		return results;
+	} catch (err) {
+		log("CBS search failed", {
+			url: searchUrl,
+			error: err.message || String(err),
+		});
+		return [];
+	} finally {
+		await page.close().catch(() => {});
+	}
+}
+
+async function scrapeCbsSearchImages({
+	query,
+	matchTerms,
+	focusTerms,
+	storyTitle,
+	storySeen,
+	globalSeen,
+	limit = POTENTIAL_IMAGE_MIN_PER_STORY,
+} = {}) {
+	const safeQuery = String(query || "").trim();
+	if (!safeQuery) return [];
+
+	const results = await scrapeCbsSearchResults(safeQuery);
+	if (!results.length) return [];
+
+	const queryTerms = buildMatchTerms(safeQuery);
+	const strongQueryTokens = (queryTerms.tokens || []).filter(
+		(token) => token && token.length >= 3
+	);
+	const minQueryHits = strongQueryTokens.length
+		? strongQueryTokens.length >= 2
+			? 2
+			: 1
+		: 0;
+	const baseTerms =
+		matchTerms && (matchTerms.phrases || matchTerms.tokens)
+			? matchTerms
+			: queryTerms;
+	const scored = results.map((item) => {
+		const title = sanitizeHeadlineForMatch(item.title);
+		const phraseMatch = hasPhraseMatch(title, queryTerms.phrases);
+		const tokenHits = countTokenHits(title, strongQueryTokens);
+		const queryOk =
+			phraseMatch || (minQueryHits > 0 && tokenHits >= minQueryHits);
+		const score = queryOk
+			? scoreTextMatch(title, baseTerms) +
+			  scoreTextMatch(title, focusTerms || {})
+			: 0;
+		return { ...item, title, score, tokenHits };
+	});
+	scored.sort((a, b) => b.score - a.score);
+
+	const minScore = CBS_SEARCH_MIN_SCORE;
+	const candidates = scored.filter((item) => item.score >= minScore);
+	if (!candidates.length) {
+		log("CBS search skip", {
+			query: safeQuery,
+			reason: "no-strong-match",
+			maxScore: scored[0]?.score || 0,
+			maxTokenHits: scored[0]?.tokenHits || 0,
+		});
+		return [];
+	}
+	const finalCandidates = candidates.slice(0, CBS_SEARCH_MAX_ARTICLES);
+
+	log("CBS search pick", {
+		query: safeQuery,
+		picked: finalCandidates.map((item) => ({
+			title: item.title,
+			url: item.url,
+			score: item.score,
+			date: item.dateText,
+			ageMinutes: item.ageMinutes,
+		})),
+	});
+
+	const images = [];
+	for (const item of finalCandidates) {
+		if (images.length >= limit) break;
+		const searchMatchTerms = buildMatchTerms(safeQuery, item.title, storyTitle);
+		// eslint-disable-next-line no-await-in-loop
+		const scraped = await scrapePotentialImagesFromArticle(item.url, {
+			matchTerms: searchMatchTerms,
+			focusTerms,
+			storyTitle,
+			articleTitle: item.title,
+			storySeen,
+			globalSeen,
+			perArticleLimit: Math.max(1, limit - images.length),
+		});
+		for (const img of scraped) {
+			images.push(img);
+			if (images.length >= limit) break;
+		}
+	}
+
+	return images;
+}
+
+async function enrichStoriesWithPotentialImages(
+	stories,
+	{
+		topicLimit,
+		minImagesPerStory = 0,
+		targetImagesPerStory = POTENTIAL_IMAGE_MAX_PER_STORY,
+		topUpTopics = 0,
+		enableVogueFallback = false,
+		enableBbcFallback = false,
+		bbcTopUpTopics = 0,
+		enableCbsFallback = false,
+		cbsTopUpTopics = 0,
+	} = {}
+) {
+	if (!Array.isArray(stories) || !stories.length) return stories;
+	const limit = clampInt(
+		topicLimit || POTENTIAL_IMAGE_TOPIC_LIMIT,
+		1,
+		stories.length
+	);
+	const minImages = clampInt(
+		minImagesPerStory || 0,
+		0,
+		POTENTIAL_IMAGE_MAX_PER_STORY
+	);
+	const targetImages = clampInt(
+		targetImagesPerStory || POTENTIAL_IMAGE_MAX_PER_STORY,
+		minImages,
+		POTENTIAL_IMAGE_MAX_PER_STORY
+	);
+	const topUpLimit = clampInt(topUpTopics || 0, 0, stories.length);
+	const bbcTopUpLimit = clampInt(bbcTopUpTopics || 0, 0, stories.length);
+	const cbsTopUpLimit = clampInt(cbsTopUpTopics || 0, 0, stories.length);
+	const globalSeen = new Set();
+	const out = [];
+
+	log("Potential images enrichment start", {
+		stories: stories.length,
+		enrichCount: limit,
+		minImages,
+		targetImages,
+		topUpLimit,
+		vogueFallback: enableVogueFallback,
+		bbcTopUpLimit,
+		bbcFallback: enableBbcFallback,
+		cbsTopUpLimit,
+		cbsFallback: enableCbsFallback,
+	});
+
+	for (let i = 0; i < stories.length; i++) {
+		const story = stories[i];
+		if (i >= limit) {
+			out.push({ ...story, potentialImages: [] });
+			continue;
+		}
+
+		try {
+			const storySeen = new Set();
+			const articles = Array.isArray(story?.articles)
+				? story.articles.slice(0, POTENTIAL_IMAGE_ARTICLE_LIMIT)
+				: [];
+			const potentialImages = [];
+			const focusTerms = buildMatchTerms(
+				story?.title,
+				story?.rawTitle,
+				story?.trendDialogTitle,
+				story?.entityNames || []
+			);
+			let articleIndex = 0;
+
+			for (const article of articles) {
+				if (!article?.url) continue;
+				articleIndex += 1;
+				log("Potential images article start", {
+					story: story?.title,
+					storyIndex: i + 1,
+					articleIndex,
+					url: article.url,
+				});
+				const matchTerms = buildMatchTerms(
+					story?.title,
+					story?.rawTitle,
+					story?.trendDialogTitle,
+					story?.entityNames || [],
+					article?.title
+				);
+
+				const scraped = await scrapePotentialImagesFromArticle(article.url, {
+					matchTerms,
+					focusTerms,
+					storyTitle: story?.title,
+					articleTitle: article?.title,
+					storySeen,
+					globalSeen,
+					perArticleLimit: POTENTIAL_IMAGE_PER_ARTICLE_LIMIT,
+				});
+				log("Potential images article done", {
+					story: story?.title,
+					storyIndex: i + 1,
+					articleIndex,
+					url: article.url,
+					count: scraped.length,
+				});
+
+				for (const img of scraped) {
+					potentialImages.push(img);
+					if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
+				}
+				if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
+				// eslint-disable-next-line no-await-in-loop
+				await delay(150);
+			}
+
+			const shouldTopUp =
+				enableVogueFallback &&
+				targetImages > 0 &&
+				i < topUpLimit &&
+				potentialImages.length < targetImages;
+			if (shouldTopUp) {
+				const queries = buildVogueSearchQueriesForStory(story);
+				let remaining = targetImages - potentialImages.length;
+				log("Vogue search topup start", {
+					story: story?.title,
+					storyIndex: i + 1,
+					remaining,
+					queries,
+				});
+
+				for (const query of queries) {
+					if (remaining <= 0) break;
+					if (potentialImages.length >= targetImages) break;
+					const searchMatchTerms = buildMatchTerms(
+						query,
+						story?.title,
+						story?.rawTitle,
+						story?.trendDialogTitle,
+						story?.entityNames || []
+					);
+					// eslint-disable-next-line no-await-in-loop
+					const searchImages = await scrapeVogueSearchImages({
+						query,
+						matchTerms: searchMatchTerms,
+						focusTerms,
+						storyTitle: story?.title,
+						storySeen,
+						globalSeen,
+						limit: remaining,
+					});
+					for (const img of searchImages) {
+						potentialImages.push(img);
+						if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
+					}
+					remaining = targetImages - potentialImages.length;
+				}
+
+				log("Vogue search topup done", {
+					story: story?.title,
+					storyIndex: i + 1,
+					count: potentialImages.length,
+				});
+			}
+
+			const shouldBbcTopUp =
+				enableBbcFallback &&
+				targetImages > 0 &&
+				i < bbcTopUpLimit &&
+				potentialImages.length < targetImages;
+			if (shouldBbcTopUp) {
+				const queries = buildBbcSearchQueriesForStory(story);
+				let remaining = targetImages - potentialImages.length;
+				log("BBC search topup start", {
+					story: story?.title,
+					storyIndex: i + 1,
+					remaining,
+					queries,
+				});
+
+				for (const query of queries) {
+					if (remaining <= 0) break;
+					if (potentialImages.length >= targetImages) break;
+					// eslint-disable-next-line no-await-in-loop
+					const searchImages = await scrapeBbcSearchImages({
+						query,
+						matchTerms: buildMatchTerms(
+							query,
+							story?.title,
+							story?.rawTitle,
+							story?.trendDialogTitle,
+							story?.entityNames || []
+						),
+						focusTerms,
+						storyTitle: story?.title,
+						storySeen,
+						globalSeen,
+						limit: remaining,
+					});
+					for (const img of searchImages) {
+						potentialImages.push(img);
+						if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
+					}
+					remaining = targetImages - potentialImages.length;
+				}
+
+				log("BBC search topup done", {
+					story: story?.title,
+					storyIndex: i + 1,
+					count: potentialImages.length,
+				});
+			}
+
+			const shouldCbsTopUp =
+				enableCbsFallback &&
+				targetImages > 0 &&
+				i < cbsTopUpLimit &&
+				potentialImages.length < targetImages;
+			if (shouldCbsTopUp) {
+				const queries = buildCbsSearchQueriesForStory(story);
+				let remaining = targetImages - potentialImages.length;
+				log("CBS search topup start", {
+					story: story?.title,
+					storyIndex: i + 1,
+					remaining,
+					queries,
+				});
+
+				for (const query of queries) {
+					if (remaining <= 0) break;
+					if (potentialImages.length >= targetImages) break;
+					// eslint-disable-next-line no-await-in-loop
+					const searchImages = await scrapeCbsSearchImages({
+						query,
+						matchTerms: buildMatchTerms(
+							query,
+							story?.title,
+							story?.rawTitle,
+							story?.trendDialogTitle,
+							story?.entityNames || []
+						),
+						focusTerms,
+						storyTitle: story?.title,
+						storySeen,
+						globalSeen,
+						limit: remaining,
+					});
+					for (const img of searchImages) {
+						potentialImages.push(img);
+						if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
+					}
+					remaining = targetImages - potentialImages.length;
+				}
+
+				log("CBS search topup done", {
+					story: story?.title,
+					storyIndex: i + 1,
+					count: potentialImages.length,
+				});
+			}
+
+			log("Potential images collected", {
+				term: story?.title,
+				count: potentialImages.length,
+			});
+
+			out.push({ ...story, potentialImages });
+		} catch (err) {
+			log("Potential images failed", {
+				term: story?.title,
+				error: err.message || String(err),
+			});
+			out.push({ ...story, potentialImages: [] });
+		}
+	}
+
+	return out;
+}
 
 /* ---------------------------------------------------------------
  * Google Images scraping helper
@@ -988,7 +2934,7 @@ async function scrape({ geo, hours, category, sort }) {
 							}
 						}
 
-						// If dialog vanished (virtual scroll) â†’ reclick.
+						// If dialog vanished (virtual scroll) → reclick.
 						if (!dialog) clickRow();
 						// eslint-disable-next-line no-await-in-loop
 						await sleep(200);
@@ -1052,7 +2998,7 @@ async function scrape({ geo, hours, category, sort }) {
 	return stories;
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ express API */
+/* ───────────────────────────────────────────────────────────── express API */
 
 router.get("/google-images", async (req, res) => {
 	const query = String(req.query.q || req.query.query || "").trim();
@@ -1090,15 +3036,19 @@ router.get("/google-trends", async (req, res) => {
 	const geo = (req.query.geo || "").toUpperCase();
 	if (!/^[A-Z]{2}$/.test(geo)) {
 		return res.status(400).json({
-			error: "`geo` must be an ISOâ€‘3166 alphaâ€‘2 country code",
+			error: "`geo` must be an ISO‑3166 alpha‑2 country code",
 		});
 	}
 
 	const hours = Number(req.query.hours) || 24;
 	const category = req.query.category ?? null;
 	const sort = req.query.sort ?? null;
+	const isEntertainment = isEntertainmentCategory(category);
 	const includeImages = ["1", "true", "yes", "on"].includes(
 		String(req.query.includeImages || "").toLowerCase()
+	);
+	const includePotentialImages = !["0", "false", "no", "off"].includes(
+		String(req.query.includePotentialImages || "").toLowerCase()
 	);
 	const skipOpenAI = ["1", "true", "yes", "on"].includes(
 		String(req.query.skipOpenAI || "").toLowerCase()
@@ -1112,6 +3062,7 @@ router.get("/google-trends", async (req, res) => {
 		category,
 		sort,
 		includeImages,
+		includePotentialImages,
 		skipOpenAI,
 		skipSignals,
 	});
@@ -1133,7 +3084,7 @@ router.get("/google-trends", async (req, res) => {
 			sort,
 		});
 
-		// Ask GPTâ€‘5.1 for better blog + YouTube titles.
+		// Ask GPT‑5.1 for better blog + YouTube titles.
 		//    This is optional and skipped if CHATGPT_API_TOKEN / OPENAI_API_KEY
 		//    is not configured or the call fails.
 		if (!skipOpenAI) {
@@ -1155,11 +3106,30 @@ router.get("/google-trends", async (req, res) => {
 			stories = await hydrateArticleImages(stories);
 		}
 
+		if (includePotentialImages) {
+			stories = await enrichStoriesWithPotentialImages(stories, {
+				topicLimit: POTENTIAL_IMAGE_TOPIC_LIMIT,
+				minImagesPerStory: POTENTIAL_IMAGE_MIN_PER_STORY,
+				targetImagesPerStory: POTENTIAL_IMAGE_MAX_PER_STORY,
+				topUpTopics: isEntertainment ? POTENTIAL_IMAGE_TOPUP_TOPIC_LIMIT : 0,
+				enableVogueFallback: isEntertainment,
+				enableBbcFallback: true,
+				bbcTopUpTopics: POTENTIAL_IMAGE_TOPIC_LIMIT,
+				enableCbsFallback: true,
+				cbsTopUpTopics: POTENTIAL_IMAGE_TOPIC_LIMIT,
+			});
+		} else {
+			stories = stories.map((s) => ({ ...s, potentialImages: [] }));
+		}
+
 		// Strip images here; downstream orchestrator will search high-quality images per ratio.
 		stories = stories.map((s) => ({
 			...s,
 			trendSearchTerm:
 				s.trendSearchTerm || s.rawTitle || s.title || s.trendDialogTitle || "",
+			potentialImages: Array.isArray(s.potentialImages)
+				? s.potentialImages
+				: [],
 			image: includeImages ? s.image || null : null,
 			images: includeImages
 				? uniqueStrings(
