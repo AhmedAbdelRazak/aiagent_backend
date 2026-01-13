@@ -1915,6 +1915,7 @@ function normalizeTrendPotentialImages(list = []) {
 			).trim(),
 			width: item.width || null,
 			height: item.height || null,
+			origin: "trend",
 		});
 	}
 	return out;
@@ -6059,6 +6060,7 @@ function normalizeImageCandidates(list = []) {
 				height,
 				topicMatchCount: item.topicMatchCount || 0,
 				anchorHit: Boolean(item.anchorHit),
+				origin: item.origin || "",
 			};
 		})
 		.filter(Boolean);
@@ -6101,7 +6103,8 @@ async function assessSegmentImageCandidate(candidate, opts = {}) {
 	} = opts;
 
 	const url = candidate?.url || "";
-	if (!url || TEXTY_IMAGE_URL_RE.test(url)) {
+	const isTrend = candidate?.origin === "trend";
+	if (!url || (!isTrend && TEXTY_IMAGE_URL_RE.test(url))) {
 		return { ok: false, score: 0 };
 	}
 
@@ -10423,6 +10426,7 @@ exports.createVideo = async (req, res) => {
 						url,
 						source: trendStory.trendSearchTerm || trendStory.title || "",
 						title: trendStory.title || "",
+						origin: "trend",
 					});
 				}
 			}
@@ -10467,9 +10471,16 @@ exports.createVideo = async (req, res) => {
 			};
 
 			let combinedCandidates = qaSeedCandidates;
-			const needsCseTopUp = combinedCandidates.length < 3;
-			if (needsCseTopUp) {
-				console.log("[Trending] image pool below minimum, enabling fallback", {
+			if (!combinedCandidates.length && normalizedSeeds.length) {
+				combinedCandidates = normalizedSeeds;
+				console.log("[Trending] using raw Trends images (no QA hits)", {
+					count: combinedCandidates.length,
+				});
+			}
+
+			const needsTopUp = combinedCandidates.length < 3;
+			if (needsTopUp) {
+				console.log("[Trending] image pool below minimum, OG-only topup", {
 					count: combinedCandidates.length,
 					target: 4,
 				});
@@ -10486,9 +10497,10 @@ exports.createVideo = async (req, res) => {
 					strictTopicMatch: true,
 					phraseAnchors: anchorPhrases,
 					requireAnchorPhrase: anchorPhrases.length > 0,
-					allowCse: true,
+					allowCse: false,
+					googleVariantLimit: 0,
 					cseMeter,
-					csePhase: "trend_pool_topup",
+					csePhase: "trend_pool_og_topup",
 				});
 				const normalizedFallback = dedupeImageCandidates(
 					normalizeImageCandidates(fallback),
@@ -10513,41 +10525,6 @@ exports.createVideo = async (req, res) => {
 				combinedCandidates = mergeCandidates([combinedCandidates, qaFallback]);
 			}
 
-			if (requireScheduledTrends && !combinedCandidates.length) {
-				try {
-					const broad = await fetchHighQualityImagesForTopic({
-						topic,
-						ratio,
-						articleLinks: [],
-						desiredCount: 6,
-						limit: 12,
-						topicTokens: tokenSet,
-						requireAnyToken: tokenSet.length > 0,
-						negativeTitleRe,
-						strictTopicMatch: false,
-						phraseAnchors: anchorPhrases,
-						requireAnchorPhrase: false,
-						allowCse: true,
-						cseMeter,
-						csePhase: "trend_pool_broad",
-					});
-					const normalizedBroad = dedupeImageCandidates(
-						normalizeImageCandidates(broad),
-						16
-					);
-					const qaBroad = await qaSegmentImageCandidates(normalizedBroad, {
-						segmentTokens: [],
-						anchorTokens,
-						topicTokens: tokenSet,
-						strict: false,
-						pageSignalCache,
-					});
-					combinedCandidates = mergeCandidates([combinedCandidates, qaBroad]);
-				} catch (e) {
-					console.warn("[Trending] broad fallback search failed ?", e.message);
-				}
-			}
-
 			const ranked = combinedCandidates.slice().sort((a, b) => {
 				const aW = Number(a.width) || 0;
 				const aH = Number(a.height) || 0;
@@ -10568,7 +10545,7 @@ exports.createVideo = async (req, res) => {
 			console.log("[Trending] image pool ready", {
 				count: trendImagesForRatio.length,
 				target: targetPoolSize,
-				usedFallback: needsCseTopUp,
+				usedFallback: needsTopUp,
 			});
 		}
 		const canUseTrendsImages =
@@ -10786,7 +10763,7 @@ exports.createVideo = async (req, res) => {
 		});
 		if (category !== "Top5" && allowTrendsImageSearch) {
 			const skipSegmentSearch = trendImagePairs.length > 0;
-			const allowCseForSegments = trendImagePairs.length === 0;
+			const allowCseForSegments = false;
 			const refined = await prepareSegmentImagePairsForShorts({
 				segments,
 				topic,

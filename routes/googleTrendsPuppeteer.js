@@ -2410,8 +2410,7 @@ async function scrapeCbsSearchImages({
 	const scoredFiltered = (() => {
 		const maxAgeMinutes = CBS_SEARCH_MAX_AGE_DAYS * 24 * 60;
 		const fresh = scored.filter(
-			(item) =>
-				item.ageMinutes == null || item.ageMinutes <= maxAgeMinutes
+			(item) => item.ageMinutes == null || item.ageMinutes <= maxAgeMinutes
 		);
 		const nonVideo = fresh.filter((item) => !isCbsVideoUrl(item.url));
 		return nonVideo.length ? nonVideo : fresh;
