@@ -1385,6 +1385,9 @@ function buildShortsTopicList({
 	push(seoTitle);
 	if (trendStory) {
 		push(trendStory.title);
+		push(trendStory.rawTitle);
+		push(trendStory.trendSearchTerm);
+		push(trendStory.trendDialogTitle);
 		push(trendStory.seoTitle);
 		if (Array.isArray(trendStory.entityNames)) {
 			trendStory.entityNames.forEach((t) => push(t));
@@ -4142,7 +4145,8 @@ function resolveTrendsCategoryId(label) {
 
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
-const TRENDS_HTTP_TIMEOUT_MS = 60000;
+const TRENDS_HTTP_TIMEOUT_MS =
+	Number(process.env.TRENDS_HTTP_TIMEOUT_MS) || 120000;
 
 function isSportsTopic(topic = "", category = "", trendStory = null) {
 	if (category && category.toLowerCase().includes("sport")) return true;
@@ -4299,7 +4303,13 @@ async function fetchTrendingStory(
 	const id = resolveTrendsCategoryId(category);
 	const baseUrl =
 		`${TRENDS_API_URL}?` +
-		qs.stringify({ geo, category: id, hours: 48, language });
+		qs.stringify({
+			geo,
+			category: id,
+			hours: 48,
+			language,
+			includePotentialImages: 1,
+		});
 
 	const normTitle = (t) =>
 		String(t || "")
@@ -10233,22 +10243,27 @@ exports.createVideo = async (req, res) => {
 			category,
 			isLongVideo: false,
 			createdAt: { $gte: threeDaysAgo },
-		}).select("topic seoTitle");
+		}).select("topic seoTitle topics");
 		const normRecent = [];
 		const usedTop5Keys = new Set();
 		for (const v of recentVideos) {
-			const base = String(v.topic || v.seoTitle || "").trim();
-			if (!base) continue;
-			const normFull = base.toLowerCase().replace(/\s+/g, " ").trim();
-			if (normFull) normRecent.push(normFull);
-			const firstTwo = normFull.split(" ").slice(0, 2).join(" ");
-			if (firstTwo && firstTwo.length >= 4) normRecent.push(firstTwo);
-			const firstThree = normFull.split(" ").slice(0, 3).join(" ");
-			if (firstThree && firstThree.length >= 6) normRecent.push(firstThree);
-			[v.topic, v.seoTitle].forEach((txt) => {
-				const key = category === "Top5" ? top5TitleKey(txt) : "";
+			const candidates = [
+				v.topic,
+				v.seoTitle,
+				...(Array.isArray(v.topics) ? v.topics : []),
+			].filter(Boolean);
+			for (const candidate of candidates) {
+				const base = String(candidate || "").trim();
+				if (!base) continue;
+				const normFull = base.toLowerCase().replace(/\s+/g, " ").trim();
+				if (normFull) normRecent.push(normFull);
+				const firstTwo = normFull.split(" ").slice(0, 2).join(" ");
+				if (firstTwo && firstTwo.length >= 4) normRecent.push(firstTwo);
+				const firstThree = normFull.split(" ").slice(0, 3).join(" ");
+				if (firstThree && firstThree.length >= 6) normRecent.push(firstThree);
+				const key = category === "Top5" ? top5TitleKey(base) : "";
 				if (key) usedTop5Keys.add(key);
-			});
+			}
 		}
 		const usedTopics = new Set(normRecent);
 
@@ -10278,12 +10293,12 @@ exports.createVideo = async (req, res) => {
 		let trendArticleText = null;
 		let liveWebContext = [];
 
-		const userOverrides = Boolean(videoImage) || customPrompt.length > 0;
+		const hasVideoImage = Boolean(videoImage);
+		const hasCustomPrompt = customPrompt.length > 0;
 		const requireScheduledTrends = isScheduledJob && category !== "Top5";
 		const shouldFetchTrendStory =
-			category !== "Top5" && (!userOverrides || isScheduledJob);
-		const allowTrendsImageSearch =
-			category !== "Top5" && (!userOverrides || isScheduledJob);
+			category !== "Top5" && (!hasVideoImage || isScheduledJob);
+		const allowTrendsImageSearch = category !== "Top5" && !hasVideoImage;
 
 		// 1) Try Trends story first (Top5 skips; scheduled runs force Trends even with overrides)
 		if (shouldFetchTrendStory) {
@@ -10301,7 +10316,7 @@ exports.createVideo = async (req, res) => {
 						null,
 				}
 			);
-			if (trendStory && trendStory.title) {
+			if (trendStory && trendStory.title && !hasCustomPrompt) {
 				topic = trendStory.title;
 				console.log(`[Trending] candidate topic="${topic}"`);
 				// mark this as used so later fallbacks don't duplicate
@@ -10521,11 +10536,13 @@ exports.createVideo = async (req, res) => {
 				});
 			}
 
-			const needsTopUp = combinedCandidates.length < 3;
+			const needsTopUp = combinedCandidates.length < 4;
+			const allowCseTopup = needsTopUp && canUseGoogleSearch();
 			if (needsTopUp) {
-				console.log("[Trending] image pool below minimum, OG-only topup", {
+				console.log("[Trending] image pool below minimum, topup", {
 					count: combinedCandidates.length,
 					target: 4,
+					allowCse: allowCseTopup,
 				});
 				const requireTokenMatch = tokenSet.length > 0;
 				const fallback = await fetchHighQualityImagesForTopic({
@@ -10540,8 +10557,8 @@ exports.createVideo = async (req, res) => {
 					strictTopicMatch: true,
 					phraseAnchors: anchorPhrases,
 					requireAnchorPhrase: anchorPhrases.length > 0,
-					allowCse: false,
-					googleVariantLimit: 0,
+					allowCse: allowCseTopup,
+					googleVariantLimit: needsTopUp ? GOOGLE_IMAGES_VARIANT_LIMIT : 0,
 					cseMeter,
 					csePhase: "trend_pool_og_topup",
 				});
@@ -10601,14 +10618,31 @@ exports.createVideo = async (req, res) => {
 					});
 				}
 			}
+			let usedRawSeedFallback = false;
+			if (!trendImagesForRatio.length && normalizedSeeds.length) {
+				const rawSeedUrls = normalizedSeeds.map((c) => c.url).filter(Boolean);
+				trendImagesForRatio = filterUploadCandidates(
+					rawSeedUrls,
+					targetPoolSize
+				);
+				if (!trendImagesForRatio.length) {
+					trendImagesForRatio = rawSeedUrls.slice(0, targetPoolSize);
+				}
+				if (trendImagesForRatio.length) {
+					usedRawSeedFallback = true;
+					console.log("[Trending] using raw seed urls fallback", {
+						count: trendImagesForRatio.length,
+					});
+				}
+			}
 			console.log("[Trending] image pool ready", {
 				count: trendImagesForRatio.length,
 				target: targetPoolSize,
-				usedFallback: needsTopUp,
+				usedFallback: needsTopUp || usedRawSeedFallback,
 			});
 		}
 		const canUseTrendsImages =
-			allowTrendsImageSearch && trendStory && trendImagesForRatio.length > 0;
+			allowTrendsImageSearch && trendImagesForRatio.length > 0;
 
 		if (canUseTrendsImages) {
 			const slugBase = topic
@@ -10831,7 +10865,7 @@ exports.createVideo = async (req, res) => {
 		});
 		if (category !== "Top5" && allowTrendsImageSearch) {
 			const skipSegmentSearch = trendImagePairs.length > 0;
-			const allowCseForSegments = false;
+			const allowCseForSegments = trendImagePairs.length < 4;
 			const refined = await prepareSegmentImagePairsForShorts({
 				segments,
 				topic,
