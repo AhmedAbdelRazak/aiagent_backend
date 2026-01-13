@@ -1,4 +1,4 @@
-﻿/* routes/googleTrendsPuppeteer.js � bullet-proof, updated 2025-11-28 */
+/* routes/googleTrendsPuppeteer.js ? bullet-proof, updated 2025-11-28 */
 /* eslint-disable no-console, max-len */
 
 require("dotenv").config();
@@ -1285,7 +1285,7 @@ async function enhanceStoriesWithOpenAI(
 /* ------------------------------------------------------------- helpers */
 
 const urlFor = ({ geo, hours, category, sort }) => {
-	// Clamp hours 1�168 and actually use the requested window.
+	// Clamp hours 1?168 and actually use the requested window.
 	// const hrs = Math.min(Math.max(Number(hours) || 24, 1), 168);
 
 	const params = new URLSearchParams({
@@ -3398,7 +3398,7 @@ router.get("/google-trends", async (req, res) => {
 			potentialImages: Array.isArray(s.potentialImages)
 				? s.potentialImages
 				: [],
-			image: includeImages ? s.image || null : null,
+			image: includeImages && s.image && !isLikelyThumbnailUrl(s.image) ? s.image : null,
 			images: includeImages
 				? uniqueStrings(
 						[
@@ -3406,12 +3406,12 @@ router.get("/google-trends", async (req, res) => {
 							...(s.articles || []).map((a) => a.image).filter(Boolean),
 						],
 						{ limit: 8 }
-				  )
+				  ).filter((img) => img && !isLikelyThumbnailUrl(img))
 				: [],
 			articles: (s.articles || []).map((a) => ({
 				title: a.title,
 				url: a.url,
-				...(includeImages && a.image ? { image: a.image } : {}),
+				...(includeImages && a.image && !isLikelyThumbnailUrl(a.image) ? { image: a.image } : {}),
 			})),
 		}));
 
@@ -3449,3 +3449,4 @@ router.get("/google-trends", async (req, res) => {
 });
 
 module.exports = router;
+

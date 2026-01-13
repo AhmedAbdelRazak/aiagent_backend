@@ -1797,10 +1797,8 @@ function filterUploadCandidates(urls, limit = 7) {
 		} catch {
 			continue;
 		}
-		if (
-			IMAGE_UPLOAD_SOFT_BLOCK.some((b) => host === b || host.endsWith(`.${b}`))
-		)
-			continue;
+		if (isBlockedHost(host) || isSoftBlockedHost(host)) continue;
+		if (isLikelyThumbnailUrl(u)) continue;
 		out.push(u);
 		if (out.length >= limit) break;
 	}
@@ -12447,3 +12445,5 @@ exports.listVideos = async (req, res, next) => {
 		next(err);
 	}
 };
+
+
