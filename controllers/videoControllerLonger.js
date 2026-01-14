@@ -3332,6 +3332,325 @@ async function uploadSegmentImagesToCloudinary({
 	return uploaded;
 }
 
+function isCloudinaryImageUrl(url = "") {
+	return /res\.cloudinary\.com\/[^/]+\/image\/upload\//i.test(
+		String(url || "")
+	);
+}
+
+function buildThumbnailSeedCandidateUrls(topicObj = {}) {
+	const story = topicObj?.trendStory || {};
+	const potentialUrls = uniqueStrings(
+		(Array.isArray(story.potentialImages) ? story.potentialImages : [])
+			.map((p) => p?.url)
+			.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
+		{ limit: 12 }
+	);
+	const topicSeeds = uniqueStrings(
+		[
+			topicObj?.image,
+			...(Array.isArray(topicObj?.images) ? topicObj.images : []),
+		].filter(Boolean),
+		{ limit: 8 }
+	).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
+	const storySeeds = uniqueStrings(
+		[
+			story.image,
+			...(Array.isArray(story.images) ? story.images : []),
+			...(Array.isArray(story.articles)
+				? story.articles.map((a) => a?.image)
+				: []),
+		].filter(Boolean),
+		{ limit: 12 }
+	).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
+	return dedupeUrlsPreserveOrder([
+		...potentialUrls,
+		...topicSeeds,
+		...storySeeds,
+	]);
+}
+
+async function collectThumbnailFallbackUrls({
+	topicLabel,
+	articleUrls = [],
+	seedUrls = [],
+	limit = 6,
+}) {
+	const target = clampNumber(Number(limit) || 6, 1, 10);
+	const urls = uniqueStrings(seedUrls, { limit: Math.max(6, target * 2) });
+	const articleCandidates = uniqueStrings(articleUrls, { limit: 6 });
+	for (const pageUrl of articleCandidates) {
+		if (urls.length >= target) break;
+		const og = await fetchOpenGraphImageUrl(pageUrl);
+		if (!og || isLikelyThumbnailUrl(og)) continue;
+		if (isProbablyDirectImageUrl(og)) {
+			urls.push(og);
+			continue;
+		}
+		const ct = await headContentType(og, 7000);
+		if (ct && !ct.startsWith("image/")) continue;
+		urls.push(og);
+	}
+	if (urls.length < target && topicLabel) {
+		const wiki = await fetchWikipediaPageImageUrl(topicLabel);
+		if (wiki && !isLikelyThumbnailUrl(wiki)) urls.push(wiki);
+	}
+	if (urls.length < target && topicLabel) {
+		const commons = await fetchWikimediaImageUrls(
+			topicLabel,
+			Math.max(2, target - urls.length)
+		);
+		urls.push(...commons.filter((u) => !isLikelyThumbnailUrl(u)));
+	}
+	return uniqueStrings(urls, { limit: target });
+}
+
+async function selectBestThumbnailSeedCandidate({
+	urls = [],
+	tmpDir,
+	jobId,
+	topicLabel,
+	maxDownloads = 6,
+	minEdge = CSE_MIN_IMAGE_SHORT_EDGE,
+	relaxedEdge = CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
+}) {
+	const candidates = dedupeUrlsPreserveOrder(urls).filter(
+		(u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)
+	);
+	for (const url of candidates) {
+		if (isCloudinaryImageUrl(url)) {
+			return { url, cloudinary: true };
+		}
+	}
+	let attempts = 0;
+	let best = null;
+	for (const url of candidates) {
+		if (attempts >= maxDownloads) break;
+		const looksDirect = isProbablyDirectImageUrl(url);
+		if (!looksDirect) {
+			const ct = await headContentType(url, 7000);
+			if (ct && !ct.startsWith("image/")) continue;
+		}
+		const extGuess = path
+			.extname(String(url).split("?")[0] || "")
+			.toLowerCase();
+		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".jpg";
+		const outPath = path.join(
+			tmpDir,
+			`thumb_seed_${safeSlug(
+				topicLabel || "topic",
+				24
+			)}_${jobId}_${attempts}_${crypto.randomUUID().slice(0, 8)}${ext}`
+		);
+		try {
+			attempts += 1;
+			await downloadToFile(url, outPath, 25000, 2);
+			const detected = detectFileType(outPath);
+			if (!detected || detected.kind !== "image") {
+				safeUnlink(outPath);
+				continue;
+			}
+			const info = await probeMedia(outPath);
+			const stream = Array.isArray(info?.streams)
+				? info.streams.find((s) => s.codec_type === "video")
+				: null;
+			const width = Number(stream?.width || 0);
+			const height = Number(stream?.height || 0);
+			if (!width || !height) {
+				safeUnlink(outPath);
+				continue;
+			}
+			const shortEdge = Math.min(width, height);
+			const area = width * height;
+			const tier = shortEdge >= minEdge ? 2 : shortEdge >= relaxedEdge ? 1 : 0;
+			const score = tier * 1e9 + area;
+			if (!best || score > best.score) {
+				if (best?.localPath) safeUnlink(best.localPath);
+				best = {
+					url,
+					localPath: outPath,
+					width,
+					height,
+					shortEdge,
+					score,
+				};
+			} else {
+				safeUnlink(outPath);
+			}
+		} catch {
+			safeUnlink(outPath);
+		}
+	}
+	return best;
+}
+
+async function ensureThumbnailSeedImages({
+	topics = [],
+	tmpDir,
+	jobId,
+	output,
+	log,
+}) {
+	if (!Array.isArray(topics) || !topics.length) return;
+	const outputCfg =
+		output && typeof output === "object"
+			? output
+			: parseRatio(output || DEFAULT_OUTPUT_RATIO);
+	const cseAvailable = Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
+	for (let i = 0; i < topics.length; i++) {
+		const t = topics[i];
+		if (!t) continue;
+		const topicLabel = String(t.displayTopic || t.topic || "").trim();
+		const existingRaw = uniqueStrings(
+			Array.isArray(t.thumbnailImageUrls) ? t.thumbnailImageUrls : [],
+			{ limit: 4 }
+		);
+		const existingCloudinary = existingRaw.filter(isCloudinaryImageUrl);
+		if (existingCloudinary.length) {
+			t.thumbnailImageUrls = existingCloudinary;
+			if (log)
+				log("thumbnail seed image reused", {
+					topic: topicLabel,
+					count: existingCloudinary.length,
+				});
+			continue;
+		}
+
+		const candidateUrls = dedupeUrlsPreserveOrder([
+			...existingRaw,
+			...buildThumbnailSeedCandidateUrls(t),
+		]);
+		const story = t.trendStory || {};
+		const articleUrls = (Array.isArray(story.articles) ? story.articles : [])
+			.map((a) => a?.url)
+			.filter((u) => isHttpUrl(u));
+
+		let selected = await selectBestThumbnailSeedCandidate({
+			urls: candidateUrls,
+			tmpDir,
+			jobId,
+			topicLabel,
+		});
+		let source = "seed";
+
+		if (!selected) {
+			const fallbackUrls = await collectThumbnailFallbackUrls({
+				topicLabel,
+				articleUrls,
+				seedUrls: candidateUrls,
+				limit: 6,
+			});
+			if (fallbackUrls.length) {
+				source = "fallback";
+				selected = await selectBestThumbnailSeedCandidate({
+					urls: fallbackUrls,
+					tmpDir,
+					jobId,
+					topicLabel,
+				});
+			}
+		}
+
+		if (!selected && cseAvailable && topicLabel) {
+			const cseUrls = await fetchCseImages(
+				topicLabel,
+				Array.isArray(t.keywords) ? t.keywords : [],
+				jobId,
+				{ maxResults: 8, maxPages: 1 }
+			);
+			if (log && cseUrls.length) {
+				log("thumbnail seed image cse fallback", {
+					topic: topicLabel,
+					count: cseUrls.length,
+				});
+			}
+			source = "cse";
+			selected = await selectBestThumbnailSeedCandidate({
+				urls: cseUrls,
+				tmpDir,
+				jobId,
+				topicLabel,
+			});
+		}
+
+		if (!selected) {
+			if (log)
+				log("thumbnail seed image missing", {
+					topic: topicLabel,
+				});
+			continue;
+		}
+
+		if (selected.cloudinary && selected.url) {
+			t.thumbnailImageUrls = [selected.url];
+			if (log)
+				log("thumbnail seed image selected", {
+					topic: topicLabel,
+					source: "cloudinary",
+					url: selected.url,
+				});
+			continue;
+		}
+
+		if (selected.localPath && fs.existsSync(selected.localPath)) {
+			const slug = safeSlug(topicLabel || "topic", 36) || "topic";
+			const publicIdBase = `aivideomatic/long_feed/thumb_seed_${slug}_${jobId}_${
+				i + 1
+			}`;
+			try {
+				const uploaded = await uploadLocalImageToCloudinary(
+					selected.localPath,
+					{
+						publicIdBase,
+						output: outputCfg,
+						jobId,
+						segIndex: `thumb_${i + 1}`,
+					}
+				);
+				if (uploaded?.url) {
+					t.thumbnailImageUrls = [uploaded.url];
+					if (log)
+						log("thumbnail seed image uploaded", {
+							topic: topicLabel,
+							source,
+							url: uploaded.url,
+							width: selected.width,
+							height: selected.height,
+						});
+				} else if (selected.url) {
+					t.thumbnailImageUrls = [selected.url];
+					if (log)
+						log("thumbnail seed image upload missing; using raw url", {
+							topic: topicLabel,
+							source,
+							url: selected.url,
+						});
+				}
+			} catch (e) {
+				if (selected.url) t.thumbnailImageUrls = [selected.url];
+				if (log)
+					log("thumbnail seed image upload failed", {
+						topic: topicLabel,
+						error: e.message,
+					});
+			} finally {
+				safeUnlink(selected.localPath);
+			}
+			continue;
+		}
+
+		if (selected.url) {
+			t.thumbnailImageUrls = [selected.url];
+			if (log)
+				log("thumbnail seed image selected", {
+					topic: topicLabel,
+					source,
+					url: selected.url,
+				});
+		}
+	}
+}
+
 async function fetchFallbackImageUrlsForSegment({
 	query,
 	topicLabel,
@@ -11193,6 +11512,13 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				script.shortTitle || shortTitleFromText(thumbTitle)
 			).trim();
 			const thumbLog = (message, payload) => logJob(jobId, message, payload);
+			await ensureThumbnailSeedImages({
+				topics: topicPicks,
+				tmpDir,
+				jobId,
+				output,
+				log: thumbLog,
+			});
 			const hookPlan = buildThumbnailHookPlan({
 				title: thumbTitle,
 				topicPicks,

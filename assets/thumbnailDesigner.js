@@ -2884,24 +2884,30 @@ async function composeThumbnailBase({
 		: [];
 	const panelCount = topics.length;
 	const hasSinglePanel = panelCount === 1;
-	const panelMargin = hasSinglePanel ? 0 : margin;
+	const fullHeightPanel = hasSinglePanel && Boolean(layout.leftPanelFullHeight);
+	const panelMargin = fullHeightPanel ? 0 : hasSinglePanel ? 0 : margin;
 	const singleTopPad = clampNumber(
 		THUMBNAIL_SINGLE_PANEL_TOP_PAD_PX,
 		18,
 		Math.round(H * 0.06)
 	);
-	const topPad = hasSinglePanel ? Math.round(singleTopPad) : 0;
+	const topPad = fullHeightPanel
+		? 0
+		: hasSinglePanel
+		? Math.round(singleTopPad)
+		: 0;
 	const panelW = makeEven(Math.max(2, leftW - panelMargin * 2));
-	const panelH =
-		panelCount > 1
-			? makeEven(
-					Math.max(
-						2,
-						Math.round((H - panelMargin * (panelCount + 1)) / panelCount)
-					)
-			  )
-			: makeEven(Math.max(2, H - panelMargin * 2 - topPad));
-	const panelBorder = Math.max(4, Math.round(W * 0.004));
+	const panelH = fullHeightPanel
+		? makeEven(H)
+		: panelCount > 1
+		? makeEven(
+				Math.max(
+					2,
+					Math.round((H - panelMargin * (panelCount + 1)) / panelCount)
+				)
+		  )
+		: makeEven(Math.max(2, H - panelMargin * 2 - topPad));
+	const panelBorder = fullHeightPanel ? 0 : Math.max(4, Math.round(W * 0.004));
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
 	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
@@ -2927,6 +2933,16 @@ async function composeThumbnailBase({
 			panelInnerW,
 			panelInnerH,
 		});
+	if (log && fullHeightPanel) {
+		log("thumbnail left panel full height (100%)", {
+			panelY: 0,
+			panelH,
+			leftPanelH: H,
+			panelBorder,
+			panelInnerH,
+			heightPct: 100,
+		});
+	}
 
 	const inputs = [baseImagePath, presenterImagePath, ...topics];
 	const filters = [];
@@ -2966,10 +2982,11 @@ async function composeThumbnailBase({
 
 	if (panelCount >= 1) {
 		const panel1Idx = 2;
-		const panelY =
-			panelCount > 1
-				? panelMargin
-				: Math.max(0, Math.round(panelMargin + topPad));
+		const panelY = fullHeightPanel
+			? 0
+			: panelCount > 1
+			? panelMargin
+			: Math.max(0, Math.round(panelMargin + topPad));
 		const panelCropX = "(iw-ow)/2";
 		const panelCropY = hasSinglePanel ? "(ih-oh)*0.22" : "(ih-oh)*0.35";
 		if (hasSinglePanel) {
@@ -4410,6 +4427,26 @@ async function collectThumbnailTopicImages({
 		);
 		const criteria = buildImageMatchCriteria(label, mergedTokens);
 		const identityLabel = buildTopicIdentityLabel(label, mergedTokens);
+		const thumbnailSeedUrls = uniqueStrings(
+			Array.isArray(t?.thumbnailImageUrls) ? t.thumbnailImageUrls : [],
+			{ limit: 6 }
+		);
+		for (const url of thumbnailSeedUrls) {
+			pushCandidate(url, {
+				source: "cloudinary",
+				title: label,
+				priority: 1.6,
+				criteria,
+				isPersonTopic,
+				topicIndex,
+			});
+		}
+		if (thumbnailSeedUrls.length && log) {
+			log("thumbnail topic images seeded", {
+				topic: label,
+				count: thumbnailSeedUrls.length,
+			});
+		}
 		const promptSeedUrls = uniqueStrings(
 			Array.isArray(t?.images) ? t.images : [],
 			{ limit: 6 }
@@ -4446,7 +4483,8 @@ async function collectThumbnailTopicImages({
 			});
 		}
 
-		let hits = hasCSE
+		const allowCse = hasCSE && urlCandidates.length < target;
+		let hits = allowCse
 			? await fetchCseImages(searchLabel, mergedTokens, {
 					intent: resolvedIntent,
 			  })
@@ -4455,7 +4493,7 @@ async function collectThumbnailTopicImages({
 			!hits.length &&
 			overrideQueries.length &&
 			defaultSearchLabel !== searchLabel &&
-			hasCSE
+			allowCse
 		) {
 			hits = await fetchCseImages(defaultSearchLabel, mergedTokens, {
 				intent: resolvedIntent,
@@ -4476,7 +4514,7 @@ async function collectThumbnailTopicImages({
 			}
 		}
 
-		if (!hits.length && hasCSE) {
+		if (!hits.length && allowCse) {
 			const ctxItems = await fetchCseContext(searchLabel, mergedTokens);
 			const ctxTitleByUrl = new Map(
 				(ctxItems || [])
@@ -4526,7 +4564,7 @@ async function collectThumbnailTopicImages({
 
 		if (
 			GOOGLE_IMAGES_SEARCH_ENABLED &&
-			urlCandidates.length < maxUrls &&
+			urlCandidates.length < target &&
 			label
 		) {
 			const legalQueries =
@@ -5459,6 +5497,7 @@ async function generateThumbnailPackage({
 		log,
 	});
 	const panelCount = Math.min(topicImagePaths.length, 3);
+	const leftPanelFullHeight = panelCount === 1;
 	const panelWordLimits =
 		topicCount >= 3
 			? { minWords: 5, maxWords: 7 }
@@ -5576,7 +5615,7 @@ async function generateThumbnailPackage({
 		{
 			key: "a",
 			title: thumbTitle,
-			layout: {},
+			layout: { leftPanelFullHeight },
 			overlayOptions: variantAOverlayOptions,
 		},
 		{
@@ -5585,6 +5624,7 @@ async function generateThumbnailPackage({
 			layout: {
 				leftPanelPct: THUMBNAIL_VARIANT_B_LEFT_PCT,
 				presenterOverlapPct: THUMBNAIL_VARIANT_B_OVERLAP_PCT,
+				leftPanelFullHeight,
 			},
 			overlayOptions: variantBOverlayOptions,
 		},
@@ -5594,6 +5634,7 @@ async function generateThumbnailPackage({
 			layout: {
 				leftPanelPct: THUMBNAIL_VARIANT_B_LEFT_PCT,
 				presenterOverlapPct: THUMBNAIL_VARIANT_B_OVERLAP_PCT,
+				leftPanelFullHeight,
 			},
 			overlayOptions: {
 				...variantBOverlayOptions,
