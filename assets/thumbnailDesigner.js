@@ -2985,6 +2985,23 @@ async function composeThumbnailBase({
 	const panelBorder = fullHeightPanel ? 0 : Math.max(4, Math.round(W * 0.004));
 	const panelInnerW = makeEven(Math.max(2, panelW - panelBorder * 2));
 	const panelInnerH = makeEven(Math.max(2, panelH - panelBorder * 2));
+	const panel1Path = hasSinglePanel ? topics[0] : "";
+	const panel1Dims =
+		hasSinglePanel && panel1Path
+			? probeImageDimensions(panel1Path)
+			: { width: 0, height: 0 };
+	const panel1Ratio =
+		panel1Dims.width && panel1Dims.height
+			? panel1Dims.width / panel1Dims.height
+			: 0;
+	const panel1Landscape = panel1Ratio >= 1.1;
+	const panel1Zoom = hasSinglePanel && panel1Landscape ? 1.04 : 1;
+	const panel1ScaleW = makeEven(
+		Math.max(2, Math.round(panelInnerW * panel1Zoom))
+	);
+	const panel1ScaleH = makeEven(
+		Math.max(2, Math.round(panelInnerH * panel1Zoom))
+	);
 	const presenterHasAlpha = hasAlphaChannel(presenterImagePath);
 	const bgBlur = Math.max(0, Math.round(THUMBNAIL_BG_SOFT_BLUR));
 	const washPrimary = clampNumber(THUMBNAIL_BG_WASH_PRIMARY_OPACITY, 0, 0.12);
@@ -3065,18 +3082,33 @@ async function composeThumbnailBase({
 		const panelCropX = "(iw-ow)/2";
 		const panelCropY = hasSinglePanel ? "(ih-oh)*0.22" : "(ih-oh)*0.35";
 		if (hasSinglePanel) {
-			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
-					`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
-					`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
-					`format=rgba[panel1bg]`
-			);
-			filters.push(
-				`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-					`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
-					`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
-					`unsharp=3:3:0.35,format=rgba[panel1fg]`
-			);
+			if (panel1Landscape) {
+				filters.push(
+					`[${panel1Idx}:v]scale=${panel1ScaleW}:${panel1ScaleH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+						`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
+						`eq=contrast=1.03:saturation=1.05:brightness=0.03:gamma=0.98,` +
+						`format=rgba[panel1bg]`
+				);
+				filters.push(
+					`[${panel1Idx}:v]scale=${panel1ScaleW}:${panel1ScaleH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+						`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},` +
+						`eq=contrast=1.07:saturation=1.12:brightness=0.045:gamma=0.98,` +
+						`unsharp=3:3:0.35,format=rgba[panel1fg]`
+				);
+			} else {
+				filters.push(
+					`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=increase:flags=lanczos,` +
+						`crop=${panelInnerW}:${panelInnerH}:${panelCropX}:${panelCropY},boxblur=12:1,` +
+						`eq=contrast=1.02:saturation=1.02:brightness=0.02,` +
+						`format=rgba[panel1bg]`
+				);
+				filters.push(
+					`[${panel1Idx}:v]scale=${panelInnerW}:${panelInnerH}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+						`pad=${panelInnerW}:${panelInnerH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+						`eq=contrast=1.06:saturation=1.08:brightness=0.04:gamma=0.98,` +
+						`unsharp=3:3:0.35,format=rgba[panel1fg]`
+				);
+			}
 			filters.push("[panel1bg][panel1fg]overlay=0:0[panel1i]");
 		} else {
 			filters.push(
@@ -3656,6 +3688,9 @@ async function renderThumbnailOverlay({
 	)
 		? clampNumber(Number(overlayOptions.sublineSpacingPct), 0.05, 0.35)
 		: 0.18;
+	const sublineMaxYPct = Number.isFinite(Number(overlayOptions.sublineMaxYPct))
+		? clampNumber(Number(overlayOptions.sublineMaxYPct), 0.3, 0.8)
+		: 0;
 	const sublineColor =
 		typeof overlayOptions.sublineColor === "string" &&
 		overlayOptions.sublineColor.trim()
@@ -3717,9 +3752,17 @@ async function renderThumbnailOverlay({
 		? Math.max(6, Math.round(fontSize * sublineSpacingPct))
 		: 0;
 	const headlineY = Math.round(THUMBNAIL_HEIGHT * textYOffset);
-	const sublineY = hasSubline
+	let sublineY = hasSubline
 		? Math.round(headlineY + headlineTextHeight + sublineGap)
 		: 0;
+	if (hasSubline && sublineMaxYPct > 0) {
+		const maxSublineY = Math.round(THUMBNAIL_HEIGHT * sublineMaxYPct);
+		const minSublineY = Math.round(headlineY + headlineTextHeight + sublineGap);
+		if (maxSublineY >= minSublineY) {
+			sublineY = Math.min(sublineY, maxSublineY);
+		}
+		sublineY = Math.max(sublineY, minSublineY);
+	}
 	const headlineRect = hasText
 		? computeHeadlineBoxRect({
 				leftPanelPct,
@@ -5914,9 +5957,10 @@ async function generateThumbnailPackage({
 	const sublineOptions = sublineText
 		? {
 				sublineText,
-				sublineScale: 0.62,
-				sublineSpacingPct: 0.18,
+				sublineScale: leftPanelFullHeight ? 0.58 : 0.62,
+				sublineSpacingPct: leftPanelFullHeight ? 0.16 : 0.18,
 				sublineColor: "0xE6E6E6",
+				...(leftPanelFullHeight ? { sublineMaxYPct: 0.56 } : {}),
 		  }
 		: {};
 	const variantAOverlayOptions = {
