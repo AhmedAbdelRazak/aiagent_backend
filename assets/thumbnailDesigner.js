@@ -470,6 +470,34 @@ const BADGE_DEDUPE_TOKEN_MAP = Object.freeze({
 	recap: ["recap", "summary", "highlights"],
 	trailer: ["trailer", "teaser", "clip"],
 });
+const BADGE_GENERIC_STRIP_TOKENS = new Set(["update", "latest"]);
+const HOOK_BADGE_MAP = Object.freeze({
+	update: "NEW DETAILS",
+	explained: "BREAKDOWN",
+	revealed: "REVEALED",
+	confirmed: "CONFIRMED",
+	trailer: "TRAILER DROP",
+	finale: "FINALE",
+	ending: "ENDING",
+	cast: "CAST NEWS",
+	return: "COMEBACK",
+	comeback: "COMEBACK",
+	recap: "RECAP",
+	review: "REVIEW",
+	reaction: "REACTION",
+	release: "RELEASE",
+	season: "NEW SEASON",
+	episode: "NEW EPISODE",
+	tour: "TOUR NEWS",
+	album: "NEW ALBUM",
+	single: "NEW SINGLE",
+});
+const BADGE_INTENT_DEFAULTS = Object.freeze({
+	legal: "NEW DETAILS",
+	entertainment: "TRENDING NOW",
+	serious_update: "NEW DETAILS",
+	general: "BREAKDOWN",
+});
 const THUMBNAIL_MERCH_DISALLOWED_HOSTS = [
 	"amazon.com",
 	"ebay.com",
@@ -2538,6 +2566,14 @@ function scoreTopicImageCandidate(candidate) {
 		const target = 0.3;
 		colorScore = 1 - Math.min(Math.abs(bRatio - target) / 0.12, 1);
 	}
+	const aspectRatio =
+		Number(candidate?.width) && Number(candidate?.height)
+			? candidate.height / candidate.width
+			: null;
+	const portraitBonus =
+		Number.isFinite(aspectRatio) && aspectRatio >= 1.1
+			? Math.min((aspectRatio - 1) * 0.08, 0.12)
+			: 0;
 	const rgOverB = candidate?.tone?.rgOverB;
 	const warmPenalty = Number.isFinite(rgOverB) && rgOverB > 1.7 ? 0.2 : 0;
 	const qualityBytes = bytesPerMegaPixel(
@@ -2578,7 +2614,8 @@ function scoreTopicImageCandidate(candidate) {
 		lumaScore * 0.2 +
 		colorScore * 0.1 +
 		matchScore * 0.3 +
-		sourceScore * 0.05 -
+		sourceScore * 0.05 +
+		portraitBonus -
 		warmPenalty -
 		compressionPenalty -
 		lowQualityPenalty -
@@ -3630,14 +3667,17 @@ async function renderThumbnailOverlay({
 		: "";
 	let adjustedTextSizePct = textSizePct;
 	let textYOffset = baseTextYOffset;
+	if (hasBadge) {
+		textYOffset = clampNumber(textYOffset + 0.018, 0.08, 0.24);
+	}
 	if (hasSubline) {
-		textYOffset = clampNumber(baseTextYOffset + 0.01, 0.08, 0.24);
+		textYOffset = clampNumber(textYOffset + 0.01, 0.08, 0.24);
 	}
 	if (lineCount >= 2) {
 		const cleanLen = cleanThumbnailText(text).length;
 		const scale = cleanLen >= 14 ? 0.92 : 0.96;
 		adjustedTextSizePct = clampNumber(textSizePct * scale, 0.08, 0.16);
-		textYOffset = clampNumber(baseTextYOffset + 0.015, 0.08, 0.24);
+		textYOffset = clampNumber(textYOffset + 0.015, 0.08, 0.24);
 	}
 	const fontSize = Math.max(
 		42,
@@ -5029,12 +5069,16 @@ function buildBadgeDedupeTokens(badgeText = "") {
 	if (!tokens.length) return new Set();
 	const dedupe = new Set();
 	for (const token of tokens) {
+		if (token.length < 3) continue;
 		const mapped = BADGE_DEDUPE_TOKEN_MAP[token];
 		if (Array.isArray(mapped) && mapped.length) {
 			for (const entry of mapped) dedupe.add(entry);
 		} else {
 			dedupe.add(token);
 		}
+	}
+	if (dedupe.size && BADGE_GENERIC_STRIP_TOKENS.size) {
+		for (const token of BADGE_GENERIC_STRIP_TOKENS) dedupe.add(token);
 	}
 	return dedupe;
 }
@@ -5066,7 +5110,26 @@ function compactHeadlineForBadge(
 		headline,
 		buildBadgeDedupeTokens(badgeText)
 	);
-	let words = selectHeadlineWords(stripped, safeMax);
+	let normalized = stripped;
+	if (badgeText) {
+		const cleanedStripped = cleanThumbnailText(stripped);
+		const cleanedWords = cleanedStripped.split(" ").filter(Boolean);
+		const last = cleanedWords[cleanedWords.length - 1];
+		if (
+			last &&
+			BADGE_GENERIC_STRIP_TOKENS.has(last) &&
+			cleanedWords.length > 1
+		) {
+			cleanedWords.pop();
+			const trimmedWords = cleanedWords.join(" ").trim();
+			if (trimmedWords) {
+				normalized = shouldAppendQuestionMark(stripped)
+					? ensureQuestionMark(trimmedWords)
+					: trimmedWords;
+			}
+		}
+	}
+	let words = selectHeadlineWords(normalized, safeMax);
 	if (!words.length && cleanedFallback) {
 		words = selectHeadlineWords(cleanedFallback, safeMax);
 	}
@@ -5090,8 +5153,10 @@ function mergeIdentityIntoHeadline(identity, headline, maxWords = 4) {
 
 function buildIdentityPunchyHeadline(identity, headline, maxWords = 3) {
 	if (!identity) return headline;
-	const hook = extractHookWord([headline]) || "UPDATE";
-	const words = cleanThumbnailText(`${identity} ${hook}`)
+	const hookWord = extractHookWord([headline]) || "DETAILS";
+	const hookKey = hookWord ? hookWord.toLowerCase() : "";
+	const hookLabel = HOOK_BADGE_MAP[hookKey] || hookWord;
+	const words = cleanThumbnailText(`${identity} ${hookLabel}`)
 		.split(" ")
 		.filter(Boolean);
 	const trimmed = words.slice(0, Math.max(1, maxWords)).join(" ").trim();
@@ -5103,7 +5168,7 @@ function buildPersonFallbackHeadline(label = "") {
 	const tokens = cleaned.split(" ").filter(Boolean);
 	if (tokens.length < 2) return "";
 	const last = tokens[tokens.length - 1];
-	return last ? `${last.toUpperCase()} UPDATE` : "";
+	return last ? `${last.toUpperCase()} STORY` : "";
 }
 
 function deriveSpecificHeadline({ title = "", topics = [] } = {}) {
@@ -5203,6 +5268,35 @@ function deriveQuestionHeadlinePlan({
 	return null;
 }
 
+function chooseBadgeText({
+	title = "",
+	topics = [],
+	intent = "general",
+	hay = "",
+} = {}) {
+	const hookWord = extractHookWord([
+		title,
+		topics?.[0]?.displayTopic,
+		topics?.[0]?.topic,
+	]);
+	const hookKey = hookWord ? hookWord.toLowerCase() : "";
+	if (hookKey) {
+		const mapped = HOOK_BADGE_MAP[hookKey];
+		return mapped || hookWord.toUpperCase();
+	}
+	const intentKey = String(intent || "general").toLowerCase();
+	const haystack = String(hay || title || "").toLowerCase();
+	if (intentKey === "legal") {
+		if (/(conservatorship|court|filing)/.test(haystack)) return "COURT FILE";
+		if (/(report|reported|records)/.test(haystack)) return "NEW REPORTS";
+		return BADGE_INTENT_DEFAULTS.legal;
+	}
+	if (intentKey === "entertainment") return BADGE_INTENT_DEFAULTS.entertainment;
+	if (intentKey === "serious_update")
+		return BADGE_INTENT_DEFAULTS.serious_update;
+	return BADGE_INTENT_DEFAULTS.general;
+}
+
 function deriveHeadlineAndBadge({
 	title = "",
 	topics = [],
@@ -5226,10 +5320,7 @@ function deriveHeadlineAndBadge({
 	else if (/(reports|reported)/.test(hay)) headline = "NEW REPORTS";
 	else headline = "WHAT WE KNOW";
 
-	let badgeText = "";
-	if (intent === "legal") badgeText = "REPORTS";
-	else if (intent === "entertainment") badgeText = "TRENDING";
-	else badgeText = "UPDATE";
+	const badgeText = chooseBadgeText({ title, topics, intent, hay });
 
 	return { headline, badgeText };
 }
@@ -5534,11 +5625,19 @@ async function generateThumbnailPackage({
 			else if (!isGenericHeadline(defaultPunchy)) punchyTitle = defaultPunchy;
 		}
 	}
+	const multiTopicBadge =
+		resolvedIntent === "entertainment" ? "TRENDING NOW" : "TOP STORIES";
 	const badgeText =
 		resolvedOverrideBadgeText ||
 		(topicCount > 1
-			? "UPDATE"
-			: questionPlan?.badgeText || hook?.badgeText || "UPDATE");
+			? multiTopicBadge
+			: questionPlan?.badgeText ||
+			  hook?.badgeText ||
+			  chooseBadgeText({
+					title: title || seoTitle || "",
+					topics,
+					intent: resolvedIntent,
+			  }));
 	const personIdentity = looksLikePersonTopic(primaryTopicLabel)
 		? buildPersonIdentityToken(primaryTopicLabel)
 		: "";
