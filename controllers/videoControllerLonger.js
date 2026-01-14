@@ -8743,7 +8743,8 @@ async function applyGlobalAtempoToWav(inWav, outWav, atempo) {
 
 function tightenVoiceSettings(settings = {}, attempt = 0) {
 	const base = settings || {};
-	if (!attempt) return base;
+	if (!attempt || FORCE_NEUTRAL_VOICEOVER || UNIFORM_TTS_VOICE_SETTINGS)
+		return base;
 	const stability = Number(base.stability ?? ELEVEN_TTS_STABILITY);
 	const style = Number(base.style ?? ELEVEN_TTS_STYLE);
 	return {
