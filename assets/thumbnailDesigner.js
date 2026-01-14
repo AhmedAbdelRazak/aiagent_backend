@@ -5043,7 +5043,9 @@ function stripHeadlineTokens(headline = "", tokensToRemove = new Set()) {
 	if (!headline || !tokensToRemove || !tokensToRemove.size) return headline;
 	const words = cleanThumbnailText(headline).split(" ").filter(Boolean);
 	if (!words.length) return headline;
-	const filtered = words.filter((word) => !tokensToRemove.has(word.toLowerCase()));
+	const filtered = words.filter(
+		(word) => !tokensToRemove.has(word.toLowerCase())
+	);
 	if (!filtered.length) return headline;
 	const trimmed = filtered.join(" ").trim();
 	return shouldAppendQuestionMark(headline)
