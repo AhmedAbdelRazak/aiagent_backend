@@ -3080,7 +3080,11 @@ async function composeThumbnailBase({
 			? panelMargin
 			: Math.max(0, Math.round(panelMargin + topPad));
 		const panelCropX = "(iw-ow)/2";
-		const panelCropY = hasSinglePanel ? "(ih-oh)*0.22" : "(ih-oh)*0.35";
+		const panelCropY = hasSinglePanel
+			? panel1Landscape
+				? "(ih-oh)*0.26"
+				: "(ih-oh)*0.22"
+			: "(ih-oh)*0.35";
 		if (hasSinglePanel) {
 			if (panel1Landscape) {
 				filters.push(
@@ -3650,6 +3654,11 @@ async function renderThumbnailOverlay({
 	const badgeOpacity = Number.isFinite(Number(overlayOptions.badgeOpacity))
 		? clampNumber(Number(overlayOptions.badgeOpacity), 0.55, 0.92)
 		: 0.8;
+	const badgeYOffsetPct = Number.isFinite(
+		Number(overlayOptions.badgeYOffsetPct)
+	)
+		? clampNumber(Number(overlayOptions.badgeYOffsetPct), -0.03, 0.06)
+		: 0;
 	const hasBadge = Boolean(badgeText);
 	const badgeFontSize = hasBadge
 		? Math.max(
@@ -3660,7 +3669,7 @@ async function renderThumbnailOverlay({
 	const badgeBorder = hasBadge ? Math.round(badgeFontSize * 0.55) : 0;
 	const badgeBoxHeight = hasBadge ? badgeFontSize + badgeBorder * 2 : 0;
 	const badgeTopY = hasBadge
-		? Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_Y_PCT)
+		? Math.round(THUMBNAIL_HEIGHT * (THUMBNAIL_BADGE_Y_PCT + badgeYOffsetPct))
 		: 0;
 	const badgeGap = hasBadge ? Math.round(THUMBNAIL_HEIGHT * 0.02) : 0;
 	const textMaskOpacity = Number.isFinite(
@@ -4026,7 +4035,7 @@ async function renderThumbnailOverlay({
 				badgeFilePath
 			)}'${fontFile}:fontsize=${badgeFontSize}:fontcolor=white:box=1:boxcolor=${accentColor}@${badgeOpacity.toFixed(
 				2
-			)}:boxborderw=${badgeBorder}:shadowcolor=black@0.35:shadowx=1:shadowy=1:x=w*${THUMBNAIL_BADGE_X_PCT}:y=h*${THUMBNAIL_BADGE_Y_PCT}`
+			)}:boxborderw=${badgeBorder}:shadowcolor=black@0.35:shadowx=1:shadowy=1:x=w*${THUMBNAIL_BADGE_X_PCT}:y=${badgeTopY}`
 		);
 	}
 	if (hasText) {
@@ -5963,6 +5972,9 @@ async function generateThumbnailPackage({
 				...(leftPanelFullHeight ? { sublineMaxYPct: 0.56 } : {}),
 		  }
 		: {};
+	const leftPanelLiftOptions = leftPanelFullHeight
+		? { leftLift: 0.07, leftLiftHeight: 0.62, badgeYOffsetPct: 0.01 }
+		: {};
 	const variantAOverlayOptions = {
 		maxWords: primaryMaxWords,
 		badgeText,
@@ -5972,6 +5984,7 @@ async function generateThumbnailPackage({
 		panelCount,
 		panelSubheaders,
 		...sublineOptions,
+		...leftPanelLiftOptions,
 	};
 	const variantBOverlayOptions = {
 		maxWords: Math.min(THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS, primaryMaxWords),
@@ -5986,6 +5999,7 @@ async function generateThumbnailPackage({
 		panelCount,
 		panelSubheaders,
 		...sublineOptions,
+		...leftPanelLiftOptions,
 	};
 	const variantPlans = [
 		{
