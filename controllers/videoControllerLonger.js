@@ -3460,10 +3460,15 @@ async function selectBestThumbnailSeedCandidate({
 				safeUnlink(outPath);
 				continue;
 			}
+			const aspectRatio = height / width;
 			const shortEdge = Math.min(width, height);
 			const area = width * height;
 			const tier = shortEdge >= minEdge ? 2 : shortEdge >= relaxedEdge ? 1 : 0;
-			const score = tier * 1e9 + area;
+			const portraitBoost =
+				Number.isFinite(aspectRatio) && aspectRatio >= 1.08
+					? Math.min((aspectRatio - 1) * 0.12, 0.22)
+					: 0;
+			const score = tier * 1e9 + area * (1 + portraitBoost);
 			if (!best || score > best.score) {
 				if (best?.localPath) safeUnlink(best.localPath);
 				best = {
@@ -5780,8 +5785,8 @@ function buildPersonSpecificHeadline({ title = "", signals } = {}) {
 	if (/\b(acting pause|pause from acting|acting break)\b/.test(lower))
 		return "ACTING PAUSE";
 	if (/\b(what she said|what he said)\b/.test(lower)) return "WHAT SHE SAID";
-	if (/\b(health update|medical update)\b/.test(lower)) return "HEALTH UPDATE";
-	if (THUMBNAIL_SERIOUS_UPDATE_RE.test(lower)) return "HER UPDATE";
+	if (/\b(health update|medical update)\b/.test(lower)) return "HEALTH NEWS";
+	if (THUMBNAIL_SERIOUS_UPDATE_RE.test(lower)) return "WHAT CHANGED";
 	return "";
 }
 
@@ -5794,39 +5799,41 @@ function pickHookFromQueries({
 	const hay = `${rqTop.join(" ")} ${rqRising.join(" ")}`.toLowerCase();
 
 	if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
-		return { headline: "WHAT HAPPENED", badge: "UPDATE" };
+		return { headline: "WHAT HAPPENED", badge: "NEW DETAILS" };
 	if (/\bwhy\b|\bexplained\b|\bmeaning\b/.test(hay))
-		return { headline: "EXPLAINED", badge: "UPDATE" };
+		return { headline: "EXPLAINED", badge: "BREAKDOWN" };
 	if (/\breaction\b|\bresigns?\b|\bsteps down\b/.test(hay))
-		return { headline: "BIG REACTION", badge: "UPDATE" };
+		return { headline: "BIG REACTION", badge: "JUST DROPPED" };
 
 	if (intent === "serious_update") {
 		if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
-			return { headline: "WHAT HAPPENED?", badge: "UPDATE" };
+			return { headline: "WHAT HAPPENED?", badge: "WHAT CHANGED" };
 		if (/\bwhat she said\b|\bwhat he said\b/.test(hay))
-			return { headline: "WHAT SHE SAID", badge: "UPDATE" };
+			return { headline: "WHAT SHE SAID", badge: "NEW DETAILS" };
 		if (/\brecovery\b|\bhealth\b/.test(hay))
-			return { headline: "HER UPDATE", badge: "UPDATE" };
-		return { headline: "WHAT WE KNOW?", badge: "UPDATE" };
+			return { headline: "HEALTH NEWS", badge: "WHAT CHANGED" };
+		return { headline: "WHAT WE KNOW?", badge: "NEW DETAILS" };
 	}
-	if (intent === "legal") return { headline: "LEGAL MOVE", badge: "REPORTS" };
+	if (intent === "legal")
+		return { headline: "LEGAL MOVE", badge: "COURT FILE" };
 	if (intent === "finance")
 		return {
 			headline: "MARKET MOVE",
-			badge: slope >= 15 ? "TRENDING" : "UPDATE",
+			badge: slope >= 15 ? "BIG SWING" : "NEW DETAILS",
 		};
-	if (intent === "sports") return { headline: "MAJOR NEWS", badge: "UPDATE" };
+	if (intent === "sports") return { headline: "KEY MOMENT", badge: "BIG PLAY" };
 	if (intent === "entertainment")
 		return {
 			headline: "NEW DETAILS",
-			badge: slope >= 15 ? "TRENDING" : "UPDATE",
+			badge: slope >= 15 ? "JUST DROPPED" : "INSIDE LOOK",
 		};
-	if (intent === "politics") return { headline: "NEW UPDATE", badge: "UPDATE" };
-	if (intent === "weather") return { headline: "STORM UPDATE", badge: "ALERT" };
+	if (intent === "politics")
+		return { headline: "POWER MOVE", badge: "NEW DETAILS" };
+	if (intent === "weather") return { headline: "STORM TRACK", badge: "ALERT" };
 
 	return {
-		headline: slope >= 15 ? "TRENDING NOW" : "NEW UPDATE",
-		badge: "UPDATE",
+		headline: slope >= 15 ? "TRENDING NOW" : "WHAT CHANGED",
+		badge: slope >= 15 ? "JUST DROPPED" : "NEW DETAILS",
 	};
 }
 
@@ -5929,10 +5936,10 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 			const actionHeadline = buildPersonSpecificHeadline({ title, signals });
 			const lastName = extractLastName(signals.displayTopic || "");
 			const fallback =
-				(actionHeadline && actionHeadline !== "HER UPDATE"
+				(actionHeadline && actionHeadline !== "WHAT CHANGED"
 					? actionHeadline
 					: lastName
-					? `${lastName} UPDATE`
+					? `${lastName} DETAILS`
 					: actionHeadline) || "";
 			if (fallback) resolvedHeadline = clampHeadline(fallback);
 		}
@@ -5941,8 +5948,8 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 	if (topics.length > 1) {
 		return {
 			intent: "multi",
-			headline: "NEWS BRIEF",
-			badgeText: "UPDATE",
+			headline: "TOP PICKS",
+			badgeText: "FAST ROUNDUP",
 			imageQueries: [],
 		};
 	}
@@ -5950,7 +5957,7 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 	return {
 		intent,
 		headline: resolvedHeadline,
-		badgeText: String(badge || "UPDATE")
+		badgeText: String(badge || "NEW DETAILS")
 			.trim()
 			.toUpperCase(),
 		imageQueries: buildTopicImageQueries({ signals, intent }),

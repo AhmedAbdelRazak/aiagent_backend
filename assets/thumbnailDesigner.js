@@ -2571,8 +2571,8 @@ function scoreTopicImageCandidate(candidate) {
 			? candidate.height / candidate.width
 			: null;
 	const portraitBonus =
-		Number.isFinite(aspectRatio) && aspectRatio >= 1.1
-			? Math.min((aspectRatio - 1) * 0.08, 0.12)
+		Number.isFinite(aspectRatio) && aspectRatio >= 1.05
+			? Math.min((aspectRatio - 1) * 0.18, 0.22)
 			: 0;
 	const rgOverB = candidate?.tone?.rgOverB;
 	const warmPenalty = Number.isFinite(rgOverB) && rgOverB > 1.7 ? 0.2 : 0;
@@ -3618,6 +3618,19 @@ async function renderThumbnailOverlay({
 	const badgeOpacity = Number.isFinite(Number(overlayOptions.badgeOpacity))
 		? clampNumber(Number(overlayOptions.badgeOpacity), 0.55, 0.92)
 		: 0.8;
+	const hasBadge = Boolean(badgeText);
+	const badgeFontSize = hasBadge
+		? Math.max(
+				18,
+				Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_FONT_PCT * badgeScale)
+		  )
+		: 0;
+	const badgeBorder = hasBadge ? Math.round(badgeFontSize * 0.55) : 0;
+	const badgeBoxHeight = hasBadge ? badgeFontSize + badgeBorder * 2 : 0;
+	const badgeTopY = hasBadge
+		? Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_Y_PCT)
+		: 0;
+	const badgeGap = hasBadge ? Math.round(THUMBNAIL_HEIGHT * 0.02) : 0;
 	const textMaskOpacity = Number.isFinite(
 		Number(overlayOptions.textMaskOpacity)
 	)
@@ -3660,15 +3673,17 @@ async function renderThumbnailOverlay({
 	});
 	const lineCount = text ? text.split("\n").length : 0;
 	const hasText = Boolean(text);
-	const hasBadge = Boolean(badgeText);
 	const hasSubline = Boolean(sublineText);
 	const fontFile = THUMBNAIL_FONT_FILE
 		? `:fontfile='${escapeDrawtext(THUMBNAIL_FONT_FILE)}'`
 		: "";
 	let adjustedTextSizePct = textSizePct;
 	let textYOffset = baseTextYOffset;
+	let minHeadlineYOffset = 0;
 	if (hasBadge) {
 		textYOffset = clampNumber(textYOffset + 0.018, 0.08, 0.24);
+		const minHeadlineY = badgeTopY + badgeBoxHeight + badgeGap;
+		minHeadlineYOffset = minHeadlineY / THUMBNAIL_HEIGHT;
 	}
 	if (hasSubline) {
 		textYOffset = clampNumber(textYOffset + 0.01, 0.08, 0.24);
@@ -3678,6 +3693,13 @@ async function renderThumbnailOverlay({
 		const scale = cleanLen >= 14 ? 0.92 : 0.96;
 		adjustedTextSizePct = clampNumber(textSizePct * scale, 0.08, 0.16);
 		textYOffset = clampNumber(textYOffset + 0.015, 0.08, 0.24);
+	}
+	if (minHeadlineYOffset > 0) {
+		textYOffset = clampNumber(
+			Math.max(textYOffset, minHeadlineYOffset),
+			0.08,
+			0.24
+		);
 	}
 	const fontSize = Math.max(
 		42,
@@ -3956,11 +3978,6 @@ async function renderThumbnailOverlay({
 		);
 	}
 	if (hasBadge) {
-		const badgeFontSize = Math.max(
-			18,
-			Math.round(THUMBNAIL_HEIGHT * THUMBNAIL_BADGE_FONT_PCT * badgeScale)
-		);
-		const badgeBorder = Math.round(badgeFontSize * 0.55);
 		filters.push(
 			`drawtext=textfile='${escapeDrawtext(
 				badgeFilePath
@@ -5297,6 +5314,81 @@ function chooseBadgeText({
 	return BADGE_INTENT_DEFAULTS.general;
 }
 
+function badgeFallbackCandidates(intent = "general") {
+	const key = String(intent || "general").toLowerCase();
+	if (key === "entertainment")
+		return ["JUST DROPPED", "NEW DETAILS", "BREAKDOWN"];
+	if (key === "legal") return ["COURT FILE", "NEW DETAILS", "BREAKDOWN"];
+	if (key === "serious_update")
+		return ["WHAT CHANGED", "NEW DETAILS", "INSIDE LOOK"];
+	if (key === "sports") return ["KEY MOMENT", "BIG PLAY", "BREAKDOWN"];
+	if (key === "finance") return ["BIG SWING", "MARKET MOVE", "NEW DETAILS"];
+	if (key === "politics") return ["POWER MOVE", "NEW DETAILS", "BREAKDOWN"];
+	if (key === "weather") return ["STORM TRACK", "ALERT", "NEW DETAILS"];
+	return ["NEW DETAILS", "BREAKDOWN", "INSIDE LOOK"];
+}
+
+function badgeIsGeneric(text = "") {
+	const cleaned = cleanThumbnailText(text).toLowerCase();
+	if (!cleaned) return true;
+	if (
+		[
+			"update",
+			"new update",
+			"latest",
+			"breaking",
+			"top stories",
+			"top story",
+			"trending now",
+		].includes(cleaned)
+	)
+		return true;
+	return false;
+}
+
+function badgeIsRedundant(badgeText, headline) {
+	if (!badgeText || !headline) return false;
+	const tokens = cleanThumbnailText(badgeText)
+		.toLowerCase()
+		.split(" ")
+		.filter((t) => t.length >= 3);
+	if (!tokens.length) return false;
+	return tokens.some((tok) => headlineHasToken(headline, tok));
+}
+
+function pickNonRedundantBadge(headline, candidates = []) {
+	for (const candidate of candidates) {
+		if (!candidate) continue;
+		if (badgeIsGeneric(candidate)) continue;
+		if (!badgeIsRedundant(candidate, headline)) return candidate;
+	}
+	for (const candidate of candidates) {
+		if (candidate && !badgeIsGeneric(candidate)) return candidate;
+	}
+	return candidates.find(Boolean) || "";
+}
+
+function sanitizeBadgeText({
+	badgeText = "",
+	headline = "",
+	intent = "general",
+	title = "",
+	topics = [],
+} = {}) {
+	const cleaned = cleanThumbnailText(badgeText);
+	const chosen =
+		cleaned && !badgeIsGeneric(cleaned)
+			? cleaned.toUpperCase()
+			: chooseBadgeText({ title, topics, intent });
+	const candidates = [
+		chosen,
+		...badgeFallbackCandidates(intent),
+		"NEW DETAILS",
+		"BREAKDOWN",
+	];
+	return pickNonRedundantBadge(headline, candidates).toUpperCase();
+}
+
 function deriveHeadlineAndBadge({
 	title = "",
 	topics = [],
@@ -5627,7 +5719,7 @@ async function generateThumbnailPackage({
 	}
 	const multiTopicBadge =
 		resolvedIntent === "entertainment" ? "TRENDING NOW" : "TOP STORIES";
-	const badgeText =
+	let badgeText =
 		resolvedOverrideBadgeText ||
 		(topicCount > 1
 			? multiTopicBadge
@@ -5671,10 +5763,19 @@ async function generateThumbnailPackage({
 		if (/^WHAT WE KNOW\??$/i.test(thumbTitle)) thumbTitle = "WHAT WE KNOW";
 		if (/^WHAT WE KNOW\??$/i.test(punchyTitle)) punchyTitle = "WHAT WE KNOW";
 	}
+	badgeText = sanitizeBadgeText({
+		badgeText,
+		headline: thumbTitle,
+		intent: resolvedIntent,
+		title: title || seoTitle || "",
+		topics,
+	});
 	const badgeMaxWords = badgeText
 		? Math.min(THUMBNAIL_TEXT_MAX_WORDS, 3)
 		: THUMBNAIL_TEXT_MAX_WORDS;
-	if (!resolvedOverrideHeadline) {
+	const shouldCompactHeadline =
+		!resolvedOverrideHeadline || isGenericHeadline(resolvedOverrideHeadline);
+	if (shouldCompactHeadline) {
 		thumbTitle = compactHeadlineForBadge(
 			thumbTitle,
 			badgeText,
