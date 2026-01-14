@@ -297,6 +297,19 @@ const MULTI_PERSON_PENALTY_TOKENS = [
 	"and",
 	"couple",
 ];
+const PERSON_TOPIC_VISUAL_NOISE_TOKENS = [
+	"cartoon",
+	"cartoonist",
+	"comic",
+	"comic strip",
+	"comicstrip",
+	"strip",
+	"dilbert",
+	"character",
+	"meme",
+	"panel",
+	"graphic",
+];
 const INJURY_VISUAL_TOKENS = [
 	"blood",
 	"bleeding",
@@ -449,6 +462,14 @@ const SPECIFIC_HEADLINE_PHRASES = new Set([
 	"SHOCKING TURN",
 	"EXPLAINED",
 ]);
+const BADGE_DEDUPE_TOKEN_MAP = Object.freeze({
+	update: ["update", "latest", "new", "breaking"],
+	breaking: ["breaking", "update", "latest", "new"],
+	exclusive: ["exclusive", "leaked", "leak"],
+	confirmed: ["confirmed", "confirm", "confirmation"],
+	recap: ["recap", "summary", "highlights"],
+	trailer: ["trailer", "teaser", "clip"],
+});
 const THUMBNAIL_MERCH_DISALLOWED_HOSTS = [
 	"amazon.com",
 	"ebay.com",
@@ -933,6 +954,19 @@ function scoreSourceAffinity(url = "", contextLink = "") {
 function multiPersonPenalty({ url = "", source = "", title = "" } = {}) {
 	const hay = `${url} ${source} ${title}`.toLowerCase();
 	return MULTI_PERSON_PENALTY_TOKENS.some((t) => hay.includes(t)) ? 0.35 : 0;
+}
+
+function personTopicClutterPenalty({
+	url = "",
+	source = "",
+	title = "",
+	isPersonTopic = false,
+} = {}) {
+	if (!isPersonTopic) return 0;
+	const hay = `${url} ${source} ${title}`.toLowerCase();
+	return PERSON_TOPIC_VISUAL_NOISE_TOKENS.some((t) => hay.includes(t))
+		? 0.28
+		: 0;
 }
 
 function injuryVisualPenalty({ url = "", source = "", title = "" } = {}) {
@@ -2536,6 +2570,9 @@ function scoreTopicImageCandidate(candidate) {
 	const personPenalty = Number.isFinite(candidate?.personPenalty)
 		? clampNumber(candidate.personPenalty, 0, 0.6)
 		: 0;
+	const clutterPenalty = Number.isFinite(candidate?.clutterPenalty)
+		? clampNumber(candidate.clutterPenalty, 0, 0.5)
+		: 0;
 	return (
 		sizeScore * 0.35 +
 		lumaScore * 0.2 +
@@ -2546,7 +2583,8 @@ function scoreTopicImageCandidate(candidate) {
 		compressionPenalty -
 		lowQualityPenalty -
 		injuryPenalty -
-		personPenalty
+		personPenalty -
+		clutterPenalty
 	);
 }
 
@@ -4323,6 +4361,12 @@ async function collectThumbnailTopicImages({
 			title,
 			isPersonTopic,
 		});
+		const clutterPenalty = personTopicClutterPenalty({
+			url,
+			source,
+			title,
+			isPersonTopic,
+		});
 		if (
 			BLOCK_PORTRAIT_FOR_NON_PERSON_TOPICS &&
 			!isPersonTopic &&
@@ -4359,6 +4403,7 @@ async function collectThumbnailTopicImages({
 			injuryPenalty,
 			lowQualityPenalty,
 			personPenalty,
+			clutterPenalty,
 			priority,
 			topicIndex,
 			relaxed: relaxed || merchPenalty >= 0.6,
@@ -4690,6 +4735,7 @@ async function collectThumbnailTopicImages({
 				(c.injuryPenalty || 0) -
 				(c.lowQualityPenalty || 0) -
 				(c.personPenalty || 0) -
+				(c.clutterPenalty || 0) -
 				(c.relaxed ? 0.6 : 0),
 		}))
 		.sort((a, b) => b.relevanceScore - a.relevanceScore);
@@ -4727,6 +4773,7 @@ async function collectThumbnailTopicImages({
 					injuryPenalty: candidate.injuryPenalty || 0,
 					lowQualityPenalty: candidate.lowQualityPenalty || 0,
 					personPenalty: candidate.personPenalty || 0,
+					clutterPenalty: candidate.clutterPenalty || 0,
 					topicIndex: candidate.topicIndex,
 					score: scoreTopicImageCandidate({
 						width: dims.width || 0,
@@ -4736,6 +4783,7 @@ async function collectThumbnailTopicImages({
 						injuryPenalty: candidate.injuryPenalty,
 						lowQualityPenalty: candidate.lowQualityPenalty,
 						personPenalty: candidate.personPenalty,
+						clutterPenalty: candidate.clutterPenalty,
 					}),
 				});
 				continue;
@@ -4751,6 +4799,7 @@ async function collectThumbnailTopicImages({
 				injuryPenalty: candidate.injuryPenalty || 0,
 				lowQualityPenalty: candidate.lowQualityPenalty || 0,
 				personPenalty: candidate.personPenalty || 0,
+				clutterPenalty: candidate.clutterPenalty || 0,
 				topicIndex: candidate.topicIndex,
 				url,
 				source: candidate.source,
@@ -4764,6 +4813,7 @@ async function collectThumbnailTopicImages({
 					injuryPenalty: candidate.injuryPenalty,
 					lowQualityPenalty: candidate.lowQualityPenalty,
 					personPenalty: candidate.personPenalty,
+					clutterPenalty: candidate.clutterPenalty,
 				}),
 			});
 		} catch {
@@ -4969,6 +5019,59 @@ function headlineHasAnyToken(headline = "", tokens = []) {
 	if (!headline || !Array.isArray(tokens) || !tokens.length) return false;
 	const hay = cleanThumbnailText(headline).toLowerCase();
 	return tokens.some((tok) => hay.includes(String(tok || "").toLowerCase()));
+}
+
+function buildBadgeDedupeTokens(badgeText = "") {
+	const tokens = cleanThumbnailText(badgeText)
+		.toLowerCase()
+		.split(" ")
+		.filter(Boolean);
+	if (!tokens.length) return new Set();
+	const dedupe = new Set();
+	for (const token of tokens) {
+		const mapped = BADGE_DEDUPE_TOKEN_MAP[token];
+		if (Array.isArray(mapped) && mapped.length) {
+			for (const entry of mapped) dedupe.add(entry);
+		} else {
+			dedupe.add(token);
+		}
+	}
+	return dedupe;
+}
+
+function stripHeadlineTokens(headline = "", tokensToRemove = new Set()) {
+	if (!headline || !tokensToRemove || !tokensToRemove.size) return headline;
+	const words = cleanThumbnailText(headline).split(" ").filter(Boolean);
+	if (!words.length) return headline;
+	const filtered = words.filter((word) => !tokensToRemove.has(word.toLowerCase()));
+	if (!filtered.length) return headline;
+	const trimmed = filtered.join(" ").trim();
+	return shouldAppendQuestionMark(headline)
+		? ensureQuestionMark(trimmed)
+		: trimmed;
+}
+
+function compactHeadlineForBadge(
+	headline,
+	badgeText,
+	fallbackLabel,
+	maxWords = THUMBNAIL_TEXT_MAX_WORDS
+) {
+	if (!headline) return headline;
+	const safeMax = Math.max(1, Number(maxWords) || THUMBNAIL_TEXT_MAX_WORDS);
+	const cleanedFallback = cleanThumbnailText(fallbackLabel || "");
+	const stripped = stripHeadlineTokens(
+		headline,
+		buildBadgeDedupeTokens(badgeText)
+	);
+	let words = selectHeadlineWords(stripped, safeMax);
+	if (!words.length && cleanedFallback) {
+		words = selectHeadlineWords(cleanedFallback, safeMax);
+	}
+	if (!words.length) return headline;
+	let result = titleCaseIfLower(words.join(" "));
+	if (shouldAppendQuestionMark(headline)) result = ensureQuestionMark(result);
+	return result;
 }
 
 function mergeIdentityIntoHeadline(identity, headline, maxWords = 4) {
@@ -5467,8 +5570,32 @@ async function generateThumbnailPackage({
 		if (/^WHAT WE KNOW\??$/i.test(thumbTitle)) thumbTitle = "WHAT WE KNOW";
 		if (/^WHAT WE KNOW\??$/i.test(punchyTitle)) punchyTitle = "WHAT WE KNOW";
 	}
+	const badgeMaxWords = badgeText
+		? Math.min(THUMBNAIL_TEXT_MAX_WORDS, 3)
+		: THUMBNAIL_TEXT_MAX_WORDS;
+	if (!resolvedOverrideHeadline) {
+		thumbTitle = compactHeadlineForBadge(
+			thumbTitle,
+			badgeText,
+			primaryTopicLabel,
+			badgeMaxWords
+		);
+		punchyTitle = compactHeadlineForBadge(
+			punchyTitle,
+			badgeText,
+			primaryTopicLabel,
+			Math.min(badgeMaxWords, THUMBNAIL_VARIANT_B_TEXT_MAX_WORDS)
+		);
+	}
+	const useIdentitySublineFinal =
+		topicCount === 1 &&
+		identitySubline &&
+		!headlineHasAnyToken(thumbTitle, identityTokens) &&
+		!headlineHasAnyToken(punchyTitle, identityTokens) &&
+		cleanThumbnailText(identitySubline).toLowerCase() !==
+			cleanThumbnailText(thumbTitle).toLowerCase();
 	const sublineText =
-		useIdentitySubline && !isGenericHeadline(identitySubline)
+		useIdentitySublineFinal && !isGenericHeadline(identitySubline)
 			? identitySubline
 			: "";
 	if (log)
@@ -5502,14 +5629,17 @@ async function generateThumbnailPackage({
 		topicCount >= 3
 			? { minWords: 5, maxWords: 7 }
 			: { minWords: 4, maxWords: 6 };
-	const panelSubheaders = buildTopicPanelSubheaders(topics, panelWordLimits)
-		.slice(0, panelCount)
-		.map((entry, idx) => ({
-			text: entry.text,
-			panelIndex: Number.isFinite(Number(entry.panelIndex))
-				? Number(entry.panelIndex)
-				: idx,
-		}));
+	const panelSubheaders =
+		panelCount > 1
+			? buildTopicPanelSubheaders(topics, panelWordLimits)
+					.slice(0, panelCount)
+					.map((entry, idx) => ({
+						text: entry.text,
+						panelIndex: Number.isFinite(Number(entry.panelIndex))
+							? Number(entry.panelIndex)
+							: idx,
+					}))
+			: [];
 	const shouldFocusRing = (topicImagePaths || []).length === 0;
 	const backgroundTitle = resolvedOverrideHeadline
 		? title || seoTitle || thumbTitle
@@ -5576,9 +5706,9 @@ async function generateThumbnailPackage({
 		}
 	}
 
-	const primaryMaxWords = useIdentitySubline
-		? Math.min(3, THUMBNAIL_TEXT_MAX_WORDS)
-		: THUMBNAIL_TEXT_MAX_WORDS;
+	const primaryMaxWords = useIdentitySublineFinal
+		? Math.min(3, badgeMaxWords)
+		: badgeMaxWords;
 	const sublineOptions = sublineText
 		? {
 				sublineText,
