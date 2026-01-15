@@ -7,6 +7,7 @@ const axios = require("axios");
 const ffmpegStatic = require("ffmpeg-static");
 
 const Video = require("../models/Video");
+const ShortVideo = require("../models/ShortVideo");
 const User = require("../models/User");
 const {
 	refreshYouTubeTokensIfNeeded,
@@ -96,6 +97,132 @@ function buildPublicBaseUrl(req) {
 	return `${req.protocol || "http"}://${req.get("host")}`;
 }
 
+function uniqueStrings(list = [], { limit = 0 } = {}) {
+	const seen = new Set();
+	const out = [];
+	for (const raw of Array.isArray(list) ? list : []) {
+		const val = String(raw || "").trim();
+		if (!val) continue;
+		const key = val.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(val);
+		if (limit && out.length >= limit) break;
+	}
+	return out;
+}
+
+function trimTitleToLimit(text = "", max = 95) {
+	const cleaned = String(text || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!cleaned) return "";
+	if (cleaned.length <= max) return cleaned;
+	const clipped = cleaned.slice(0, max);
+	return clipped.replace(/\s+\S*$/, "").trim();
+}
+
+function cleanClipTitleBase(text = "") {
+	let cleaned = String(text || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!cleaned) return "";
+	cleaned = cleaned.replace(/^["']+|["']+$/g, "");
+	cleaned = cleaned.replace(
+		/^(here's|here is|this is|there's|there is|today|right now)\b[:,-]?\s*/i,
+		""
+	);
+	cleaned = cleaned.replace(/^[\-\s]+/, "");
+	cleaned = cleaned.replace(/[.!?]+$/g, "");
+	cleaned = cleaned.replace(/^\s*(and|but|so)\s+/i, "");
+	return cleaned.trim();
+}
+
+function buildClipTitleCandidates(line = "", fallbackBase = "") {
+	const base = trimTitleToLimit(
+		cleanClipTitleBase(line) || String(fallbackBase || "").trim(),
+		95
+	);
+	if (!base) return [];
+	const variants = [
+		base,
+		`The key detail: ${base}`,
+		`What changed: ${base}`,
+		`Why it matters: ${base}`,
+		`The quick update: ${base}`,
+		`${base} | The detail people missed`,
+	];
+	return uniqueStrings(variants, { limit: 8 }).map((t) =>
+		trimTitleToLimit(t, 95)
+	);
+}
+
+function buildClipThumbnailTextCandidates(line = "", fallbackBase = "") {
+	const base = cleanClipTitleBase(line) || String(fallbackBase || "").trim();
+	const tokens = base.split(/\s+/).slice(0, 3).join(" ");
+	const variants = [
+		tokens || fallbackBase,
+		"Key detail",
+		"What changed",
+		"Why it matters",
+		"The twist",
+		"Still unclear",
+	];
+	return uniqueStrings(variants, { limit: 8 }).map((t) => t.trim());
+}
+
+function normalizeTitleKey(text = "") {
+	return String(text || "")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim();
+}
+
+function buildTitleSuffixFromLine(line = "") {
+	const cleaned = cleanClipTitleBase(line);
+	if (!cleaned) return "";
+	return cleaned.split(/\s+/).slice(0, 3).join(" ");
+}
+
+function pickUniqueTitle({
+	titleCandidates = [],
+	usedTitles,
+	line = "",
+	clipIndex = 0,
+}) {
+	const used = usedTitles instanceof Set ? usedTitles : new Set();
+	for (const candidate of titleCandidates) {
+		const key = normalizeTitleKey(candidate);
+		if (!key || used.has(key)) continue;
+		used.add(key);
+		return candidate;
+	}
+	const base = trimTitleToLimit(cleanClipTitleBase(line) || line, 95);
+	if (base) {
+		const baseKey = normalizeTitleKey(base);
+		if (baseKey && !used.has(baseKey)) {
+			used.add(baseKey);
+			return base;
+		}
+		const suffix = buildTitleSuffixFromLine(line);
+		if (suffix) {
+			const withSuffix = trimTitleToLimit(`${base} - ${suffix}`, 95);
+			const suffixKey = normalizeTitleKey(withSuffix);
+			if (suffixKey && !used.has(suffixKey)) {
+				used.add(suffixKey);
+				return withSuffix;
+			}
+		}
+		const fallback = trimTitleToLimit(`${base} - Clip ${clipIndex + 1}`, 95);
+		const fallbackKey = normalizeTitleKey(fallback);
+		if (!used.has(fallbackKey)) used.add(fallbackKey);
+		return fallback;
+	}
+	const generic = trimTitleToLimit(`Short update - Clip ${clipIndex + 1}`, 95);
+	used.add(normalizeTitleKey(generic));
+	return generic;
+}
+
 function mapUploadsUrlToPath(url) {
 	try {
 		const parsed = new URL(url);
@@ -171,6 +298,11 @@ function normalizeClipCandidates(shortsDetails, segments = []) {
 	const candidates = Array.isArray(raw.clipCandidates)
 		? raw.clipCandidates
 		: [];
+	const fallbackBase = String(
+		raw.angle ||
+			(Array.isArray(raw.titleCandidates) ? raw.titleCandidates[0] : "") ||
+			""
+	).trim();
 	const normalized = candidates
 		.map((c, idx) => {
 			const segmentIndex = Number(
@@ -180,6 +312,51 @@ function normalizeClipCandidates(shortsDetails, segments = []) {
 			if (segments.length && segmentIndex >= segments.length) return null;
 			const line = String(c?.line || segments[segmentIndex]?.text || "").trim();
 			if (!line) return null;
+			const rawTitleCandidates = Array.isArray(
+				c?.titleCandidates ||
+					c?.title_candidates ||
+					c?.seoTitleCandidates ||
+					c?.seo_title_candidates
+			)
+				? c.titleCandidates ||
+				  c.title_candidates ||
+				  c.seoTitleCandidates ||
+				  c.seo_title_candidates
+				: [];
+			let titleCandidates = uniqueStrings(
+				(rawTitleCandidates || [])
+					.map((t) => String(t || "").trim())
+					.filter(Boolean),
+				{ limit: 8 }
+			);
+			if (titleCandidates.length < 3) {
+				const fallbackTitles = buildClipTitleCandidates(line, fallbackBase);
+				titleCandidates = uniqueStrings(
+					[...titleCandidates, ...fallbackTitles],
+					{ limit: 8 }
+				);
+			}
+			const rawThumbCandidates = Array.isArray(
+				c?.thumbnailTextCandidates || c?.thumbnail_text_candidates
+			)
+				? c.thumbnailTextCandidates || c.thumbnail_text_candidates
+				: [];
+			let thumbnailTextCandidates = uniqueStrings(
+				(rawThumbCandidates || [])
+					.map((t) => String(t || "").trim())
+					.filter(Boolean),
+				{ limit: 8 }
+			);
+			if (thumbnailTextCandidates.length < 3) {
+				const fallbackThumbs = buildClipThumbnailTextCandidates(
+					line,
+					fallbackBase
+				);
+				thumbnailTextCandidates = uniqueStrings(
+					[...thumbnailTextCandidates, ...fallbackThumbs],
+					{ limit: 8 }
+				);
+			}
 			return {
 				id: String(c?.id || `short_${segmentIndex}_${idx}`),
 				type: String(c?.type || "context_needed"),
@@ -190,6 +367,8 @@ function normalizeClipCandidates(shortsDetails, segments = []) {
 				targetSeconds: normalizeTargetSeconds(
 					c?.targetSeconds ?? c?.target_seconds
 				),
+				titleCandidates,
+				thumbnailTextCandidates,
 				status: c?.status || "pending",
 				uploaded: Boolean(c?.uploaded),
 				localPath: c?.localPath || "",
@@ -218,10 +397,67 @@ function normalizeClipCandidates(shortsDetails, segments = []) {
 	};
 }
 
+function stripClipCandidateForPlan(candidate) {
+	if (!candidate) return candidate;
+	return {
+		id: String(candidate.id || "").trim(),
+		type: String(candidate.type || "context_needed"),
+		segmentIndex: Number.isFinite(Number(candidate.segmentIndex))
+			? Number(candidate.segmentIndex)
+			: 0,
+		line: String(candidate.line || "").trim(),
+		openLoop: Boolean(candidate.openLoop),
+		ctaLine: String(candidate.ctaLine || SHORTS_DEFAULT_CTA_LINE).trim(),
+		targetSeconds: normalizeTargetSeconds(candidate.targetSeconds),
+		titleCandidates: Array.isArray(candidate.titleCandidates)
+			? candidate.titleCandidates
+			: [],
+		thumbnailTextCandidates: Array.isArray(candidate.thumbnailTextCandidates)
+			? candidate.thumbnailTextCandidates
+			: [],
+	};
+}
+
+function mergeShortRecordsIntoCandidates(
+	clipCandidates = [],
+	shortRecords = []
+) {
+	if (!Array.isArray(clipCandidates) || !clipCandidates.length) return [];
+	const byId = new Map();
+	for (const record of Array.isArray(shortRecords) ? shortRecords : []) {
+		if (!record || !record.clipId) continue;
+		byId.set(String(record.clipId), record);
+	}
+	return clipCandidates.map((clip) => {
+		const record = byId.get(String(clip.id || ""));
+		if (!record) return clip;
+		return {
+			...clip,
+			title: record.title || clip.title || "",
+			titleCandidates:
+				Array.isArray(record.titleCandidates) && record.titleCandidates.length
+					? record.titleCandidates
+					: clip.titleCandidates,
+			thumbnailTextCandidates:
+				Array.isArray(record.thumbnailTextCandidates) &&
+				record.thumbnailTextCandidates.length
+					? record.thumbnailTextCandidates
+					: clip.thumbnailTextCandidates,
+			status: record.status || clip.status,
+			localPath: record.localPath || clip.localPath,
+			publicUrl: record.publicUrl || clip.publicUrl,
+			youtubeLink: record.youtubeLink || clip.youtubeLink,
+			lastError: record.lastError || clip.lastError,
+			uploadedAt: record.uploadedAt || clip.uploadedAt || "",
+		};
+	});
+}
+
 function fallbackShortsDetails(video) {
 	const segments = Array.isArray(video?.longVideoMeta?.segments)
 		? video.longVideoMeta.segments
 		: [];
+	const fallbackBase = String(video?.seoTitle || "").trim();
 	const fallbackCandidates = segments.slice(0, 4).map((seg, idx) => ({
 		id: `short_${seg.index ?? idx}_${idx}`,
 		type: idx === 0 ? "hook" : "context_needed",
@@ -230,6 +466,14 @@ function fallbackShortsDetails(video) {
 		openLoop: /\?/.test(String(seg.text || "")),
 		ctaLine: SHORTS_DEFAULT_CTA_LINE,
 		targetSeconds: 25,
+		titleCandidates: buildClipTitleCandidates(
+			String(seg.text || "").trim(),
+			fallbackBase
+		),
+		thumbnailTextCandidates: buildClipThumbnailTextCandidates(
+			String(seg.text || "").trim(),
+			fallbackBase
+		),
 		status: "pending",
 		uploaded: false,
 		localPath: "",
@@ -347,18 +591,26 @@ async function createShortClip({
 	return outputPath;
 }
 
-function buildShortsTitle(video, clipIndex = 0) {
-	const titleCandidates = Array.isArray(video?.shortsDetails?.titleCandidates)
-		? video.shortsDetails.titleCandidates
+function buildShortsTitle({
+	candidate,
+	clipIndex = 0,
+	fallbackTitle = "Short update",
+	usedTitles,
+}) {
+	const explicit = Array.isArray(candidate?.titleCandidates)
+		? candidate.titleCandidates
 		: [];
-	const fallback = String(video?.seoTitle || "Short update").trim();
-	const picked =
-		titleCandidates.length > 0
-			? titleCandidates[clipIndex % titleCandidates.length]
-			: fallback;
-	return String(picked || fallback)
-		.trim()
-		.slice(0, 95);
+	const fallback = buildClipTitleCandidates(
+		String(candidate?.line || "").trim(),
+		fallbackTitle
+	);
+	const pool = uniqueStrings([...explicit, ...fallback], { limit: 8 });
+	return pickUniqueTitle({
+		titleCandidates: pool,
+		usedTitles,
+		line: String(candidate?.line || "").trim(),
+		clipIndex,
+	});
 }
 
 function buildShortsDescription(candidate) {
@@ -376,7 +628,7 @@ function buildShortsDescription(candidate) {
 	return parts.filter((p) => p !== "").join("\n");
 }
 
-async function uploadShortClip({ video, candidate, clipIndex }) {
+async function uploadShortClip({ video, shortDoc, clipIndex }) {
 	const userId = video?.user;
 	if (!userId) throw new Error("Short upload missing user");
 	const user = await User.findById(userId);
@@ -392,13 +644,22 @@ async function uploadShortClip({ video, candidate, clipIndex }) {
 	if (!youtubeTokens?.refresh_token)
 		throw new Error("Missing YouTube refresh token");
 
-	const title = buildShortsTitle(video, clipIndex);
-	const description = buildShortsDescription(candidate);
+	const title =
+		String(shortDoc?.title || "").trim() ||
+		buildShortsTitle({
+			candidate: shortDoc,
+			clipIndex,
+			fallbackTitle: String(video?.seoTitle || "Short update").trim(),
+			usedTitles: new Set(),
+		});
+	const description =
+		String(shortDoc?.description || "").trim() ||
+		buildShortsDescription(shortDoc);
 	const tags = ["shorts", "short", "clip"];
 	const category = YT_CATEGORY_MAP[video?.category]
 		? video.category
 		: "Entertainment";
-	return await uploadToYouTube(youtubeTokens, candidate.localPath, {
+	return await uploadToYouTube(youtubeTokens, shortDoc.localPath, {
 		title,
 		description,
 		tags,
@@ -457,49 +718,138 @@ exports.createShortsFromLong = async (req, res) => {
 		const fullVideoUrl = isHttpUrl(video.youtubeLink)
 			? video.youtubeLink
 			: isHttpUrl(video.outputUrl)
-				? video.outputUrl
-				: "";
+			? video.outputUrl
+			: "";
+
+		const existingShorts = await ShortVideo.find({
+			longVideo: video._id,
+		}).lean();
+		const existingById = new Map(
+			(existingShorts || []).map((s) => [String(s.clipId || ""), s])
+		);
+		const usedTitles = new Set(
+			(existingShorts || [])
+				.map((s) => normalizeTitleKey(s.title || ""))
+				.filter(Boolean)
+		);
 
 		let generatedCount = 0;
 		for (let i = 0; i < candidatesToProcess.length; i++) {
 			const candidate = candidatesToProcess[i];
 			if (!candidate.fullVideoUrl && fullVideoUrl)
 				candidate.fullVideoUrl = fullVideoUrl;
+
+			const fallbackBase =
+				String(shortsDetails.angle || "").trim() ||
+				String(video?.seoTitle || "").trim() ||
+				"Short update";
 			if (
-				!forceRegenerate &&
-				candidate.localPath &&
-				fs.existsSync(candidate.localPath)
+				!Array.isArray(candidate.titleCandidates) ||
+				!candidate.titleCandidates.length
 			) {
-				candidate.status = candidate.uploaded ? "uploaded" : "ready";
-				continue;
+				candidate.titleCandidates = buildClipTitleCandidates(
+					candidate.line,
+					fallbackBase
+				);
 			}
+			if (
+				!Array.isArray(candidate.thumbnailTextCandidates) ||
+				!candidate.thumbnailTextCandidates.length
+			) {
+				candidate.thumbnailTextCandidates = buildClipThumbnailTextCandidates(
+					candidate.line,
+					fallbackBase
+				);
+			}
+
+			const existing = existingById.get(String(candidate.id || ""));
+			const shouldReuse =
+				!forceRegenerate &&
+				existing?.localPath &&
+				fs.existsSync(existing.localPath);
 
 			const { startSec, durationSec } = computeClipWindow(timeline, candidate);
 			const outName = `short_${videoId}_${candidate.id}.mp4`;
 			const outPath = path.join(SHORTS_OUTPUT_DIR, outName);
-			await createShortClip({
-				inputPath: source.path,
-				startSec,
-				durationSec,
-				outputPath: outPath,
-			});
-			const publicUrl = baseUrl ? `${baseUrl}/uploads/shorts/${outName}` : "";
-			candidate.localPath = outPath;
-			candidate.publicUrl = publicUrl;
-			candidate.fullVideoUrl = fullVideoUrl;
-			candidate.status = "ready";
-			candidate.uploaded = false;
-			candidate.lastError = "";
-			candidate.generatedAt = nowIso();
-			generatedCount += 1;
+
+			if (!shouldReuse) {
+				await createShortClip({
+					inputPath: source.path,
+					startSec,
+					durationSec,
+					outputPath: outPath,
+				});
+				generatedCount += 1;
+			}
+
+			const publicUrl = baseUrl
+				? `${baseUrl}/uploads/shorts/${outName}`
+				: existing?.publicUrl || "";
+			const title =
+				!forceRegenerate && existing?.title
+					? existing.title
+					: buildShortsTitle({
+							candidate,
+							clipIndex: i,
+							fallbackTitle: String(video?.seoTitle || "Short update").trim(),
+							usedTitles,
+					  });
+			const description =
+				!forceRegenerate && existing?.description
+					? existing.description
+					: buildShortsDescription({
+							...candidate,
+							fullVideoUrl: candidate.fullVideoUrl || fullVideoUrl,
+					  });
+			const status =
+				!forceRegenerate && existing?.status === "uploaded"
+					? "uploaded"
+					: "ready";
+			const lastError = forceRegenerate ? "" : existing?.lastError || "";
+
+			await ShortVideo.findOneAndUpdate(
+				{ longVideo: video._id, clipId: String(candidate.id || "") },
+				{
+					user: video.user,
+					longVideo: video._id,
+					clipId: String(candidate.id || ""),
+					orderIndex: i,
+					segmentIndex: candidate.segmentIndex,
+					type: candidate.type,
+					line: candidate.line,
+					openLoop: candidate.openLoop,
+					ctaLine: candidate.ctaLine,
+					targetSeconds: candidate.targetSeconds,
+					title,
+					titleCandidates: candidate.titleCandidates || [],
+					thumbnailTextCandidates: candidate.thumbnailTextCandidates || [],
+					description,
+					localPath: shouldReuse ? existing?.localPath : outPath,
+					publicUrl,
+					fullVideoUrl: candidate.fullVideoUrl || fullVideoUrl,
+					status,
+					lastError,
+					generatedAt: shouldReuse
+						? existing?.generatedAt || new Date()
+						: new Date(),
+					startSec,
+					durationSec,
+					youtubeLink: forceRegenerate ? "" : existing?.youtubeLink || "",
+					uploadedAt: forceRegenerate ? null : existing?.uploadedAt || null,
+				},
+				{ upsert: true, new: true, setDefaultsOnInsert: true }
+			);
 		}
 
 		const nextUploadAt = new Date(
 			Date.now() + SHORTS_UPLOAD_DELAY_HOURS * 60 * 60 * 1000
 		).toISOString();
+		const plannedCandidates = candidatesToProcess.map((c) =>
+			stripClipCandidateForPlan(c)
+		);
 		video.shortsDetails = {
 			...shortsDetails,
-			clipCandidates,
+			clipCandidates: plannedCandidates,
 			status: "ready",
 			generatedAt: nowIso(),
 			nextUploadAt,
@@ -507,11 +857,22 @@ exports.createShortsFromLong = async (req, res) => {
 		};
 		await video.save();
 
+		const shortsRecords = await ShortVideo.find({
+			longVideo: video._id,
+		}).lean();
+		const responseDetails = {
+			...video.shortsDetails,
+			clipCandidates: mergeShortRecordsIntoCandidates(
+				video.shortsDetails.clipCandidates || [],
+				shortsRecords
+			),
+		};
+
 		return res.json({
 			success: true,
 			generatedCount,
 			source: source.source,
-			shortsDetails: video.shortsDetails,
+			shortsDetails: responseDetails,
 		});
 	} catch (err) {
 		console.error("[createShortsFromLong] error:", err.message || err);
@@ -529,9 +890,29 @@ exports.getShortsFromLong = async (req, res) => {
 		if (!video.isLongVideo)
 			return res.status(400).json({ error: "Not a long video." });
 
+		const segments = Array.isArray(video?.longVideoMeta?.segments)
+			? video.longVideoMeta.segments
+			: [];
+		const normalized =
+			video.shortsDetails && typeof video.shortsDetails === "object"
+				? normalizeClipCandidates(video.shortsDetails, segments)
+				: null;
+		const shortsRecords = await ShortVideo.find({
+			longVideo: video._id,
+		}).lean();
+		const mergedDetails = normalized
+			? {
+					...normalized,
+					clipCandidates: mergeShortRecordsIntoCandidates(
+						normalized.clipCandidates || [],
+						shortsRecords
+					),
+			  }
+			: null;
+
 		return res.json({
 			success: true,
-			shortsDetails: video.shortsDetails || null,
+			shortsDetails: mergedDetails,
 			longVideoMeta: video.longVideoMeta || null,
 		});
 	} catch (err) {
@@ -582,11 +963,12 @@ exports.processPendingShortUploads = async ({ limit = 3 } = {}) => {
 
 	for (const video of videos) {
 		if (processed >= max) break;
-		const details = normalizeClipCandidates(
-			video.shortsDetails,
-			video.longVideoMeta?.segments || []
-		);
-		const nextUploadAtRaw = details.nextUploadAt || video.shortsDetails?.nextUploadAt;
+		const segments = Array.isArray(video?.longVideoMeta?.segments)
+			? video.longVideoMeta.segments
+			: [];
+		const details = normalizeClipCandidates(video.shortsDetails, segments);
+		const nextUploadAtRaw =
+			details.nextUploadAt || video.shortsDetails?.nextUploadAt;
 		const nextUploadAtTs = nextUploadAtRaw
 			? new Date(nextUploadAtRaw).getTime()
 			: 0;
@@ -595,60 +977,87 @@ exports.processPendingShortUploads = async ({ limit = 3 } = {}) => {
 		const fullVideoUrl = isHttpUrl(video.youtubeLink)
 			? video.youtubeLink
 			: isHttpUrl(video.outputUrl)
-				? video.outputUrl
-				: "";
+			? video.outputUrl
+			: "";
+		const shortsToUpload = await ShortVideo.find({
+			longVideo: video._id,
+			status: "ready",
+		}).sort({ orderIndex: 1, createdAt: 1 });
+
+		if (!shortsToUpload.length) continue;
+
 		let attempted = false;
-		for (let i = 0; i < details.clipCandidates.length; i++) {
+		for (let i = 0; i < shortsToUpload.length; i++) {
 			if (processed >= max) break;
-			const candidate = details.clipCandidates[i];
-			if (candidate.uploaded) continue;
-			if (candidate.status !== "ready") continue;
-			if (!candidate.localPath || !fs.existsSync(candidate.localPath)) continue;
-			if (!candidate.fullVideoUrl && fullVideoUrl)
-				candidate.fullVideoUrl = fullVideoUrl;
+			const shortDoc = shortsToUpload[i];
+			if (!shortDoc.localPath || !fs.existsSync(shortDoc.localPath)) continue;
+			if (!shortDoc.fullVideoUrl && fullVideoUrl) {
+				shortDoc.fullVideoUrl = fullVideoUrl;
+				if (!shortDoc.description) {
+					shortDoc.description = buildShortsDescription({
+						line: shortDoc.line,
+						ctaLine: shortDoc.ctaLine,
+						fullVideoUrl,
+					});
+				}
+			}
 
 			try {
 				const youtubeLink = await uploadShortClip({
 					video,
-					candidate,
-					clipIndex: i,
+					shortDoc,
+					clipIndex: Number.isFinite(Number(shortDoc.orderIndex))
+						? Number(shortDoc.orderIndex)
+						: i,
 				});
-				candidate.uploaded = true;
-				candidate.status = "uploaded";
-				candidate.youtubeLink = youtubeLink;
-				candidate.uploadedAt = nowIso();
-				candidate.lastError = "";
+				shortDoc.status = "uploaded";
+				shortDoc.youtubeLink = youtubeLink;
+				shortDoc.uploadedAt = new Date();
+				shortDoc.lastError = "";
 				uploaded += 1;
 				attempted = true;
 			} catch (e) {
-				candidate.status = "failed";
-				candidate.lastError = e.message || "upload_failed";
+				shortDoc.status = "failed";
+				shortDoc.lastError = e.message || "upload_failed";
 				errors.push({
 					videoId: String(video._id),
-					clipId: candidate.id,
-					error: candidate.lastError,
+					clipId: String(shortDoc.clipId || ""),
+					error: shortDoc.lastError,
 				});
 				attempted = true;
 			}
 
+			await shortDoc.save();
 			processed += 1;
 		}
 
-		const allUploaded = details.clipCandidates.length
-			? details.clipCandidates.every((c) => c.uploaded)
-			: false;
 		if (attempted) {
-			details.nextUploadAt = new Date(
-				nowTs + SHORTS_UPLOAD_GAP_HOURS * 60 * 60 * 1000
-			).toISOString();
+			video.shortsDetails = {
+				...video.shortsDetails,
+				nextUploadAt: new Date(
+					nowTs + SHORTS_UPLOAD_GAP_HOURS * 60 * 60 * 1000
+				).toISOString(),
+				updatedAt: nowIso(),
+			};
 		}
-		if (allUploaded) details.status = "uploaded";
 
-		video.shortsDetails = {
-			...video.shortsDetails,
-			...details,
-			updatedAt: nowIso(),
-		};
+		const plannedCount = Array.isArray(details.clipCandidates)
+			? details.clipCandidates.length
+			: 0;
+		if (plannedCount) {
+			const uploadedCount = await ShortVideo.countDocuments({
+				longVideo: video._id,
+				status: "uploaded",
+			});
+			if (uploadedCount >= plannedCount) {
+				video.shortsDetails = {
+					...video.shortsDetails,
+					status: "uploaded",
+					updatedAt: nowIso(),
+				};
+			}
+		}
+
 		await video.save();
 	}
 

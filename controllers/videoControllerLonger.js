@@ -6516,6 +6516,51 @@ function buildTitleCandidates(baseTitle = "", shortTitle = "") {
 	return uniqueStrings(variants, { limit: 8 }).map((t) => t.slice(0, 95));
 }
 
+function trimTitleToLimit(text = "", max = 95) {
+	const cleaned = String(text || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!cleaned) return "";
+	if (cleaned.length <= max) return cleaned;
+	const clipped = cleaned.slice(0, max);
+	return clipped.replace(/\s+\S*$/, "").trim();
+}
+
+function cleanClipTitleBase(text = "") {
+	let cleaned = String(text || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!cleaned) return "";
+	cleaned = cleaned.replace(/^["']+|["']+$/g, "");
+	cleaned = cleaned.replace(
+		/^(here's|here is|this is|there's|there is|today|right now)\b[:,-]?\s*/i,
+		""
+	);
+	cleaned = cleaned.replace(/^[\-\s]+/, "");
+	cleaned = cleaned.replace(/[.!?]+$/g, "");
+	cleaned = cleaned.replace(/^\s*(and|but|so)\s+/i, "");
+	return cleaned.trim();
+}
+
+function buildClipTitleCandidates(line = "", fallbackBase = "") {
+	const base = trimTitleToLimit(
+		cleanClipTitleBase(line) || String(fallbackBase || "").trim(),
+		95
+	);
+	if (!base) return [];
+	const variants = [
+		base,
+		`The key detail: ${base}`,
+		`What changed: ${base}`,
+		`Why it matters: ${base}`,
+		`The quick update: ${base}`,
+		`${base} | The detail people missed`,
+	];
+	return uniqueStrings(variants, { limit: 8 }).map((t) =>
+		trimTitleToLimit(t, 95)
+	);
+}
+
 function buildThumbnailTextCandidates(baseTitle = "") {
 	const base = String(baseTitle || "").trim();
 	const tokens = base.split(/\s+/).slice(0, 2).join(" ");
@@ -6529,6 +6574,20 @@ function buildThumbnailTextCandidates(baseTitle = "") {
 		"Why it shifted",
 	];
 	if (tokens) variants.unshift(tokens);
+	return uniqueStrings(variants, { limit: 8 }).map((t) => t.trim());
+}
+
+function buildClipThumbnailTextCandidates(line = "", fallbackBase = "") {
+	const base = cleanClipTitleBase(line) || String(fallbackBase || "").trim();
+	const tokens = base.split(/\s+/).slice(0, 3).join(" ");
+	const variants = [
+		tokens || fallbackBase,
+		"Key detail",
+		"What changed",
+		"Why it matters",
+		"The twist",
+		"Still unclear",
+	];
 	return uniqueStrings(variants, { limit: 8 }).map((t) => t.trim());
 }
 
@@ -6572,6 +6631,7 @@ function buildFallbackShortsDetails(script = {}) {
 				: type === "twist"
 				? SHORTS_TARGET_SECONDS[1]
 				: SHORTS_TARGET_SECONDS[2] || SHORTS_DEFAULT_TARGET_SECONDS;
+		const fallbackBase = shortTitle || title;
 		return {
 			id: `short_${segIndex}_${i}`,
 			type,
@@ -6580,6 +6640,11 @@ function buildFallbackShortsDetails(script = {}) {
 			openLoop: segmentHasOpenLoop(line),
 			ctaLine: SHORTS_DEFAULT_CTA_LINE,
 			targetSeconds: normalizeShortsTargetSeconds(targetSeconds),
+			titleCandidates: buildClipTitleCandidates(line, fallbackBase),
+			thumbnailTextCandidates: buildClipThumbnailTextCandidates(
+				line,
+				fallbackBase
+			),
 		};
 	});
 
@@ -6629,6 +6694,54 @@ function normalizeShortsDetails(raw, script = {}) {
 					? c.openLoop
 					: segmentHasOpenLoop(line);
 			const ctaLine = String(c?.ctaLine || c?.cta_line || "").trim();
+			const rawTitleCandidates = Array.isArray(
+				c?.titleCandidates ||
+					c?.title_candidates ||
+					c?.seoTitleCandidates ||
+					c?.seo_title_candidates
+			)
+				? c.titleCandidates ||
+				  c.title_candidates ||
+				  c.seoTitleCandidates ||
+				  c.seo_title_candidates
+				: [];
+			let titleCandidates = uniqueStrings(
+				(rawTitleCandidates || [])
+					.map((t) => String(t || "").trim())
+					.filter(Boolean),
+				{ limit: 8 }
+			);
+			if (titleCandidates.length < 3) {
+				const fallbackTitles = buildClipTitleCandidates(
+					line,
+					script?.shortTitle || script?.title || ""
+				);
+				titleCandidates = uniqueStrings(
+					[...titleCandidates, ...fallbackTitles],
+					{ limit: 8 }
+				);
+			}
+			const rawThumbCandidates = Array.isArray(
+				c?.thumbnailTextCandidates || c?.thumbnail_text_candidates
+			)
+				? c.thumbnailTextCandidates || c.thumbnail_text_candidates
+				: [];
+			let thumbnailTextCandidates = uniqueStrings(
+				(rawThumbCandidates || [])
+					.map((t) => String(t || "").trim())
+					.filter(Boolean),
+				{ limit: 8 }
+			);
+			if (thumbnailTextCandidates.length < 3) {
+				const fallbackThumbs = buildClipThumbnailTextCandidates(
+					line,
+					script?.shortTitle || script?.title || ""
+				);
+				thumbnailTextCandidates = uniqueStrings(
+					[...thumbnailTextCandidates, ...fallbackThumbs],
+					{ limit: 8 }
+				);
+			}
 			return {
 				id: String(c?.id || `short_${segIndex}_${idx}`),
 				type,
@@ -6637,6 +6750,8 @@ function normalizeShortsDetails(raw, script = {}) {
 				openLoop,
 				ctaLine: ctaLine || SHORTS_DEFAULT_CTA_LINE,
 				targetSeconds,
+				titleCandidates,
+				thumbnailTextCandidates,
 			};
 		})
 		.filter(Boolean);
@@ -6730,7 +6845,9 @@ Return JSON ONLY:
       "line": "exact sentence(s) from that segment text",
       "openLoop": true,
       "ctaLine": "Full breakdown on the channel.",
-      "targetSeconds": 25
+      "targetSeconds": 25,
+      "titleCandidates": ["3-6 clip-specific options, max 95 chars each"],
+      "thumbnailTextCandidates": ["3-6 clip-specific options, 2-5 words each"]
     }
   ]
 }
@@ -6741,6 +6858,7 @@ Rules:
 - line must be copied verbatim from the segment text.
 - openLoop=true only if the clip does NOT resolve the question.
 - targetSeconds must be 25, 35, or 45.
+- Each clip must include titleCandidates + thumbnailTextCandidates that are descriptive of that clip line (not generic).
 
 Segments:
 ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
@@ -7665,6 +7783,7 @@ ${evidenceLine}
 - shortsDetails.clipCandidates must be 3-6 items with type, segmentIndex, line, openLoop, ctaLine, targetSeconds.
 - clipCandidates.line must be copied verbatim from the segment text it references.
 - targetSeconds must be 25, 35, or 45.
+- Each clip must include titleCandidates + thumbnailTextCandidates that are descriptive of that clip line (not generic).
 
 Return JSON ONLY:
 {
@@ -7681,7 +7800,9 @@ Return JSON ONLY:
         "line": "exact sentence(s) from that segment text",
         "openLoop": true,
         "ctaLine": "Full breakdown on the channel.",
-        "targetSeconds": 25
+        "targetSeconds": 25,
+        "titleCandidates": ["3-6 clip-specific options, max 95 chars each"],
+        "thumbnailTextCandidates": ["3-6 clip-specific options, 2-5 words each"]
       }
     ]
   },
