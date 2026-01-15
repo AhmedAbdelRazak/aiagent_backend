@@ -235,6 +235,11 @@ const OUTPUT_DIR = path.join(__dirname, "../uploads/videos");
 const THUMBNAIL_DIR = path.join(__dirname, "../uploads/thumbnails");
 const LONG_VIDEO_PERSIST_OUTPUT =
 	String(process.env.LONG_VIDEO_PERSIST_OUTPUT || "").toLowerCase() === "true";
+const LONG_VIDEO_PERSIST_FOR_SHORTS =
+	String(process.env.LONG_VIDEO_PERSIST_FOR_SHORTS || "true").toLowerCase() ===
+	"true";
+const SHOULD_PERSIST_LONG_VIDEO =
+	LONG_VIDEO_PERSIST_OUTPUT || LONG_VIDEO_PERSIST_FOR_SHORTS;
 
 // Your classy suit reference (also default presenter)
 const DEFAULT_PRESENTER_ASSET_URL =
@@ -482,8 +487,8 @@ function ensureDir(dir) {
 	if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 ensureDir(TMP_ROOT);
-if (LONG_VIDEO_PERSIST_OUTPUT) ensureDir(OUTPUT_DIR);
-if (LONG_VIDEO_PERSIST_OUTPUT) ensureDir(THUMBNAIL_DIR);
+if (SHOULD_PERSIST_LONG_VIDEO) ensureDir(OUTPUT_DIR);
+if (SHOULD_PERSIST_LONG_VIDEO) ensureDir(THUMBNAIL_DIR);
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
@@ -11634,7 +11639,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		}
 
 		if (dryRun) {
-			const dummyUrl = LONG_VIDEO_PERSIST_OUTPUT
+			const dummyUrl = SHOULD_PERSIST_LONG_VIDEO
 				? `${baseUrl}/uploads/videos/long_${jobId}_dryrun.mp4`
 				: "";
 			updateJob(jobId, {
@@ -12187,7 +12192,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			thumbnailPublicId = thumbPublicId;
 			if (thumbLocalPath && fs.existsSync(thumbLocalPath)) {
 				thumbnailPath = thumbLocalPath;
-				if (LONG_VIDEO_PERSIST_OUTPUT) {
+				if (SHOULD_PERSIST_LONG_VIDEO) {
 					const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
 					fs.copyFileSync(thumbLocalPath, finalThumb);
 					thumbnailPath = finalThumb;
@@ -12197,7 +12202,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			updateJob(jobId, {
 				meta: {
 					...JOBS.get(jobId)?.meta,
-					thumbnailPath: LONG_VIDEO_PERSIST_OUTPUT ? thumbnailPath : "",
+					thumbnailPath: SHOULD_PERSIST_LONG_VIDEO ? thumbnailPath : "",
 					thumbnailUrl: thumbnailUrl || "",
 					thumbnailPublicId: thumbnailPublicId || "",
 					thumbnailVariants: thumbVariants,
@@ -13585,7 +13590,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		// 16) Finalize (with fade-out)
 		const outputName = `long_${jobId}.mp4`;
-		const outputPath = LONG_VIDEO_PERSIST_OUTPUT
+		const outputPath = SHOULD_PERSIST_LONG_VIDEO
 			? path.join(OUTPUT_DIR, outputName)
 			: path.join(tmpDir, outputName);
 
@@ -13630,13 +13635,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			logJob(jobId, "youtube upload skipped", { error: e.message });
 		}
 
-		const finalVideoUrl = LONG_VIDEO_PERSIST_OUTPUT
+		const finalVideoUrl = SHOULD_PERSIST_LONG_VIDEO
 			? `${baseUrl}/uploads/videos/${outputName}`
 			: youtubeLink || "";
-		const outputUrl = LONG_VIDEO_PERSIST_OUTPUT
+		const outputUrl = SHOULD_PERSIST_LONG_VIDEO
 			? finalVideoUrl
 			: youtubeLink || "";
-		const localFilePath = LONG_VIDEO_PERSIST_OUTPUT ? outputPath : "";
+		const localFilePath = SHOULD_PERSIST_LONG_VIDEO ? outputPath : "";
 		let videoDocId = null;
 		try {
 			if (user?._id) {
@@ -13718,7 +13723,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			},
 		});
 		logJob(jobId, "job completed", { finalVideoUrl, youtubeLink });
-		if (!LONG_VIDEO_PERSIST_OUTPUT) safeUnlink(outputPath);
+		if (!SHOULD_PERSIST_LONG_VIDEO) safeUnlink(outputPath);
 	} catch (err) {
 		logJob(jobId, "job failed", {
 			error: err?.message || "Long video job failed",
