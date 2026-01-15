@@ -6730,7 +6730,7 @@ Return JSON ONLY:
       "line": "exact sentence(s) from that segment text",
       "openLoop": true,
       "ctaLine": "Full breakdown on the channel.",
-      "targetSeconds": 15
+      "targetSeconds": 25
     }
   ]
 }
@@ -7681,7 +7681,7 @@ Return JSON ONLY:
         "line": "exact sentence(s) from that segment text",
         "openLoop": true,
         "ctaLine": "Full breakdown on the channel.",
-        "targetSeconds": 15
+        "targetSeconds": 25
       }
     ]
   },
@@ -11900,11 +11900,19 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			});
 		}
 
-		const shortsDetails = await ensureShortsDetails({
+		const shortsDetailsRaw = await ensureShortsDetails({
 			jobId,
 			script,
 			topics: topicPicks,
 		});
+		const shortsDetails =
+			shortsDetailsRaw && typeof shortsDetailsRaw === "object"
+				? {
+						...shortsDetailsRaw,
+						status: shortsDetailsRaw.status || "planned",
+						plannedAt: shortsDetailsRaw.plannedAt || nowIso(),
+				  }
+				: null;
 		script.shortsDetails = shortsDetails;
 
 		const scriptEngagement = summarizeScriptEngagement(script);

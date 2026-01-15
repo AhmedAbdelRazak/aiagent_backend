@@ -2488,18 +2488,37 @@ function normalizePunctuationForTTS(text = "") {
 	return cleaned;
 }
 
+function normalizeEnglishSpacingForTTS(text = "") {
+	let cleaned = String(text || "");
+
+	// Ensure punctuation is followed by a space.
+	cleaned = cleaned.replace(/([.!?])([A-Za-z])/g, "$1 $2");
+	cleaned = cleaned.replace(/([,:;])([A-Za-z])/g, "$1 $2");
+
+	// Split camelCase and alpha/number boundaries.
+	cleaned = cleaned.replace(/([a-z])([A-Z])/g, "$1 $2");
+	cleaned = cleaned.replace(/([A-Za-z])(\d)/g, "$1 $2");
+	cleaned = cleaned.replace(/(\d)([A-Za-z])/g, "$1 $2");
+
+	// Replace word-joining separators with spaces.
+	cleaned = cleaned.replace(/([A-Za-z0-9])[-_]+([A-Za-z0-9])/g, "$1 $2");
+
+	return cleaned;
+}
+
 function cleanForTTS(text = "", language = DEFAULT_LANGUAGE) {
 	let cleaned = normalizePunctuationForTTS(text);
+	if (language === "English") {
+		cleaned = cleaned.normalize("NFKD");
+		cleaned = normalizeEnglishSpacingForTTS(cleaned);
+		// allow ASCII punctuation + letters/numbers
+		cleaned = cleaned.replace(/[^\x20-\x7E]+/g, " ");
+	}
 	// normalize whitespace
 	cleaned = cleaned
 		.replace(/[^\S\r\n]+/g, " ")
 		.replace(/\s+/g, " ")
 		.trim();
-	if (language === "English") {
-		// allow ASCII punctuation + letters/numbers
-		cleaned = cleaned.replace(/[^\x20-\x7E]+/g, " ");
-		cleaned = cleaned.replace(/\s+/g, " ").trim();
-	}
 	if (!cleaned) return text || "";
 	return cleaned;
 }
@@ -9820,28 +9839,36 @@ async function elevenLabsTTS(
 	voiceIdOverride = null
 ) {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
+	const langNote = normalizeLanguageLabel(language || DEFAULT_LANGUAGE);
 	const voiceId =
 		voiceIdOverride ||
-		ELEVEN_VOICES[language] ||
+		ELEVEN_VOICES[langNote] ||
 		ELEVEN_VOICES[DEFAULT_LANGUAGE];
 	const languageCode =
-		ELEVEN_LANGUAGE_CODES[language] ||
-		ELEVEN_LANGUAGE_CODES[normalizeLanguageLabel(language)] ||
-		ELEVEN_LANGUAGE_CODES[DEFAULT_LANGUAGE];
+		ELEVEN_LANGUAGE_CODES[langNote] || ELEVEN_LANGUAGE_CODES[DEFAULT_LANGUAGE];
+	const safeText = normalizeScriptForTTS(text, langNote);
 
-	const tone = deriveVoiceSettings(text, category);
+	const tone = deriveVoiceSettings(safeText || text, category);
+	const stability =
+		langNote === "English" ? Math.max(0.28, tone.stability) : tone.stability;
+	const modelPrimary =
+		langNote === "English"
+			? process.env.ELEVEN_MODEL_ENGLISH || "eleven_monolingual_v1"
+			: process.env.ELEVEN_MODEL_DEFAULT || "eleven_multilingual_v2";
+	const modelFallback =
+		process.env.ELEVEN_MODEL_FALLBACK || "eleven_multilingual_v2";
 
-	const payload = {
-		text,
-		model_id: "eleven_multilingual_v2",
+	const buildPayload = (modelId, includeStyle = true) => ({
+		text: safeText || text,
+		model_id: modelId,
 		...(languageCode ? { language_code: languageCode } : {}),
 		voice_settings: {
-			stability: tone.stability,
+			stability,
 			similarity_boost: tone.similarityBoost,
-			style: tone.style,
+			...(includeStyle ? { style: tone.style } : {}),
 			use_speaker_boost: true,
 		},
-	};
+	});
 	const opts = {
 		headers: {
 			"xi-api-key": ELEVEN_API_KEY,
@@ -9852,10 +9879,15 @@ async function elevenLabsTTS(
 		validateStatus: (s) => s < 500,
 	};
 	const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`;
-	let res = await axios.post(url, payload, opts);
+	let res = await axios.post(url, buildPayload(modelPrimary, true), opts);
 	if (res.status === 422) {
-		delete payload.voice_settings.style;
-		res = await axios.post(url, payload, opts);
+		res = await axios.post(url, buildPayload(modelPrimary, false), opts);
+	}
+	if (res.status >= 300 && modelPrimary !== modelFallback) {
+		res = await axios.post(url, buildPayload(modelFallback, true), opts);
+		if (res.status === 422) {
+			res = await axios.post(url, buildPayload(modelFallback, false), opts);
+		}
 	}
 	if (res.status >= 300)
 		throw new Error(`ElevenLabs TTS failed (${res.status})`);
@@ -12664,7 +12696,8 @@ exports.listVideos = async (req, res, next) => {
 
 		const filter = role === "admin" ? {} : { user: userId };
 		if (req.query.isLongVideo !== undefined) {
-			filter.isLongVideo = String(req.query.isLongVideo).toLowerCase() === "true";
+			filter.isLongVideo =
+				String(req.query.isLongVideo).toLowerCase() === "true";
 		}
 
 		const total = await Video.countDocuments(filter);
