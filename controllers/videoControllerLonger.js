@@ -7731,6 +7731,8 @@ Style rules (IMPORTANT):
 - Make at least one segment per topic clip-ready for Shorts: a standalone line that ends with an open loop, not a full resolution.
 - Anchor each topic around one clear angle or implication; keep facts in service of that angle.
 - Make each segment feel like a mini reveal: include one standout detail, twist, or implication likely new to viewers.
+- Prefer curiosity pivots over soft transitions; when moving between points, hint at a consequence or open question instead of just explaining flow.
+- Every 2-3 segments, add a brief stakes ratchet: one line that signals what changes if the point is true, without fully resolving it.
 - Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
 - Use specific nouns (people, places, titles) over vague phrases like "big news" or "fans are excited".
 - Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
@@ -7761,6 +7763,7 @@ Style rules (IMPORTANT):
 - The FIRST segment for every topic must mention the topic name in the first sentence.
 - Each segment should naturally flow into the next with a quick transition phrase.
 - Each segment ends with a complete sentence and strong terminal punctuation. Do NOT end with "and", "but", "so", "because", "with", "to", "for", "that", or an open parenthetical.
+- Before the engagement question, end with a short tension line; avoid soft wrap-ups or reflective closing phrases.
 - No long lists. If you must list, cap at 3 items.
 - If you are unsure about a detail, say "reports suggest" or "early signs".
 - ${ctaLine}
