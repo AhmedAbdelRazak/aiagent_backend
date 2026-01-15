@@ -233,7 +233,8 @@ const JAMENDO_BASE = "https://api.jamendo.com/v3.0";
 const TMP_ROOT = path.join(os.tmpdir(), "agentai_long_video");
 const OUTPUT_DIR = path.join(__dirname, "../uploads/videos");
 const THUMBNAIL_DIR = path.join(__dirname, "../uploads/thumbnails");
-const LONG_VIDEO_PERSIST_OUTPUT = false;
+const LONG_VIDEO_PERSIST_OUTPUT =
+	String(process.env.LONG_VIDEO_PERSIST_OUTPUT || "").toLowerCase() === "true";
 
 // Your classy suit reference (also default presenter)
 const DEFAULT_PRESENTER_ASSET_URL =
@@ -323,6 +324,15 @@ const ENABLE_MICRO_BREATHS = true;
 const MAX_MICRO_BREATHS_PER_VIDEO = clampNumber(1, 0, 3);
 const MICRO_BREATH_MIN_WORDS = clampNumber(26, 18, 40);
 const MICRO_BREATH_TARGET_WORD = clampNumber(12, 8, 18);
+// Shorts + engagement markers
+const SHORTS_MIN_CANDIDATES = 3;
+const SHORTS_MAX_CANDIDATES = 6;
+const SHORTS_TARGET_SECONDS = [25, 35, 45];
+const SHORTS_DEFAULT_TARGET_SECONDS = 35;
+const SHORTS_DEFAULT_CTA_LINE = "Full breakdown on the channel.";
+const SHORTS_EARLY_WINDOW_SEC = 28;
+const SHORTS_OPEN_LOOP_WINDOW_SEC = 150;
+const SHORTS_OPEN_LOOP_MIN_COUNT = 2;
 
 // Audio processing
 const AUDIO_SR = 48000;
@@ -6347,6 +6357,429 @@ function sanitizeSegmentText(text = "") {
 	return cleaned || "Quick update.";
 }
 
+const SHORTS_CLIP_TYPES = new Set([
+	"hook",
+	"twist",
+	"controversy",
+	"context_needed",
+]);
+
+const SHORTS_OPEN_LOOP_HINTS = [
+	/\bbut\b/i,
+	/\bhowever\b/i,
+	/\byet\b/i,
+	/\bstill\b/i,
+	/\bthe detail\b/i,
+	/\bthe twist\b/i,
+	/\bwhat people missed\b/i,
+	/\bwhat people ignore\b/i,
+	/\bthe question\b/i,
+	/\bnot clear\b/i,
+	/\bunclear\b/i,
+	/\bnot confirmed\b/i,
+];
+
+const SHORTS_EARLY_RESOLUTION_HINTS = [
+	/\bso the answer is\b/i,
+	/\btherefore\b/i,
+	/\bin short\b/i,
+	/\bthe takeaway\b/i,
+	/\bthis means\b/i,
+	/\bthe reason is\b/i,
+];
+
+const SHORTS_ENDING_BLOCKLIST = [
+	/\bwhat do you think\b/i,
+	/\bthoughts on\b/i,
+	/\bwhich topic stood out\b/i,
+];
+
+const SHORTS_FORWARD_LOOKING_HINTS = [
+	/\bwhat happens next\b/i,
+	/\bwatch for\b/i,
+	/\bnext update\b/i,
+	/\bnext piece\b/i,
+	/\bstill unresolved\b/i,
+	/\bmissing detail\b/i,
+	/\bopen question\b/i,
+];
+
+function textHasAnyRegex(text = "", list = []) {
+	return list.some((rx) => rx.test(String(text || "")));
+}
+
+function segmentHasOpenLoop(text = "") {
+	if (/\?/.test(String(text || ""))) return true;
+	return textHasAnyRegex(text, SHORTS_OPEN_LOOP_HINTS);
+}
+
+function collectTextUpToSeconds(segments = [], seconds = 0) {
+	if (!segments.length || !seconds) return "";
+	let elapsed = 0;
+	const parts = [];
+	for (const seg of segments) {
+		if (elapsed >= seconds) break;
+		const text = String(seg?.text || "").trim();
+		if (text) parts.push(text);
+		elapsed += countWords(text) / SCRIPT_VOICE_WPS;
+	}
+	return parts.join(" ").trim();
+}
+
+function countOpenLoopsWithinSeconds(segments = [], seconds = 0) {
+	if (!segments.length || !seconds) return 0;
+	let elapsed = 0;
+	let count = 0;
+	for (const seg of segments) {
+		const text = String(seg?.text || "").trim();
+		if (!text) continue;
+		if (elapsed > seconds) break;
+		if (segmentHasOpenLoop(text)) count += 1;
+		elapsed += countWords(text) / SCRIPT_VOICE_WPS;
+	}
+	return count;
+}
+
+function analyzeShortsGuardrails(script = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	const issues = [];
+	if (!segments.length) {
+		return { pass: false, needsRewrite: true, issues: ["segments_missing"] };
+	}
+
+	const earlyText = collectTextUpToSeconds(segments, SHORTS_EARLY_WINDOW_SEC);
+	const earlyHasGap =
+		/\?/.test(earlyText) || textHasAnyRegex(earlyText, SHORTS_OPEN_LOOP_HINTS);
+	const earlyHasResolution = textHasAnyRegex(
+		earlyText,
+		SHORTS_EARLY_RESOLUTION_HINTS
+	);
+	if (!earlyHasGap) issues.push("early_curiosity_gap_missing");
+	if (earlyHasResolution) issues.push("early_resolution_detected");
+
+	const loopCount = countOpenLoopsWithinSeconds(
+		segments,
+		SHORTS_OPEN_LOOP_WINDOW_SEC
+	);
+	if (loopCount < SHORTS_OPEN_LOOP_MIN_COUNT)
+		issues.push("open_loops_under_target");
+
+	const lastText = String(segments[segments.length - 1]?.text || "").trim();
+	const endingBlocked = textHasAnyRegex(lastText, SHORTS_ENDING_BLOCKLIST);
+	const endingForward =
+		/\?/.test(lastText) ||
+		textHasAnyRegex(lastText, SHORTS_FORWARD_LOOKING_HINTS) ||
+		textHasAnyRegex(lastText, SHORTS_OPEN_LOOP_HINTS);
+	if (endingBlocked) issues.push("ending_question_generic");
+	if (!endingForward) issues.push("ending_open_loop_missing");
+
+	return {
+		pass: issues.length === 0,
+		needsRewrite: issues.length > 0,
+		issues,
+		stats: {
+			earlyHasGap,
+			earlyHasResolution,
+			openLoopCount: loopCount,
+			endingBlocked,
+			endingForward,
+		},
+	};
+}
+
+function normalizeShortsClipType(raw) {
+	const t = String(raw || "")
+		.trim()
+		.toLowerCase();
+	if (SHORTS_CLIP_TYPES.has(t)) return t;
+	return "context_needed";
+}
+
+function normalizeShortsTargetSeconds(raw) {
+	const n = Number(raw);
+	if (SHORTS_TARGET_SECONDS.includes(n)) return n;
+	return SHORTS_DEFAULT_TARGET_SECONDS;
+}
+
+function buildTitleCandidates(baseTitle = "", shortTitle = "") {
+	const base = String(shortTitle || baseTitle || "").trim();
+	if (!base) return [];
+	const variants = [
+		base,
+		`The detail people missed about ${base}`,
+		`The twist in ${base}`,
+		`Why ${base} is trending`,
+		`What changed with ${base}`,
+		`The real story behind ${base}`,
+		`${base} - the missing piece`,
+	];
+	return uniqueStrings(variants, { limit: 8 }).map((t) => t.slice(0, 95));
+}
+
+function buildThumbnailTextCandidates(baseTitle = "") {
+	const base = String(baseTitle || "").trim();
+	const tokens = base.split(/\s+/).slice(0, 2).join(" ");
+	const variants = [
+		"The detail",
+		"Still unclear",
+		"The twist",
+		"People missed",
+		"What changed",
+		"The missing piece",
+		"Why it shifted",
+	];
+	if (tokens) variants.unshift(tokens);
+	return uniqueStrings(variants, { limit: 8 }).map((t) => t.trim());
+}
+
+function scoreSegmentForClip(text = "", index = 0) {
+	const t = String(text || "").toLowerCase();
+	let score = 0;
+	if (index === 0) score += 4;
+	if (/\?/.test(t)) score += 3;
+	if (textHasAnyRegex(t, SHORTS_OPEN_LOOP_HINTS)) score += 2;
+	if (/\bbut\b|\bhowever\b|\bturns out\b|\bodd\b/.test(t)) score += 1;
+	return score;
+}
+
+function inferClipTypeFromText(text = "", index = 0) {
+	const t = String(text || "").toLowerCase();
+	if (index === 0) return "hook";
+	if (/\bcontroversy\b|\bbacklash\b|\bcritics\b|\bpolarizing\b/.test(t))
+		return "controversy";
+	if (/\btwist\b|\bturns out\b|\bbut\b|\bhowever\b|\bodd\b/.test(t))
+		return "twist";
+	return "context_needed";
+}
+
+function buildFallbackShortsDetails(script = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	const title = String(script?.title || "").trim();
+	const shortTitle = String(script?.shortTitle || "").trim();
+	const scored = segments.map((s, idx) => ({
+		idx,
+		score: scoreSegmentForClip(s.text || "", idx),
+	}));
+	scored.sort((a, b) => b.score - a.score);
+	const picked = scored.slice(0, SHORTS_MAX_CANDIDATES).map((s) => s.idx);
+	const clipCandidates = picked.map((segIndex, i) => {
+		const seg = segments[segIndex] || {};
+		const line = String(seg.text || "").trim();
+		const type = inferClipTypeFromText(line, segIndex);
+		const targetSeconds =
+			type === "hook"
+				? SHORTS_TARGET_SECONDS[0]
+				: type === "twist"
+				? SHORTS_TARGET_SECONDS[1]
+				: SHORTS_TARGET_SECONDS[2] || SHORTS_DEFAULT_TARGET_SECONDS;
+		return {
+			id: `short_${segIndex}_${i}`,
+			type,
+			segmentIndex: segIndex,
+			line: line || "Quick update.",
+			openLoop: segmentHasOpenLoop(line),
+			ctaLine: SHORTS_DEFAULT_CTA_LINE,
+			targetSeconds: normalizeShortsTargetSeconds(targetSeconds),
+		};
+	});
+
+	return {
+		angle: shortTitle || title,
+		titleCandidates: buildTitleCandidates(title, shortTitle),
+		thumbnailTextCandidates: buildThumbnailTextCandidates(shortTitle || title),
+		clipCandidates,
+	};
+}
+
+function normalizeShortsDetails(raw, script = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	const safe = raw && typeof raw === "object" ? raw : {};
+	const angle = String(safe.angle || "").trim();
+	const titleCandidates = Array.isArray(
+		safe.titleCandidates || safe.title_candidates
+	)
+		? safe.titleCandidates || safe.title_candidates
+		: [];
+	const thumbnailTextCandidates = Array.isArray(
+		safe.thumbnailTextCandidates || safe.thumbnail_text_candidates
+	)
+		? safe.thumbnailTextCandidates || safe.thumbnail_text_candidates
+		: [];
+	const clipCandidatesRaw =
+		safe.clipCandidates || safe.clip_candidates || safe.clipCandidates || [];
+	const clipCandidates = (
+		Array.isArray(clipCandidatesRaw) ? clipCandidatesRaw : []
+	)
+		.map((c, idx) => {
+			const segIndex = Number(
+				c?.segmentIndex ?? c?.segment_index ?? c?.index ?? c?.segment ?? idx
+			);
+			if (!Number.isFinite(segIndex) || segIndex < 0) return null;
+			if (segments.length && segIndex >= segments.length) return null;
+			const baseText = segments[segIndex]?.text || "";
+			const rawLine = String(c?.line || "").trim();
+			const line = rawLine || String(baseText || "").trim();
+			if (!line) return null;
+			const type = normalizeShortsClipType(c?.type);
+			const targetSeconds = normalizeShortsTargetSeconds(
+				c?.targetSeconds ?? c?.target_seconds
+			);
+			const openLoop =
+				typeof c?.openLoop === "boolean"
+					? c.openLoop
+					: segmentHasOpenLoop(line);
+			const ctaLine = String(c?.ctaLine || c?.cta_line || "").trim();
+			return {
+				id: String(c?.id || `short_${segIndex}_${idx}`),
+				type,
+				segmentIndex: segIndex,
+				line,
+				openLoop,
+				ctaLine: ctaLine || SHORTS_DEFAULT_CTA_LINE,
+				targetSeconds,
+			};
+		})
+		.filter(Boolean);
+
+	const normalized = {
+		angle,
+		titleCandidates: uniqueStrings(
+			(titleCandidates || [])
+				.map((t) => String(t || "").trim())
+				.filter(Boolean),
+			{ limit: 8 }
+		),
+		thumbnailTextCandidates: uniqueStrings(
+			(thumbnailTextCandidates || [])
+				.map((t) => String(t || "").trim())
+				.filter(Boolean),
+			{ limit: 8 }
+		),
+		clipCandidates,
+	};
+
+	if (!normalized.angle) {
+		normalized.angle = String(script?.shortTitle || script?.title || "").trim();
+	}
+	if (normalized.titleCandidates.length < 5) {
+		const extra = buildTitleCandidates(script?.title, script?.shortTitle);
+		normalized.titleCandidates = uniqueStrings(
+			[...normalized.titleCandidates, ...extra],
+			{ limit: 8 }
+		);
+	}
+	if (normalized.thumbnailTextCandidates.length < 5) {
+		const extra = buildThumbnailTextCandidates(
+			script?.shortTitle || script?.title || ""
+		);
+		normalized.thumbnailTextCandidates = uniqueStrings(
+			[...normalized.thumbnailTextCandidates, ...extra],
+			{ limit: 8 }
+		);
+	}
+	if (normalized.clipCandidates.length < SHORTS_MIN_CANDIDATES) {
+		const fallback = buildFallbackShortsDetails(script);
+		const merged = [];
+		const seen = new Set();
+		for (const item of [
+			...normalized.clipCandidates,
+			...fallback.clipCandidates,
+		]) {
+			const id = String(item?.id || "").trim();
+			if (!id || seen.has(id)) continue;
+			seen.add(id);
+			merged.push(item);
+			if (merged.length >= SHORTS_MAX_CANDIDATES) break;
+		}
+		normalized.clipCandidates = merged;
+	}
+	if (normalized.clipCandidates.length > SHORTS_MAX_CANDIDATES) {
+		normalized.clipCandidates = normalized.clipCandidates.slice(
+			0,
+			SHORTS_MAX_CANDIDATES
+		);
+	}
+
+	return normalized;
+}
+
+async function generateShortsDetailsWithModel({ jobId, script, topics = [] }) {
+	if (!process.env.CHATGPT_API_TOKEN) return null;
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return null;
+	const topicLabels = (topics || [])
+		.map((t) => t?.displayTopic || t?.topic || "")
+		.filter(Boolean)
+		.join(", ");
+	const prompt = `
+You are creating clip candidates for YouTube Shorts from a long-form script.
+Keep the voice neutral and factual. Do NOT resolve everything in the clip.
+Provide clip candidates that are cut-ready and end with an open loop.
+
+Topics: ${topicLabels || "general"}
+
+Return JSON ONLY:
+{
+  "angle": "one sentence, what this video is really about",
+  "titleCandidates": ["5-8 options, max 95 chars each"],
+  "thumbnailTextCandidates": ["5-8 options, 2-5 words each"],
+  "clipCandidates": [
+    {
+      "type": "hook|twist|controversy|context_needed",
+      "segmentIndex": 0,
+      "line": "exact sentence(s) from that segment text",
+      "openLoop": true,
+      "ctaLine": "Full breakdown on the channel.",
+      "targetSeconds": 15
+    }
+  ]
+}
+
+Rules:
+- Return 3-6 clipCandidates.
+- segmentIndex must map to the provided segment index.
+- line must be copied verbatim from the segment text.
+- openLoop=true only if the clip does NOT resolve the question.
+- targetSeconds must be 25, 35, or 45.
+
+Segments:
+${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
+`.trim();
+
+	try {
+		const resp = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: prompt }],
+		});
+		const parsed = parseJsonFlexible(
+			resp?.choices?.[0]?.message?.content || ""
+		);
+		if (!parsed || typeof parsed !== "object") return null;
+		return parsed;
+	} catch (e) {
+		if (jobId)
+			logJob(jobId, "shorts details generation failed", { error: e.message });
+		return null;
+	}
+}
+
+async function ensureShortsDetails({ jobId, script, topics }) {
+	const existing = script?.shortsDetails || null;
+	const normalized = normalizeShortsDetails(existing, script);
+	const needsMore =
+		!normalized ||
+		normalized.clipCandidates.length < SHORTS_MIN_CANDIDATES ||
+		normalized.titleCandidates.length < 3;
+	if (!needsMore) return normalized;
+	const modelDetails = await generateShortsDetailsWithModel({
+		jobId,
+		script,
+		topics,
+	});
+	if (!modelDetails) return normalized;
+	return normalizeShortsDetails(modelDetails, script);
+}
+
 const REAL_WORLD_FICTIONAL_REWRITE_RULES = [
 	{ regex: /(^|[.!?]\s+)in[-\s]?universe[:,]?\s+/gi, replace: "$1" },
 	{ regex: /\bin[-\s]?universe\b/gi, replace: "" },
@@ -6471,10 +6904,15 @@ function buildTopicEngagementQuestionForLabel(
 		shortTitle,
 		maxWords: compact ? 5 : 5,
 	});
-	if (!label) return "What do you think?";
-	if (compact) return `Thoughts on ${label}?`;
-	if (mood === "serious") return `What is your take on ${label}?`;
-	return `What do you think about ${label}?`;
+	const fallback = "What detail still feels unresolved?";
+	if (!label) return fallback;
+	if (compact)
+		return mood === "serious"
+			? `Which detail about ${label} still feels unresolved?`
+			: `What detail about ${label} still feels unresolved?`;
+	if (mood === "serious")
+		return `Which detail about ${label} still feels unresolved to you?`;
+	return `What detail about ${label} still feels unresolved to you?`;
 }
 
 function buildTopicEngagementQuestion({
@@ -6499,15 +6937,10 @@ function buildTopicEngagementQuestion({
 			shortTitle,
 		});
 
-	if (compact)
-		return mood === "serious"
-			? "Which topic matters most to you?"
-			: "Which topic stood out to you most?";
+	if (compact) return "Which topic still feels unresolved to you?";
 
 	const list = formatTopicList(labels);
-	return mood === "serious"
-		? `Which of these topics matters most to you: ${list}?`
-		: `Which of these stood out to you most: ${list}?`;
+	return `Which of these topics still feels unresolved to you: ${list}?`;
 }
 
 function buildOutroLine({
@@ -6536,11 +6969,10 @@ function buildOutroLine({
 		}
 	} else {
 		if (countWords(line) > 12) {
-			line = "Thank you for watching. See you next time.";
+			line = "Thank you for watching and See you next time.";
 		}
 		if (countWords(line) < 12) {
-			line =
-				"Thank you for watching. I appreciate you, and I'll see you next time.";
+			line = "Thank you for watching and see you next time.";
 		}
 	}
 	return sanitizeIntroOutroLine(line);
@@ -6599,11 +7031,11 @@ function enforceCtaQuestion(text = "", mood = "neutral") {
 	const hasQuestionMark = /\?/.test(t);
 	const subscribeStatement =
 		mood === "serious" ? "Subscribe for updates." : "Subscribe for more.";
-	const commentQuestion = "What do you think?";
+	const commentQuestion = "What detail still feels unresolved to you?";
 	const combinedCta =
 		mood === "serious"
-			? "What do you think, and will you subscribe for updates?"
-			: "What do you think, and will you subscribe for more?";
+			? "What detail still feels unresolved to you, and will you subscribe for updates?"
+			: "What detail still feels unresolved to you, and will you subscribe for more?";
 
 	if (hasQuestionMark) {
 		// De-dup: keep one question and avoid repeating subscribe prompts.
@@ -7170,7 +7602,11 @@ Style rules (IMPORTANT):
 - Avoid staccato punctuation. Do NOT put commas between single words.
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
 - Avoid exclamation points; use calm, steady punctuation.
-- Lead with the answer, then add context (what happened, why it matters, what to watch for).
+- Structure each topic as a mini-arc: HOOK -> TENSION -> CONTEXT -> PAYOFF -> OPEN LOOP.
+- Lead with the tension or contrast, then add context; delay the clear answer by at least one sentence.
+- Build short curiosity gaps that carry into the next segment; pay them off within 1-2 segments.
+- Make at least one segment per topic clip-ready for Shorts: a standalone line that ends with an open loop, not a full resolution.
+- Anchor each topic around one clear angle or implication; keep facts in service of that angle.
 - Make each segment feel like a mini reveal: include one standout detail, twist, or implication likely new to viewers.
 - Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
 - Use specific nouns (people, places, titles) over vague phrases like "big news" or "fans are excited".
@@ -7225,11 +7661,30 @@ ${evidenceLine}
 - overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
 - overlayCues.startPct and endPct must be between 0.2 and 0.85, with endPct at least 0.2 greater than startPct.
 - overlayCues.position must be "topRight" only.
+- Also return shortsDetails with clip candidates and packaging ideas.
+- shortsDetails.clipCandidates must be 3-6 items with type, segmentIndex, line, openLoop, ctaLine, targetSeconds.
+- clipCandidates.line must be copied verbatim from the segment text it references.
+- targetSeconds must be 25, 35, or 45.
 
 Return JSON ONLY:
 {
   "title": "...",
   "shortTitle": "...",
+  "shortsDetails": {
+    "angle": "one sentence about what the video is really about",
+    "titleCandidates": ["5-8 options, max 95 chars each"],
+    "thumbnailTextCandidates": ["5-8 options, 2-5 words each"],
+    "clipCandidates": [
+      {
+        "type": "hook|twist|controversy|context_needed",
+        "segmentIndex": 0,
+        "line": "exact sentence(s) from that segment text",
+        "openLoop": true,
+        "ctaLine": "Full breakdown on the channel.",
+        "targetSeconds": 15
+      }
+    ]
+  },
   "segments": [
 	{
 	  "index": 0,
@@ -7374,6 +7829,13 @@ Return JSON ONLY:
 	const finalShortTitle = shortTitleFromText(
 		String(parsed.shortTitle || "").trim() || finalTitle
 	).slice(0, 60);
+	const rawShortsDetails =
+		parsed.shortsDetails || parsed.shorts_details || parsed.shorts || null;
+	const normalizedShortsDetails = normalizeShortsDetails(rawShortsDetails, {
+		title: finalTitle,
+		shortTitle: finalShortTitle,
+		segments,
+	});
 
 	logJob(jobId, "script ready", {
 		title: finalTitle,
@@ -7386,6 +7848,7 @@ Return JSON ONLY:
 		title: finalTitle,
 		shortTitle: finalShortTitle,
 		segments,
+		shortsDetails: normalizedShortsDetails,
 	};
 }
 
@@ -7860,6 +8323,9 @@ Rules:
 - Keep the same topic order and assignments.
 - No redundancy: each segment adds a new detail or angle with concrete, interesting facts.
 - Add one fresh, concrete detail or implication per segment when possible.
+- Structure each topic around one clear angle; keep facts in service of that angle.
+- Preserve curiosity gaps: open with tension and delay the payoff by at least one sentence or segment.
+- Keep at least one clip-ready line per topic that ends with an open loop.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
 - Keep the overall delivery neutral and professional; avoid excited phrasing and exclamation points.
@@ -11350,6 +11816,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			topicContexts,
 			wordCaps,
 		});
+		let shortsGuardrails = analyzeShortsGuardrails(script);
+		if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
 		logJob(jobId, "script qa", {
 			pass: qaResult.pass,
 			needsRewrite: qaResult.needsRewrite,
@@ -11357,6 +11825,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			warnings: qaResult.warnings,
 			stats: qaResult.stats,
 		});
+		logJob(jobId, "shorts guardrails", shortsGuardrails);
 
 		for (let qaAttempt = 0; qaAttempt < MAX_QA_REWRITES; qaAttempt++) {
 			if (!qaResult.needsRewrite) break;
@@ -11387,6 +11856,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				topicContexts,
 				wordCaps,
 			});
+			shortsGuardrails = analyzeShortsGuardrails(script);
+			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
 			logJob(jobId, "script qa rewrite result", {
 				attempt: qaAttempt + 1,
 				pass: qaResult.pass,
@@ -11394,6 +11865,10 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				issues: qaResult.issues,
 				warnings: qaResult.warnings,
 				stats: qaResult.stats,
+			});
+			logJob(jobId, "shorts guardrails rewrite result", {
+				attempt: qaAttempt + 1,
+				...shortsGuardrails,
 			});
 		}
 		if (!qaResult.pass) {
@@ -11417,15 +11892,25 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				topicContexts,
 				wordCaps,
 			});
+			shortsGuardrails = analyzeShortsGuardrails(script);
+			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
 			logJob(jobId, "script qa attribution fix", {
 				inserted: attributionFix.inserted,
 				qa: qaResult,
 			});
 		}
 
+		const shortsDetails = await ensureShortsDetails({
+			jobId,
+			script,
+			topics: topicPicks,
+		});
+		script.shortsDetails = shortsDetails;
+
 		const scriptEngagement = summarizeScriptEngagement(script);
 		logJob(jobId, "script qa summary", {
 			qa: qaResult,
+			shortsGuardrails,
 			engagement: scriptEngagement,
 			sources: topicSourceSummary,
 		});
@@ -11451,6 +11936,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					warnings: qaResult.warnings,
 					stats: qaResult.stats,
 				},
+				shortsGuardrails,
+				shortsDetails,
 				script: { title: script.title, segments: script.segments },
 			},
 		});
@@ -12160,6 +12647,9 @@ Rules:
 - Keep EXACTLY ${segments.length} segments.
 - Preserve smooth transitions.
 - Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
+- Structure each topic around one clear angle; keep facts in service of that angle.
+- Preserve curiosity gaps: open with tension and delay the payoff by at least one sentence or segment.
+- Keep at least one clip-ready line per topic that ends with an open loop.
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
 - For Topic 2+ only, if a segment is the first for a new topic, start it with an explicit transition line naming the topic. Do NOT use that transition for Topic 1.
 - Improve clarity and specificity; avoid vague filler phrasing or repeating the question.
@@ -13036,6 +13526,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				const durationForDoc = allowedDurations.has(durationValue)
 					? durationValue
 					: undefined;
+				const timelineForMeta = Array.isArray(timeline)
+					? timeline.map((seg) => ({
+							index: seg.index,
+							topicIndex: seg.topicIndex,
+							topicLabel: seg.topicLabel,
+							text: seg.text,
+							startSec: seg.startSec,
+							endSec: seg.endSec,
+							visualType: seg.visualType || "presenter",
+					  }))
+					: [];
+				const shortsDetailsForDoc = script?.shortsDetails || null;
 				const doc = await Video.create({
 					user: user._id,
 					category: categoryLabel,
@@ -13052,6 +13554,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					outputUrl: outputUrl || "",
 					localFilePath: localFilePath || "",
 					youtubeLink,
+					longVideoMeta: {
+						segments: script?.segments || [],
+						timeline: timelineForMeta,
+					},
+					shortsDetails: shortsDetailsForDoc,
 					language: languageLabel,
 					country: LONG_VIDEO_TRENDS_GEO,
 					youtubeEmail: user?.youtubeEmail || "",

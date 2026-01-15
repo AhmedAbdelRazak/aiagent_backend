@@ -25,6 +25,9 @@ const Schedule = require("./models/Schedule");
 const Video = require("./models/Video");
 const { createVideo } = require("./controllers/videoController");
 const { createLongVideo } = require("./controllers/videoControllerLonger");
+const {
+	processPendingShortUploads,
+} = require("./controllers/shortsGeneratorFromLongs");
 
 /* ---------- Middleware ---------- */
 const { protect } = require("./middlewares/authMiddleware");
@@ -167,6 +170,10 @@ const FAIL_BACKOFF_MINUTES = toInt(
 	process.env.SCHEDULE_FAIL_BACKOFF_MINUTES,
 	10
 );
+const SHORTS_UPLOAD_BATCH_MIN = toInt(process.env.SHORTS_UPLOAD_BATCH_MIN, 3);
+const SHORTS_UPLOAD_BATCH_MAX = toInt(process.env.SHORTS_UPLOAD_BATCH_MAX, 6);
+const SHORTS_CRON_TZ = process.env.SHORTS_CRON_TZ || PST_TZ;
+const SHORTS_CRON_SCHEDULE = process.env.SHORTS_CRON_SCHEDULE || "0 */2 * * *";
 
 async function processQueue() {
 	if (processing) return;
@@ -455,6 +462,41 @@ const cronTask = cron.schedule(
 	{ timezone: PST_TZ }
 );
 
+/* ---------- Shorts uploader cron (every 2 hours) ---------- */
+let shortsProcessing = false;
+function pickShortsBatchSize() {
+	const min = Math.min(SHORTS_UPLOAD_BATCH_MIN, SHORTS_UPLOAD_BATCH_MAX);
+	const max = Math.max(SHORTS_UPLOAD_BATCH_MIN, SHORTS_UPLOAD_BATCH_MAX);
+	return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+const shortsCronTask = cron.schedule(
+	SHORTS_CRON_SCHEDULE,
+	async () => {
+		if (shortsProcessing) return;
+		if (mongoose.connection.readyState !== 1) {
+			console.warn("[ShortsCron] DB not connected yet; skipping this tick.");
+			return;
+		}
+		shortsProcessing = true;
+		const limit = pickShortsBatchSize();
+		try {
+			const result = await processPendingShortUploads({ limit });
+			console.log("[ShortsCron] Upload batch complete", {
+				limit,
+				processed: result.processed,
+				uploaded: result.uploaded,
+				errors: result.errors?.length || 0,
+			});
+		} catch (err) {
+			console.error("[ShortsCron] fatal:", err?.message || err);
+		} finally {
+			shortsProcessing = false;
+		}
+	},
+	{ timezone: SHORTS_CRON_TZ }
+);
+
 /* ---------- Socket.IO handlers ---------- */
 io.on("connection", (socket) => {
 	console.log("User connected:", socket.id);
@@ -522,6 +564,9 @@ async function shutdown(code = 0) {
 
 	try {
 		cronTask.stop();
+	} catch {}
+	try {
+		shortsCronTask.stop();
 	} catch {}
 
 	await new Promise((resolve) => {

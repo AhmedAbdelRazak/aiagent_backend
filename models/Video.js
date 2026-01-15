@@ -94,7 +94,15 @@ const videoSchema = new mongoose.Schema(
 		script: {
 			type: String,
 			trim: true,
-			required: true, // full on‐screen script / narration
+			required: true, // full on-screen script / narration
+		},
+		longVideoMeta: {
+			type: mongoose.Schema.Types.Mixed,
+			default: null,
+		},
+		shortsDetails: {
+			type: mongoose.Schema.Types.Mixed,
+			default: null,
 		},
 		scheduled: {
 			type: Boolean,

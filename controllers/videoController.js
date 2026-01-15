@@ -12663,6 +12663,9 @@ exports.listVideos = async (req, res, next) => {
 		if (limit > 100) limit = 100; // hard cap to avoid DoS
 
 		const filter = role === "admin" ? {} : { user: userId };
+		if (req.query.isLongVideo !== undefined) {
+			filter.isLongVideo = String(req.query.isLongVideo).toLowerCase() === "true";
+		}
 
 		const total = await Video.countDocuments(filter);
 		const pages = Math.ceil(total / limit);
