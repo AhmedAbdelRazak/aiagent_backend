@@ -511,7 +511,7 @@ async function resolveSourceVideoPath(video, req) {
 	const sourceVideoUrl = String(req?.body?.sourceVideoUrl || "").trim();
 	if (sourceVideoUrl && isHttpUrl(sourceVideoUrl)) {
 		const out = path.join(SHORTS_SOURCE_DIR, `source_${String(video._id)}.mp4`);
-		await downloadToFile(sourceVideoUrl, out, 120000);
+		if (!fs.existsSync(out)) await downloadToFile(sourceVideoUrl, out, 120000);
 		return { path: out, source: "download" };
 	}
 	throw new Error(
