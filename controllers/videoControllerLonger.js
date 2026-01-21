@@ -104,7 +104,7 @@ const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVEN_FIXED_VOICE_ID = "uKepyVD0sANZxUFnIoI2";
 const ELEVEN_TTS_MODEL = "eleven_turbo_v2_5";
 const ELEVEN_TTS_MODEL_FALLBACKS = String(
-	"eleven_multilingual_v2,eleven_monolingual_v1"
+	"eleven_multilingual_v2,eleven_monolingual_v1",
 )
 	.split(",")
 	.map((s) => s.trim())
@@ -134,8 +134,8 @@ const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY || null;
 
 const CLOUDINARY_ENABLED = Boolean(
 	process.env.CLOUDINARY_CLOUD_NAME &&
-		process.env.CLOUDINARY_API_KEY &&
-		process.env.CLOUDINARY_API_SECRET
+	process.env.CLOUDINARY_API_KEY &&
+	process.env.CLOUDINARY_API_SECRET,
 );
 if (CLOUDINARY_ENABLED) {
 	cloudinary.config({
@@ -203,12 +203,12 @@ function buildGoogleImagesApiCandidates(baseUrl) {
 		list.push(`${trimmed}/api/google-images`);
 		if (/localhost/i.test(trimmed)) {
 			list.push(
-				`${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`
+				`${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`,
 			);
 		}
 		if (/\[::1\]/.test(trimmed)) {
 			list.push(
-				`${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`
+				`${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`,
 			);
 		}
 	}
@@ -268,7 +268,7 @@ const FINAL_MASTER_MIN_HEIGHT = 1080;
 const FINAL_MASTER_TIMEOUT_MS = clampNumber(
 	process.env.FINAL_MASTER_TIMEOUT_MS ?? 0,
 	0,
-	7 * 24 * 60 * 60 * 1000
+	7 * 24 * 60 * 60 * 1000,
 );
 const FINAL_GOP_SECONDS = 2;
 const FINAL_COLOR_SPACE = "bt709";
@@ -398,7 +398,7 @@ const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 
 // Music
-const MUSIC_VOLUME = clampNumber(0.18, 0.06, 0.5);
+const MUSIC_VOLUME = clampNumber(0.16, 0.06, 0.5);
 const MUSIC_DUCK_THRESHOLD = clampNumber(0.09, 0.03, 0.3);
 const MUSIC_DUCK_RATIO = clampNumber(6, 2, 14);
 const MUSIC_DUCK_ATTACK = clampNumber(25, 5, 200);
@@ -452,7 +452,7 @@ setInterval(() => {
 		const entries = Array.from(JOBS.entries()).sort(
 			(a, b) =>
 				new Date(a[1].updatedAt || a[1].createdAt).getTime() -
-				new Date(b[1].updatedAt || b[1].createdAt).getTime()
+				new Date(b[1].updatedAt || b[1].createdAt).getTime(),
 		);
 		for (let i = 0; i < entries.length - MAX_JOBS_TO_KEEP; i++) {
 			JOBS.delete(entries[i][0]);
@@ -559,12 +559,12 @@ function ensureClickableLinks(text) {
 			s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
 			s = s.replace(
 				/(https?:\/\/)?(www\.)?(serenejannat\.com[^\s)]*)/gi,
-				(_m, _scheme, _www, domain) => `https://${domain}`
+				(_m, _scheme, _www, domain) => `https://${domain}`,
 			);
 			s = s.replace(
 				/(^|\s)([a-z0-9.-]+\.[a-z]{2,}[^\s)]*)/gi,
 				(_m, prefix, url) =>
-					`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
+					`${prefix}https://${url.replace(/^https?:\/\//i, "")}`,
 			);
 			s = s.replace(/(https?:\/\/[^\s)]+)[).,;:]+$/g, "$1");
 			s = s.replace(/([^ \t\r\n])(https?:\/\/[^\s)]+)/g, "$1 $2");
@@ -596,7 +596,7 @@ function tokenizeQaText(text = "") {
 		.filter(Boolean)
 		.filter((t) => t.length >= 3);
 	return tokens.filter(
-		(t) => !TOPIC_STOP_WORDS.has(t) && !GENERIC_TOPIC_TOKENS.has(t)
+		(t) => !TOPIC_STOP_WORDS.has(t) && !GENERIC_TOPIC_TOKENS.has(t),
 	);
 }
 
@@ -622,7 +622,7 @@ function extractSourceTokensFromContext(contextItems = []) {
 		const lowered = host.toLowerCase();
 		const base = lowered.replace(
 			/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
-			""
+			"",
 		);
 		const cleaned = base.replace(/[^a-z0-9]+/g, " ").trim();
 		if (cleaned) tokens.add(cleaned);
@@ -676,7 +676,7 @@ const ffmpegPath = resolveFfmpegPath();
 if (ffmpegPath) console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
 else
 	console.warn(
-		"[LongVideo] WARN - No valid FFmpeg binary found. Set FFMPEG_PATH or ensure ffmpeg is on PATH."
+		"[LongVideo] WARN - No valid FFmpeg binary found. Set FFMPEG_PATH or ensure ffmpeg is on PATH.",
 	);
 
 function resolveFfprobePath() {
@@ -721,7 +721,7 @@ function spawnBin(binPath, args, label, { timeoutMs } = {}) {
 						try {
 							proc.kill("SIGKILL");
 						} catch {}
-				  }, Number(timeoutMs))
+					}, Number(timeoutMs))
 				: null;
 
 		proc.stdout.on("data", (d) => (stdout += d.toString()));
@@ -788,7 +788,7 @@ async function probeMedia(filePath) {
 						streams: [],
 					});
 				}
-			}
+			},
 		);
 	});
 }
@@ -812,7 +812,7 @@ function isRetriableAxiosError(err) {
 
 async function withRetries(
 	fn,
-	{ retries = 2, baseDelayMs = 600, label = "" } = {}
+	{ retries = 2, baseDelayMs = 600, label = "" } = {},
 ) {
 	let lastErr = null;
 	for (let attempt = 0; attempt <= retries; attempt++) {
@@ -823,17 +823,17 @@ async function withRetries(
 			const retriable =
 				isRetriableAxiosError(e) ||
 				/ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(
-					String(e?.message || "")
+					String(e?.message || ""),
 				);
 			if (attempt >= retries || !retriable) throw e;
 			const delay = Math.round(
-				baseDelayMs * Math.pow(2, attempt) + Math.random() * 150
+				baseDelayMs * Math.pow(2, attempt) + Math.random() * 150,
 			);
 			if (label)
 				console.warn(
 					`[Retry] ${label} attempt ${attempt + 1}/${retries + 1} failed: ${
 						e.message
-					}. waiting ${delay}ms`
+					}. waiting ${delay}ms`,
 				);
 			await sleep(delay);
 		}
@@ -1017,7 +1017,7 @@ function validateCreateBody(body = {}) {
 		clean: {
 			preferredTopicHint: String(body.preferredTopicHint || "").trim(),
 			category: normalizeCategoryLabel(
-				String(body.category || LONG_VIDEO_TRENDS_CATEGORY || "Entertainment")
+				String(body.category || LONG_VIDEO_TRENDS_CATEGORY || "Entertainment"),
 			).trim(),
 			language: normalizeLanguageLabel(body.language || "English"),
 			targetDurationSec: duration,
@@ -1036,7 +1036,7 @@ function validateCreateBody(body = {}) {
 			youtubeRefreshToken: String(body.youtubeRefreshToken || "").trim(),
 			youtubeTokenExpiresAt: body.youtubeTokenExpiresAt || "",
 			youtubeCategory: String(
-				body.youtubeCategory || LONG_VIDEO_YT_CATEGORY || "Entertainment"
+				body.youtubeCategory || LONG_VIDEO_YT_CATEGORY || "Entertainment",
 			).trim(),
 			// overlays are optional; pass through as-is
 			overlayAssets: Array.isArray(body.overlayAssets)
@@ -1085,17 +1085,17 @@ function normalizeTopicTokens(tokens = []) {
 				.map((t) =>
 					String(t || "")
 						.toLowerCase()
-						.trim()
+						.trim(),
 				)
-				.filter(Boolean)
-		)
+				.filter(Boolean),
+		),
 	);
 }
 
 function filterSpecificTopicTokens(tokens = []) {
 	const norm = normalizeTopicTokens(tokens);
 	const filtered = norm.filter(
-		(t) => t.length >= 3 && !GENERIC_TOPIC_TOKENS.has(t)
+		(t) => t.length >= 3 && !GENERIC_TOPIC_TOKENS.has(t),
 	);
 	return filtered.length ? filtered : norm;
 }
@@ -1197,7 +1197,7 @@ function normalizeInterestOverTime(raw = null) {
 function scoreTrendStoryForYouTube(story) {
 	if (!story) return 0;
 	const title = String(
-		story.topic || story.rawTitle || story.title || ""
+		story.topic || story.rawTitle || story.title || "",
 	).trim();
 	const snippet = (story.searchPhrases || []).join(" ");
 	let score = scoreTrendingCandidate({ title, snippet });
@@ -1231,7 +1231,7 @@ function rankTrendStoriesForYouTube(stories = []) {
 					s.relatedQueries.top.length > 0) ||
 					(Array.isArray(s.relatedQueries.rising) &&
 						s.relatedQueries.rising.length > 0))) ||
-			(s.interestOverTime && Number(s.interestOverTime.points) > 0)
+			(s.interestOverTime && Number(s.interestOverTime.points) > 0),
 	);
 	if (!hasSignals) return stories;
 	const scored = stories.map((s, idx) => ({
@@ -1250,7 +1250,7 @@ function inferEntertainmentCategory(tokens = []) {
 	const set = new Set(tokens.map((t) => t.toLowerCase()));
 	if (
 		["movie", "film", "trailer", "cast", "director", "box", "office"].some(
-			(t) => set.has(t)
+			(t) => set.has(t),
 		)
 	)
 		return "film";
@@ -1260,13 +1260,13 @@ function inferEntertainmentCategory(tokens = []) {
 		return "tv";
 	if (
 		["song", "album", "music", "tour", "concert", "singer", "rapper"].some(
-			(t) => set.has(t)
+			(t) => set.has(t),
 		)
 	)
 		return "music";
 	if (
 		["celebrity", "actor", "actress", "influencer", "tiktok"].some((t) =>
-			set.has(t)
+			set.has(t),
 		)
 	)
 		return "celebrity";
@@ -1305,7 +1305,7 @@ function resolveTrendsCategoryId(label) {
 		(c) =>
 			String(c.category || "")
 				.trim()
-				.toLowerCase() === target
+				.toLowerCase() === target,
 	);
 	return entry ? entry.ids[0] : 0;
 }
@@ -1345,7 +1345,7 @@ function normalizeTrendPotentialImages(list = []) {
 				item.url ||
 				item.link ||
 				item.originalUrl ||
-				""
+				"",
 		).trim();
 		if (!isHttpUrl(url) || isLikelyThumbnailUrl(url)) continue;
 		const key = normalizeImageUrlKey(url);
@@ -1354,10 +1354,10 @@ function normalizeTrendPotentialImages(list = []) {
 		out.push({
 			url,
 			source: String(
-				item.source || item.pageUrl || item.contextLink || ""
+				item.source || item.pageUrl || item.contextLink || "",
 			).trim(),
 			title: String(
-				item.description || item.title || item.caption || ""
+				item.description || item.title || item.caption || "",
 			).trim(),
 			width: item.width || null,
 			height: item.height || null,
@@ -1375,19 +1375,19 @@ function normalizeTrendStory(raw = {}) {
 			raw.dialogTitle ||
 			raw.youtubeShortTitle ||
 			raw.seoTitle ||
-			""
+			"",
 	).trim();
 	const topic = cleanTopicCandidate(baseTitle);
 	const rawTitle = String(raw.rawTitle || raw.title || baseTitle || "").trim();
 	const relatedQueries = normalizeRelatedQueries(
-		raw.relatedQueries || raw.trendSignals?.relatedQueries || null
+		raw.relatedQueries || raw.trendSignals?.relatedQueries || null,
 	);
 	const interestOverTime = normalizeInterestOverTime(
-		raw.interestOverTime || raw.trendSignals?.interestOverTime || null
+		raw.interestOverTime || raw.trendSignals?.interestOverTime || null,
 	);
 	const relatedPhrases = uniqueStrings(
 		[...relatedQueries.rising, ...relatedQueries.top],
-		{ limit: 8 }
+		{ limit: 8 },
 	);
 	const searchPhrases = uniqueStrings(
 		[
@@ -1397,7 +1397,7 @@ function normalizeTrendStory(raw = {}) {
 			...(raw.searchPhrases || []),
 			...(raw.entityNames || []),
 		],
-		{ limit: 12 }
+		{ limit: 12 },
 	);
 	const articles = Array.isArray(raw.articles)
 		? raw.articles
@@ -1415,7 +1415,7 @@ function normalizeTrendStory(raw = {}) {
 			...(Array.isArray(raw.images) ? raw.images : []),
 			...articles.map((a) => a.image).filter(Boolean),
 		],
-		{ limit: 10 }
+		{ limit: 10 },
 	).filter((u) => isHttpUrl(u));
 	const potentialImages = normalizeTrendPotentialImages(raw.potentialImages);
 	const keywords = uniqueStrings(
@@ -1425,7 +1425,7 @@ function normalizeTrendStory(raw = {}) {
 			...articles.slice(0, 4).map((a) => a.title),
 			topic,
 		],
-		{ limit: 12 }
+		{ limit: 12 },
 	);
 	return {
 		topic,
@@ -1502,7 +1502,7 @@ async function fetchTrendsStories({
 
 async function fetchCseItems(
 	queries,
-	{ num = 4, searchType = null, imgSize = null, start = 1, maxPages = 1 } = {}
+	{ num = 4, searchType = null, imgSize = null, start = 1, maxPages = 1 } = {},
 ) {
 	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
 	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
@@ -1538,7 +1538,7 @@ async function fetchCseItems(
 							? {
 									imgType: "photo",
 									imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
-							  }
+								}
 							: {}),
 					},
 					timeout: 12000,
@@ -1581,7 +1581,7 @@ async function pickTrendingTopicFromCse() {
 	if (!items.length) return null;
 
 	const filtered = items.filter((it) =>
-		isEntertainmentCandidate(it.title, it.snippet)
+		isEntertainmentCandidate(it.title, it.snippet),
 	);
 	const pool = filtered.length ? filtered : items;
 	const ranked = pool
@@ -1601,7 +1601,7 @@ async function pickTrendingTopicFromCse() {
 	const context = shortlist
 		.map(
 			(it, idx) =>
-				`${idx + 1}) ${it.title}${it.snippet ? " | " + it.snippet : ""}`
+				`${idx + 1}) ${it.title}${it.snippet ? " | " + it.snippet : ""}`,
 		)
 		.join("\n");
 
@@ -1625,7 +1625,7 @@ Return JSON ONLY:
 		});
 
 		const parsed = parseJsonFlexible(
-			resp?.choices?.[0]?.message?.content || ""
+			resp?.choices?.[0]?.message?.content || "",
 		);
 		if (parsed?.topic) {
 			const keywords = Array.isArray(parsed.keywords)
@@ -1748,7 +1748,7 @@ async function loadRecentLongVideoTopics({ userId, categoryLabel }) {
 	if (categoryLabel) query.category = categoryLabel;
 	try {
 		const recentVideos = await Video.find(query).select(
-			"topic topics seoTitle"
+			"topic topics seoTitle",
 		);
 		const used = new Set();
 		for (const v of recentVideos) {
@@ -1954,7 +1954,7 @@ function extractPromptSubjectTokens(text = "") {
 		(t) =>
 			!TOPIC_STOP_WORDS.has(t) &&
 			!GENERIC_TOPIC_TOKENS.has(t) &&
-			!PROMPT_CONTROL_TOKENS.has(t)
+			!PROMPT_CONTROL_TOKENS.has(t),
 	);
 }
 
@@ -2110,7 +2110,7 @@ async function selectTopics({
 		const displayTopic =
 			cleanTopicLabel(primaryTrendStory.topic) || primaryTrendStory.topic;
 		const relatedQueries = normalizeRelatedQueries(
-			primaryTrendStory.relatedQueries
+			primaryTrendStory.relatedQueries,
 		);
 		topics.push({
 			topic: primaryTrendStory.topic,
@@ -2189,7 +2189,7 @@ Avoid broad listicles. Keep each short and searchable.
 				messages: [{ role: "user", content: ask }],
 			});
 			const parsed = parseJsonFlexible(
-				resp?.choices?.[0]?.message?.content || ""
+				resp?.choices?.[0]?.message?.content || "",
 			);
 			const list = Array.isArray(parsed?.topics) ? parsed.topics : null;
 			if (Array.isArray(list)) {
@@ -2215,7 +2215,7 @@ Avoid broad listicles. Keep each short and searchable.
 
 	if (!topics.length) {
 		throw new Error(
-			"Unable to pick topics. Provide preferredTopicHint or ensure Google Trends is available."
+			"Unable to pick topics. Provide preferredTopicHint or ensure Google Trends is available.",
 		);
 	}
 
@@ -2239,7 +2239,7 @@ function isLikelyThumbnailUrl(u = "") {
 
 async function fetchGoogleImagesFromService(
 	query,
-	{ limit = GOOGLE_IMAGES_RESULTS_PER_QUERY, baseUrl, jobId } = {}
+	{ limit = GOOGLE_IMAGES_RESULTS_PER_QUERY, baseUrl, jobId } = {},
 ) {
 	const q = sanitizeOverlayQuery(query);
 	if (!q) return [];
@@ -2258,7 +2258,7 @@ async function fetchGoogleImagesFromService(
 				[];
 			const urls = uniqueStrings(
 				raw.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
-				{ limit: Math.max(12, Number(limit) || 12) }
+				{ limit: Math.max(12, Number(limit) || 12) },
 			);
 			if (urls.length) {
 				if (jobId)
@@ -2304,7 +2304,7 @@ async function fetchCseContext(topic, extraTokens = []) {
 			`${topic} season`,
 			`${topic} streaming`,
 			`${topic} finale`,
-			`${topic} ending`
+			`${topic} ending`,
 		);
 	} else if (category === "music") {
 		queries.push(`${topic} chart`, `${topic} music video`, `${topic} tour`);
@@ -2312,7 +2312,7 @@ async function fetchCseContext(topic, extraTokens = []) {
 		queries.push(
 			`${topic} interview`,
 			`${topic} controversy`,
-			`${topic} social media`
+			`${topic} social media`,
 		);
 	}
 	if (category === "film" || category === "tv" || category === "celebrity") {
@@ -2326,7 +2326,7 @@ async function fetchCseContext(topic, extraTokens = []) {
 		.filter(
 			(it) =>
 				topicMatchInfo(matchTokens, [it.title, it.snippet, it.link]).count >=
-				minMatches
+				minMatches,
 		)
 		.slice(0, 6);
 }
@@ -2335,7 +2335,7 @@ async function fetchCseImages(
 	topic,
 	extraTokens = [],
 	jobId = null,
-	opts = {}
+	opts = {},
 ) {
 	if (!topic) return [];
 	const extra = Array.isArray(extraTokens)
@@ -2349,17 +2349,17 @@ async function fetchCseImages(
 	const maxResults = clampNumber(
 		Number(opts.maxResults) || 6,
 		1,
-		CSE_MAX_IMAGE_RESULTS
+		CSE_MAX_IMAGE_RESULTS,
 	);
 	const maxPages = clampNumber(Number(opts.maxPages) || CSE_MAX_PAGES, 1, 5);
 	const relaxedMinEdge = clampNumber(
 		Number(opts.relaxedMinEdge) || CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
 		200,
-		CSE_MIN_IMAGE_SHORT_EDGE
+		CSE_MIN_IMAGE_SHORT_EDGE,
 	);
 	const requestSize = Math.min(
 		CSE_MAX_IMAGE_RESULTS,
-		Math.max(12, maxResults * IMAGE_SEARCH_CANDIDATE_MULTIPLIER)
+		Math.max(12, maxResults * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
 	);
 
 	const queries = [
@@ -2371,22 +2371,22 @@ async function fetchCseImages(
 		queries.unshift(
 			`${searchLabel} official still`,
 			`${searchLabel} movie still`,
-			`${searchLabel} premiere`
+			`${searchLabel} premiere`,
 		);
 	} else if (category === "tv") {
 		queries.unshift(
 			`${searchLabel} episode still`,
-			`${searchLabel} cast photo`
+			`${searchLabel} cast photo`,
 		);
 	} else if (category === "music") {
 		queries.unshift(
 			`${searchLabel} live performance`,
-			`${searchLabel} stage photo`
+			`${searchLabel} stage photo`,
 		);
 	} else if (category === "celebrity") {
 		queries.unshift(
 			`${searchLabel} red carpet`,
-			`${searchLabel} interview photo`
+			`${searchLabel} interview photo`,
 		);
 	}
 
@@ -2478,7 +2478,7 @@ async function fetchCseImages(
 			it.image?.contextLink || ""
 		}`.toLowerCase();
 		const urlMatches = matchTokens.filter((tok) =>
-			urlText.includes(tok)
+			urlText.includes(tok),
 		).length;
 		const score = info.count + urlMatches * 0.75;
 		const entry = { url, score, urlMatches, w, h };
@@ -2715,7 +2715,7 @@ function buildOverlayQueryFallback(text = "", topic = "") {
 	const base = cleanTopicCandidate(topic);
 	const tokens = filterSpecificTopicTokens(tokenizeLabel(text)).slice(0, 4);
 	const extras = tokens.filter(
-		(t) => !base.toLowerCase().includes(String(t || "").toLowerCase())
+		(t) => !base.toLowerCase().includes(String(t || "").toLowerCase()),
 	);
 	const parts = [base, ...extras].filter(Boolean);
 	return sanitizeOverlayQuery(parts.join(" "));
@@ -2726,7 +2726,7 @@ async function fetchCseImagesForQuery(
 	topicTokens = [],
 	maxResults = 4,
 	jobId = null,
-	opts = {}
+	opts = {},
 ) {
 	const q = sanitizeOverlayQuery(query);
 	if (!q) return [];
@@ -2735,15 +2735,15 @@ async function fetchCseImagesForQuery(
 	const relaxedMinEdge = clampNumber(
 		Number(opts.relaxedMinEdge) || CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
 		200,
-		CSE_MIN_IMAGE_SHORT_EDGE
+		CSE_MIN_IMAGE_SHORT_EDGE,
 	);
 	const requestSize = Math.min(
 		CSE_MAX_IMAGE_RESULTS,
-		Math.max(12, target * IMAGE_SEARCH_CANDIDATE_MULTIPLIER)
+		Math.max(12, target * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
 	);
 	const strictTopicTokens = filterSpecificTopicTokens(topicTokens);
 	const tokens = expandTopicTokens(
-		filterSpecificTopicTokens([...tokenizeLabel(q), ...strictTopicTokens])
+		filterSpecificTopicTokens([...tokenizeLabel(q), ...strictTopicTokens]),
 	);
 	const minMatches = minTopicTokenMatches(tokens);
 	const relaxedMinMatches = Math.max(1, minMatches - 1);
@@ -2877,7 +2877,7 @@ async function buildOverlayAssetsFromSegments({
 			seg.topicLabel ||
 				topics[topicIndex]?.displayTopic ||
 				topics[topicIndex]?.topic ||
-				""
+				"",
 		).trim();
 		const cueRaw = Array.isArray(seg.overlayCues) ? seg.overlayCues[0] : null;
 		const cueQuery =
@@ -2916,12 +2916,12 @@ async function buildOverlayAssetsFromSegments({
 		const startPct = clampNumber(
 			Number.isFinite(cue.startPct) ? cue.startPct : 0.25,
 			0.2,
-			0.75
+			0.75,
 		);
 		const endPct = clampNumber(
 			Number.isFinite(cue.endPct) ? cue.endPct : 0.75,
 			startPct + 0.2,
-			0.9
+			0.9,
 		);
 		let startSec = Number(t.startSec) + segDur * startPct;
 		let endSec = Number(t.startSec) + segDur * endPct;
@@ -2986,7 +2986,7 @@ function resolveSegmentImageQuery(seg, topics = []) {
 		seg?.topicLabel ||
 			topics?.[topicIndex]?.displayTopic ||
 			topics?.[topicIndex]?.topic ||
-			""
+			"",
 	).trim();
 	const cueRaw = Array.isArray(seg?.overlayCues) ? seg.overlayCues[0] : null;
 	const fallbackQuery = buildOverlayQueryFallback(seg?.text || "", topicLabel);
@@ -3017,7 +3017,7 @@ function buildSegmentImageQueryVariants({
 	if (segmentText || topicLabel) {
 		const fallback = buildOverlayQueryFallback(
 			segmentText || "",
-			topicLabel || ""
+			topicLabel || "",
 		);
 		push(fallback);
 	}
@@ -3025,7 +3025,7 @@ function buildSegmentImageQueryVariants({
 
 	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
 	const textTokens = filterSpecificTopicTokens(
-		tokenizeLabel(segmentText || "")
+		tokenizeLabel(segmentText || ""),
 	).filter((t) => !topicTokens.has(t));
 	if (topicLabel && textTokens.length) {
 		push(`${topicLabel} ${textTokens.slice(0, 3).join(" ")}`);
@@ -3036,7 +3036,7 @@ function buildSegmentImageQueryVariants({
 			...(Array.isArray(topicKeywords) ? topicKeywords : []),
 			...(Array.isArray(articleTitles) ? articleTitles : []),
 		],
-		{ limit: Math.max(6, Number(maxVariants) || 6) }
+		{ limit: Math.max(6, Number(maxVariants) || 6) },
 	);
 	for (const hint of hintList) {
 		if (variants.length >= maxVariants) break;
@@ -3054,11 +3054,11 @@ function buildSegmentImageQueryVariants({
 function extractSegmentMatchTokens(
 	segmentText = "",
 	topicLabel = "",
-	maxTokens = 4
+	maxTokens = 4,
 ) {
 	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
 	const tokens = filterSpecificTopicTokens(
-		tokenizeLabel(segmentText || "")
+		tokenizeLabel(segmentText || ""),
 	).filter((t) => !topicTokens.has(t));
 	return tokens.slice(0, Math.max(1, Number(maxTokens) || 1));
 }
@@ -3120,7 +3120,7 @@ function pickSegmentImageUrls(
 	desiredCount = 1,
 	usedUrls,
 	usedHosts,
-	opts = {}
+	opts = {},
 ) {
 	let pool = dedupeUrlsPreserveOrder(candidates);
 	if (!pool.length) return [];
@@ -3128,7 +3128,7 @@ function pickSegmentImageUrls(
 	const target = Math.max(1, Math.floor(desiredCount));
 	const maxPicks = Math.max(
 		target,
-		Math.floor(Number(opts.maxPicks) || target)
+		Math.floor(Number(opts.maxPicks) || target),
 	);
 	const usedUrlsGlobal =
 		opts && opts.usedUrlsGlobal instanceof Set ? opts.usedUrlsGlobal : null;
@@ -3140,14 +3140,14 @@ function pickSegmentImageUrls(
 		: [];
 	if (requireTokens.length) {
 		const matched = pool.filter(
-			(url) => scoreUrlTokenMatch(url, requireTokens) > 0
+			(url) => scoreUrlTokenMatch(url, requireTokens) > 0,
 		);
 		if (matched.length) {
 			const matchedKeys = new Set(
-				matched.map((url) => normalizeImageUrlKey(url))
+				matched.map((url) => normalizeImageUrlKey(url)),
 			);
 			const rest = pool.filter(
-				(url) => !matchedKeys.has(normalizeImageUrlKey(url))
+				(url) => !matchedKeys.has(normalizeImageUrlKey(url)),
 			);
 			pool = matched.concat(rest);
 			if (matched.length >= target) pool = matched;
@@ -3209,7 +3209,7 @@ async function downloadSegmentImages(
 	tmpDir,
 	jobId,
 	segIndex,
-	targetCount = 0
+	targetCount = 0,
 ) {
 	const localPaths = [];
 	const usedUrls = [];
@@ -3228,7 +3228,7 @@ async function downloadSegmentImages(
 			tmpDir,
 			`seg_${jobId}_${segIndex}_img_${i}_${crypto
 				.randomUUID()
-				.slice(0, 8)}${ext}`
+				.slice(0, 8)}${ext}`,
 		);
 		try {
 			await downloadToFile(url, out, 25000, 2);
@@ -3249,7 +3249,7 @@ async function downloadSegmentImages(
 
 async function uploadLocalImageToCloudinary(
 	localPath,
-	{ publicIdBase, output, jobId, segIndex } = {}
+	{ publicIdBase, output, jobId, segIndex } = {},
 ) {
 	if (!CLOUDINARY_ENABLED || !localPath || !fs.existsSync(localPath))
 		return null;
@@ -3282,7 +3282,7 @@ async function uploadLocalImageToCloudinary(
 			path.dirname(localPath),
 			`cloud_scaled_${jobId || "job"}_${segIndex || "seg"}_${crypto
 				.randomUUID()
-				.slice(0, 8)}.jpg`
+				.slice(0, 8)}.jpg`,
 		);
 		await spawnBin(
 			ffmpegPath,
@@ -3299,7 +3299,7 @@ async function uploadLocalImageToCloudinary(
 				scaledPath,
 			],
 			"cloudinary_downscale",
-			{ timeoutMs: 120000 }
+			{ timeoutMs: 120000 },
 		);
 		const result = await cloudinary.uploader.upload(scaledPath, {
 			...baseOpts,
@@ -3349,7 +3349,7 @@ async function uploadSegmentImagesToCloudinary({
 
 function isCloudinaryImageUrl(url = "") {
 	return /res\.cloudinary\.com\/[^/]+\/image\/upload\//i.test(
-		String(url || "")
+		String(url || ""),
 	);
 }
 
@@ -3359,14 +3359,14 @@ function buildThumbnailSeedCandidateUrls(topicObj = {}) {
 		(Array.isArray(story.potentialImages) ? story.potentialImages : [])
 			.map((p) => p?.url)
 			.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
-		{ limit: 12 }
+		{ limit: 12 },
 	);
 	const topicSeeds = uniqueStrings(
 		[
 			topicObj?.image,
 			...(Array.isArray(topicObj?.images) ? topicObj.images : []),
 		].filter(Boolean),
-		{ limit: 8 }
+		{ limit: 8 },
 	).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
 	const storySeeds = uniqueStrings(
 		[
@@ -3376,7 +3376,7 @@ function buildThumbnailSeedCandidateUrls(topicObj = {}) {
 				? story.articles.map((a) => a?.image)
 				: []),
 		].filter(Boolean),
-		{ limit: 12 }
+		{ limit: 12 },
 	).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
 	return dedupeUrlsPreserveOrder([
 		...potentialUrls,
@@ -3413,7 +3413,7 @@ async function collectThumbnailFallbackUrls({
 	if (urls.length < target && topicLabel) {
 		const commons = await fetchWikimediaImageUrls(
 			topicLabel,
-			Math.max(2, target - urls.length)
+			Math.max(2, target - urls.length),
 		);
 		urls.push(...commons.filter((u) => !isLikelyThumbnailUrl(u)));
 	}
@@ -3430,7 +3430,7 @@ async function selectBestThumbnailSeedCandidate({
 	relaxedEdge = CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
 }) {
 	const candidates = dedupeUrlsPreserveOrder(urls).filter(
-		(u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)
+		(u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u),
 	);
 	for (const url of candidates) {
 		if (isCloudinaryImageUrl(url)) {
@@ -3454,8 +3454,8 @@ async function selectBestThumbnailSeedCandidate({
 			tmpDir,
 			`thumb_seed_${safeSlug(
 				topicLabel || "topic",
-				24
-			)}_${jobId}_${attempts}_${crypto.randomUUID().slice(0, 8)}${ext}`
+				24,
+			)}_${jobId}_${attempts}_${crypto.randomUUID().slice(0, 8)}${ext}`,
 		);
 		try {
 			attempts += 1;
@@ -3523,7 +3523,7 @@ async function ensureThumbnailSeedImages({
 		const topicLabel = String(t.displayTopic || t.topic || "").trim();
 		const existingRaw = uniqueStrings(
 			Array.isArray(t.thumbnailImageUrls) ? t.thumbnailImageUrls : [],
-			{ limit: 4 }
+			{ limit: 4 },
 		);
 		const existingCloudinary = existingRaw.filter(isCloudinaryImageUrl);
 		if (existingCloudinary.length) {
@@ -3576,7 +3576,7 @@ async function ensureThumbnailSeedImages({
 				topicLabel,
 				Array.isArray(t.keywords) ? t.keywords : [],
 				jobId,
-				{ maxResults: 8, maxPages: 1 }
+				{ maxResults: 8, maxPages: 1 },
 			);
 			if (log && cseUrls.length) {
 				log("thumbnail seed image cse fallback", {
@@ -3625,7 +3625,7 @@ async function ensureThumbnailSeedImages({
 						output: outputCfg,
 						jobId,
 						segIndex: `thumb_${i + 1}`,
-					}
+					},
 				);
 				if (uploaded?.url) {
 					t.thumbnailImageUrls = [uploaded.url];
@@ -3684,26 +3684,26 @@ async function fetchFallbackImageUrlsForSegment({
 	urls.push(...seeded);
 
 	const topicTokens = filterSpecificTopicTokens(
-		topicTokensFromTitle(topicLabel || query || "")
+		topicTokensFromTitle(topicLabel || query || ""),
 	);
 	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
 	const contextItems = await fetchCseContext(
 		query || topicLabel,
-		topicLabel ? [topicLabel] : []
+		topicLabel ? [topicLabel] : [],
 	);
 	const strictContextItems = requiredTopicMatches
 		? contextItems.filter(
 				(it) =>
 					topicMatchInfo(topicTokens, [it.title, it.snippet, it.link]).count >=
-					requiredTopicMatches
-		  )
+					requiredTopicMatches,
+			)
 		: contextItems;
 	const contextArticleUrls = uniqueStrings(
 		[
 			...strictContextItems.map((c) => c?.link).filter(Boolean),
 			...(Array.isArray(articleUrls) ? articleUrls : []),
 		],
-		{ limit: 10 }
+		{ limit: 10 },
 	);
 	for (const pageUrl of contextArticleUrls) {
 		if (urls.length >= target) break;
@@ -3774,7 +3774,7 @@ async function prepareImageSegments({
 				...(story.searchPhrases || []),
 				...(story.entityNames || []),
 			],
-			{ limit: 10 }
+			{ limit: 10 },
 		);
 		const articleTitles = (story.articles || [])
 			.map((a) => a.title)
@@ -3786,10 +3786,10 @@ async function prepareImageSegments({
 			(Array.isArray(story.potentialImages) ? story.potentialImages : [])
 				.map((p) => p?.url)
 				.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
-			{ limit: 14 }
+			{ limit: 14 },
 		);
 		const potentialKeys = new Set(
-			potentialUrls.map((u) => normalizeImageUrlKey(u))
+			potentialUrls.map((u) => normalizeImageUrlKey(u)),
 		);
 		const seedUrls = uniqueStrings(
 			[
@@ -3801,7 +3801,7 @@ async function prepareImageSegments({
 					.map((a) => a.image)
 					.filter((u) => isHttpUrl(u)),
 			],
-			{ limit: 12 }
+			{ limit: 12 },
 		)
 			.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
 			.filter((u) => !potentialKeys.has(normalizeImageUrlKey(u)));
@@ -3859,7 +3859,7 @@ async function prepareImageSegments({
 		const segmentTokens = extractSegmentMatchTokens(
 			seg.text || "",
 			effectiveTopicLabel,
-			4
+			4,
 		);
 		const queryVariants = buildSegmentImageQueryVariants({
 			baseQuery: query,
@@ -3883,22 +3883,22 @@ async function prepareImageSegments({
 		});
 
 		const plannedSegmentUrls = dedupeUrlsPreserveOrder(
-			Array.isArray(seg.imageUrls) ? seg.imageUrls : []
+			Array.isArray(seg.imageUrls) ? seg.imageUrls : [],
 		).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
 		const potentialUrls = Array.isArray(meta.potentialUrls)
 			? meta.potentialUrls.filter(
-					(u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)
-			  )
+					(u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u),
+				)
 			: [];
 		const seedUrls = Array.isArray(meta.seedUrls)
 			? meta.seedUrls.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
 			: [];
 
 		const plannedUrlKeys = new Set(
-			plannedSegmentUrls.map((u) => normalizeImageUrlKey(u))
+			plannedSegmentUrls.map((u) => normalizeImageUrlKey(u)),
 		);
 		const potentialUrlKeys = new Set(
-			potentialUrls.map((u) => normalizeImageUrlKey(u))
+			potentialUrls.map((u) => normalizeImageUrlKey(u)),
 		);
 		const seedUrlKeys = new Set(seedUrls.map((u) => normalizeImageUrlKey(u)));
 
@@ -3930,7 +3930,7 @@ async function prepareImageSegments({
 						topicTokens,
 						Math.max(12, desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
 						jobId,
-						{ maxPages: CSE_MAX_PAGES }
+						{ maxPages: CSE_MAX_PAGES },
 					);
 					queryCache.set(cacheKey, urls);
 				} else {
@@ -3948,7 +3948,7 @@ async function prepareImageSegments({
 				segmentCseTopicCalls += 1;
 				const topicExtras = uniqueStrings(
 					[...queryVariants, ...(segmentTokens || [])],
-					{ limit: 12 }
+					{ limit: 12 },
 				);
 				fromTopicUrls = await fetchCseImages(
 					effectiveTopicLabel,
@@ -3957,10 +3957,10 @@ async function prepareImageSegments({
 					{
 						maxResults: Math.max(
 							12,
-							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER
+							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 						),
 						maxPages: CSE_MAX_PAGES,
-					}
+					},
 				);
 				topicCache.set(topicKey, fromTopicUrls);
 			} else {
@@ -3997,7 +3997,7 @@ async function prepareImageSegments({
 		) {
 			const googleVariants = queryVariants.slice(
 				0,
-				Math.max(1, GOOGLE_IMAGES_VARIANT_LIMIT)
+				Math.max(1, GOOGLE_IMAGES_VARIANT_LIMIT),
 			);
 			const googleUrls = [];
 			for (const gQuery of googleVariants) {
@@ -4008,7 +4008,7 @@ async function prepareImageSegments({
 						limit: Math.max(
 							12,
 							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
-							GOOGLE_IMAGES_RESULTS_PER_QUERY
+							GOOGLE_IMAGES_RESULTS_PER_QUERY,
 						),
 						baseUrl,
 						jobId,
@@ -4064,19 +4064,19 @@ async function prepareImageSegments({
 			{
 				maxPicks: Math.max(
 					desiredCount,
-					desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER
+					desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 				),
 				requireTokens: segmentTokens,
 				preferTokens: topicTokens,
 				usedUrlsGlobal,
-			}
+			},
 		);
 		let download = await downloadSegmentImages(
 			picks,
 			tmpDir,
 			jobId,
 			seg.index,
-			desiredCount
+			desiredCount,
 		);
 		let localPaths = download.localPaths;
 		let pickedUrls = download.usedUrls;
@@ -4118,19 +4118,19 @@ async function prepareImageSegments({
 				{
 					maxPicks: Math.max(
 						missing || desiredCount,
-						(missing || desiredCount) * IMAGE_SEARCH_CANDIDATE_MULTIPLIER
+						(missing || desiredCount) * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 					),
 					requireTokens: segmentTokens,
 					preferTokens: topicTokens,
 					usedUrlsGlobal,
-				}
+				},
 			);
 			download = await downloadSegmentImages(
 				fallbackPicks,
 				tmpDir,
 				jobId,
 				seg.index,
-				missing || desiredCount
+				missing || desiredCount,
 			);
 			localPaths = localPaths.concat(download.localPaths || []);
 			pickedUrls = pickedUrls.concat(download.usedUrls || []);
@@ -4151,7 +4151,7 @@ async function prepareImageSegments({
 		}
 
 		const cseUrlKeys = new Set(
-			[...fromQueryUrls, ...fromTopicUrls].map((u) => normalizeImageUrlKey(u))
+			[...fromQueryUrls, ...fromTopicUrls].map((u) => normalizeImageUrlKey(u)),
 		);
 		let pickedPlanned = 0;
 		let pickedPotential = 0;
@@ -4317,7 +4317,7 @@ async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
 		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".mp4";
 		const outPath = path.join(
 			tmpDir,
-			`motion_ref_${crypto.randomUUID()}${ext}`
+			`motion_ref_${crypto.randomUUID()}${ext}`,
 		);
 		await downloadToFile(u, outPath, 60000, 2);
 		const detected = detectFileType(outPath);
@@ -4361,7 +4361,7 @@ async function runwayCreateEphemeralUpload({ filePath, filename }) {
 			headers: runwayHeadersJson(),
 			timeout: 20000,
 			validateStatus: (s) => s < 500,
-		}
+		},
 	);
 
 	if (init.status >= 300) {
@@ -4370,7 +4370,7 @@ async function runwayCreateEphemeralUpload({ filePath, filename }) {
 				? init.data
 				: JSON.stringify(init.data || {});
 		throw new Error(
-			`Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`
+			`Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`,
 		);
 	}
 
@@ -4396,7 +4396,7 @@ async function runwayCreateEphemeralUpload({ filePath, filename }) {
 	// Node 18+ fallback
 	if (typeof fetch !== "function" || typeof FormData !== "function") {
 		throw new Error(
-			"Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'"
+			"Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'",
 		);
 	}
 	const form = new FormData();
@@ -4425,7 +4425,7 @@ async function pollRunwayTask(taskId, label) {
 					? res.data
 					: JSON.stringify(res.data || {});
 			throw new Error(
-				`${label} polling failed (${res.status}): ${msg.slice(0, 500)}`
+				`${label} polling failed (${res.status}): ${msg.slice(0, 500)}`,
 			);
 		}
 		const data = res.data || {};
@@ -4437,7 +4437,7 @@ async function pollRunwayTask(taskId, label) {
 		}
 		if (status === "FAILED") {
 			throw new Error(
-				`${label} failed: ${data.failureCode || data.error || "FAILED"}`
+				`${label} failed: ${data.failureCode || data.error || "FAILED"}`,
 			);
 		}
 	}
@@ -4517,7 +4517,7 @@ async function runwayImageToVideo({
 				headers: runwayHeadersJson(),
 				timeout: 30000,
 				validateStatus: (s) => s < 500,
-			}
+			},
 		);
 		if (res.status < 300 && res.data?.id)
 			return await pollRunwayTask(res.data.id, "runway_image_to_video");
@@ -4525,13 +4525,13 @@ async function runwayImageToVideo({
 		const msg =
 			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
 		lastErr = new Error(
-			`Runway image_to_video failed (${res.status}): ${msg.slice(0, 700)}`
+			`Runway image_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
 		);
 		if (model !== models[models.length - 1]) {
 			console.warn(
 				`[Runway] image_to_video failed for model ${model}; trying fallback ${
 					models[models.length - 1]
-				}`
+				}`,
 			);
 		}
 	}
@@ -4564,14 +4564,14 @@ async function runwayVideoToVideo({
 			headers: runwayHeadersJson(),
 			timeout: 30000,
 			validateStatus: (s) => s < 500,
-		}
+		},
 	);
 
 	if (res.status >= 300 || !res.data?.id) {
 		const msg =
 			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
 		throw new Error(
-			`Runway video_to_video failed (${res.status}): ${msg.slice(0, 700)}`
+			`Runway video_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
 		);
 	}
 
@@ -4601,7 +4601,7 @@ ${smileLine}
 function buildBaselinePrompt(
 	expression = "neutral",
 	motionRefVideo,
-	variant = 0
+	variant = 0,
 ) {
 	const expr = normalizeExpression(expression);
 	let expressionLine =
@@ -4623,8 +4623,8 @@ function buildBaselinePrompt(
 		variant === 1
 			? "Add tiny head tilts and micro shifts in posture; keep movement subtle."
 			: variant === 2
-			? "Use a slightly different blink cadence and a soft head turn or two."
-			: "";
+				? "Use a slightly different blink cadence and a soft head turn or two."
+				: "";
 	const motionHint = motionRefVideo
 		? "Match the natural motion style from the reference performance: gentle head movement with rare micro-nods (no repeated nodding); head mostly steady; slow and controlled; no fast turns or jerky motion; hands resting with minimal movement; avoid robotic or looped motion."
 		: PRESENTER_MOTION_STYLE;
@@ -4666,7 +4666,9 @@ function buildWordCaps(segmentCount, narrationTargetSec) {
 		const endCut = i === segmentCount - 1 ? 0.95 : 1.0;
 		const cap = Math.max(
 			14,
-			Math.round(avg * SCRIPT_VOICE_WPS * SCRIPT_PACE_BIAS * hookBoost * endCut)
+			Math.round(
+				avg * SCRIPT_VOICE_WPS * SCRIPT_PACE_BIAS * hookBoost * endCut,
+			),
 		);
 		caps.push(cap);
 	}
@@ -4956,13 +4958,13 @@ function detectFictionalContext(text = "") {
 	const hay = raw.toLowerCase();
 	if (!hay) return false;
 	const hasStrong = FICTIONAL_CONTEXT_STRONG_TOKENS.some((tok) =>
-		hay.includes(tok)
+		hay.includes(tok),
 	);
 	const hasRealWorldOverride = REAL_WORLD_OVERRIDE_TOKENS.some((tok) =>
-		hay.includes(tok)
+		hay.includes(tok),
 	);
 	const hasPersonCue = REAL_PERSON_CONTEXT_TOKENS.some((tok) =>
-		hay.includes(tok)
+		hay.includes(tok),
 	);
 	const hasNamePattern =
 		/\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b/.test(raw);
@@ -4971,12 +4973,12 @@ function detectFictionalContext(text = "") {
 	if (hasPersonCue) return false;
 	if (hasNamePattern && hasRealWorldOverride) return false;
 	const hasWeak = FICTIONAL_CONTEXT_WEAK_TOKENS.some((tok) =>
-		hay.includes(tok)
+		hay.includes(tok),
 	);
 	if (!hasWeak) return false;
 	const hasQuestionCue =
 		/\b(did|does|do)\s+\w[\w\s]{0,40}\b(die|dies|died|killed|survive|survives|alive)\b/.test(
-			hay
+			hay,
 		) ||
 		/\bending explained\b/.test(hay) ||
 		/\bwho\s+(dies|died|survives|survived)\b/.test(hay);
@@ -5005,7 +5007,7 @@ function inferTopicDomainFromText(text = "") {
 	for (const group of TOPIC_DOMAIN_TOKENS) {
 		const score = group.tokens.reduce(
 			(acc, tok) => acc + (hay.includes(tok) ? 1 : 0),
-			0
+			0,
 		);
 		if (score > best.score) best = { domain: group.domain, score };
 	}
@@ -5032,7 +5034,7 @@ function normalizeContextLine(line = "") {
 	text = text.replace(/([a-z])([A-Z])/g, "$1 $2");
 	text = text.replace(
 		/\b(vlog|clip|shorts|reel)(today|yesterday)\b/gi,
-		"$1 $2"
+		"$1 $2",
 	);
 	text = text.replace(/\b(today|yesterday)\b/gi, "");
 	text = text.replace(/\s+/g, " ").trim();
@@ -5062,7 +5064,7 @@ function normalizeContextLine(line = "") {
 function buildTopicContextStrings(topicObj, contextItems = []) {
 	const list = [];
 	const topicLabel = cleanTopicLabel(
-		topicObj?.displayTopic || topicObj?.topic || ""
+		topicObj?.displayTopic || topicObj?.topic || "",
 	);
 	const pushLine = (value) => {
 		const cleaned = normalizeContextLine(value);
@@ -5080,7 +5082,7 @@ function buildTopicContextStrings(topicObj, contextItems = []) {
 	const articleTitles = articles.map((a) => a?.title).filter(Boolean);
 	const imageComment = story.imageComment || "";
 	const related = normalizeRelatedQueries(
-		story.relatedQueries || topicObj?.relatedQueries || null
+		story.relatedQueries || topicObj?.relatedQueries || null,
 	);
 
 	for (const value of [
@@ -5119,7 +5121,7 @@ function scoreAnchorCandidate(candidate = "", baseTokens = []) {
 		(t) =>
 			!baseSet.has(t) &&
 			!TOPIC_STOP_WORDS.has(t) &&
-			!GENERIC_TOPIC_TOKENS.has(t)
+			!GENERIC_TOPIC_TOKENS.has(t),
 	);
 	const capWords = (candidate.match(/\b[A-Z][a-z]+\b/g) || []).length;
 	const wordCount = tokens.length;
@@ -5133,13 +5135,13 @@ function scoreAnchorCandidate(candidate = "", baseTokens = []) {
 		score -= Math.min(1.2, (extraTokens.length - 1) * 0.25);
 	if (
 		/^(did|does|do|is|are|was|were|will|can|could|should|would|has|have|had)\b/i.test(
-			cleaned
+			cleaned,
 		)
 	) {
 		score -= 0.7;
 	}
 	const isGenericOnly = tokens.every(
-		(t) => TOPIC_STOP_WORDS.has(t) || GENERIC_TOPIC_TOKENS.has(t)
+		(t) => TOPIC_STOP_WORDS.has(t) || GENERIC_TOPIC_TOKENS.has(t),
 	);
 	if (isGenericOnly) score -= 2;
 	return score;
@@ -5148,7 +5150,7 @@ function scoreAnchorCandidate(candidate = "", baseTokens = []) {
 function pickTopicAnchorLabel(topicLabel = "", contextStrings = []) {
 	const baseLabel = normalizeTopicLabelForQuestion(topicLabel) || topicLabel;
 	const baseTokens = filterSpecificTopicTokens(
-		topicTokensFromTitle(baseLabel || topicLabel)
+		topicTokensFromTitle(baseLabel || topicLabel),
 	);
 	const candidates = new Set();
 	const pushCandidate = (value) => {
@@ -5184,7 +5186,7 @@ function pickTopicAnchorLabel(topicLabel = "", contextStrings = []) {
 function pickIntentEvidenceLine(
 	contextStrings = [],
 	anchor = "",
-	topicLabel = ""
+	topicLabel = "",
 ) {
 	const lines = Array.isArray(contextStrings) ? contextStrings : [];
 	const anchorLower = String(anchor || "").toLowerCase();
@@ -5192,20 +5194,20 @@ function pickIntentEvidenceLine(
 		const hit = lines.find((l) =>
 			String(l || "")
 				.toLowerCase()
-				.includes(anchorLower)
+				.includes(anchorLower),
 		);
 		if (hit) return String(hit || "").slice(0, 160);
 	}
 	const baseTokens = topicTokensFromTitle(
-		normalizeTopicLabelForQuestion(topicLabel) || topicLabel
+		normalizeTopicLabelForQuestion(topicLabel) || topicLabel,
 	);
 	if (baseTokens.length) {
 		const hit = lines.find((l) =>
 			baseTokens.some((t) =>
 				String(l || "")
 					.toLowerCase()
-					.includes(t)
-			)
+					.includes(t),
+			),
 		);
 		if (hit) return String(hit || "").slice(0, 160);
 	}
@@ -5214,14 +5216,14 @@ function pickIntentEvidenceLine(
 
 function buildTopicIntentSummary(topicObj, contextItems = []) {
 	const label = cleanTopicLabel(
-		topicObj?.displayTopic || topicObj?.topic || ""
+		topicObj?.displayTopic || topicObj?.topic || "",
 	);
 	const contextStrings = buildTopicContextStrings(topicObj, contextItems);
 	const contextText = contextStrings.join(" ");
 	const domainInfo = inferTopicDomainFromText(contextText);
 	const anchor = pickTopicAnchorLabel(
 		label || topicObj?.topic || "",
-		contextStrings
+		contextStrings,
 	);
 	const evidence = pickIntentEvidenceLine(contextStrings, anchor, label);
 	return {
@@ -5241,8 +5243,8 @@ function inferTonePlan({ topic, topics, angle, liveContext }) {
 			: topic || "";
 	const contextLines = Array.isArray(liveContext)
 		? liveContext.map((c) =>
-				typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`
-		  )
+				typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`,
+			)
 		: [];
 	const hay = [topicLine, angle || "", ...contextLines].join(" ").toLowerCase();
 
@@ -5263,8 +5265,8 @@ function inferTonePlan({ topic, topics, angle, liveContext }) {
 		seriousScore >= excitedScore + 2
 			? "serious"
 			: excitedScore > seriousScore
-			? "excited"
-			: "neutral";
+				? "excited"
+				: "neutral";
 	return { mood };
 }
 
@@ -5381,7 +5383,7 @@ function coerceExpressionForNaturalness(
 	rawExpression,
 	text,
 	mood = "neutral",
-	topicLabel = ""
+	topicLabel = "",
 ) {
 	if (isSensitiveTopicText(`${text} ${topicLabel}`)) return "neutral";
 	const base = normalizeExpression(rawExpression, mood);
@@ -5449,7 +5451,7 @@ function pickSubtleExpressionIndices(
 	total,
 	seed,
 	maxCount = MAX_SUBTLE_VISUAL_EXPRESSIONS,
-	edgeBuffer = SUBTLE_VISUAL_EDGE_BUFFER
+	edgeBuffer = SUBTLE_VISUAL_EDGE_BUFFER,
 ) {
 	const t = Number.isFinite(Number(total)) ? Number(total) : 0;
 	const buffer = Math.max(0, Math.floor(Number(edgeBuffer) || 0));
@@ -5471,7 +5473,7 @@ function pickSubtleExpressionIndices(
 function buildSubtleVideoExpressionPlan(
 	segments = [],
 	mood = "neutral",
-	jobId
+	jobId,
 ) {
 	if (!segments.length) return [];
 	const total = segments.length;
@@ -5482,11 +5484,11 @@ function buildSubtleVideoExpressionPlan(
 	let indices = pickSubtleExpressionIndices(total, seed);
 	const edgeBuffer = Math.max(
 		0,
-		Math.floor(Number(SUBTLE_VISUAL_EDGE_BUFFER) || 0)
+		Math.floor(Number(SUBTLE_VISUAL_EDGE_BUFFER) || 0),
 	);
 	const maxCount = Math.max(
 		0,
-		Math.floor(Number(MAX_SUBTLE_VISUAL_EXPRESSIONS) || 0)
+		Math.floor(Number(MAX_SUBTLE_VISUAL_EXPRESSIONS) || 0),
 	);
 	const entertainmentIndices = [];
 	for (let i = 0; i < segments.length; i++) {
@@ -5499,13 +5501,13 @@ function buildSubtleVideoExpressionPlan(
 
 	if (entertainmentIndices.length && maxCount > 0) {
 		const eligibleEntertainment = entertainmentIndices.filter(
-			(i) => i >= edgeBuffer && i <= total - edgeBuffer - 1
+			(i) => i >= edgeBuffer && i <= total - edgeBuffer - 1,
 		);
 		const pickFrom = eligibleEntertainment.length
 			? eligibleEntertainment
 			: entertainmentIndices;
 		const hasEntertainmentIndex = indices.some((i) =>
-			entertainmentIndices.includes(i)
+			entertainmentIndices.includes(i),
 		);
 		if (!hasEntertainmentIndex && pickFrom.length) {
 			const pick =
@@ -5520,13 +5522,13 @@ function buildSubtleVideoExpressionPlan(
 	}
 
 	const normalized = segments.map((s) =>
-		normalizeExpression(s.expression, mood)
+		normalizeExpression(s.expression, mood),
 	);
 	const entertainmentSet = new Set(entertainmentIndices);
 	for (const idx of indices) {
 		const seg = segments[idx] || {};
 		const sensitive = isSensitiveTopicText(
-			`${seg.text || ""} ${seg.topicLabel || ""}`
+			`${seg.text || ""} ${seg.topicLabel || ""}`,
 		);
 		if (sensitive) {
 			plan[idx] = "neutral";
@@ -5559,20 +5561,20 @@ function normalizeRelatedQueriesAny(rq) {
 	const top = Array.isArray(rq.top)
 		? rq.top
 		: Array.isArray(rq.topSample)
-		? rq.topSample
-		: [];
+			? rq.topSample
+			: [];
 	const rising = Array.isArray(rq.rising)
 		? rq.rising
 		: Array.isArray(rq.risingSample)
-		? rq.risingSample
-		: [];
+			? rq.risingSample
+			: [];
 	return {
 		top: uniqueStrings(top.map((s) => String(s || "").trim()).filter(Boolean), {
 			limit: 12,
 		}),
 		rising: uniqueStrings(
 			rising.map((s) => String(s || "").trim()).filter(Boolean),
-			{ limit: 12 }
+			{ limit: 12 },
 		),
 	};
 }
@@ -5601,34 +5603,34 @@ function buildThumbnailSignalsFromTopicPick(topicPick) {
 	const t = topicPick || {};
 	const story = t.trendStory || t || {};
 	const displayTopic = String(
-		t.displayTopic || t.topic || story.title || story.rawTitle || ""
+		t.displayTopic || t.topic || story.title || story.rawTitle || "",
 	).trim();
 	const keywords = Array.isArray(t.keywords)
 		? t.keywords.map((s) => String(s || "").trim()).filter(Boolean)
 		: [];
 	const relatedQueries = normalizeRelatedQueriesAny(
-		story.relatedQueries || t.relatedQueries
+		story.relatedQueries || t.relatedQueries,
 	);
 	const interestOverTime = normalizeInterestAny(
-		story.interestOverTime || t.interestOverTime
+		story.interestOverTime || t.interestOverTime,
 	);
 	const { titles: articleTitles, urls: articleUrls } =
 		extractArticleFacts(story);
 	const seedImages = Array.isArray(story.images)
 		? story.images
 		: Array.isArray(t.images)
-		? t.images
-		: [];
+			? t.images
+			: [];
 	const searchPhrases = Array.isArray(story.searchPhrases)
 		? story.searchPhrases
 		: Array.isArray(t.searchPhrases)
-		? t.searchPhrases
-		: [];
+			? t.searchPhrases
+			: [];
 	const entityNames = Array.isArray(story.entityNames)
 		? story.entityNames
 		: Array.isArray(t.entityNames)
-		? t.entityNames
-		: [];
+			? t.entityNames
+			: [];
 
 	return {
 		displayTopic,
@@ -5871,7 +5873,7 @@ function buildTopicImageQueries({ signals, intent }) {
 				`${core} press photo`,
 				`${core} interview`,
 			],
-			{ limit: 6 }
+			{ limit: 6 },
 		);
 	}
 	if (intent === "serious_update") {
@@ -5882,7 +5884,7 @@ function buildTopicImageQueries({ signals, intent }) {
 				`${core} press photo`,
 				`${core} interview`,
 			],
-			{ limit: 6 }
+			{ limit: 6 },
 		);
 	}
 
@@ -5894,7 +5896,7 @@ function buildTopicImageQueries({ signals, intent }) {
 				`${core} press photo`,
 				`${core} conference`,
 			],
-			{ limit: 6 }
+			{ limit: 6 },
 		);
 	}
 
@@ -5910,7 +5912,7 @@ function buildTopicImageQueries({ signals, intent }) {
 					`${core} ballroom`,
 					`${core} ceremony`,
 				],
-				{ limit: 6 }
+				{ limit: 6 },
 			);
 		}
 		return uniqueStrings(
@@ -5920,13 +5922,13 @@ function buildTopicImageQueries({ signals, intent }) {
 				`${core} interview`,
 				`${core} red carpet`,
 			],
-			{ limit: 6 }
+			{ limit: 6 },
 		);
 	}
 
 	return uniqueStrings(
 		[`${core} portrait`, `${core} close up`, `${core} press photo`],
-		{ limit: 6 }
+		{ limit: 6 },
 	);
 }
 
@@ -5954,8 +5956,8 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 				(actionHeadline && actionHeadline !== "WHAT CHANGED"
 					? actionHeadline
 					: lastName
-					? `${lastName} DETAILS`
-					: actionHeadline) || "";
+						? `${lastName} DETAILS`
+						: actionHeadline) || "";
 			if (fallback) resolvedHeadline = clampHeadline(fallback);
 		}
 	}
@@ -6028,7 +6030,7 @@ function looksLikeQuestionTopic(text = "") {
 	return (
 		/\?/.test(t) ||
 		/^(what|when|where|why|how|who|did|does|do|is|are|was|were|can|could|will|would|should|has|have|had|may|might)\b/.test(
-			t
+			t,
 		) ||
 		/\bwhat time\b/.test(t) ||
 		/\bcome out\b/.test(t)
@@ -6041,12 +6043,12 @@ function normalizeTopicLabelForQuestion(text = "") {
 	t = t
 		.replace(
 			/^(did|does|do|is|are|was|were|can|could|will|would|should|has|have|had|may|might)\s+/i,
-			""
+			"",
 		)
 		.replace(/^(what time does|what time do|when does|when do)\s+/i, "")
 		.replace(
 			/^(what is|who is|who are|how does|how do|why does|why is)\s+/i,
-			""
+			"",
 		)
 		.replace(/\bcome out\b/i, "")
 		.replace(/\brelease date\b/i, "release")
@@ -6065,7 +6067,7 @@ function normalizeEngagementLabel(text = "") {
 	let t = normalizeTopicLabelForQuestion(text);
 	if (!t) return t;
 	const deathMatch = t.match(
-		/^(.*)\b(die|dies|died|death)\b\s*(?:in|on|at|during)?\s*(.*)$/i
+		/^(.*)\b(die|dies|died|death)\b\s*(?:in|on|at|during)?\s*(.*)$/i,
 	);
 	if (deathMatch) {
 		const subject = String(deathMatch[1] || "").trim();
@@ -6182,7 +6184,7 @@ function injectMicroBreath(text = "", state) {
 	const words = t.split(/\s+/);
 	const targetIdx = Math.min(
 		words.length - 5,
-		Math.max(MICRO_BREATH_TARGET_WORD, Math.floor(words.length * 0.45))
+		Math.max(MICRO_BREATH_TARGET_WORD, Math.floor(words.length * 0.45)),
 	);
 	const cleanWord = (w) => w.toLowerCase().replace(/[^a-z']/g, "");
 	const scan = (start, end, step) => {
@@ -6269,7 +6271,7 @@ function stripMetaNarration(text = "") {
 		.replace(/\b(outro|intro)\b/gi, "")
 		.replace(
 			/\b(in this video|in this clip|in this segment|next video|next clip)\b/gi,
-			""
+			"",
 		)
 		.replace(/\b(next|this|that|first|second|third|final)\s+segment\b/gi, "")
 		.replace(/\s+/g, " ")
@@ -6280,7 +6282,7 @@ function stripMetaNarration(text = "") {
 function stripFillerAndEmotes(
 	text = "",
 	state,
-	{ maxFillers = 0, maxEmotes = 0 } = {}
+	{ maxFillers = 0, maxEmotes = 0 } = {},
 ) {
 	const counter = state || { fillers: 0, emotes: 0 };
 	let t = String(text || "");
@@ -6342,7 +6344,7 @@ function sanitizeIntroOutroLine(text = "") {
 	const { text: cleaned } = stripFillerAndEmotes(
 		base,
 		{ fillers: 0, emotes: 0 },
-		{ maxFillers: 0, maxEmotes: 0 }
+		{ maxFillers: 0, maxEmotes: 0 },
 	);
 	return cleaned;
 }
@@ -6352,7 +6354,7 @@ function stripAllFillers(text = "") {
 	const { text: cleaned } = stripFillerAndEmotes(
 		base,
 		{ fillers: 0, emotes: 0 },
-		{ maxFillers: 0, maxEmotes: 0 }
+		{ maxFillers: 0, maxEmotes: 0 },
 	);
 	return cleaned;
 }
@@ -6457,14 +6459,14 @@ function analyzeShortsGuardrails(script = {}) {
 		/\?/.test(earlyText) || textHasAnyRegex(earlyText, SHORTS_OPEN_LOOP_HINTS);
 	const earlyHasResolution = textHasAnyRegex(
 		earlyText,
-		SHORTS_EARLY_RESOLUTION_HINTS
+		SHORTS_EARLY_RESOLUTION_HINTS,
 	);
 	if (!earlyHasGap) issues.push("early_curiosity_gap_missing");
 	if (earlyHasResolution) issues.push("early_resolution_detected");
 
 	const loopCount = countOpenLoopsWithinSeconds(
 		segments,
-		SHORTS_OPEN_LOOP_WINDOW_SEC
+		SHORTS_OPEN_LOOP_WINDOW_SEC,
 	);
 	if (loopCount < SHORTS_OPEN_LOOP_MIN_COUNT)
 		issues.push("open_loops_under_target");
@@ -6539,7 +6541,7 @@ function cleanClipTitleBase(text = "") {
 	cleaned = cleaned.replace(/^["']+|["']+$/g, "");
 	cleaned = cleaned.replace(
 		/^(here's|here is|this is|there's|there is|today|right now)\b[:,-]?\s*/i,
-		""
+		"",
 	);
 	cleaned = cleaned.replace(/^[\-\s]+/, "");
 	cleaned = cleaned.replace(/[.!?]+$/g, "");
@@ -6550,7 +6552,7 @@ function cleanClipTitleBase(text = "") {
 function buildClipTitleCandidates(line = "", fallbackBase = "") {
 	const base = trimTitleToLimit(
 		cleanClipTitleBase(line) || String(fallbackBase || "").trim(),
-		95
+		95,
 	);
 	if (!base) return [];
 	const variants = [
@@ -6562,7 +6564,7 @@ function buildClipTitleCandidates(line = "", fallbackBase = "") {
 		`${base} | The detail people missed`,
 	];
 	return uniqueStrings(variants, { limit: 8 }).map((t) =>
-		trimTitleToLimit(t, 95)
+		trimTitleToLimit(t, 95),
 	);
 }
 
@@ -6634,8 +6636,8 @@ function buildFallbackShortsDetails(script = {}) {
 			type === "hook"
 				? SHORTS_TARGET_SECONDS[0]
 				: type === "twist"
-				? SHORTS_TARGET_SECONDS[1]
-				: SHORTS_TARGET_SECONDS[2] || SHORTS_DEFAULT_TARGET_SECONDS;
+					? SHORTS_TARGET_SECONDS[1]
+					: SHORTS_TARGET_SECONDS[2] || SHORTS_DEFAULT_TARGET_SECONDS;
 		const fallbackBase = shortTitle || title;
 		return {
 			id: `short_${segIndex}_${i}`,
@@ -6648,7 +6650,7 @@ function buildFallbackShortsDetails(script = {}) {
 			titleCandidates: buildClipTitleCandidates(line, fallbackBase),
 			thumbnailTextCandidates: buildClipThumbnailTextCandidates(
 				line,
-				fallbackBase
+				fallbackBase,
 			),
 		};
 	});
@@ -6666,12 +6668,12 @@ function normalizeShortsDetails(raw, script = {}) {
 	const safe = raw && typeof raw === "object" ? raw : {};
 	const angle = String(safe.angle || "").trim();
 	const titleCandidates = Array.isArray(
-		safe.titleCandidates || safe.title_candidates
+		safe.titleCandidates || safe.title_candidates,
 	)
 		? safe.titleCandidates || safe.title_candidates
 		: [];
 	const thumbnailTextCandidates = Array.isArray(
-		safe.thumbnailTextCandidates || safe.thumbnail_text_candidates
+		safe.thumbnailTextCandidates || safe.thumbnail_text_candidates,
 	)
 		? safe.thumbnailTextCandidates || safe.thumbnail_text_candidates
 		: [];
@@ -6682,7 +6684,7 @@ function normalizeShortsDetails(raw, script = {}) {
 	)
 		.map((c, idx) => {
 			const segIndex = Number(
-				c?.segmentIndex ?? c?.segment_index ?? c?.index ?? c?.segment ?? idx
+				c?.segmentIndex ?? c?.segment_index ?? c?.index ?? c?.segment ?? idx,
 			);
 			if (!Number.isFinite(segIndex) || segIndex < 0) return null;
 			if (segments.length && segIndex >= segments.length) return null;
@@ -6692,7 +6694,7 @@ function normalizeShortsDetails(raw, script = {}) {
 			if (!line) return null;
 			const type = normalizeShortsClipType(c?.type);
 			const targetSeconds = normalizeShortsTargetSeconds(
-				c?.targetSeconds ?? c?.target_seconds
+				c?.targetSeconds ?? c?.target_seconds,
 			);
 			const openLoop =
 				typeof c?.openLoop === "boolean"
@@ -6703,31 +6705,31 @@ function normalizeShortsDetails(raw, script = {}) {
 				c?.titleCandidates ||
 					c?.title_candidates ||
 					c?.seoTitleCandidates ||
-					c?.seo_title_candidates
+					c?.seo_title_candidates,
 			)
 				? c.titleCandidates ||
-				  c.title_candidates ||
-				  c.seoTitleCandidates ||
-				  c.seo_title_candidates
+					c.title_candidates ||
+					c.seoTitleCandidates ||
+					c.seo_title_candidates
 				: [];
 			let titleCandidates = uniqueStrings(
 				(rawTitleCandidates || [])
 					.map((t) => String(t || "").trim())
 					.filter(Boolean),
-				{ limit: 8 }
+				{ limit: 8 },
 			);
 			if (titleCandidates.length < 3) {
 				const fallbackTitles = buildClipTitleCandidates(
 					line,
-					script?.shortTitle || script?.title || ""
+					script?.shortTitle || script?.title || "",
 				);
 				titleCandidates = uniqueStrings(
 					[...titleCandidates, ...fallbackTitles],
-					{ limit: 8 }
+					{ limit: 8 },
 				);
 			}
 			const rawThumbCandidates = Array.isArray(
-				c?.thumbnailTextCandidates || c?.thumbnail_text_candidates
+				c?.thumbnailTextCandidates || c?.thumbnail_text_candidates,
 			)
 				? c.thumbnailTextCandidates || c.thumbnail_text_candidates
 				: [];
@@ -6735,16 +6737,16 @@ function normalizeShortsDetails(raw, script = {}) {
 				(rawThumbCandidates || [])
 					.map((t) => String(t || "").trim())
 					.filter(Boolean),
-				{ limit: 8 }
+				{ limit: 8 },
 			);
 			if (thumbnailTextCandidates.length < 3) {
 				const fallbackThumbs = buildClipThumbnailTextCandidates(
 					line,
-					script?.shortTitle || script?.title || ""
+					script?.shortTitle || script?.title || "",
 				);
 				thumbnailTextCandidates = uniqueStrings(
 					[...thumbnailTextCandidates, ...fallbackThumbs],
-					{ limit: 8 }
+					{ limit: 8 },
 				);
 			}
 			return {
@@ -6767,13 +6769,13 @@ function normalizeShortsDetails(raw, script = {}) {
 			(titleCandidates || [])
 				.map((t) => String(t || "").trim())
 				.filter(Boolean),
-			{ limit: 8 }
+			{ limit: 8 },
 		),
 		thumbnailTextCandidates: uniqueStrings(
 			(thumbnailTextCandidates || [])
 				.map((t) => String(t || "").trim())
 				.filter(Boolean),
-			{ limit: 8 }
+			{ limit: 8 },
 		),
 		clipCandidates,
 	};
@@ -6785,16 +6787,16 @@ function normalizeShortsDetails(raw, script = {}) {
 		const extra = buildTitleCandidates(script?.title, script?.shortTitle);
 		normalized.titleCandidates = uniqueStrings(
 			[...normalized.titleCandidates, ...extra],
-			{ limit: 8 }
+			{ limit: 8 },
 		);
 	}
 	if (normalized.thumbnailTextCandidates.length < 5) {
 		const extra = buildThumbnailTextCandidates(
-			script?.shortTitle || script?.title || ""
+			script?.shortTitle || script?.title || "",
 		);
 		normalized.thumbnailTextCandidates = uniqueStrings(
 			[...normalized.thumbnailTextCandidates, ...extra],
-			{ limit: 8 }
+			{ limit: 8 },
 		);
 	}
 	if (normalized.clipCandidates.length < SHORTS_MIN_CANDIDATES) {
@@ -6816,7 +6818,7 @@ function normalizeShortsDetails(raw, script = {}) {
 	if (normalized.clipCandidates.length > SHORTS_MAX_CANDIDATES) {
 		normalized.clipCandidates = normalized.clipCandidates.slice(
 			0,
-			SHORTS_MAX_CANDIDATES
+			SHORTS_MAX_CANDIDATES,
 		);
 	}
 
@@ -6875,7 +6877,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			messages: [{ role: "user", content: prompt }],
 		});
 		const parsed = parseJsonFlexible(
-			resp?.choices?.[0]?.message?.content || ""
+			resp?.choices?.[0]?.message?.content || "",
 		);
 		if (!parsed || typeof parsed !== "object") return null;
 		return parsed;
@@ -7012,7 +7014,7 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 		.replace("{topic2}", safeLabels[1] || safeLabels[0] || topicList)
 		.replace(
 			"{topic3}",
-			safeLabels[2] || safeLabels[1] || safeLabels[0] || topicList
+			safeLabels[2] || safeLabels[1] || safeLabels[0] || topicList,
 		);
 	return sanitizeIntroOutroLine(line);
 }
@@ -7020,7 +7022,7 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 function buildTopicEngagementQuestionForLabel(
 	topicLabel,
 	mood = "neutral",
-	{ compact = false, shortTitle = "" } = {}
+	{ compact = false, shortTitle = "" } = {},
 ) {
 	const label = selectEngagementLabel({
 		topicLabel,
@@ -7051,8 +7053,8 @@ function buildTopicEngagementQuestion({
 		topicLabels.length > 0
 			? topicLabels
 			: shortTitle
-			? [shortTopicLabel(shortTitle, 4)]
-			: [];
+				? [shortTopicLabel(shortTitle, 4)]
+				: [];
 	if (!labels.length) return "What do you think?";
 	if (labels.length === 1)
 		return buildTopicEngagementQuestionForLabel(labels[0], mood, {
@@ -7078,7 +7080,7 @@ function buildOutroLine({
 				shortTitle,
 				mood,
 				compact: true,
-		  })
+			})
 		: "";
 	let line = includeQuestion
 		? `${question} Thank you for watching, and see you next time.`
@@ -7177,7 +7179,7 @@ function enforceCtaQuestion(text = "", mood = "neutral") {
 function enforceSegmentCompleteness(
 	segments = [],
 	mood = "neutral",
-	{ includeCta = true } = {}
+	{ includeCta = true } = {},
 ) {
 	return (segments || []).map((s, i, arr) => {
 		const isLast = i === arr.length - 1;
@@ -7259,7 +7261,7 @@ function ensureTopicTransitions(segments = [], topics = []) {
 		const topicLabel =
 			String(seg.topicLabel || "").trim() ||
 			String(
-				topics[topicIndex]?.displayTopic || topics[topicIndex]?.topic || ""
+				topics[topicIndex]?.displayTopic || topics[topicIndex]?.topic || "",
 			).trim();
 		let text = String(seg.text || "").trim();
 
@@ -7270,7 +7272,7 @@ function ensureTopicTransitions(segments = [], topics = []) {
 			const topicLower = topicLabel.toLowerCase();
 			const hasTransition =
 				/^(and now|next up|now|switching gears|turning to|moving on|pivoting)/i.test(
-					text
+					text,
 				);
 			const mentionsTopic = topicLower && lower.includes(topicLower);
 			if (!hasTransition || !mentionsTopic) {
@@ -7343,7 +7345,7 @@ function hasInstallmentEvidence(text = "") {
 
 function stripUnverifiedInstallmentDetails(
 	text,
-	{ anchor = "", allowInstallmentNumbers = false } = {}
+	{ anchor = "", allowInstallmentNumbers = false } = {},
 ) {
 	if (!text || allowInstallmentNumbers) return text;
 	let updated = String(text);
@@ -7354,20 +7356,20 @@ function stripUnverifiedInstallmentDetails(
 		updated = updated
 			.replace(
 				new RegExp(`\\b${escaped}\\s+\\d+\\s+episode\\s+\\d+\\b`, "gi"),
-				cleanedAnchor
+				cleanedAnchor,
 			)
 			.replace(
 				new RegExp(`\\b${escaped}\\s+episode\\s+\\d+\\b`, "gi"),
-				cleanedAnchor
+				cleanedAnchor,
 			)
 			.replace(
 				new RegExp(`\\b${escaped}\\s+season\\s+\\d+\\b`, "gi"),
-				cleanedAnchor
+				cleanedAnchor,
 			);
 		if (!/\d/.test(cleanedAnchor)) {
 			updated = updated.replace(
 				new RegExp(`\\b${escaped}\\s+\\d+\\b`, "gi"),
-				cleanedAnchor
+				cleanedAnchor,
 			);
 		}
 	}
@@ -7383,9 +7385,9 @@ function stripUnverifiedInstallmentDetails(
 		updated = updated.replace(
 			new RegExp(
 				`\\b${escaped}\\s+the\\s+(episode|season|part|chapter|volume)\\b`,
-				"gi"
+				"gi",
 			),
-			cleanedAnchor
+			cleanedAnchor,
 		);
 	}
 	return updated
@@ -7398,19 +7400,19 @@ function enforceTopicSpecificityGuards(
 	segments = [],
 	topics = [],
 	topicContexts = [],
-	topicIntents = []
+	topicIntents = [],
 ) {
 	const topicMeta = new Map();
 	for (let i = 0; i < (topics || []).length; i++) {
 		const label = String(
-			topics[i]?.displayTopic || topics[i]?.topic || ""
+			topics[i]?.displayTopic || topics[i]?.topic || "",
 		).trim();
 		const contextItems = Array.isArray(topicContexts?.[i]?.context)
 			? topicContexts[i].context
 			: [];
 		const contextText = contextItems
 			.map((c) =>
-				typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`
+				typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`,
 			)
 			.join(" ");
 		const combined = `${label} ${contextText}`.trim();
@@ -7438,7 +7440,7 @@ function ensureTopicEngagementQuestions(
 	segments = [],
 	topics = [],
 	mood = "neutral",
-	wordCapsByIndex = []
+	wordCapsByIndex = [],
 ) {
 	const lastByTopic = new Map();
 	for (let i = 0; i < (segments || []).length; i++) {
@@ -7463,7 +7465,7 @@ function ensureTopicEngagementQuestions(
 		const topicLabel =
 			String(seg.topicLabel || "").trim() ||
 			String(
-				topics[topicIndex]?.displayTopic || topics[topicIndex]?.topic || ""
+				topics[topicIndex]?.displayTopic || topics[topicIndex]?.topic || "",
 			).trim();
 		const question = buildTopicEngagementQuestionForLabel(topicLabel, mood, {
 			compact: true,
@@ -7486,7 +7488,7 @@ function ensureTopicEngagementQuestions(
 		}
 
 		const combined = cleanupSpeechText(
-			`${baseText ? `${baseText}. ` : ""}${question}`.trim()
+			`${baseText ? `${baseText}. ` : ""}${question}`.trim(),
 		);
 		return { ...seg, text: combined };
 	});
@@ -7540,8 +7542,8 @@ async function generateScript({
 		mood === "serious"
 			? `Segment 0: measured, serious tone, slower pacing. ${outroGuide}`
 			: mood === "excited"
-			? `Segment 0: confident, neutral hook with controlled energy (no shouty hype). ${outroGuide}`
-			: `Segment 0: confident, neutral hook. ${outroGuide}`;
+				? `Segment 0: confident, neutral hook with controlled energy (no shouty hype). ${outroGuide}`
+				: `Segment 0: confident, neutral hook. ${outroGuide}`;
 	const ctaLine = includeOutro
 		? "End the LAST segment of EACH topic with one short, topic-specific engagement question for comments. Do NOT add like/subscribe in content; the closing line only says thank you and see you next time."
 		: "Last segment ends with ONE short CTA question (comment + subscribe).";
@@ -7570,7 +7572,7 @@ async function generateScript({
 						? t.trendStory.relatedQueries.top
 						: []),
 				],
-				{ limit: 8 }
+				{ limit: 8 },
 			);
 			const articles = (t.trendStory?.articles || [])
 				.map((a) => a.title)
@@ -7660,10 +7662,10 @@ async function generateScript({
 						const sources = uniqueStrings(
 							items
 								.map((c) =>
-									typeof c === "string" ? "" : getUrlHost(c?.link || "")
+									typeof c === "string" ? "" : getUrlHost(c?.link || ""),
 								)
 								.filter(Boolean),
-							{ limit: 6 }
+							{ limit: 6 },
 						);
 						return `Topic ${idx + 1} (${tc.topic}): ${
 							sources.length ? sources.join(", ") : "(none)"
@@ -7691,7 +7693,7 @@ ${topicPlanLines}
 ${deepDiveGuide}
 
 Target narration duration (NOT counting intro/outro): ~${narrationTargetSec.toFixed(
-		1
+		1,
 	)}s
 Segments: EXACTLY ${segmentCount}
 Per-segment word caps: ${capsLine}
@@ -7838,7 +7840,7 @@ Return JSON ONLY:
 
 	const topicIndexForSegment = (idx) => {
 		const match = topicRanges.find(
-			(r) => Number(idx) >= r.startIndex && Number(idx) <= r.endIndex
+			(r) => Number(idx) >= r.startIndex && Number(idx) <= r.endIndex,
 		);
 		return match ? match.topicIndex : 0;
 	};
@@ -7874,7 +7876,7 @@ Return JSON ONLY:
 			s.expression,
 			s.text,
 			mood,
-			s.topicLabel
+			s.topicLabel,
 		),
 	}));
 
@@ -7902,7 +7904,7 @@ Return JSON ONLY:
 		segments,
 		safeTopics,
 		topicContexts,
-		topicIntents
+		topicIntents,
 	);
 	segments = enforceRealWorldFraming(segments, topicContextFlags);
 
@@ -7918,7 +7920,7 @@ Return JSON ONLY:
 		segments,
 		safeTopics,
 		mood,
-		wordCaps
+		wordCaps,
 	);
 
 	// Ensure clean segment endings and CTA consistency.
@@ -7941,13 +7943,13 @@ Return JSON ONLY:
 	}
 	if (FORCE_NEUTRAL_VOICEOVER) {
 		segments = segments.map((s) =>
-			s.expression === "excited" ? { ...s, expression: "warm" } : s
+			s.expression === "excited" ? { ...s, expression: "warm" } : s,
 		);
 	}
 	// Smooth expressions so adjacent segments stay coherent.
 	const smoothed = smoothExpressionPlan(
 		segments.map((s) => s.expression),
-		mood
+		mood,
 	);
 	segments = segments.map((s, i) => ({ ...s, expression: smoothed[i] }));
 
@@ -7956,7 +7958,7 @@ Return JSON ONLY:
 		.trim()
 		.slice(0, 120);
 	const finalShortTitle = shortTitleFromText(
-		String(parsed.shortTitle || "").trim() || finalTitle
+		String(parsed.shortTitle || "").trim() || finalTitle,
 	).slice(0, 60);
 	const rawShortsDetails =
 		parsed.shortsDetails || parsed.shorts_details || parsed.shorts || null;
@@ -7990,7 +7992,7 @@ function buildTrendSignalLines(topics = []) {
 				String(t?.displayTopic || t?.topic || "").trim() || `Topic ${idx + 1}`;
 			const related = normalizeRelatedQueries(t?.trendStory?.relatedQueries);
 			const interest = normalizeInterestOverTime(
-				t?.trendStory?.interestOverTime
+				t?.trendStory?.interestOverTime,
 			);
 			const rising = related.rising.slice(0, 4);
 			const top = related.top.slice(0, 4);
@@ -8011,7 +8013,7 @@ function extractTrendSignalTokens(relatedQueries = null) {
 	const related = normalizeRelatedQueries(relatedQueries);
 	const list = uniqueStrings(
 		[...related.rising, ...related.top].filter(Boolean),
-		{ limit: 12 }
+		{ limit: 12 },
 	);
 	if (!list.length) return [];
 	const tokens = list.flatMap((q) => tokenizeQaText(q));
@@ -8097,7 +8099,7 @@ function analyzeScriptQuality({
 	}
 
 	const shortSegments = segments.filter(
-		(s) => countWords(s.text) < QA_MIN_SEGMENT_WORDS
+		(s) => countWords(s.text) < QA_MIN_SEGMENT_WORDS,
 	);
 	if (shortSegments.length) warnings.push("short_segments_detected");
 
@@ -8115,7 +8117,7 @@ function analyzeScriptQuality({
 		if (!tokens.length) continue;
 		const topicSegments = segments.filter((s) => Number(s.topicIndex) === i);
 		const hasAttribution = topicSegments.some((s) =>
-			segmentHasAttribution(s.text || "", tokens)
+			segmentHasAttribution(s.text || "", tokens),
 		);
 		if (!hasAttribution) missingAttributionTopics.push(i);
 	}
@@ -8175,7 +8177,7 @@ function summarizeScriptEngagement(script = {}) {
 	const avgWords =
 		segments.length > 0 ? totalWords / segments.length : totalWords;
 	const questionSegments = segments.filter((s) =>
-		/\?/.test(String(s.text || ""))
+		/\?/.test(String(s.text || "")),
 	).length;
 	const fullText = segments
 		.map((s) => String(s.text || "").toLowerCase())
@@ -8184,7 +8186,7 @@ function summarizeScriptEngagement(script = {}) {
 		(tokens || []).reduce(
 			(count, tok) =>
 				fullText.includes(String(tok || "").toLowerCase()) ? count + 1 : count,
-			0
+			0,
 		);
 	return {
 		segmentCount: segments.length,
@@ -8192,7 +8194,7 @@ function summarizeScriptEngagement(script = {}) {
 		avgWords: Number(avgWords.toFixed(1)),
 		questionSegments,
 		questionRatio: Number(
-			(segments.length ? questionSegments / segments.length : 0).toFixed(2)
+			(segments.length ? questionSegments / segments.length : 0).toFixed(2),
 		),
 		trendTokenHits: countTokenHits(TREND_SIGNAL_TOKENS),
 		excitedTokenHits: countTokenHits(EXCITED_TONE_TOKENS),
@@ -8207,7 +8209,7 @@ function formatSourceLabel(host = "", topicLabel = "") {
 	if (!cleaned) return "";
 	const base = cleaned.replace(
 		/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
-		""
+		"",
 	);
 	const words = base
 		.replace(/[^a-z0-9]+/gi, " ")
@@ -8224,7 +8226,7 @@ function formatSourceLabel(host = "", topicLabel = "") {
 		if (slug && baseLower.includes(slug)) {
 			return topicTokens
 				.map((t) =>
-					t.length <= 3 ? t.toUpperCase() : t[0].toUpperCase() + t.slice(1)
+					t.length <= 3 ? t.toUpperCase() : t[0].toUpperCase() + t.slice(1),
 				)
 				.join(" ");
 		}
@@ -8239,7 +8241,7 @@ function formatSourceLabel(host = "", topicLabel = "") {
 	}
 	return words
 		.map((w) =>
-			w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)
+			w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1),
 		)
 		.join(" ");
 }
@@ -8283,7 +8285,7 @@ function buildSourceTokensFromHosts(hosts = []) {
 		tokens.add(lowered);
 		const base = lowered.replace(
 			/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
-			""
+			"",
 		);
 		const cleaned = base.replace(/[^a-z0-9]+/g, " ").trim();
 		if (cleaned) tokens.add(cleaned);
@@ -8294,7 +8296,7 @@ function buildSourceTokensFromHosts(hosts = []) {
 function pickTopicSourceHosts(
 	topic,
 	topicContext = [],
-	{ preferArticles = false } = {}
+	{ preferArticles = false } = {},
 ) {
 	const ctx = Array.isArray(topicContext) ? topicContext : [];
 	const ctxHosts = ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean);
@@ -8310,7 +8312,7 @@ function pickTopicSourceHosts(
 		? [
 				...ctxHosts.filter((host) => !isDeprioritizedSourceHost(host)),
 				...ctxHosts.filter((host) => isDeprioritizedSourceHost(host)),
-		  ]
+			]
 		: ctxHosts;
 	return uniqueStrings([...articleHosts, ...prioritizedCtxHosts], { limit: 6 });
 }
@@ -8334,7 +8336,7 @@ function ensureTopicAttributions({
 			? topicContexts[i].context
 			: [];
 		const contentType = String(
-			topicContextFlags?.contentType || ""
+			topicContextFlags?.contentType || "",
 		).toLowerCase();
 		const topicFlag = Array.isArray(topicContextFlags?.topics)
 			? topicContextFlags.topics[i]
@@ -8350,7 +8352,7 @@ function ensureTopicAttributions({
 			sourceTokens = buildSourceTokensFromHosts(sourceHosts);
 		const topicSegments = segments.filter((s) => Number(s.topicIndex) === i);
 		const hasAttribution = topicSegments.some((s) =>
-			segmentHasAttribution(s.text || "", sourceTokens)
+			segmentHasAttribution(s.text || "", sourceTokens),
 		);
 		if (hasAttribution) continue;
 
@@ -8358,7 +8360,7 @@ function ensureTopicAttributions({
 		if (targetIndex < 0) continue;
 		const sourceLabel = formatSourceLabel(
 			sourceHosts[0],
-			segments[targetIndex]?.topicLabel || topics?.[i]?.topic || ""
+			segments[targetIndex]?.topicLabel || topics?.[i]?.topic || "",
 		);
 		if (!sourceLabel) continue;
 		const prefix = `According to ${sourceLabel}, `;
@@ -8412,7 +8414,7 @@ async function rewriteSegmentsForQuality({
 		const contextLabel = isFictional ? "fictional" : "real-world";
 		const sources = uniqueStrings(
 			ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean),
-			{ limit: 6 }
+			{ limit: 6 },
 		);
 		return `Topic ${idx + 1} (${
 			intent.label || t?.topic || "topic"
@@ -8427,7 +8429,7 @@ async function rewriteSegmentsForQuality({
 			(s) =>
 				`#${s.index}: topic ${s.topicIndex} (${
 					s.topicLabel || topics?.[s.topicIndex]?.topic || ""
-				})`
+				})`,
 		)
 		.join(", ");
 	const trendSignalLines = buildTrendSignalLines(topics);
@@ -8507,7 +8509,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		updated,
 		topics,
 		topicContexts,
-		topicIntents
+		topicIntents,
 	);
 	updated = enforceRealWorldFraming(updated, topicContextFlags);
 	updated = ensureTopicEngagementQuestions(updated, topics, mood, wordCaps);
@@ -8537,7 +8539,7 @@ function buildVoiceSettingsForExpression(
 	expression = "neutral",
 	mood = "neutral",
 	text = "",
-	opts = {}
+	opts = {},
 ) {
 	const uniform = Boolean(opts?.uniform);
 	const forceNeutral = Boolean(opts?.forceNeutral);
@@ -8624,7 +8626,7 @@ async function synthesizeTtsWav({
 					expectedText: ttsText,
 					jobId,
 					label: safeLabel,
-			  })
+				})
 			: { pass: true, issues: [] };
 		let activeWav = wav;
 		let activeDurationSec = durationSec;
@@ -8636,7 +8638,7 @@ async function synthesizeTtsWav({
 				pass: qa.pass,
 				issues: qa.issues,
 				maxInternalSilenceSec: Number(
-					(qa.maxInternalSilenceSec || 0).toFixed(3)
+					(qa.maxInternalSilenceSec || 0).toFixed(3),
 				),
 				similarity: Number((qa.similarity || 0).toFixed(3)),
 			});
@@ -8665,7 +8667,7 @@ async function synthesizeTtsWav({
 								pass: tightenedQa.pass,
 								issues: tightenedQa.issues,
 								maxInternalSilenceSec: Number(
-									(tightenedQa.maxInternalSilenceSec || 0).toFixed(3)
+									(tightenedQa.maxInternalSilenceSec || 0).toFixed(3),
 								),
 								similarity: Number((tightenedQa.similarity || 0).toFixed(3)),
 							});
@@ -8796,7 +8798,7 @@ async function createSilentWav({ durationSec, outPath }) {
 			outPath,
 		],
 		"silent_wav",
-		{ timeoutMs: 60000 }
+		{ timeoutMs: 60000 },
 	);
 	return outPath;
 }
@@ -8836,7 +8838,7 @@ function buildYouTubeOAuth2Client(source) {
 	const o = new google.auth.OAuth2(
 		process.env.YOUTUBE_CLIENT_ID,
 		process.env.YOUTUBE_CLIENT_SECRET,
-		process.env.YOUTUBE_REDIRECT_URI
+		process.env.YOUTUBE_REDIRECT_URI,
 	);
 	o.setCredentials(creds);
 	return o;
@@ -8870,14 +8872,14 @@ async function refreshYouTubeTokensIfNeeded(user, payload) {
 function normalizeYouTubeTags(tags = []) {
 	const list = Array.isArray(tags) ? tags : [tags];
 	return Array.from(
-		new Set(list.map((t) => String(t || "").trim()).filter(Boolean))
+		new Set(list.map((t) => String(t || "").trim()).filter(Boolean)),
 	).slice(0, 15);
 }
 
 async function uploadToYouTube(
 	u,
 	fp,
-	{ title, description, tags, category, thumbnailPath, jobId }
+	{ title, description, tags, category, thumbnailPath, jobId },
 ) {
 	const o = buildYouTubeOAuth2Client(u);
 	if (!o) throw new Error("YouTube OAuth missing");
@@ -8904,7 +8906,7 @@ async function uploadToYouTube(
 			},
 			media: { body: fs.createReadStream(fp) },
 		},
-		{ maxContentLength: Infinity, maxBodyLength: Infinity }
+		{ maxContentLength: Infinity, maxBodyLength: Infinity },
 	);
 
 	const videoId = data?.id;
@@ -8960,13 +8962,13 @@ async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
 				.trim()
 				.replace(/\n{3,}/g, "\n\n");
 			seoDescription = ensureClickableLinks(
-				`${MERCH_INTRO}${descRaw}\n\n${BRAND_CREDIT}`
+				`${MERCH_INTRO}${descRaw}\n\n${BRAND_CREDIT}`,
 			);
 		} catch {}
 	}
 	if (!seoDescription) {
 		seoDescription = ensureClickableLinks(
-			`${MERCH_INTRO}${seoTitle}\n\nTell me your take and tap like if this helped.\n\n${BRAND_CREDIT}`
+			`${MERCH_INTRO}${seoTitle}\n\nTell me your take and tap like if this helped.\n\n${BRAND_CREDIT}`,
 		);
 	}
 
@@ -8979,7 +8981,7 @@ async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
 				messages: [{ role: "user", content: tagPrompt }],
 			});
 			const parsed = parseJsonFlexible(
-				stripCodeFence(tagResp.choices?.[0]?.message?.content || "")
+				stripCodeFence(tagResp.choices?.[0]?.message?.content || ""),
 			);
 			if (Array.isArray(parsed)) tags.push(...parsed);
 		} catch {}
@@ -9276,7 +9278,7 @@ async function mp3ToCleanWav(mp3Path, wavPath) {
 			wavPath,
 		],
 		"mp3_to_wav",
-		{ timeoutMs: 120000 }
+		{ timeoutMs: 120000 },
 	);
 }
 
@@ -9306,7 +9308,7 @@ async function trimLeadingSilenceWav(inWav, outWav) {
 			outWav,
 		],
 		"trim_lead_silence",
-		{ timeoutMs: 120000 }
+		{ timeoutMs: 120000 },
 	);
 	return outWav;
 }
@@ -9331,7 +9333,7 @@ async function applyGlobalAtempoToWav(inWav, outWav, atempo) {
 			outWav,
 		],
 		"apply_global_atempo",
-		{ timeoutMs: 120000 }
+		{ timeoutMs: 120000 },
 	);
 	return outWav;
 }
@@ -9347,7 +9349,7 @@ function tightenVoiceSettings(settings = {}, attempt = 0) {
 		stability: clampNumber(
 			stability + AUDIO_QA_STRICT_STABILITY_BOOST * attempt,
 			0.1,
-			1
+			1,
 		),
 		style: clampNumber(Math.min(style, AUDIO_QA_STRICT_STYLE_MAX), 0, 0.35),
 	};
@@ -9401,7 +9403,7 @@ async function detectInternalSilence(
 		minSilenceSec = AUDIO_QA_INTERNAL_SILENCE_SEC,
 		noiseDb = AUDIO_QA_INTERNAL_SILENCE_DB,
 		edgeBufferSec = AUDIO_QA_EDGE_BUFFER_SEC,
-	} = {}
+	} = {},
 ) {
 	const durationSec = await probeDurationSeconds(wavPath);
 	if (!durationSec || !Number.isFinite(durationSec)) {
@@ -9419,7 +9421,7 @@ async function detectInternalSilence(
 			"-",
 		],
 		"silence_detect",
-		{ timeoutMs: 60000 }
+		{ timeoutMs: 60000 },
 	);
 	const stderr = String(res?.stderr || "");
 	const lines = stderr.split(/\r?\n/);
@@ -9432,7 +9434,7 @@ async function detectInternalSilence(
 			currentStart = Number(startMatch[1]);
 		}
 		const endMatch = line.match(
-			/silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)/
+			/silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)/,
 		);
 		if (endMatch) {
 			const end = Number(endMatch[1]);
@@ -9448,11 +9450,11 @@ async function detectInternalSilence(
 
 	const edge = Math.max(0, Number(edgeBufferSec) || 0);
 	const internal = silences.filter(
-		(s) => s.start > edge && s.end < durationSec - edge
+		(s) => s.start > edge && s.end < durationSec - edge,
 	);
 	const maxInternal = internal.reduce(
 		(max, s) => Math.max(max, Number(s.duration) || 0),
-		0
+		0,
 	);
 
 	return {
@@ -9512,7 +9514,7 @@ async function tightenInternalSilenceWav({
 	const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
 	const outPath = path.join(
 		tmpDir,
-		`${safeLabel}_tight_${jobId || "audio"}.wav`
+		`${safeLabel}_tight_${jobId || "audio"}.wav`,
 	);
 	const minSeg = 0.02;
 	const keepSilence = clampNumber(maxSilenceSec, 0.08, 0.5);
@@ -9548,14 +9550,14 @@ async function tightenInternalSilenceWav({
 			const aLabel = `a${idx}`;
 			filterParts.push(
 				`[0:a]atrim=start=${seg.start.toFixed(3)}:end=${seg.end.toFixed(
-					3
-				)},asetpts=PTS-STARTPTS[${aLabel}]`
+					3,
+				)},asetpts=PTS-STARTPTS[${aLabel}]`,
 			);
 			labels.push(`[${aLabel}]`);
 		} else {
 			const sLabel = `s${idx}`;
 			filterParts.push(
-				`anullsrc=r=${AUDIO_SR}:cl=mono:d=${seg.duration.toFixed(3)}[${sLabel}]`
+				`anullsrc=r=${AUDIO_SR}:cl=mono:d=${seg.duration.toFixed(3)}[${sLabel}]`,
 			);
 			labels.push(`[${sLabel}]`);
 		}
@@ -9565,7 +9567,7 @@ async function tightenInternalSilenceWav({
 	filterParts.push(
 		`${labels.join("")}concat=n=${
 			labels.length
-		}:v=0:a=1,aresample=${AUDIO_SR},aformat=channel_layouts=mono[clean]`
+		}:v=0:a=1,aresample=${AUDIO_SR},aformat=channel_layouts=mono[clean]`,
 	);
 
 	await spawnBin(
@@ -9587,7 +9589,7 @@ async function tightenInternalSilenceWav({
 			outPath,
 		],
 		"tighten_internal_silence",
-		{ timeoutMs: 120000 }
+		{ timeoutMs: 120000 },
 	);
 
 	const outDuration = await probeDurationSeconds(outPath);
@@ -9744,7 +9746,7 @@ async function requestSyncSoJob({ videoPath, audioPath, jobId }) {
 		(typeof FormData !== "function" || typeof fetch !== "function")
 	) {
 		throw new Error(
-			"Sync multipart requires Node 18+ (fetch/FormData) or install 'form-data'"
+			"Sync multipart requires Node 18+ (fetch/FormData) or install 'form-data'",
 		);
 	}
 
@@ -9774,7 +9776,7 @@ async function requestSyncSoJob({ videoPath, audioPath, jobId }) {
 				const err = new Error(
 					`Sync.so generate failed (${res.status}): ${
 						extractSyncSoError(data, "") || "unknown error"
-					}`
+					}`,
 				);
 				err.response = { status: res.status, data };
 				throw err;
@@ -9795,18 +9797,18 @@ async function requestSyncSoJob({ videoPath, audioPath, jobId }) {
 	form.append(
 		"video",
 		new Blob([fs.readFileSync(videoPath)], { type: "video/mp4" }),
-		"presenter.mp4"
+		"presenter.mp4",
 	);
 	form.append(
 		"audio",
 		new Blob([fs.readFileSync(audioPath)], { type: "audio/wav" }),
-		"segment.wav"
+		"segment.wav",
 	);
 
 	const { status, ok, data, text } = await fetchJson(
 		endpoint,
 		{ method: "POST", headers: buildSyncSoHeaders(), body: form },
-		90000
+		90000,
 	);
 
 	const id = extractSyncSoId(data);
@@ -9814,7 +9816,7 @@ async function requestSyncSoJob({ videoPath, audioPath, jobId }) {
 		throw new Error(
 			`Sync.so generate failed (${status}): ${
 				extractSyncSoError(data, text) || "unknown error"
-			}`
+			}`,
 		);
 	}
 	return { id };
@@ -9829,13 +9831,13 @@ async function pollSyncSoJob({ id, label, jobId }) {
 		const { status, ok, data, text } = await fetchJson(
 			statusUrl,
 			{ headers: buildSyncSoHeaders() },
-			25000
+			25000,
 		);
 		if (!ok) {
 			throw new Error(
 				`${label} status check failed (${status}): ${
 					extractSyncSoError(data, text) || "unknown error"
-				}`
+				}`,
 			);
 		}
 
@@ -9845,7 +9847,7 @@ async function pollSyncSoJob({ id, label, jobId }) {
 		if ((st === "completed" || st === "succeeded") && out) return out;
 		if (st === "failed" || st === "error" || st === "rejected") {
 			throw new Error(
-				`${label} failed: ${extractSyncSoError(data, text) || "unknown error"}`
+				`${label} failed: ${extractSyncSoError(data, text) || "unknown error"}`,
 			);
 		}
 
@@ -9876,7 +9878,7 @@ async function normalizeClip(
 	inPath,
 	outPath,
 	outCfg,
-	{ zoomOut = 1.0, addFades = false, fadeOutOnly = false } = {}
+	{ zoomOut = 1.0, addFades = false, fadeOutOnly = false } = {},
 ) {
 	const w = makeEven(outCfg.w);
 	const h = makeEven(outCfg.h);
@@ -9888,7 +9890,7 @@ async function normalizeClip(
 			? `scale=${w}:${h}:force_original_aspect_ratio=increase,boxblur=15:1,crop=${w}:${h}`
 			: `scale=${w}:${h}:force_original_aspect_ratio=${
 					scaleMode === "cover" ? "increase" : "decrease"
-			  },crop=${w}:${h}`;
+				},crop=${w}:${h}`;
 
 	if (scaleMode === "contain") {
 		vf = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`;
@@ -9978,7 +9980,7 @@ async function normalizeClip(
 			outPath,
 		],
 		"normalize_clip",
-		{ timeoutMs: 240000 }
+		{ timeoutMs: 240000 },
 	);
 }
 
@@ -9987,11 +9989,11 @@ async function createSyncFallbackInput(
 	tmpDir,
 	jobId,
 	label,
-	variant = 1
+	variant = 1,
 ) {
 	const out = path.join(
 		tmpDir,
-		`${label}_${crypto.randomUUID()}_sync_fallback_${variant}.mp4`
+		`${label}_${crypto.randomUUID()}_sync_fallback_${variant}.mp4`,
 	);
 	let vf = `fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`;
 	let crf = Math.max(26, SYNC_SO_INPUT_CRF + 4);
@@ -10026,7 +10028,7 @@ async function createSyncFallbackInput(
 			out,
 		],
 		tag,
-		{ timeoutMs: 180000 }
+		{ timeoutMs: 180000 },
 	);
 
 	return await ensureUnderBytes(out, SYNC_SO_MAX_BYTES, tmpDir, jobId, label);
@@ -10076,7 +10078,7 @@ async function renderLipsyncedSegment({
 			baseSeg,
 		],
 		"base_segment",
-		{ timeoutMs: 240000 }
+		{ timeoutMs: 240000 },
 	);
 
 	let syncBase = baseSeg;
@@ -10088,7 +10090,7 @@ async function renderLipsyncedSegment({
 		} catch {}
 
 		const sizeThreshold = Math.floor(
-			SYNC_SO_MAX_BYTES * SYNC_SO_PRESCALE_SIZE_PCT
+			SYNC_SO_MAX_BYTES * SYNC_SO_PRESCALE_SIZE_PCT,
 		);
 		const shouldPrescale =
 			SYNC_SO_PRESCALE_ALWAYS ||
@@ -10120,7 +10122,7 @@ async function renderLipsyncedSegment({
 					prescaled,
 				],
 				"sync_prescale",
-				{ timeoutMs: 180000 }
+				{ timeoutMs: 180000 },
 			);
 			syncBase = prescaled;
 			logJob(jobId, "sync prescale applied", {
@@ -10137,7 +10139,7 @@ async function renderLipsyncedSegment({
 		SYNC_SO_MAX_BYTES,
 		tmpDir,
 		jobId,
-		`base_${safeLabel}`
+		`base_${safeLabel}`,
 	);
 	if (!LONG_VIDEO_KEEP_TMP) {
 		if (baseSeg && baseSeg !== baseSized) safeUnlink(baseSeg);
@@ -10157,12 +10159,12 @@ async function renderLipsyncedSegment({
 							tmpDir,
 							jobId,
 							`sync_${safeLabel}`,
-							attempt
-					  );
+							attempt,
+						);
 
 			const fit = path.join(
 				tmpDir,
-				`base_fit_${jobId}_${safeLabel}_${attempt}.mp4`
+				`base_fit_${jobId}_${safeLabel}_${attempt}.mp4`,
 			);
 			await fitVideoToDuration(syncInput, dur, fit);
 
@@ -10243,7 +10245,7 @@ async function createImageMontageClip({
 	const h = makeEven(output.h);
 	const fps = Number(output.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
 	const imageScaleMode = String(
-		output.imageScaleMode || DEFAULT_IMAGE_SCALE_MODE
+		output.imageScaleMode || DEFAULT_IMAGE_SCALE_MODE,
 	)
 		.trim()
 		.toLowerCase();
@@ -10270,13 +10272,13 @@ async function createImageMontageClip({
 			const fg2 = `fg2${idx}`;
 			filterParts.push(`[${idx}:v]split=2[${bg}][${fg}]`);
 			filterParts.push(
-				`[${bg}]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},gblur=sigma=18[${bg2}]`
+				`[${bg}]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},gblur=sigma=18[${bg2}]`,
 			);
 			filterParts.push(
-				`[${fg}]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos[${fg2}]`
+				`[${fg}]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos[${fg2}]`,
 			);
 			filterParts.push(
-				`[${bg2}][${fg2}]overlay=(W-w)/2:(H-h)/2,fps=${fps},${trim},setsar=1,format=yuv420p[${outLabel}]`
+				`[${bg2}][${fg2}]overlay=(W-w)/2:(H-h)/2,fps=${fps},${trim},setsar=1,format=yuv420p[${outLabel}]`,
 			);
 		} else {
 			const scale =
@@ -10291,11 +10293,11 @@ async function createImageMontageClip({
 					? motionMode === 0
 						? `zoompan=z='min(1.08,zoom+0.0007)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps}`
 						: motionMode === 1
-						? `zoompan=z='min(1.06,zoom+0.0006)':x='iw/2-(iw/zoom/2)+${panX}':y='ih/2-(ih/zoom/2)+${panY}':d=1:fps=${fps}`
-						: `fps=${fps}`
+							? `zoompan=z='min(1.06,zoom+0.0006)':x='iw/2-(iw/zoom/2)+${panX}':y='ih/2-(ih/zoom/2)+${panY}':d=1:fps=${fps}`
+							: `fps=${fps}`
 					: `fps=${fps}`;
 			filterParts.push(
-				`[${idx}:v]${scale},${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`
+				`[${idx}:v]${scale},${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`,
 			);
 		}
 		vLabels.push(`[${outLabel}]`);
@@ -10309,8 +10311,8 @@ async function createImageMontageClip({
 			const offset = Math.max(0, acc - crossfadeDur);
 			filterParts.push(
 				`[${last}][v${i}]xfade=transition=fade:duration=${crossfadeDur.toFixed(
-					3
-				)}:offset=${offset.toFixed(3)}[${out}]`
+					3,
+				)}:offset=${offset.toFixed(3)}[${out}]`,
 			);
 			acc += perDur - crossfadeDur;
 			last = out;
@@ -10318,7 +10320,7 @@ async function createImageMontageClip({
 		filterParts.push(`[${last}]setsar=1,format=yuv420p[v]`);
 	} else {
 		filterParts.push(
-			`${vLabels.join("")}concat=n=${imagePaths.length}:v=1:a=0[v]`
+			`${vLabels.join("")}concat=n=${imagePaths.length}:v=1:a=0[v]`,
 		);
 	}
 
@@ -10347,7 +10349,7 @@ async function createImageMontageClip({
 			raw,
 		],
 		"image_montage",
-		{ timeoutMs: 240000 }
+		{ timeoutMs: 240000 },
 	);
 
 	const fit = path.join(tmpDir, `seg_img_${jobId}_${safeLabel}_fit.mp4`);
@@ -10393,7 +10395,7 @@ async function fitVideoToDuration(inVideo, targetSec, outVideo, padSec = 0) {
 	const pad = Math.max(0, Number(padSec) || 0);
 	const target = Math.max(0.2, Number(targetSec) || 1) + pad;
 	const vf = `setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${target.toFixed(
-		3
+		3,
 	)},trim=0:${target.toFixed(3)},setpts=PTS-STARTPTS`;
 	await spawnBin(
 		ffmpegPath,
@@ -10419,7 +10421,7 @@ async function fitVideoToDuration(inVideo, targetSec, outVideo, padSec = 0) {
 			outVideo,
 		],
 		"fit_video",
-		{ timeoutMs: 180000 }
+		{ timeoutMs: 180000 },
 	);
 	return outVideo;
 }
@@ -10455,7 +10457,7 @@ async function mergeVideoWithAudio(videoPath, audioPath, outPath) {
 			outPath,
 		],
 		"merge_audio",
-		{ timeoutMs: 180000 }
+		{ timeoutMs: 180000 },
 	);
 	return outPath;
 }
@@ -10465,7 +10467,7 @@ async function ensureUnderBytes(
 	maxBytes,
 	tmpDir,
 	jobId,
-	label = "sync_input"
+	label = "sync_input",
 ) {
 	try {
 		const st = fs.statSync(videoPath);
@@ -10494,7 +10496,7 @@ async function ensureUnderBytes(
 				out,
 			],
 			"shrink_sync_input",
-			{ timeoutMs: 180000 }
+			{ timeoutMs: 180000 },
 		);
 
 		const st2 = fs.statSync(out);
@@ -10529,7 +10531,7 @@ async function ensureUnderBytes(
 				out2,
 			],
 			"shrink_sync_input_scale",
-			{ timeoutMs: 180000 }
+			{ timeoutMs: 180000 },
 		);
 		const st3 = fs.statSync(out2);
 		logJob(jobId, "sync input scaled down", {
@@ -10568,7 +10570,7 @@ async function concatClips(clips, outPath, outCfg) {
 		.map(
 			(_, i) =>
 				`[${i}:v:0]${scaleFilter}setpts=PTS-STARTPTS,format=yuv420p,setsar=1[v${i}];` +
-				`[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp[a${i}]`
+				`[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp[a${i}]`,
 		)
 		.join(";");
 
@@ -10601,7 +10603,7 @@ async function concatClips(clips, outPath, outCfg) {
 		"-movflags",
 		"+faststart",
 		"-y",
-		outPath
+		outPath,
 	);
 
 	await spawnBin(ffmpegPath, args, "concat", { timeoutMs: 420000 });
@@ -10630,7 +10632,7 @@ async function createPresenterIntroMotion({
 	const dur = clampNumber(
 		Number(durationSec) || DEFAULT_INTRO_SEC,
 		INTRO_MIN_SEC,
-		4
+		4,
 	);
 
 	const motionHint = motionRefVideo
@@ -10638,7 +10640,7 @@ async function createPresenterIntroMotion({
 		: "Natural head and neck movement, human blink rate with slight variation, subtle breathing, hands resting with minimal movement.";
 	const introFace = pickIntroExpression(jobId);
 	const titleTarget = `${Math.round(
-		INTRO_TEXT_X_PCT * 100
+		INTRO_TEXT_X_PCT * 100,
 	)}% from the left edge and ${Math.round(INTRO_TEXT_Y_PCT * 100)}% down`;
 
 	const prompt = `
@@ -10703,7 +10705,7 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 			const outCfg = parseRatio(outputRatio);
 			const outMp4Fallback = path.join(
 				path.dirname(presenterImagePath),
-				`intro_motion_fallback_${jobId}.mp4`
+				`intro_motion_fallback_${jobId}.mp4`,
 			);
 			await spawnBin(
 				ffmpegPath,
@@ -10717,9 +10719,9 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 					"-an",
 					"-vf",
 					`scale=${makeEven(outCfg.w)}:${makeEven(
-						outCfg.h
+						outCfg.h,
 					)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-						outCfg.w
+						outCfg.w,
 					)}:${makeEven(outCfg.h)},fps=${DEFAULT_OUTPUT_FPS},format=yuv420p`,
 					"-c:v",
 					"libx264",
@@ -10735,7 +10737,7 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 					outMp4Fallback,
 				],
 				"intro_fallback",
-				{ timeoutMs: 180000 }
+				{ timeoutMs: 180000 },
 			);
 			logJob(jobId, "intro motion fallback created", {
 				path: path.basename(outMp4Fallback),
@@ -10746,7 +10748,7 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 
 	const outMp4 = path.join(
 		path.dirname(presenterImagePath),
-		`intro_motion_${jobId}.mp4`
+		`intro_motion_${jobId}.mp4`,
 	);
 	await downloadToFile(outUrl, outMp4, 120000, 2);
 	return outMp4;
@@ -10805,7 +10807,7 @@ function resolveWatermarkFontFile() {
 const WATERMARK_FONT_FILE = resolveWatermarkFontFile();
 if (!WATERMARK_FONT_FILE) {
 	console.warn(
-		"[LongVideo] WARN - Watermark font not found. Falling back to default drawtext font."
+		"[LongVideo] WARN - Watermark font not found. Falling back to default drawtext font.",
 	);
 }
 
@@ -10886,7 +10888,7 @@ function wrapIntroText(text = "", maxCharsPerLine = 36, maxLines = 2) {
 
 function fitIntroText(
 	text = "",
-	{ baseMaxChars = 36, preferLines = 2, maxLines = 3 } = {}
+	{ baseMaxChars = 36, preferLines = 2, maxLines = 3 } = {},
 ) {
 	const clean = String(text || "").trim();
 	if (!clean) return { text: "", fontScale: 1, lines: 0, truncated: false };
@@ -10939,7 +10941,7 @@ async function createIntroClip({
 	const dur = clampNumber(
 		Number(durationSec) || DEFAULT_INTRO_SEC,
 		minDur,
-		maxDur
+		maxDur,
 	);
 
 	const fontFile = resolveFontFile();
@@ -10962,7 +10964,7 @@ async function createIntroClip({
 	const safeSub = escapeDrawtext(subFit.text);
 	const titleFontSize = Math.max(
 		16,
-		Math.round(H * 0.048 * titleFit.fontScale)
+		Math.round(H * 0.048 * titleFit.fontScale),
 	);
 	const subFontSize = Math.max(12, Math.round(H * 0.032 * subFit.fontScale));
 	const titleX = Math.round(W * INTRO_TEXT_X_PCT);
@@ -10972,9 +10974,9 @@ async function createIntroClip({
 	const textInDur = INTRO_TEXT_FADE_IN_DUR;
 	const textInEnd = textInStart + textInDur;
 	const alphaExpr = `if(lt(t,${textInStart.toFixed(
-		2
+		2,
 	)}),0, if(lt(t,${textInEnd.toFixed(2)}),(t-${textInStart.toFixed(
-		2
+		2,
 	)})/${textInDur.toFixed(2)}, 1))`;
 
 	const bgKind = detectFileType(bgImagePath)?.kind;
@@ -10987,7 +10989,7 @@ async function createIntroClip({
 	const base = isVideoBg
 		? `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}${videoBlur},fps=${fps},format=yuv420p,`
 		: `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},gblur=sigma=18,` +
-		  `zoompan=z='min(1.12,zoom+0.0025)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps},format=yuv420p,`;
+			`zoompan=z='min(1.12,zoom+0.0025)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps},format=yuv420p,`;
 	const vf =
 		base +
 		`drawtext=text='${safeTitle}'${fontOpt}:fontsize=${titleFontSize}:fontcolor=white:x=${titleX}:y=${titleY}-(text_h/2):shadowcolor=black:shadowx=2:shadowy=2:alpha='${alphaExpr}',` +
@@ -11039,7 +11041,7 @@ async function createIntroClip({
 			outPath,
 		],
 		"intro_clip",
-		{ timeoutMs: 180000 }
+		{ timeoutMs: 180000 },
 	);
 
 	return outPath;
@@ -11112,8 +11114,8 @@ function buildAutoOverlaysFromTimeline({
 				(s) =>
 					Number.isFinite(Number(s.startSec)) &&
 					Number.isFinite(Number(s.endSec)) &&
-					Number(s.endSec) > Number(s.startSec)
-		  )
+					Number(s.endSec) > Number(s.startSec),
+			)
 		: [];
 
 	const positions = [OVERLAY_DEFAULT_POSITION];
@@ -11127,7 +11129,7 @@ function buildAutoOverlaysFromTimeline({
 		if (segments.length) {
 			const idx = Math.min(
 				segments.length - 1,
-				Math.floor(((i + 0.5) * segments.length) / n)
+				Math.floor(((i + 0.5) * segments.length) / n),
 			);
 			const seg = segments[idx];
 			const segDur = Math.max(0.6, Number(seg.endSec) - Number(seg.startSec));
@@ -11137,7 +11139,7 @@ function buildAutoOverlaysFromTimeline({
 		} else {
 			const available = Math.max(
 				1,
-				Number(totalDurationSec || 0) - Number(introSec || 0)
+				Number(totalDurationSec || 0) - Number(introSec || 0),
 			);
 			const slotCenter =
 				Number(introSec || 0) + (available / (n + 1)) * (i + 1);
@@ -11186,19 +11188,19 @@ async function applyOverlays(baseVideoPath, overlays, outPath) {
 		filterParts.push(
 			`[${inV}]format=rgba,trim=0:${dur.toFixed(3)},setpts=PTS-STARTPTS+${
 				ov.startSec
-			}/TB[${prep}]`
+			}/TB[${prep}]`,
 		);
 
 		// Scale with a hard cap to avoid covering the presenter.
 		filterParts.push(
-			`[${prep}][${last}]scale2ref=w='min(iw*${ov.scale},main_w*${OVERLAY_MAX_WIDTH_PCT})':h='-1'[${scaled}][${baseRef}]`
+			`[${prep}][${last}]scale2ref=w='min(iw*${ov.scale},main_w*${OVERLAY_MAX_WIDTH_PCT})':h='-1'[${scaled}][${baseRef}]`,
 		);
 
 		if (OVERLAY_BORDER_PX > 0) {
 			filterParts.push(
 				`[${scaled}]pad=iw+${OVERLAY_BORDER_PX * 2}:ih+${
 					OVERLAY_BORDER_PX * 2
-				}:${OVERLAY_BORDER_PX}:${OVERLAY_BORDER_PX}:color=black@0.25[${timed}]`
+				}:${OVERLAY_BORDER_PX}:${OVERLAY_BORDER_PX}:color=black@0.25[${timed}]`,
 			);
 		}
 
@@ -11206,8 +11208,8 @@ async function applyOverlays(baseVideoPath, overlays, outPath) {
 			`[${baseRef}][${timed}]overlay=${pos.x}:${
 				pos.y
 			}:enable='between(t,${ov.startSec.toFixed(3)},${ov.endSec.toFixed(
-				3
-			)})'[${out}]`
+				3,
+			)})'[${out}]`,
 		);
 
 		last = out;
@@ -11244,7 +11246,7 @@ async function applyOverlays(baseVideoPath, overlays, outPath) {
 			outPath,
 		],
 		"overlay",
-		{ timeoutMs: 360000 }
+		{ timeoutMs: 360000 },
 	);
 
 	return outPath;
@@ -11267,7 +11269,7 @@ async function jamendoSearchTracks({
 		limit: 20,
 		fuzzytags: String(fuzzytags || "cinematic, trailer, energetic").replace(
 			/\s+/g,
-			"+"
+			"+",
 		),
 		include: "licenses",
 		audioformat: "mp32",
@@ -11346,7 +11348,7 @@ async function resolveBackgroundMusic({
 
 	// 3) Jamendo based on topic (fallback)
 	const tags = `cinematic, upbeat, modern, instrumental, ${String(
-		topic || ""
+		topic || "",
 	).slice(0, 40)}`;
 	const speeds = ["medium", "high"];
 	const candidates = await jamendoSearchTracks({
@@ -11377,7 +11379,7 @@ async function resolveBackgroundMusic({
 	}
 
 	throw new Error(
-		"Background music is required but could not be resolved. Provide JAMENDO_CLIENT_ID or musicUrl or LONG_VIDEO_DEFAULT_MUSIC_URL/PATH."
+		"Background music is required but could not be resolved. Provide JAMENDO_CLIENT_ID or musicUrl or LONG_VIDEO_DEFAULT_MUSIC_URL/PATH.",
 	);
 }
 
@@ -11385,7 +11387,7 @@ async function mixBackgroundMusic(
 	baseVideoPath,
 	musicPath,
 	outPath,
-	{ jobId }
+	{ jobId },
 ) {
 	const dur = await probeDurationSeconds(baseVideoPath);
 	const duration = dur && dur > 1 ? dur : null;
@@ -11401,12 +11403,12 @@ async function mixBackgroundMusic(
 	const filter =
 		`[0:a]aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,asplit=2[vox][vox_sc];` +
 		`[1:a]aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,volume=${vol.toFixed(
-			3
+			3,
 		)},atrim=0:${duration ? duration.toFixed(2) : "9999"}[music];` +
 		`[music][vox_sc]sidechaincompress=threshold=${threshold.toFixed(
-			3
+			3,
 		)}:ratio=${ratio.toFixed(2)}:attack=${attack.toFixed(
-			0
+			0,
 		)}:release=${release.toFixed(0)}:makeup=${makeup.toFixed(2)}[ducked];` +
 		`[vox][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`;
 
@@ -11433,7 +11435,7 @@ async function mixBackgroundMusic(
 		"-movflags",
 		"+faststart",
 		"-y",
-		outPath
+		outPath,
 	);
 
 	await spawnBin(ffmpegPath, args, "music_mix", { timeoutMs: 240000 });
@@ -11452,7 +11454,7 @@ async function finalizeVideoWithFadeOut({
 	const fadeDur = clampNumber(
 		safeFade,
 		0,
-		dur > 0 ? Math.min(1.2, dur / 2) : 0
+		dur > 0 ? Math.min(1.2, dur / 2) : 0,
 	);
 	const shouldFade = Boolean(fadeDur && dur && dur >= 0.4);
 	const start = shouldFade ? Math.max(0, dur - fadeDur) : 0;
@@ -11468,7 +11470,7 @@ async function finalizeVideoWithFadeOut({
 	];
 	if (shouldFade) {
 		videoFilters.push(
-			`fade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`
+			`fade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
 		);
 	}
 	videoFilters.push("format=yuv420p");
@@ -11479,7 +11481,7 @@ async function finalizeVideoWithFadeOut({
 	];
 	if (shouldFade) {
 		audioFilters.push(
-			`afade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`
+			`afade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
 		);
 	}
 	audioFilters.push(FINAL_LOUDNORM_FILTER);
@@ -11529,7 +11531,7 @@ async function finalizeVideoWithFadeOut({
 			outputPath,
 		],
 		"final_master",
-		{ timeoutMs: FINAL_MASTER_TIMEOUT_MS }
+		{ timeoutMs: FINAL_MASTER_TIMEOUT_MS },
 	);
 }
 
@@ -11600,17 +11602,17 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let introDurationSec = clampNumber(
 			DEFAULT_INTRO_SEC,
 			INTRO_MIN_SEC,
-			INTRO_MAX_SEC
+			INTRO_MAX_SEC,
 		);
 		let outroDurationSec = clampNumber(
 			DEFAULT_OUTRO_SEC,
 			OUTRO_MIN_SEC,
-			OUTRO_MAX_SEC
+			OUTRO_MAX_SEC,
 		);
 		const totalTargetSec =
 			introDurationSec + contentTargetSec + outroDurationSec;
 		const hasYouTubeTokens = Boolean(
-			youtubeRefreshToken || youtubeAccessToken || user?.youtubeRefreshToken
+			youtubeRefreshToken || youtubeAccessToken || user?.youtubeRefreshToken,
 		);
 		let thumbnailPath = "";
 		let thumbnailUrl = "";
@@ -11661,13 +11663,13 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		if (!SYNC_SO_API_KEY) throw new Error("SYNC_SO_API_KEY missing.");
 		if (!RUNWAY_API_KEY)
 			throw new Error(
-				"RUNWAY_API_KEY missing (required for presenter pipeline)."
+				"RUNWAY_API_KEY missing (required for presenter pipeline).",
 			);
 		if (!process.env.CHATGPT_API_TOKEN)
 			throw new Error("CHATGPT_API_TOKEN missing.");
 		if (!ELEVEN_API_KEY)
 			throw new Error(
-				"ELEVENLABS_API_KEY missing (required for intro/outro voice)."
+				"ELEVENLABS_API_KEY missing (required for intro/outro voice).",
 			);
 		if (!effectiveVoiceId) throw new Error("ELEVENLABS voiceId missing.");
 
@@ -11698,7 +11700,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			.filter(Boolean);
 		const topicSummary = topicTitles.join(" / ");
 		const contentMode = topicPicks.some(
-			(t) => String(t?.source || "").toLowerCase() === "user_prompt"
+			(t) => String(t?.source || "").toLowerCase() === "user_prompt",
 		)
 			? "prompt"
 			: "trends";
@@ -11718,11 +11720,11 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				(Array.isArray(story.articles) ? story.articles : [])
 					.map((a) => a?.url)
 					.filter((u) => isHttpUrl(u)),
-				{ limit: 6 }
+				{ limit: 6 },
 			);
 			const articleHosts = uniqueStrings(
 				articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
-				{ limit: 6 }
+				{ limit: 6 },
 			);
 			return {
 				index: idx,
@@ -11762,7 +11764,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		let presenterLocal = await ensureLocalPresenterAsset(
 			presenterAssetUrl,
 			tmpDir,
-			jobId
+			jobId,
 		);
 		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
 		const detected = detectFileType(presenterLocal);
@@ -11805,7 +11807,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						: []),
 					t.trendStory?.imageComment,
 				].filter(Boolean),
-				{ limit: 8 }
+				{ limit: 8 },
 			);
 			const mergedContext = Array.isArray(ctx)
 				? ctx.concat(trendContext)
@@ -11826,22 +11828,22 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const contextItems = Array.isArray(tc.context) ? tc.context : [];
 			const cseLinks = uniqueStrings(
 				contextItems.map((c) => c?.link).filter((u) => isHttpUrl(u)),
-				{ limit: 6 }
+				{ limit: 6 },
 			);
 			const cseHosts = uniqueStrings(
 				cseLinks.map((u) => getUrlHost(u)).filter(Boolean),
-				{ limit: 6 }
+				{ limit: 6 },
 			);
 			const story = topicPicks[idx]?.trendStory || {};
 			const articleUrls = uniqueStrings(
 				(Array.isArray(story.articles) ? story.articles : [])
 					.map((a) => a?.url)
 					.filter((u) => isHttpUrl(u)),
-				{ limit: 6 }
+				{ limit: 6 },
 			);
 			const articleHosts = uniqueStrings(
 				articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
-				{ limit: 6 }
+				{ limit: 6 },
 			);
 			const related = normalizeRelatedQueries(story.relatedQueries);
 			const interest = normalizeInterestOverTime(story.interestOverTime);
@@ -11876,8 +11878,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		const contentType = allFictionalTopics
 			? "fictional"
 			: hasFictionalTopic
-			? "mixed"
-			: "real";
+				? "mixed"
+				: "real";
 		const tonePlan = inferTonePlan({
 			topics: topicPicks,
 			liveContext,
@@ -11912,7 +11914,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		});
 		const narrationTargetSec = Math.max(
 			18,
-			Number(narrationPlan?.targetSec || contentTargetSec) || 0
+			Number(narrationPlan?.targetSec || contentTargetSec) || 0,
 		);
 		const segmentCount = computeSegmentCount(narrationTargetSec);
 		const wordCaps = buildWordCaps(segmentCount, narrationTargetSec);
@@ -12002,7 +12004,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		}
 		if (!qaResult.pass) {
 			throw new Error(
-				`script_qa_failed:${qaResult.issues.join("|") || "unknown"}`
+				`script_qa_failed:${qaResult.issues.join("|") || "unknown"}`,
 			);
 		}
 
@@ -12040,7 +12042,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						...shortsDetailsRaw,
 						status: shortsDetailsRaw.status || "planned",
 						plannedAt: shortsDetailsRaw.plannedAt || nowIso(),
-				  }
+					}
 				: null;
 		script.shortsDetails = shortsDetails;
 
@@ -12083,7 +12085,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		if (enableWardrobeEdit && presenterIsImage) {
 			try {
 				const presenterTitle = String(
-					script.title || topicSummary || topicTitles[0] || ""
+					script.title || topicSummary || topicTitles[0] || "",
 				).trim();
 				const presenterResult = await generatePresenterAdjustedImage({
 					jobId,
@@ -12105,7 +12107,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						presenterIsVideo = false;
 						presenterIsImage = true;
 						presenterOutfit = String(
-							presenterResult.presenterOutfit || ""
+							presenterResult.presenterOutfit || "",
 						).trim();
 						logJob(jobId, "presenter adjustments ready", {
 							path: path.basename(presenterLocal),
@@ -12141,7 +12143,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const fallbackTitle = topicTitles[0] || topicSummary || "Quick Update";
 			const thumbTitle = String(script.title || fallbackTitle).trim();
 			const thumbShortTitle = String(
-				script.shortTitle || shortTitleFromText(thumbTitle)
+				script.shortTitle || shortTitleFromText(thumbTitle),
 			).trim();
 			const thumbLog = (message, payload) => logJob(jobId, message, payload);
 			await ensureThumbnailSeedImages({
@@ -12161,7 +12163,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			if (
 				hookPlan?.intent === "serious_update" &&
 				["neutral", "warm"].includes(
-					String(thumbExpression || "").toLowerCase()
+					String(thumbExpression || "").toLowerCase(),
 				)
 			) {
 				thumbExpression = "thoughtful";
@@ -12302,7 +12304,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				? buildVoiceSettingsForExpression("neutral", "neutral", "", {
 						uniform: true,
 						forceNeutral: FORCE_NEUTRAL_VOICEOVER,
-				  })
+					})
 				: null;
 		const resolveVoiceSettings = (expression, text) =>
 			lockedVoiceSettings ||
@@ -12347,7 +12349,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const introTargetSec = clampNumber(
 				introDurationSec,
 				INTRO_MIN_SEC,
-				INTRO_MAX_SEC
+				INTRO_MAX_SEC,
 			);
 			const introFit = await fitWavToTargetDuration({
 				wavPath: introAudioPath,
@@ -12414,7 +12416,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const outroTargetSec = clampNumber(
 				outroDurationSec,
 				OUTRO_MIN_SEC,
-				OUTRO_MAX_SEC
+				OUTRO_MAX_SEC,
 			);
 			const outroFit = await fitWavToTargetDuration({
 				wavPath: outroAudioPath,
@@ -12481,13 +12483,13 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				normalizeExpression(s.expression, voiceTonePlan?.mood),
 				s.text,
 				voiceTonePlan?.mood,
-				s.topicLabel
+				s.topicLabel,
 			),
 			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
 		}));
 		const smoothedExpressions = smoothExpressionPlan(
 			segments.map((s) => s.expression),
-			voiceTonePlan?.mood
+			voiceTonePlan?.mood,
 		);
 		let segmentsWithExpressions = segments.map((s, i) => ({
 			...s,
@@ -12495,13 +12497,13 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		}));
 		if (FORCE_NEUTRAL_VOICEOVER) {
 			segmentsWithExpressions = segmentsWithExpressions.map((s) =>
-				s.expression === "excited" ? { ...s, expression: "warm" } : s
+				s.expression === "excited" ? { ...s, expression: "warm" } : s,
 			);
 		}
 		const videoExpressionPlan = buildSubtleVideoExpressionPlan(
 			segmentsWithExpressions,
 			voiceTonePlan?.mood,
-			jobId
+			jobId,
 		);
 		segments = segmentsWithExpressions.map((s, i) => ({
 			...s,
@@ -12515,7 +12517,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				String(
 					topicPicks?.[Number(s.topicIndex)]?.displayTopic ||
 						topicPicks?.[Number(s.topicIndex)]?.topic ||
-						""
+						"",
 				).trim() ||
 				String(topicTitles[0] || "").trim(),
 		}));
@@ -12556,7 +12558,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						voiceWav,
 					],
 					"voiceover_to_wav",
-					{ timeoutMs: 180000 }
+					{ timeoutMs: 180000 },
 				);
 				safeUnlink(voicePath);
 
@@ -12587,7 +12589,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 							out,
 						],
 						"split_voiceover",
-						{ timeoutMs: 120000 }
+						{ timeoutMs: 120000 },
 					);
 					const d = await probeDurationSeconds(out);
 					cleanedWavs.push({ index: i, wav: out, cleanDur: d });
@@ -12611,7 +12613,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					seg.text = breathedText;
 					const voiceSettings = resolveVoiceSettings(
 						seg.expression,
-						breathedText
+						breathedText,
 					);
 					logJob(jobId, "tts segment start", {
 						segment: seg.index,
@@ -12679,7 +12681,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			driftSec = Math.abs(sumCleanDur - narrationTargetSec);
 			const toleranceSec = Math.min(
 				SCRIPT_TOLERANCE_SEC,
-				Math.max(1, narrationTargetSec * 0.07)
+				Math.max(1, narrationTargetSec * 0.07),
 			);
 			const ratioDelta = Math.abs(1 - rawAtempo);
 			const overageSec = sumCleanDur - narrationTargetSec;
@@ -12687,8 +12689,8 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				0,
 				Math.min(
 					MAX_NARRATION_OVERAGE_SEC,
-					narrationTargetSec * (MAX_NARRATION_OVERAGE_RATIO - 1)
-				)
+					narrationTargetSec * (MAX_NARRATION_OVERAGE_RATIO - 1),
+				),
 			);
 			const allowOverage =
 				ALLOW_NARRATION_OVERRUN &&
@@ -12708,7 +12710,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				globalAtempo = clampNumber(
 					globalAtempo * VOICE_SPEED_BOOST,
 					GLOBAL_ATEMPO_MIN,
-					GLOBAL_ATEMPO_MAX
+					GLOBAL_ATEMPO_MAX,
 				);
 			}
 			logJob(jobId, "global atempo computed", {
@@ -12746,11 +12748,11 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const adjustPct = clampNumber(
 				Math.round(Math.abs(1 - dampedRatio) * 100 + 3),
 				REWRITE_ADJUST_MIN,
-				REWRITE_ADJUST_MAX
+				REWRITE_ADJUST_MAX,
 			);
 			const direction = ratio > 1 ? "LONGER" : "SHORTER";
 			const adjustedCaps = wordCaps.map((c) =>
-				Math.max(12, Math.round(c * dampedRatio))
+				Math.max(12, Math.round(c * dampedRatio)),
 			);
 			const capsLine2 = adjustedCaps
 				.map((c, i) => `#${i}: <= ${c} words`)
@@ -12763,13 +12765,13 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					(s) =>
 						`#${s.index}: topic ${s.topicIndex} (${
 							s.topicLabel || topicTitles?.[s.topicIndex] || ""
-						})`
+						})`,
 				)
 				.join(", ");
 
 			const rewritePrompt = `
 Rewrite this script to better fit ~${narrationTargetSec.toFixed(
-				1
+				1,
 			)}s of spoken narration.
 Make the script about ${adjustPct}% ${direction} while keeping the same vibe.
 Quality first: do not remove key details or clarity just to hit the target.
@@ -12819,7 +12821,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				messages: [{ role: "user", content: rewritePrompt }],
 			});
 			const parsed2 = parseJsonFlexible(
-				resp2?.choices?.[0]?.message?.content || ""
+				resp2?.choices?.[0]?.message?.content || "",
 			);
 			if (!parsed2 || !Array.isArray(parsed2.segments))
 				throw new Error("Rewrite parse failed");
@@ -12838,14 +12840,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const fixedSegments = enforceSegmentCompleteness(
 				segments,
 				voiceTonePlan?.mood,
-				{ includeCta: false }
+				{ includeCta: false },
 			);
 			const withTransitions = ensureTopicTransitions(fixedSegments, topicPicks);
 			const withQuestions = ensureTopicEngagementQuestions(
 				withTransitions,
 				topicPicks,
 				voiceTonePlan?.mood,
-				adjustedCaps
+				adjustedCaps,
 			);
 			const fillerLimited = limitFillerAndEmotesAcrossSegments(withQuestions, {
 				maxFillers: MAX_FILLER_WORDS_PER_VIDEO,
@@ -12957,7 +12959,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			if (TRIM_LEADING_SILENCE && !voiceoverUrlLocked) {
 				const trimmed = path.join(
 					tmpDir,
-					`seg_audio_${jobId}_${a.index}_tight.wav`
+					`seg_audio_${jobId}_${a.index}_tight.wav`,
 				);
 				await trimLeadingSilenceWav(out, trimmed);
 				safeUnlink(out);
@@ -12997,7 +12999,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		if (timeline.length) {
 			const finalEnd = timeline[timeline.length - 1].endSec;
 			const desired = Number(
-				(introDurationSec + narrationTargetSec).toFixed(3)
+				(introDurationSec + narrationTargetSec).toFixed(3),
 			);
 			if (Math.abs(finalEnd - desired) > 0.08) {
 				logJob(jobId, "timeline end differs from target (small drift)", {
@@ -13009,7 +13011,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		const narrationActualSec = segmentAudio.reduce(
 			(sum, a) => sum + (Number(a.dur) || 0),
-			0
+			0,
 		);
 		const totalPlannedSec =
 			Number(introDurationSec || 0) +
@@ -13036,7 +13038,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				startSec: seg.startSec,
 				endSec: seg.endSec,
 				durationSec: Number(
-					Math.max(0, Number(seg.endSec) - Number(seg.startSec)).toFixed(3)
+					Math.max(0, Number(seg.endSec) - Number(seg.startSec)).toFixed(3),
 				),
 			})),
 		});
@@ -13059,7 +13061,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		}
 		const presenterPositions = pickEvenlySpacedIndices(
 			totalSegments,
-			presenterCount
+			presenterCount,
 		);
 		const presenterPosSet = new Set(presenterPositions);
 		const presenterSegments = [];
@@ -13099,11 +13101,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			if (Array.isArray(seg.imageUrls)) allImageUrls.push(...seg.imageUrls);
 		}
 		const uniqueImageUrls = new Set(
-			allImageUrls.map((u) => normalizeImageUrlKey(u))
+			allImageUrls.map((u) => normalizeImageUrlKey(u)),
 		);
 		const duplicateImageCount = Math.max(
 			0,
-			allImageUrls.length - uniqueImageUrls.size
+			allImageUrls.length - uniqueImageUrls.size,
 		);
 		logJob(jobId, "segment image qa", {
 			totalImages: allImageUrls.length,
@@ -13134,12 +13136,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		const presenterSegSet = new Set(finalPresenterSegments);
 		const presenterOnlySegments = segments.filter((s) =>
-			presenterSegSet.has(s.index)
+			presenterSegSet.has(s.index),
 		);
 		const presenterVideoPlan = buildSubtleVideoExpressionPlan(
 			presenterOnlySegments,
 			voiceTonePlan?.mood,
-			jobId
+			jobId,
 		);
 		const presenterPlanByIndex = new Map();
 		presenterOnlySegments.forEach((seg, idx) => {
@@ -13195,8 +13197,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					...segments.map((s) => s.videoExpression || s.expression),
 					introExpression,
 					outroExpression,
-				].filter(Boolean)
-			)
+				].filter(Boolean),
+			),
 		);
 		if (!expressionsNeeded.includes("neutral"))
 			expressionsNeeded.unshift("neutral");
@@ -13234,14 +13236,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 						const outMp4 = path.join(
 							tmpDir,
-							`baseline_${jobId}_${expr}_v${v + 1}.mp4`
+							`baseline_${jobId}_${expr}_v${v + 1}.mp4`,
 						);
 						await downloadToFile(outUrl, outMp4, 120000, 2);
 
 						// Prep baseline for sync input
 						const prep = path.join(
 							tmpDir,
-							`baseline_sync_${jobId}_${expr}_v${v + 1}.mp4`
+							`baseline_sync_${jobId}_${expr}_v${v + 1}.mp4`,
 						);
 						await spawnBin(
 							ffmpegPath,
@@ -13253,11 +13255,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 								"-an",
 								"-vf",
 								`scale=${makeEven(output.w)}:${makeEven(
-									output.h
+									output.h,
 								)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-									output.w
+									output.w,
 								)}:${makeEven(
-									output.h
+									output.h,
 								)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
 								"-c:v",
 								"libx264",
@@ -13273,7 +13275,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 								prep,
 							],
 							"prepare_baseline",
-							{ timeoutMs: 240000 }
+							{ timeoutMs: 240000 },
 						);
 
 						const syncReady = await ensureUnderBytes(
@@ -13281,7 +13283,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							SYNC_SO_MAX_BYTES,
 							tmpDir,
 							jobId,
-							`baseline_sync_${expr}_v${v + 1}`
+							`baseline_sync_${expr}_v${v + 1}`,
 						);
 						pushBaselineVariant(expr, syncReady);
 						logJob(jobId, "baseline presenter ready", {
@@ -13314,9 +13316,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					"-an",
 					"-vf",
 					`scale=${makeEven(output.w)}:${makeEven(
-						output.h
+						output.h,
 					)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-						output.w
+						output.w,
 					)}:${makeEven(output.h)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p`,
 					"-c:v",
 					"libx264",
@@ -13332,7 +13334,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					still,
 				],
 				"baseline_still",
-				{ timeoutMs: 180000 }
+				{ timeoutMs: 180000 },
 			);
 			pushBaselineVariant("neutral", still);
 		}
@@ -13480,7 +13482,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				tailRaw,
 			],
 			"outro_tail_cut",
-			{ timeoutMs: 120000 }
+			{ timeoutMs: 120000 },
 		);
 		const tailFit = path.join(tmpDir, `outro_tail_fit_${jobId}.mp4`);
 		await fitVideoToDuration(tailRaw, OUTRO_SMILE_TAIL_SEC, tailFit);
@@ -13528,7 +13530,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					: autoOverlayAssets;
 			const normalizedOverlays = normalizeOverlayAssets(
 				overlaySource,
-				totalDurationSec
+				totalDurationSec,
 			);
 			const overlaysToUse = normalizedOverlays;
 
@@ -13565,7 +13567,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				overlayedPath = await applyOverlays(
 					concatPath,
 					overlayLocal,
-					overlayedPath
+					overlayedPath,
 				);
 				logJob(jobId, "overlays applied", { count: overlayLocal.length });
 			} catch (e) {
@@ -13618,7 +13620,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				};
 				youtubeTokens = await refreshYouTubeTokensIfNeeded(
 					user,
-					youtubePayload
+					youtubePayload,
 				);
 				if (youtubeTokens?.refresh_token) {
 					youtubeLink = await uploadToYouTube(youtubeTokens, outputPath, {
@@ -13672,7 +13674,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							startSec: seg.startSec,
 							endSec: seg.endSec,
 							visualType: seg.visualType || "presenter",
-					  }))
+						}))
 					: [];
 				const shortsDetailsForDoc = script?.shortsDetails || null;
 				const doc = await Video.create({
@@ -13706,8 +13708,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					youtubeTokenExpiresAt: youtubeTokens?.expiry_date
 						? new Date(youtubeTokens.expiry_date)
 						: youtubeTokenExpiresAt
-						? new Date(youtubeTokenExpiresAt)
-						: undefined,
+							? new Date(youtubeTokenExpiresAt)
+							: undefined,
 					presenterOutfit: presenterOutfit || "",
 				});
 				videoDocId = doc?._id ? String(doc._id) : null;
@@ -13792,11 +13794,11 @@ exports.createLongVideo = async (req, res) => {
 		const { type, timeOfDay, startDate, endDate } = schedule;
 		if (!["daily", "weekly", "monthly"].includes(String(type || ""))) {
 			console.warn(
-				"[LongVideo] Invalid schedule type; skipping schedule save."
+				"[LongVideo] Invalid schedule type; skipping schedule save.",
 			);
 		} else if (!parseTimeOfDay(timeOfDay) || !startDate) {
 			console.warn(
-				"[LongVideo] Invalid schedule timing; skipping schedule save."
+				"[LongVideo] Invalid schedule timing; skipping schedule save.",
 			);
 		} else {
 			const nextRun = computeNextRun({

@@ -77,10 +77,15 @@ const SHORTS_UPLOAD_DELAY_HOURS = clampNumber(
 	72
 );
 const SHORTS_UPLOAD_GAP_HOURS = clampNumber(
-	toNumber(process.env.SHORTS_UPLOAD_GAP_HOURS, 2),
-	1,
-	24
+	toNumber(process.env.SHORTS_UPLOAD_GAP_HOURS, 24),
+	24,
+	168
 );
+const SHORTS_WATERMARK_TEXT = "https://serenejannat.com";
+const SHORTS_WATERMARK_OPACITY = 0.55;
+const SHORTS_WATERMARK_MARGIN_PCT = 0.035;
+const SHORTS_WATERMARK_FONT_PCT_PORTRAIT = 0.022;
+const SHORTS_WATERMARK_FONT_PCT_LANDSCAPE = 0.028;
 
 function nowIso() {
 	return new Date().toISOString();
@@ -238,6 +243,70 @@ function mapUploadsUrlToPath(url) {
 function makeEven(n) {
 	const x = Math.round(Number(n) || 0);
 	return x % 2 === 0 ? x : x + 1;
+}
+
+function resolveShortsFontFile() {
+	const env = String(
+		process.env.FFMPEG_FONT_PATH || process.env.FFMPEG_FONT || ""
+	).trim();
+	if (env && fs.existsSync(env)) return env;
+	const candidates = [
+		path.join(__dirname, "../assets/fonts/DejaVuSans.ttf"),
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+		"/usr/share/fonts/dejavu/DejaVuSans.ttf",
+		"C:/Windows/Fonts/arial.ttf",
+		"C:/Windows/Fonts/arialbd.ttf",
+	];
+	for (const p of candidates) {
+		try {
+			if (p && fs.existsSync(p)) return p;
+		} catch {}
+	}
+	return null;
+}
+
+const SHORTS_WATERMARK_FONT_FILE = resolveShortsFontFile();
+
+function escapeDrawtext(s = "") {
+	const placeholder = "__NL__";
+	return String(s || "")
+		.replace(/\r\n|\r|\n/g, placeholder)
+		.replace(/\\/g, "\\\\")
+		.replace(/:/g, "\\:")
+		.replace(/'/g, "\\'")
+		.replace(/%/g, "\\%")
+		.replace(/\[/g, "\\[")
+		.replace(/\]/g, "\\]")
+		.replace(new RegExp(placeholder, "g"), "\\n")
+		.trim();
+}
+
+function buildShortsWatermarkFilter(width, height) {
+	const w = Number(width) || SHORTS_WIDTH;
+	const h = Number(height) || SHORTS_HEIGHT;
+	const aspect = w / h;
+	const fontFactor =
+		aspect < 1
+			? SHORTS_WATERMARK_FONT_PCT_PORTRAIT
+			: SHORTS_WATERMARK_FONT_PCT_LANDSCAPE;
+	let fontSize = Math.max(16, Math.round(h * fontFactor));
+	const marginX = Math.max(12, Math.round(w * SHORTS_WATERMARK_MARGIN_PCT));
+	const marginY = Math.max(12, Math.round(h * SHORTS_WATERMARK_MARGIN_PCT));
+	const rawText = SHORTS_WATERMARK_TEXT;
+	const text = escapeDrawtext(rawText);
+	const maxWidth = Math.max(120, w - marginX * 2);
+	const approxCharWidth = fontSize * 0.56;
+	const approxTextWidth = rawText.length * approxCharWidth;
+	if (approxTextWidth > maxWidth) {
+		const scale = maxWidth / approxTextWidth;
+		fontSize = Math.max(14, Math.floor(fontSize * scale));
+	}
+	const fontFile = SHORTS_WATERMARK_FONT_FILE
+		? `:fontfile='${escapeDrawtext(SHORTS_WATERMARK_FONT_FILE)}'`
+		: "";
+	return `drawtext=text='${text}'${fontFile}:fontsize=${fontSize}:fontcolor=white@${SHORTS_WATERMARK_OPACITY.toFixed(
+		2
+	)}:shadowcolor=black@0.55:shadowx=2:shadowy=2:x=w-text_w-${marginX}:y=h-text_h-${marginY}`;
 }
 
 async function spawnBin(bin, args, label, { timeoutMs = 180000 } = {}) {
@@ -558,7 +627,15 @@ async function createShortClip({
 	const ffmpegPath = ffmpegStatic || "ffmpeg";
 	const w = makeEven(SHORTS_WIDTH);
 	const h = makeEven(SHORTS_HEIGHT);
-	const vf = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},format=yuv420p`;
+	const watermarkFilter = buildShortsWatermarkFilter(w, h);
+	const vf = [
+		`scale=${w}:${h}:force_original_aspect_ratio=increase`,
+		`crop=${w}:${h}`,
+		watermarkFilter,
+		"format=yuv420p",
+	]
+		.filter(Boolean)
+		.join(",");
 	await spawnBin(
 		ffmpegPath,
 		[
@@ -613,13 +690,26 @@ function buildShortsTitle({
 	});
 }
 
+function ensureFullVideoLinkInDescription(description = "", fullVideoUrl = "") {
+	const url = String(fullVideoUrl || "").trim();
+	if (!url) return String(description || "").trim();
+	const current = String(description || "").trim();
+	if (current && current.includes(url)) return current;
+	const header = `Watch the full video: ${url}`;
+	if (!current) return header;
+	return `${header}\n${current}`;
+}
+
 function buildShortsDescription(candidate) {
 	const line = String(candidate?.line || "").trim();
 	const cta = String(candidate?.ctaLine || SHORTS_DEFAULT_CTA_LINE).trim();
 	const fullVideoUrl = String(candidate?.fullVideoUrl || "").trim();
+	const fullVideoLine = fullVideoUrl
+		? `Watch the full video: ${fullVideoUrl}`
+		: "";
 	const parts = [
+		fullVideoLine,
 		line,
-		fullVideoUrl ? `From the full video: ${fullVideoUrl}` : "",
 		"",
 		cta,
 		"",
@@ -986,56 +1076,62 @@ exports.processPendingShortUploads = async ({ limit = 3 } = {}) => {
 
 		if (!shortsToUpload.length) continue;
 
-		let attempted = false;
-		for (let i = 0; i < shortsToUpload.length; i++) {
-			if (processed >= max) break;
-			const shortDoc = shortsToUpload[i];
-			if (!shortDoc.localPath || !fs.existsSync(shortDoc.localPath)) continue;
-			if (!shortDoc.fullVideoUrl && fullVideoUrl) {
-				shortDoc.fullVideoUrl = fullVideoUrl;
-				if (!shortDoc.description) {
-					shortDoc.description = buildShortsDescription({
-						line: shortDoc.line,
-						ctaLine: shortDoc.ctaLine,
-						fullVideoUrl,
-					});
-				}
-			}
-
-			try {
-				const youtubeLink = await uploadShortClip({
-					video,
-					shortDoc,
-					clipIndex: Number.isFinite(Number(shortDoc.orderIndex))
-						? Number(shortDoc.orderIndex)
-						: i,
-				});
-				shortDoc.status = "uploaded";
-				shortDoc.youtubeLink = youtubeLink;
-				shortDoc.uploadedAt = new Date();
-				shortDoc.lastError = "";
-				uploaded += 1;
-				attempted = true;
-			} catch (e) {
-				shortDoc.status = "failed";
-				shortDoc.lastError = e.message || "upload_failed";
-				errors.push({
-					videoId: String(video._id),
-					clipId: String(shortDoc.clipId || ""),
-					error: shortDoc.lastError,
-				});
-				attempted = true;
-			}
-
-			await shortDoc.save();
-			processed += 1;
+		const shortDoc = shortsToUpload[0];
+		if (!shortDoc.localPath || !fs.existsSync(shortDoc.localPath)) continue;
+		if (!shortDoc.fullVideoUrl && fullVideoUrl) {
+			shortDoc.fullVideoUrl = fullVideoUrl;
 		}
 
-		if (attempted) {
+		const resolvedFullUrl = shortDoc.fullVideoUrl || fullVideoUrl;
+		if (!shortDoc.description) {
+			shortDoc.description = buildShortsDescription({
+				line: shortDoc.line,
+				ctaLine: shortDoc.ctaLine,
+				fullVideoUrl: resolvedFullUrl,
+			});
+		} else if (resolvedFullUrl) {
+			const updatedDescription = ensureFullVideoLinkInDescription(
+				shortDoc.description,
+				resolvedFullUrl
+			);
+			if (updatedDescription !== shortDoc.description) {
+				shortDoc.description = updatedDescription;
+			}
+		}
+
+		let uploadedAt = null;
+		try {
+			const youtubeLink = await uploadShortClip({
+				video,
+				shortDoc,
+				clipIndex: Number.isFinite(Number(shortDoc.orderIndex))
+					? Number(shortDoc.orderIndex)
+					: 0,
+			});
+			uploadedAt = new Date();
+			shortDoc.status = "uploaded";
+			shortDoc.youtubeLink = youtubeLink;
+			shortDoc.uploadedAt = uploadedAt;
+			shortDoc.lastError = "";
+			uploaded += 1;
+		} catch (e) {
+			shortDoc.status = "failed";
+			shortDoc.lastError = e.message || "upload_failed";
+			errors.push({
+				videoId: String(video._id),
+				clipId: String(shortDoc.clipId || ""),
+				error: shortDoc.lastError,
+			});
+		}
+
+		await shortDoc.save();
+		processed += 1;
+
+		if (uploadedAt) {
 			video.shortsDetails = {
 				...video.shortsDetails,
 				nextUploadAt: new Date(
-					nowTs + SHORTS_UPLOAD_GAP_HOURS * 60 * 60 * 1000
+					uploadedAt.getTime() + SHORTS_UPLOAD_GAP_HOURS * 60 * 60 * 1000
 				).toISOString(),
 				updatedAt: nowIso(),
 			};
