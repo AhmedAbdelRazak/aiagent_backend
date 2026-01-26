@@ -22,7 +22,14 @@ const router = express.Router();
 
 const ROW_LIMIT = 8; // how many rising-search rows we scrape
 const ROW_TIMEOUT_MS = 12_000; // per-row timeout (ms)
-const PROTOCOL_TIMEOUT = 120_000; // whole-browser cap (ms)
+const PROTOCOL_TIMEOUT =
+	Number(
+		process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS ||
+			process.env.TRENDS_PROTOCOL_TIMEOUT_MS,
+	) || 120_000; // whole-browser cap (ms)
+const PAGE_CREATE_RETRY_LIMIT = 2;
+const PAGE_CREATE_RETRY_DELAY_MS = 750;
+const BROWSER_CLOSE_TIMEOUT_MS = 5000;
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
 const ARTICLE_FETCH_BLOCKLIST_HOSTS = ["washingtonpost.com", "nytimes.com"];
 const log = (...m) => console.log("[Trends]", ...m);
@@ -227,7 +234,8 @@ function buildRecentTopicMatcher(recentTopics) {
 		if (!normalized) return false;
 		if (recentTopics.has(normalized)) return true;
 		return usedList.some(
-			(used) => used && (used.includes(normalized) || normalized.includes(used))
+			(used) =>
+				used && (used.includes(normalized) || normalized.includes(used)),
 		);
 	};
 }
@@ -248,7 +256,7 @@ function resolveVideoCategoriesFromQuery(value = "") {
 
 async function loadRecentVideoTopics({ userId, category, isLongVideo } = {}) {
 	const cutoff = new Date(
-		Date.now() - RECENT_VIDEO_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
+		Date.now() - RECENT_VIDEO_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
 	);
 	const query = { createdAt: { $gte: cutoff } };
 	if (typeof isLongVideo === "boolean") query.isLongVideo = isLongVideo;
@@ -281,7 +289,8 @@ function filterStoriesByRecentTopics(stories = [], recentTopics) {
 		if (!normalized) return false;
 		if (recentTopics.has(normalized)) return true;
 		return usedList.some(
-			(used) => used && (used.includes(normalized) || normalized.includes(used))
+			(used) =>
+				used && (used.includes(normalized) || normalized.includes(used)),
 		);
 	};
 
@@ -305,7 +314,7 @@ function filterStoriesByRecentTopics(stories = [], recentTopics) {
 
 async function applyRecentTopicFilter(
 	payload,
-	{ userId, category, isLongVideo, topicsLimit } = {}
+	{ userId, category, isLongVideo, topicsLimit } = {},
 ) {
 	if (!payload || typeof payload !== "object") return payload;
 	const baseStories = Array.isArray(payload.stories) ? payload.stories : [];
@@ -393,7 +402,7 @@ function normaliseImageBriefs(briefs = [], topic = "") {
 			byAspect.set(ar, {
 				aspectRatio: ar,
 				visualHook: String(
-					raw.visualHook || raw.idea || raw.hook || raw.description || ""
+					raw.visualHook || raw.idea || raw.hook || raw.description || "",
 				).trim(),
 				emotion: String(raw.emotion || "").trim(),
 				rationale: String(raw.rationale || raw.note || "").trim(),
@@ -446,7 +455,7 @@ function safeParseOpenAiJson(raw = "") {
 	const base = stripCodeFences(trimmed);
 	const candidates = uniqueStrings(
 		[trimmed, base, extractJsonObject(base), extractJsonObject(trimmed)],
-		{ limit: 6 }
+		{ limit: 6 },
 	);
 	for (const candidate of candidates) {
 		if (!candidate) continue;
@@ -501,7 +510,7 @@ function sanitizeHeadlineForMatch(raw = "") {
 		.replace(/\b(?:today|yesterday|tomorrow)\b/gi, "")
 		.replace(
 			/\d+\s*(?:minutes?|mins?|min|hours?|hrs?|hr|days?|day|weeks?|week)\s*ago\b/gi,
-			""
+			"",
 		)
 		.replace(/\s*[\u2022\u00b7\u25cf\|\-\u2013\u2014]\s+.+$/g, "")
 		.replace(/\s+/g, " ")
@@ -685,7 +694,7 @@ function parseCbsDateToTimestamp(value = "") {
 	}
 
 	const relMatch = lower.match(
-		/(\d+)\s*(mins?|minutes?|m|hrs?|hours?|h|days?|d|weeks?|w)\s*ago/
+		/(\d+)\s*(mins?|minutes?|m|hrs?|hours?|h|days?|d|weeks?|w)\s*ago/,
 	);
 	if (relMatch) {
 		const valueNum = Number(relMatch[1]);
@@ -725,7 +734,7 @@ function buildMatchTerms(...values) {
 		list
 			.map((val) => normalizeMatchText(sanitizeHeadlineForMatch(val)))
 			.filter(Boolean),
-		{ limit: 24 }
+		{ limit: 24 },
 	);
 
 	const tokens = [];
@@ -846,7 +855,7 @@ function classifyImageUrl(rawUrl = "") {
 		parsed.searchParams.has("quality");
 	const looksLikeArticlePath =
 		/(\/|^)(story|news|article|video|entertainment|sports|tv|movies|celebrity|politics)(\/|$)/.test(
-			path
+			path,
 		);
 	if (looksLikeArticlePath && !hasFormat) return "bad";
 	if (looksLikeArticlePath && hasFormat) return "maybe";
@@ -855,7 +864,7 @@ function classifyImageUrl(rawUrl = "") {
 
 async function validateImageUrl(
 	rawUrl,
-	timeoutMs = POTENTIAL_IMAGE_VALIDATE_TIMEOUT_MS
+	timeoutMs = POTENTIAL_IMAGE_VALIDATE_TIMEOUT_MS,
 ) {
 	if (typeof fetch !== "function") return true;
 	const supportsAbort =
@@ -968,7 +977,7 @@ function parseRelatedQueries(payload, limit = RELATED_QUERIES_LIMIT) {
 			(list || [])
 				.map((it) => it?.query || it?.topic?.title || "")
 				.filter(Boolean),
-			{ limit: clampInt(limit, 4, 20) }
+			{ limit: clampInt(limit, 4, 20) },
 		);
 	return {
 		top: toQueries(topRaw),
@@ -983,8 +992,8 @@ function parseInterestOverTime(payload) {
 	const values = timeline
 		.map((t) =>
 			Number(
-				Array.isArray(t?.value) ? t.value[0] : t?.value ?? t?.formattedValue
-			)
+				Array.isArray(t?.value) ? t.value[0] : (t?.value ?? t?.formattedValue),
+			),
 		)
 		.filter((n) => Number.isFinite(n));
 	if (!values.length) {
@@ -1010,8 +1019,8 @@ function hasTrendSignalData(signals) {
 	const interest = signals.interestOverTime || {};
 	return Boolean(
 		(Array.isArray(related.top) && related.top.length) ||
-			(Array.isArray(related.rising) && related.rising.length) ||
-			Number(interest.points) > 0
+		(Array.isArray(related.rising) && related.rising.length) ||
+		Number(interest.points) > 0,
 	);
 }
 
@@ -1019,11 +1028,11 @@ async function fetchTrendSignalsWithOpts(opts) {
 	let [relatedRaw, interestRaw] = await Promise.all([
 		withTimeout(
 			googleTrends.relatedQueries(opts),
-			TRENDS_SIGNAL_TIMEOUT_MS
+			TRENDS_SIGNAL_TIMEOUT_MS,
 		).catch(() => null),
 		withTimeout(
 			googleTrends.interestOverTime(opts),
-			TRENDS_SIGNAL_TIMEOUT_MS
+			TRENDS_SIGNAL_TIMEOUT_MS,
 		).catch(() => null),
 	]);
 	if (!relatedRaw && !interestRaw) {
@@ -1031,18 +1040,18 @@ async function fetchTrendSignalsWithOpts(opts) {
 		[relatedRaw, interestRaw] = await Promise.all([
 			withTimeout(
 				googleTrends.relatedQueries(opts),
-				TRENDS_SIGNAL_TIMEOUT_MS
+				TRENDS_SIGNAL_TIMEOUT_MS,
 			).catch(() => null),
 			withTimeout(
 				googleTrends.interestOverTime(opts),
-				TRENDS_SIGNAL_TIMEOUT_MS
+				TRENDS_SIGNAL_TIMEOUT_MS,
 			).catch(() => null),
 		]);
 	}
 
 	const related = parseRelatedQueries(safeParseTrendsJson(relatedRaw) || {});
 	const interest = parseInterestOverTime(
-		safeParseTrendsJson(interestRaw) || {}
+		safeParseTrendsJson(interestRaw) || {},
 	);
 	return { relatedQueries: related, interestOverTime: interest };
 }
@@ -1069,11 +1078,11 @@ async function fetchTrendSignalsForKeyword(keyword, { geo, hours } = {}) {
 		const fallbackHours = clampInt(
 			Math.max(windowHours, TRENDS_SIGNAL_FALLBACK_HOURS),
 			12,
-			168
+			168,
 		);
 		if (fallbackHours > windowHours) {
 			const fallbackStart = new Date(
-				endTime.getTime() - fallbackHours * 60 * 60 * 1000
+				endTime.getTime() - fallbackHours * 60 * 60 * 1000,
 			);
 			const fallbackSignals = await fetchTrendSignalsWithOpts({
 				keyword: variant,
@@ -1183,7 +1192,7 @@ async function enrichStoriesWithTrendSignals(stories, { geo, hours } = {}) {
  */
 async function enhanceStoriesWithOpenAI(
 	stories,
-	{ geo, hours, category, language = "English" }
+	{ geo, hours, category, language = "English" },
 ) {
 	if (!openai || !stories.length) return stories;
 
@@ -1252,14 +1261,14 @@ async function enhanceStoriesWithOpenAI(
 				byTerm.get(key) ||
 				// fallback: GPT sometimes normalizes whitespace/case
 				Array.from(byTerm.values()).find(
-					(t) => t.term && t.term.toLowerCase().trim() === key.trim()
+					(t) => t.term && t.term.toLowerCase().trim() === key.trim(),
 				);
 
 			if (!match) return s;
 
 			const briefs = normaliseImageBriefs(
 				match.imageDirectives || match.viralImageBriefs || [],
-				s.title
+				s.title,
 			);
 			const imageComment =
 				String(match.imageComment || match.imageHook || "").trim() ||
@@ -1267,7 +1276,7 @@ async function enhanceStoriesWithOpenAI(
 					? `Lead image for ${s.title}: ${briefs[0].visualHook}`
 					: `Lead image for ${s.title}, framed for ${
 							briefs[0]?.aspectRatio === "720:1280" ? "vertical" : "landscape"
-					  } video.`);
+						} video.`);
 
 			return {
 				...s,
@@ -1311,11 +1320,53 @@ const urlFor = ({ geo, hours, category, sort }) => {
 /* ----------------------------------------------------- cached browser */
 
 let browser; // one instance per container / PM2 worker
+let browserLaunchPromise = null;
 
-async function getBrowser() {
-	if (browser) return browser;
+function isBrowserConnected(activeBrowser) {
+	return Boolean(
+		activeBrowser &&
+		typeof activeBrowser.isConnected === "function" &&
+		activeBrowser.isConnected(),
+	);
+}
 
-	browser = await puppeteer.launch({
+async function closeBrowser(reason) {
+	if (!browser) return;
+	const activeBrowser = browser;
+	browser = null;
+
+	if (reason) {
+		log("Browser closing", { reason });
+	}
+
+	try {
+		await Promise.race([
+			activeBrowser.close().catch(() => {}),
+			delay(BROWSER_CLOSE_TIMEOUT_MS),
+		]);
+	} catch (err) {
+		log("Browser close failed", err.message || String(err));
+	}
+
+	const proc =
+		typeof activeBrowser.process === "function"
+			? activeBrowser.process()
+			: null;
+	if (proc && proc.exitCode == null) {
+		try {
+			if (process.platform === "win32") {
+				proc.kill();
+			} else {
+				proc.kill("SIGKILL");
+			}
+		} catch {
+			// Ignore kill errors (already exited, etc.)
+		}
+	}
+}
+
+async function launchBrowser() {
+	const launched = await puppeteer.launch({
 		headless: true,
 		protocolTimeout: PROTOCOL_TIMEOUT,
 		executablePath:
@@ -1329,7 +1380,68 @@ async function getBrowser() {
 		],
 	});
 
-	return browser;
+	launched.on("disconnected", () => {
+		if (browser === launched) {
+			browser = null;
+		}
+		log("Browser disconnected");
+	});
+
+	return launched;
+}
+
+async function getBrowser() {
+	if (isBrowserConnected(browser)) return browser;
+	if (browser) await closeBrowser("stale browser connection");
+
+	if (!browserLaunchPromise) {
+		browserLaunchPromise = launchBrowser()
+			.then((launched) => {
+				browser = launched;
+				return launched;
+			})
+			.finally(() => {
+				browserLaunchPromise = null;
+			});
+	}
+
+	return browserLaunchPromise;
+}
+
+function shouldResetBrowserFromError(err) {
+	const message = String(err?.message || err || "");
+	return /Target\.createTarget timed out|Protocol error|ProtocolError|Target closed|Session closed|Browser closed|browser has disconnected|Connection closed|ECONNRESET|EPIPE/i.test(
+		message,
+	);
+}
+
+async function getBrowserPage({ label } = {}) {
+	const maxAttempts = Math.max(1, PAGE_CREATE_RETRY_LIMIT + 1);
+	let lastErr;
+
+	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+		try {
+			const activeBrowser = await getBrowser();
+			return await activeBrowser.newPage();
+		} catch (err) {
+			lastErr = err;
+			const message = String(err?.message || err || "");
+			const shouldReset = shouldResetBrowserFromError(err);
+			if (shouldReset) {
+				log("Browser reset after newPage failure", {
+					label: label || "unknown",
+					attempt,
+					error: message.slice(0, 180),
+				});
+				await closeBrowser("newPage failure");
+			}
+			if (attempt < maxAttempts) {
+				await delay(PAGE_CREATE_RETRY_DELAY_MS * attempt);
+			}
+		}
+	}
+
+	throw lastErr;
 }
 
 /* ------------------------------------- article image helpers (Node side) */
@@ -1339,7 +1451,7 @@ function isBlockedArticleFetchUrl(url = "") {
 	try {
 		const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
 		return ARTICLE_FETCH_BLOCKLIST_HOSTS.some(
-			(b) => host === b || host.endsWith("." + b)
+			(b) => host === b || host.endsWith("." + b),
 		);
 	} catch {
 		return false;
@@ -1408,19 +1520,19 @@ function extractBestImageFromHtml(html) {
 
 	// Try common Open Graph / Twitter meta tags.
 	pushMatch(
-		/<meta[^>]+property=["']og:image:secure_url["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+		/<meta[^>]+property=["']og:image:secure_url["'][^>]+content=["']([^"'>]+)["'][^>]*>/i,
 	);
 	pushMatch(
-		/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+		/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"'>]+)["'][^>]*>/i,
 	);
 	pushMatch(
-		/<meta[^>]+name=["']og:image["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+		/<meta[^>]+name=["']og:image["'][^>]+content=["']([^"'>]+)["'][^>]*>/i,
 	);
 	pushMatch(
-		/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+		/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"'>]+)["'][^>]*>/i,
 	);
 	pushMatch(
-		/<meta[^>]+name=["']twitter:image:src["'][^>]+content=["']([^"'>]+)["'][^>]*>/i
+		/<meta[^>]+name=["']twitter:image:src["'][^>]+content=["']([^"'>]+)["'][^>]*>/i,
 	);
 
 	const httpCandidates = candidates.filter((u) => /^https?:\/\//i.test(u));
@@ -1431,7 +1543,7 @@ async function fetchBestImageForArticle(url, fallbackImage) {
 	try {
 		const html = await fetchHtmlWithTimeout(
 			url,
-			ARTICLE_IMAGE_FETCH_TIMEOUT_MS
+			ARTICLE_IMAGE_FETCH_TIMEOUT_MS,
 		);
 		const ogImage = extractBestImageFromHtml(html);
 		return ogImage || fallbackImage || null;
@@ -1461,7 +1573,7 @@ async function hydrateArticleImages(stories) {
 				story.articles.map(async (art) => {
 					const bestImage = await fetchBestImageForArticle(art.url, art.image);
 					return { ...art, image: bestImage };
-				})
+				}),
 			);
 
 			const hero =
@@ -1473,7 +1585,7 @@ async function hydrateArticleImages(stories) {
 				image: hero,
 				articles: enrichedArticles,
 			};
-		})
+		}),
 	);
 }
 
@@ -1618,7 +1730,7 @@ function buildImageContext(raw = {}) {
 		.map((val) =>
 			String(val || "")
 				.replace(/\s+/g, " ")
-				.trim()
+				.trim(),
 		)
 		.filter(Boolean)
 		.join(" ");
@@ -1667,7 +1779,7 @@ function selectPotentialImagesFromRaw(rawImages, options = {}) {
 	const resolvedBaseUrl = baseUrl || articleUrl;
 	const defaultSource = normalizePossibleUrl(
 		sourceUrl || articleUrl,
-		resolvedBaseUrl
+		resolvedBaseUrl,
 	);
 
 	const candidates = [];
@@ -1703,16 +1815,16 @@ function selectPotentialImagesFromRaw(rawImages, options = {}) {
 		const contextMatch = matchesAnyTermStrict(context, matchTerms);
 		const urlMatch = matchesAnyTermStrict(
 			getUrlPathForMatch(imageUrl),
-			matchTerms
+			matchTerms,
 		);
 		const focusActive = Boolean(
 			focusTerms &&
-				((focusTerms.phrases || []).length || (focusTerms.tokens || []).length)
+			((focusTerms.phrases || []).length || (focusTerms.tokens || []).length),
 		);
 		const focusMatch = !focusActive
 			? true
 			: matchesAnyTermStrict(context, focusTerms) ||
-			  matchesAnyTermStrict(getUrlPathForMatch(imageUrl), focusTerms);
+				matchesAnyTermStrict(getUrlPathForMatch(imageUrl), focusTerms);
 		if (!focusMatch) continue;
 		if (!contextMatch && !urlMatch) continue;
 
@@ -1770,10 +1882,10 @@ async function scrapePotentialImagesFromArticle(
 		storySeen,
 		globalSeen,
 		perArticleLimit,
-	} = {}
+	} = {},
 ) {
 	if (!articleUrl) return [];
-	const page = await (await getBrowser()).newPage();
+	const page = await getBrowserPage({ label: "potential-images-article" });
 	page.setDefaultNavigationTimeout(POTENTIAL_IMAGE_TIMEOUT_MS);
 	await page.setUserAgent(BROWSER_UA);
 
@@ -1821,7 +1933,7 @@ async function scrapePotentialImagesFromArticle(
 		if (blockSignal) {
 			const combined = `${blockSignal.title} ${blockSignal.text}`.toLowerCase();
 			const blocked = POTENTIAL_IMAGE_CAPTCHA_HINTS.some((hint) =>
-				combined.includes(hint)
+				combined.includes(hint),
 			);
 			if (blocked) {
 				log("Potential images blocked hint", {
@@ -1927,8 +2039,7 @@ async function scrapePotentialImagesFromArticle(
 			const ogImage = meta?.ogImage || "";
 			const focusActive = Boolean(
 				focusTerms &&
-					((focusTerms.phrases || []).length ||
-						(focusTerms.tokens || []).length)
+				((focusTerms.phrases || []).length || (focusTerms.tokens || []).length),
 			);
 			const metaTerms = focusActive ? focusTerms : matchTerms;
 			if (metaTitle && ogImage && matchesAnyTermStrict(metaTitle, metaTerms)) {
@@ -1976,7 +2087,7 @@ async function scrapePotentialImagesFromArticle(
 		log(
 			"Potential images scrape failed:",
 			articleUrl,
-			err.message || String(err)
+			err.message || String(err),
 		);
 		return [];
 	} finally {
@@ -1996,7 +2107,7 @@ async function scrapeVogueSearchImages({
 	const safeQuery = String(query || "").trim();
 	if (!safeQuery) return [];
 
-	const page = await (await getBrowser()).newPage();
+	const page = await getBrowserPage({ label: "vogue-search" });
 	page.setDefaultNavigationTimeout(POTENTIAL_IMAGE_TIMEOUT_MS);
 	await page.setUserAgent(BROWSER_UA);
 
@@ -2047,7 +2158,7 @@ async function scrapeVogueSearchImages({
 		if (blockSignal) {
 			const combined = `${blockSignal.title} ${blockSignal.text}`.toLowerCase();
 			const blocked = POTENTIAL_IMAGE_CAPTCHA_HINTS.some((hint) =>
-				combined.includes(hint)
+				combined.includes(hint),
 			);
 			if (blocked) {
 				log("Vogue search blocked hint", {
@@ -2150,7 +2261,7 @@ async function scrapeBbcSearchResults(query) {
 	const safeQuery = String(query || "").trim();
 	if (!safeQuery) return [];
 
-	const page = await (await getBrowser()).newPage();
+	const page = await getBrowserPage({ label: "bbc-search" });
 	page.setDefaultNavigationTimeout(POTENTIAL_IMAGE_TIMEOUT_MS);
 	await page.setUserAgent(BROWSER_UA);
 
@@ -2201,7 +2312,7 @@ async function scrapeBbcSearchResults(query) {
 		if (blockSignal) {
 			const combined = `${blockSignal.title} ${blockSignal.text}`.toLowerCase();
 			const blocked = POTENTIAL_IMAGE_CAPTCHA_HINTS.some((hint) =>
-				combined.includes(hint)
+				combined.includes(hint),
 			);
 			if (blocked) {
 				log("BBC search blocked hint", {
@@ -2220,7 +2331,7 @@ async function scrapeBbcSearchResults(query) {
 					.slice(0, limit);
 
 			const cards = Array.from(
-				document.querySelectorAll('[data-testid="newport-card"]')
+				document.querySelectorAll('[data-testid="newport-card"]'),
 			);
 			for (const card of cards) {
 				const link = card.querySelector("a[href]");
@@ -2294,7 +2405,7 @@ async function scrapeBbcSearchImages({
 
 	const queryTerms = buildMatchTerms(safeQuery);
 	const strongQueryTokens = (queryTerms.tokens || []).filter(
-		(token) => token && token.length >= 3
+		(token) => token && token.length >= 3,
 	);
 	const minQueryHits = strongQueryTokens.length
 		? strongQueryTokens.length >= 2
@@ -2317,7 +2428,7 @@ async function scrapeBbcSearchImages({
 			phraseMatch || (minQueryHits > 0 && tokenHits >= minQueryHits);
 		const score = queryOk
 			? scoreTextMatch(title, baseTerms) +
-			  scoreTextMatch(title, focusTerms || {})
+				scoreTextMatch(title, focusTerms || {})
 			: 0;
 		return { ...item, title, score, tokenHits, ageMinutes };
 	});
@@ -2380,7 +2491,7 @@ async function scrapeCbsSearchResults(query) {
 	const safeQuery = sanitizeCbsSearchQuery(query, 90);
 	if (!safeQuery) return [];
 
-	const page = await (await getBrowser()).newPage();
+	const page = await getBrowserPage({ label: "cbs-search" });
 	page.setDefaultNavigationTimeout(POTENTIAL_IMAGE_TIMEOUT_MS);
 	await page.setUserAgent(BROWSER_UA);
 
@@ -2430,7 +2541,7 @@ async function scrapeCbsSearchResults(query) {
 		if (blockSignal) {
 			const combined = `${blockSignal.title} ${blockSignal.text}`.toLowerCase();
 			const blocked = POTENTIAL_IMAGE_CAPTCHA_HINTS.some((hint) =>
-				combined.includes(hint)
+				combined.includes(hint),
 			);
 			if (blocked) {
 				log("CBS search blocked hint", {
@@ -2453,7 +2564,7 @@ async function scrapeCbsSearchResults(query) {
 				document.querySelector(".search-results") ||
 				document.querySelector("main");
 			const cards = Array.from(
-				container?.querySelectorAll("article.item") || []
+				container?.querySelectorAll("article.item") || [],
 			);
 			for (const card of cards) {
 				const link =
@@ -2471,7 +2582,7 @@ async function scrapeCbsSearchResults(query) {
 			}
 
 			const anchors = Array.from(
-				(container || document).querySelectorAll("article.item a[href]")
+				(container || document).querySelectorAll("article.item a[href]"),
 			);
 			for (const anchor of anchors) {
 				const card = anchor.closest("article.item");
@@ -2546,7 +2657,7 @@ async function scrapeCbsSearchImages({
 
 	const queryTerms = buildMatchTerms(safeQuery);
 	const strongQueryTokens = (queryTerms.tokens || []).filter(
-		(token) => token && token.length >= 3
+		(token) => token && token.length >= 3,
 	);
 	const minQueryHits = strongQueryTokens.length
 		? strongQueryTokens.length >= 2
@@ -2569,14 +2680,14 @@ async function scrapeCbsSearchImages({
 			phraseMatch || (minQueryHits > 0 && tokenHits >= minQueryHits);
 		const score = queryOk
 			? scoreTextMatch(title, baseTerms) +
-			  scoreTextMatch(title, focusTerms || {})
+				scoreTextMatch(title, focusTerms || {})
 			: 0;
 		return { ...item, title, score, tokenHits, ageMinutes };
 	});
 	const scoredFiltered = (() => {
 		const maxAgeMinutes = CBS_SEARCH_MAX_AGE_DAYS * 24 * 60;
 		const fresh = scored.filter(
-			(item) => item.ageMinutes == null || item.ageMinutes <= maxAgeMinutes
+			(item) => item.ageMinutes == null || item.ageMinutes <= maxAgeMinutes,
 		);
 		const nonVideo = fresh.filter((item) => !isCbsVideoUrl(item.url));
 		return nonVideo.length ? nonVideo : fresh;
@@ -2650,23 +2761,23 @@ async function enrichStoriesWithPotentialImages(
 		bbcTopUpTopics = 0,
 		enableCbsFallback = false,
 		cbsTopUpTopics = 0,
-	} = {}
+	} = {},
 ) {
 	if (!Array.isArray(stories) || !stories.length) return stories;
 	const limit = clampInt(
 		topicLimit || POTENTIAL_IMAGE_TOPIC_LIMIT,
 		1,
-		stories.length
+		stories.length,
 	);
 	const minImages = clampInt(
 		minImagesPerStory || 0,
 		0,
-		POTENTIAL_IMAGE_MAX_PER_STORY
+		POTENTIAL_IMAGE_MAX_PER_STORY,
 	);
 	const targetImages = clampInt(
 		targetImagesPerStory || POTENTIAL_IMAGE_MAX_PER_STORY,
 		minImages,
-		POTENTIAL_IMAGE_MAX_PER_STORY
+		POTENTIAL_IMAGE_MAX_PER_STORY,
 	);
 	const topUpLimit = clampInt(topUpTopics || 0, 0, stories.length);
 	const bbcTopUpLimit = clampInt(bbcTopUpTopics || 0, 0, stories.length);
@@ -2704,7 +2815,7 @@ async function enrichStoriesWithPotentialImages(
 				story?.title,
 				story?.rawTitle,
 				story?.trendDialogTitle,
-				story?.entityNames || []
+				story?.entityNames || [],
 			);
 			let articleIndex = 0;
 
@@ -2722,7 +2833,7 @@ async function enrichStoriesWithPotentialImages(
 					story?.rawTitle,
 					story?.trendDialogTitle,
 					story?.entityNames || [],
-					article?.title
+					article?.title,
 				);
 
 				const scraped = await scrapePotentialImagesFromArticle(article.url, {
@@ -2774,7 +2885,7 @@ async function enrichStoriesWithPotentialImages(
 						story?.title,
 						story?.rawTitle,
 						story?.trendDialogTitle,
-						story?.entityNames || []
+						story?.entityNames || [],
 					);
 					// eslint-disable-next-line no-await-in-loop
 					const searchImages = await scrapeVogueSearchImages({
@@ -2826,7 +2937,7 @@ async function enrichStoriesWithPotentialImages(
 							story?.title,
 							story?.rawTitle,
 							story?.trendDialogTitle,
-							story?.entityNames || []
+							story?.entityNames || [],
 						),
 						focusTerms,
 						storyTitle: story?.title,
@@ -2874,7 +2985,7 @@ async function enrichStoriesWithPotentialImages(
 							story?.title,
 							story?.rawTitle,
 							story?.trendDialogTitle,
-							story?.entityNames || []
+							story?.entityNames || [],
 						),
 						focusTerms,
 						storyTitle: story?.title,
@@ -2934,7 +3045,7 @@ async function scrapeGoogleImages({
 	query,
 	limit = GOOGLE_IMAGES_DEFAULT_LIMIT,
 }) {
-	const page = await (await getBrowser()).newPage();
+	const page = await getBrowserPage({ label: "google-images" });
 	page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
 	await page.setUserAgent(BROWSER_UA);
 
@@ -2947,7 +3058,7 @@ async function scrapeGoogleImages({
 	});
 
 	const targetUrl = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(
-		query
+		query,
 	)}`;
 	log("Google images navigate:", targetUrl);
 
@@ -2973,7 +3084,7 @@ async function scrapeGoogleImages({
 			};
 
 			const anchors = Array.from(
-				document.querySelectorAll('a[href^="/imgres?"]')
+				document.querySelectorAll('a[href^="/imgres?"]'),
 			);
 			for (const a of anchors) {
 				const href = a.getAttribute("href") || "";
@@ -3016,7 +3127,7 @@ async function scrapeGoogleImages({
 }
 
 async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
-	const page = await (await getBrowser()).newPage();
+	const page = await getBrowserPage({ label: "trends-scrape" });
 	page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
 
 	// Relay browser console messages, but drop noisy network errors.
@@ -3072,7 +3183,7 @@ async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
 
 				while (Date.now() < deadline) {
 					const dialog = document.querySelector(
-						'div[aria-modal="true"][role="dialog"][aria-label]'
+						'div[aria-modal="true"][role="dialog"][aria-label]',
 					);
 
 					if (dialog) {
@@ -3095,7 +3206,7 @@ async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
 							while (Date.now() < t2) {
 								anchors = [
 									...dialog.querySelectorAll(
-										'a[target="_blank"][href^="http"]'
+										'a[target="_blank"][href^="http"]',
 									),
 								];
 								if (anchors.length) break;
@@ -3115,11 +3226,11 @@ async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
 							// Close the dialog (handle layout variants).
 							(
 								dialog.querySelector(
-									'div[aria-label="Close search"], div[aria-label="Close"], button.pYTkkf-Bz112c-LgbsSe'
+									'div[aria-label="Close search"], div[aria-label="Close"], button.pYTkkf-Bz112c-LgbsSe',
 								) || document.querySelector('div[aria-label="Close"]')
 							)?.click() ||
 								document.dispatchEvent(
-									new KeyboardEvent("keydown", { key: "Escape" })
+									new KeyboardEvent("keydown", { key: "Escape" }),
 								);
 
 							return {
@@ -3141,7 +3252,7 @@ async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
 			},
 			id,
 			term,
-			ROW_TIMEOUT_MS
+			ROW_TIMEOUT_MS,
 		);
 
 		log(`Result for "${term}":`, result.status);
@@ -3157,11 +3268,11 @@ async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
 						title: String(a.title || "").trim(),
 						url: a.url,
 						image: a.image || null,
-				  }))
+					}))
 				: [];
 			const searchPhrases = uniqueStrings(
 				[primaryTitle, rawTitle, ...articles.map((a) => a.title)],
-				{ limit: 6 }
+				{ limit: 6 },
 			);
 			const entityNames = uniqueStrings([primaryTitle, rawTitle]);
 
@@ -3180,7 +3291,7 @@ async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
 		try {
 			await page.waitForFunction(
 				() => !document.querySelector('div[aria-modal="true"][role="dialog"]'),
-				{ timeout: 5_000 }
+				{ timeout: 5_000 },
 			);
 			await page.waitForTimeout(250);
 		} catch (e) {
@@ -3203,7 +3314,7 @@ async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
 					id: tr.getAttribute("data-row-id"),
 					term: tr.querySelector("td:nth-child(2)")?.innerText.trim() ?? "",
 				})),
-			ROW_LIMIT
+			ROW_LIMIT,
 		);
 		log("Row list:", rows);
 
@@ -3258,7 +3369,7 @@ router.get("/google-images", async (req, res) => {
 	} catch (err) {
 		console.error(
 			"[Trends] Google Images scraping failed:",
-			err.message || err
+			err.message || err,
 		);
 		return res.status(500).json({
 			error: "Google Images scraping failed",
@@ -3280,20 +3391,20 @@ router.get("/google-trends", async (req, res) => {
 	const sort = req.query.sort ?? null;
 	const isEntertainment = isEntertainmentCategory(category);
 	const includeImages = ["1", "true", "yes", "on"].includes(
-		String(req.query.includeImages || "").toLowerCase()
+		String(req.query.includeImages || "").toLowerCase(),
 	);
 	const includePotentialImages = !["0", "false", "no", "off"].includes(
-		String(req.query.includePotentialImages || "").toLowerCase()
+		String(req.query.includePotentialImages || "").toLowerCase(),
 	);
 	const skipOpenAI = ["1", "true", "yes", "on"].includes(
-		String(req.query.skipOpenAI || "").toLowerCase()
+		String(req.query.skipOpenAI || "").toLowerCase(),
 	);
 	const skipSignals = ["1", "true", "yes", "on"].includes(
-		String(req.query.skipSignals || "").toLowerCase()
+		String(req.query.skipSignals || "").toLowerCase(),
 	);
 	const topicsParamPresent = Object.prototype.hasOwnProperty.call(
 		req.query,
-		"topics"
+		"topics",
 	);
 	const rawTopicsLimit = Number(req.query.topics);
 	const topicsLimit = Number.isFinite(rawTopicsLimit)
@@ -3303,14 +3414,14 @@ router.get("/google-trends", async (req, res) => {
 	const shouldUseCache = !useLimitedScrape;
 	const longParamPresent = Object.prototype.hasOwnProperty.call(
 		req.query,
-		"long"
+		"long",
 	);
 	const isLongVideo = ["1", "true", "yes", "on"].includes(
-		String(req.query.long || "").toLowerCase()
+		String(req.query.long || "").toLowerCase(),
 	);
 	const applyRecentFilter = topicsParamPresent || longParamPresent;
 	const userId = normalizeObjectId(
-		req.query.userId || req.query.user || req.user?._id || req.user?.id || ""
+		req.query.userId || req.query.user || req.user?._id || req.user?.id || "",
 	);
 	const cacheKey = buildTrendsCacheKey({
 		geo,
@@ -3350,7 +3461,7 @@ router.get("/google-trends", async (req, res) => {
 						userId,
 						category,
 						isLongVideo,
-				  })
+					})
 				: null;
 		let stories = await scrape({
 			geo,
@@ -3422,8 +3533,8 @@ router.get("/google-trends", async (req, res) => {
 							s.image || null,
 							...(s.articles || []).map((a) => a.image).filter(Boolean),
 						],
-						{ limit: 8 }
-				  ).filter((img) => img && !isLikelyThumbnailUrl(img))
+						{ limit: 8 },
+					).filter((img) => img && !isLikelyThumbnailUrl(img))
 				: [],
 			articles: (s.articles || []).map((a) => ({
 				title: a.title,
