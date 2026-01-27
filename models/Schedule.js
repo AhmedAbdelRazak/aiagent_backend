@@ -56,6 +56,16 @@ const scheduleSchema = new mongoose.Schema(
 			type: Date,
 			required: true,
 		},
+		failCount: {
+			type: Number,
+			default: 0,
+		},
+		lastFailAt: {
+			type: Date,
+		},
+		lastFailReason: {
+			type: String,
+		},
 		active: {
 			type: Boolean,
 			default: true,

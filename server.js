@@ -170,6 +170,10 @@ const FAIL_BACKOFF_MINUTES = toInt(
 	process.env.SCHEDULE_FAIL_BACKOFF_MINUTES,
 	10
 );
+const MAX_SCHEDULE_FAILURES = Math.max(
+	1,
+	toInt(process.env.SCHEDULE_MAX_FAILURES, 3)
+);
 const SHORTS_UPLOAD_BATCH_MIN = toInt(process.env.SHORTS_UPLOAD_BATCH_MIN, 3);
 const SHORTS_UPLOAD_BATCH_MAX = toInt(process.env.SHORTS_UPLOAD_BATCH_MAX, 6);
 const SHORTS_CRON_TZ = process.env.SHORTS_CRON_TZ || PST_TZ;
@@ -213,6 +217,76 @@ function normalizeScheduleType(t) {
 		.trim();
 	if (v === "daily" || v === "weekly" || v === "monthly") return v;
 	return "daily";
+}
+
+function getScheduleFailCount(sched) {
+	const n = Number(sched?.failCount);
+	return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+function computeNextRunForSchedule({
+	scheduleType,
+	timeOfDay,
+	baseMoment,
+	nowMoment,
+}) {
+	const t = parseTimeOfDay(timeOfDay);
+	if (!t) return null;
+
+	let base = baseMoment && baseMoment.isValid() ? baseMoment : null;
+	if (!base) base = nowMoment;
+
+	if (scheduleType === "daily") base = base.add(1, "day");
+	else if (scheduleType === "weekly") base = base.add(1, "week");
+	else if (scheduleType === "monthly") base = base.add(1, "month");
+
+	let next = base.hour(t.hh).minute(t.mm).second(0).millisecond(0);
+	if (next.isBefore(nowMoment)) {
+		if (scheduleType === "daily") next = next.add(1, "day");
+		else if (scheduleType === "weekly") next = next.add(1, "week");
+		else if (scheduleType === "monthly") next = next.add(1, "month");
+	}
+	return next;
+}
+
+async function applyScheduleFailureBackoff(
+	sched,
+	{ nowPST, scheduleType, reason, err } = {}
+) {
+	const currentFails = getScheduleFailCount(sched);
+	const nextFails = currentFails + 1;
+	const msg = String(reason || err?.message || err || "").trim();
+
+	sched.failCount = nextFails;
+	sched.lastFailAt = nowPST.toDate();
+	if (msg) sched.lastFailReason = msg.slice(0, 500);
+
+	if (nextFails >= MAX_SCHEDULE_FAILURES) {
+		const next = computeNextRunForSchedule({
+			scheduleType,
+			timeOfDay: sched.timeOfDay,
+			baseMoment: nowPST,
+			nowMoment: nowPST,
+		});
+		sched.nextRun = next ? next.toDate() : nowPST.add(1, "day").toDate();
+		sched.failCount = 0;
+		await sched.save();
+		console.log(
+			`[Queue] Failure limit reached (${MAX_SCHEDULE_FAILURES}) for schedule ${
+				sched._id
+			}; nextRun ${dayjs(sched.nextRun).tz(PST_TZ).format()} PST`
+		);
+		return { deferred: true };
+	}
+
+	sched.nextRun = nowPST.add(FAIL_BACKOFF_MINUTES, "minute").toDate();
+	await sched.save();
+	console.log(
+		`[Queue] Backoff attempt ${nextFails}/${MAX_SCHEDULE_FAILURES} for schedule ${
+			sched._id
+		}; retry at ${dayjs(sched.nextRun).tz(PST_TZ).format()} PST`
+	);
+	return { deferred: false };
 }
 
 async function handleSchedule(sched) {
@@ -259,8 +333,11 @@ async function handleSchedule(sched) {
 		console.error(
 			`[Queue] Schedule ${sched._id} missing category; delaying with backoff`
 		);
-		sched.nextRun = nowPST.add(FAIL_BACKOFF_MINUTES, "minute").toDate();
-		await sched.save();
+		await applyScheduleFailureBackoff(sched, {
+			nowPST,
+			scheduleType,
+			reason: "missing category",
+		});
 		return;
 	}
 
@@ -364,40 +441,35 @@ async function handleSchedule(sched) {
 		} else {
 			await createVideo(reqMock, resMock);
 		}
+		sched.failCount = 0;
+		sched.lastFailReason = undefined;
 		console.log(`[Queue] ✔ Video done for schedule ${sched._id}`);
 	} catch (err) {
 		console.error(
 			`[Queue] ✖ createVideo failed for schedule ${sched._id}:`,
 			err?.message || err
 		);
-		sched.nextRun = nowPST.add(FAIL_BACKOFF_MINUTES, "minute").toDate();
-		await sched.save();
-		console.log(
-			`[Queue] ↻ Backoff: schedule ${sched._id} will retry at ${dayjs(
-				sched.nextRun
-			)
-				.tz(PST_TZ)
-				.format()} PST`
-		);
+		await applyScheduleFailureBackoff(sched, {
+			nowPST,
+			scheduleType,
+			err,
+		});
 		return;
 	}
 
 	/* 3) compute nextRun (PST wall-clock time) */
-	const { hh, mm } = t;
-
-	let base = dayjs(sched.nextRun).tz(PST_TZ);
-	if (!base.isValid()) base = nowPST;
-
-	if (scheduleType === "daily") base = base.add(1, "day");
-	else if (scheduleType === "weekly") base = base.add(1, "week");
-	else if (scheduleType === "monthly") base = base.add(1, "month");
-
-	let next = base.hour(hh).minute(mm).second(0).millisecond(0);
-
-	if (next.isBefore(nowPST)) {
-		if (scheduleType === "daily") next = next.add(1, "day");
-		else if (scheduleType === "weekly") next = next.add(1, "week");
-		else if (scheduleType === "monthly") next = next.add(1, "month");
+	const next = computeNextRunForSchedule({
+		scheduleType,
+		timeOfDay: sched.timeOfDay,
+		baseMoment: dayjs(sched.nextRun).tz(PST_TZ),
+		nowMoment: nowPST,
+	});
+	if (!next) {
+		console.error(
+			`[Queue] Invalid nextRun calc for schedule ${sched._id}; keeping current`
+		);
+		await sched.save();
+		return;
 	}
 
 	if (endPST && next.isAfter(endPST)) {
