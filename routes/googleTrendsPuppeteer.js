@@ -56,6 +56,7 @@ const TRENDS_CACHE_TTL_MS = 5 * 60 * 1000;
 const RECENT_VIDEO_LOOKBACK_DAYS = 3;
 const POTENTIAL_IMAGE_TOPIC_LIMIT = ROW_LIMIT;
 const POTENTIAL_IMAGE_MIN_PER_STORY = 4;
+const MIN_FEED_IMAGES_PER_STORY = 3;
 const POTENTIAL_IMAGE_TOPUP_TOPIC_LIMIT = 5;
 const POTENTIAL_IMAGE_ARTICLE_LIMIT = 3;
 const POTENTIAL_IMAGE_PER_ARTICLE_LIMIT = 6;
@@ -177,6 +178,23 @@ function uniqueStrings(list = [], { limit = 0 } = {}) {
 		if (seen.has(key)) continue;
 		seen.add(key);
 		out.push(val);
+		if (limit && out.length >= limit) break;
+	}
+	return out;
+}
+
+function dedupeImageUrlsByKey(list = [], { limit = 0 } = {}) {
+	const seen = new Set();
+	const out = [];
+	for (const raw of Array.isArray(list) ? list : []) {
+		const url = String(raw || "").trim();
+		if (!url) continue;
+		if (!/^https?:\/\//i.test(url)) continue;
+		if (isLikelyThumbnailUrl(url)) continue;
+		const key = normalizeImageUrlKey(url);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(url);
 		if (limit && out.length >= limit) break;
 	}
 	return out;
@@ -3012,6 +3030,110 @@ async function enrichStoriesWithPotentialImages(
 				count: potentialImages.length,
 			});
 
+			if (potentialImages.length < MIN_FEED_IMAGES_PER_STORY) {
+				const matchTerms = buildMatchTerms(
+					story?.title,
+					story?.rawTitle,
+					story?.trendDialogTitle,
+					story?.entityNames || [],
+					...(Array.isArray(story?.articles)
+						? story.articles.map((a) => a?.title).filter(Boolean)
+						: []),
+				);
+				const queries = uniqueStrings(
+					[
+						story?.title,
+						story?.rawTitle,
+						story?.trendDialogTitle,
+						...(story?.searchPhrases || []),
+					].filter(Boolean),
+					{ limit: 3 },
+				);
+				let remaining = MIN_FEED_IMAGES_PER_STORY - potentialImages.length;
+				log("Google images topup start", {
+					story: story?.title,
+					storyIndex: i + 1,
+					remaining,
+					queries,
+				});
+
+				const addUrl = (url, strict = true) => {
+					if (!url || potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY)
+						return false;
+					if (isLikelyThumbnailUrl(url)) return false;
+					if (classifyImageUrl(url) === "bad") return false;
+					const key = normalizeImageUrlKey(url);
+					if (storySeen.has(key) || globalSeen.has(key)) return false;
+					let decoded = "";
+					try {
+						decoded = decodeURIComponent(url);
+					} catch {
+						decoded = url;
+					}
+					const hay = `${getUrlPathForMatch(url)} ${decoded}`;
+					const ok = strict
+						? matchesAnyTermStrict(hay, matchTerms)
+						: matchesAnyTerm(hay, matchTerms);
+					if (!ok) return false;
+
+					storySeen.add(key);
+					globalSeen.add(key);
+					potentialImages.push({
+						imageurl: url,
+						description: story?.title || "",
+						source: "google-images",
+					});
+					return true;
+				};
+
+				for (const query of queries) {
+					if (remaining <= 0) break;
+					let urls = [];
+					try {
+						// eslint-disable-next-line no-await-in-loop
+						urls = await scrapeGoogleImages({
+							query,
+							limit: Math.max(12, MIN_FEED_IMAGES_PER_STORY * 4),
+						});
+					} catch (err) {
+						log("Google images topup failed", {
+							story: story?.title,
+							query,
+							error: err.message || String(err),
+						});
+						continue;
+					}
+					const deduped = dedupeImageUrlsByKey(urls);
+					for (const url of deduped) {
+						if (remaining <= 0) break;
+						if (addUrl(url, true)) {
+							remaining -= 1;
+						}
+					}
+					if (remaining > 0) {
+						for (const url of deduped) {
+							if (remaining <= 0) break;
+							if (addUrl(url, false)) {
+								remaining -= 1;
+							}
+						}
+					}
+				}
+
+				log("Google images topup done", {
+					story: story?.title,
+					storyIndex: i + 1,
+					count: potentialImages.length,
+				});
+				if (potentialImages.length < MIN_FEED_IMAGES_PER_STORY) {
+					log("Potential images still below minimum", {
+						story: story?.title,
+						storyIndex: i + 1,
+						count: potentialImages.length,
+					});
+				}
+			}
+
 			out.push({ ...story, potentialImages });
 		} catch (err) {
 			log("Potential images failed", {
@@ -3516,34 +3638,48 @@ router.get("/google-trends", async (req, res) => {
 		}
 
 		// Strip images here; downstream orchestrator will search high-quality images per ratio.
-		stories = stories.map((s) => ({
-			...s,
-			trendSearchTerm:
-				s.trendSearchTerm || s.rawTitle || s.title || s.trendDialogTitle || "",
-			potentialImages: Array.isArray(s.potentialImages)
+		stories = stories.map((s) => {
+			const potentialUrls = Array.isArray(s.potentialImages)
 				? s.potentialImages
-				: [],
-			image:
-				includeImages && s.image && !isLikelyThumbnailUrl(s.image)
-					? s.image
-					: null,
-			images: includeImages
-				? uniqueStrings(
-						[
-							s.image || null,
-							...(s.articles || []).map((a) => a.image).filter(Boolean),
-						],
-						{ limit: 8 },
-					).filter((img) => img && !isLikelyThumbnailUrl(img))
-				: [],
-			articles: (s.articles || []).map((a) => ({
-				title: a.title,
-				url: a.url,
-				...(includeImages && a.image && !isLikelyThumbnailUrl(a.image)
-					? { image: a.image }
-					: {}),
-			})),
-		}));
+						.map(
+							(img) =>
+								img?.imageurl || img?.imageUrl || img?.url || img?.link || "",
+						)
+						.filter(Boolean)
+				: [];
+			const baseImages = [
+				s.image || null,
+				...(s.articles || []).map((a) => a.image).filter(Boolean),
+			];
+			const feedImages = includeImages
+				? dedupeImageUrlsByKey([...baseImages, ...potentialUrls], { limit: 8 })
+				: [];
+
+			return {
+				...s,
+				trendSearchTerm:
+					s.trendSearchTerm ||
+					s.rawTitle ||
+					s.title ||
+					s.trendDialogTitle ||
+					"",
+				potentialImages: Array.isArray(s.potentialImages)
+					? s.potentialImages
+					: [],
+				image:
+					includeImages && s.image && !isLikelyThumbnailUrl(s.image)
+						? s.image
+						: null,
+				images: feedImages,
+				articles: (s.articles || []).map((a) => ({
+					title: a.title,
+					url: a.url,
+					...(includeImages && a.image && !isLikelyThumbnailUrl(a.image)
+						? { image: a.image }
+						: {}),
+				})),
+			};
+		});
 
 		const payload = {
 			generatedAt: new Date().toISOString(),

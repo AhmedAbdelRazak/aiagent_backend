@@ -320,16 +320,9 @@ async function handleSchedule(sched) {
 
 	const { user, video } = sched;
 
-	/* 2) resolve base video seed */
-	let baseVideo = video || null;
-	if (!baseVideo && Array.isArray(sched.videos) && sched.videos.length) {
-		baseVideo = sched.videos[sched.videos.length - 1];
-	}
-
-	let resolvedCategory =
-		sched.category || (baseVideo && baseVideo.category) || null;
-
-	if (!resolvedCategory) {
+	const normalizeScheduleValue = (value = "") => String(value || "").trim();
+	const scheduleCategory = normalizeScheduleValue(sched.category);
+	if (!scheduleCategory) {
 		console.error(
 			`[Queue] Schedule ${sched._id} missing category; delaying with backoff`
 		);
@@ -341,6 +334,32 @@ async function handleSchedule(sched) {
 		return;
 	}
 
+	const resolveVideoDoc = async (candidate) => {
+		if (!candidate) return null;
+		if (typeof candidate === "object") {
+			const hasCategory = Boolean(candidate.category);
+			const hasDuration = Number.isFinite(Number(candidate.duration));
+			if (hasCategory && hasDuration) return candidate;
+		}
+		const id = candidate._id || candidate.id || candidate;
+		if (!id) return candidate;
+		try {
+			return await Video.findById(id).lean();
+		} catch {
+			return candidate;
+		}
+	};
+
+	/* 2) resolve base video seed */
+	const initialVideo = await resolveVideoDoc(video || null);
+	let latestVideo = null;
+	if (Array.isArray(sched.videos) && sched.videos.length) {
+		latestVideo = await resolveVideoDoc(sched.videos[sched.videos.length - 1]);
+	}
+	const seedVideo = latestVideo || initialVideo || null;
+
+	let resolvedCategory = scheduleCategory;
+
 	const isLongSchedule =
 		String(sched.videoType || "").toLowerCase() === "long" ||
 		String(resolvedCategory || "").toLowerCase() === "longvideo";
@@ -351,18 +370,78 @@ async function handleSchedule(sched) {
 	}
 
 	if (!isLongSchedule) {
-		if (!baseVideo || !baseVideo.category) {
-			try {
-				baseVideo = await Video.findOne({
-					user: (user && user._id) || user,
-					category: resolvedCategory,
-				})
-					.sort({ createdAt: -1 })
-					.lean();
-			} catch (e) {
-				console.warn("[Queue] No base video found; using defaults:", e.message);
-			}
+		const normBaseCategory = normalizeScheduleValue(initialVideo?.category);
+		if (normBaseCategory && normBaseCategory !== resolvedCategory) {
+			console.error(
+				`[Queue] Schedule ${sched._id} category mismatch (schedule=${resolvedCategory}, seed=${normBaseCategory})`
+			);
+			await applyScheduleFailureBackoff(sched, {
+				nowPST,
+				scheduleType,
+				reason: "category mismatch with seed video",
+			});
+			return;
 		}
+
+		const normLatestCategory = normalizeScheduleValue(latestVideo?.category);
+		if (normLatestCategory && normLatestCategory !== resolvedCategory) {
+			console.error(
+				`[Queue] Schedule ${sched._id} category mismatch (schedule=${resolvedCategory}, latest=${normLatestCategory})`
+			);
+			await applyScheduleFailureBackoff(sched, {
+				nowPST,
+				scheduleType,
+				reason: "category mismatch with latest schedule video",
+			});
+			return;
+		}
+
+		if (!seedVideo) {
+			console.error(
+				`[Queue] Schedule ${sched._id} missing seed video; delaying with backoff`
+			);
+			await applyScheduleFailureBackoff(sched, {
+				nowPST,
+				scheduleType,
+				reason: "missing seed video",
+			});
+			return;
+		}
+	}
+
+	const normalizeDuration = (value) => {
+		const n = Number(value);
+		return Number.isFinite(n) && n > 0 ? n : null;
+	};
+	const initialDuration = normalizeDuration(initialVideo?.duration);
+	const latestDuration = normalizeDuration(latestVideo?.duration);
+	if (
+		!isLongSchedule &&
+		initialDuration &&
+		latestDuration &&
+		initialDuration !== latestDuration
+	) {
+		console.error(
+			`[Queue] Schedule ${sched._id} duration mismatch (seed=${initialDuration}, latest=${latestDuration})`
+		);
+		await applyScheduleFailureBackoff(sched, {
+			nowPST,
+			scheduleType,
+			reason: "duration mismatch across schedule videos",
+		});
+		return;
+	}
+	const resolvedDuration = latestDuration || initialDuration;
+	if (!isLongSchedule && !resolvedDuration) {
+		console.error(
+			`[Queue] Schedule ${sched._id} missing duration from seed videos; delaying with backoff`
+		);
+		await applyScheduleFailureBackoff(sched, {
+			nowPST,
+			scheduleType,
+			reason: "missing duration from schedule videos",
+		});
+		return;
 	}
 
 	const body = isLongSchedule
@@ -392,24 +471,24 @@ async function handleSchedule(sched) {
 		  }
 		: {
 				category: resolvedCategory,
-				ratio: baseVideo?.ratio || "720:1280",
-				duration: baseVideo?.duration || 20,
-				language: baseVideo?.language || "English",
-				country: baseVideo?.country || "US",
+				ratio: seedVideo?.ratio || "720:1280",
+				duration: resolvedDuration,
+				language: seedVideo?.language || "English",
+				country: seedVideo?.country || "US",
 				customPrompt: "",
-				videoImage: baseVideo?.videoImage,
+				videoImage: seedVideo?.videoImage,
 				schedule: null,
-				useSora: Boolean(baseVideo?.useSora),
-				youtubeAccessToken: baseVideo?.youtubeAccessToken,
-				youtubeRefreshToken: baseVideo?.youtubeRefreshToken,
-				youtubeTokenExpiresAt: baseVideo?.youtubeTokenExpiresAt,
-				youtubeEmail: baseVideo?.youtubeEmail,
+				useSora: Boolean(seedVideo?.useSora),
+				youtubeAccessToken: seedVideo?.youtubeAccessToken,
+				youtubeRefreshToken: seedVideo?.youtubeRefreshToken,
+				youtubeTokenExpiresAt: seedVideo?.youtubeTokenExpiresAt,
+				youtubeEmail: seedVideo?.youtubeEmail,
 		  };
 	const scheduleJobMeta = {
 		scheduleId: String(sched._id),
 		category: resolvedCategory,
-		baseVideoId: baseVideo?._id || baseVideo?.id || undefined,
-		useSora: Boolean(baseVideo?.useSora),
+		baseVideoId: seedVideo?._id || seedVideo?.id || undefined,
+		useSora: Boolean(seedVideo?.useSora),
 		videoType: isLongSchedule ? "long" : "short",
 	};
 

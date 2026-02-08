@@ -2,6 +2,7 @@
 const mongoose = require("mongoose");
 const Schedule = require("../models/Schedule");
 const SocialPost = require("../models/SocialPost"); // ← make sure this exists
+const Video = require("../models/Video");
 const dayjs = require("dayjs");
 
 exports.createSchedule = async (req, res, next) => {
@@ -35,11 +36,22 @@ exports.createSchedule = async (req, res, next) => {
 			else next = next.add(1, "month");
 		}
 
-		const effectiveCategory = category || video.category;
+		const videoCategory = String(video.category || "").trim();
+		const requestedCategory = String(category || "").trim();
+		const effectiveCategory = videoCategory || requestedCategory;
 		if (!effectiveCategory) {
 			return res
 				.status(400)
 				.json({ error: "Category is required for schedules." });
+		}
+		if (
+			requestedCategory &&
+			videoCategory &&
+			requestedCategory !== videoCategory
+		) {
+			return res.status(400).json({
+				error: `Category must match the scheduled video's category (${videoCategory}).`,
+			});
 		}
 
 		const sched = new Schedule({
@@ -132,7 +144,34 @@ exports.updateSchedule = async (req, res, next) => {
 
 		if (scheduleType) schedule.scheduleType = scheduleType;
 		if (timeOfDay) schedule.timeOfDay = timeOfDay;
-		if (category) schedule.category = category;
+		if (category) {
+			const requestedCategory = String(category || "").trim();
+			if (!requestedCategory) {
+				return res
+					.status(400)
+					.json({ error: "Category cannot be empty." });
+			}
+			const isLongSchedule =
+				String(schedule.videoType || "").toLowerCase() === "long" ||
+				String(schedule.category || "").toLowerCase() === "longvideo";
+			if (!isLongSchedule) {
+				if (!schedule.video) {
+					return res.status(400).json({
+						error: "Schedule is missing its seed video; category cannot be changed.",
+					});
+				}
+				const seedVideo = await Video.findById(schedule.video).select(
+					"category"
+				);
+				const seedCategory = String(seedVideo?.category || "").trim();
+				if (seedCategory && seedCategory !== requestedCategory) {
+					return res.status(400).json({
+						error: `Category must match the scheduled video's category (${seedCategory}).`,
+					});
+				}
+			}
+			schedule.category = requestedCategory;
+		}
 		if (active !== undefined) schedule.active = active;
 
 		// Recompute nextRun if timeOfDay or type changed
@@ -218,3 +257,4 @@ exports.listSchedules = async (req, res, next) => {
 		next(err);
 	}
 };
+

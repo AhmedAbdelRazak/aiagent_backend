@@ -99,7 +99,7 @@ if (ffmpegPath) {
 	console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
 } else {
 	console.warn(
-		"[Startup] WARN - No valid FFmpeg binary found. Set FFMPEG_PATH or ensure ffmpeg is on PATH."
+		"[Startup] WARN - No valid FFmpeg binary found. Set FFMPEG_PATH or ensure ffmpeg is on PATH.",
 	);
 }
 
@@ -112,7 +112,7 @@ function ffmpegSupportsLavfi() {
 	try {
 		child_process.execSync(
 			`"${bin}" -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:d=0.1 -frames:v 1 -f null -`,
-			{ stdio: "ignore" }
+			{ stdio: "ignore" },
 		);
 		return true;
 	} catch {
@@ -139,7 +139,7 @@ function resolveFontPath() {
 const FONT_PATH = resolveFontPath();
 assertExists(
 	FONT_PATH,
-	"No valid TTF font found – set FFMPEG_FONT_PATH or install DejaVu/Arial."
+	"No valid TTF font found – set FFMPEG_FONT_PATH or install DejaVu/Arial.",
 );
 const FONT_PATH_FFMPEG = FONT_PATH.replace(/\\/g, "/").replace(/:/g, "\\:");
 
@@ -188,26 +188,26 @@ const CSE_MIN_IMAGE_SHORT_EDGE = 720;
 const CSE_RELAXED_MIN_IMAGE_SHORT_EDGE = 480;
 const CSE_CACHE_TTL_MS = Math.max(
 	0,
-	Number(process.env.CSE_CACHE_TTL_MS || 6 * 60 * 60 * 1000)
+	Number(process.env.CSE_CACHE_TTL_MS || 6 * 60 * 60 * 1000),
 );
 const CSE_CACHE_MAX_ENTRIES = Math.max(
 	50,
-	Number(process.env.CSE_CACHE_MAX_ENTRIES || 800)
+	Number(process.env.CSE_CACHE_MAX_ENTRIES || 800),
 );
 const CSE_SEGMENT_MAX_PAGES = Math.max(
 	1,
-	Number(process.env.CSE_SEGMENT_MAX_PAGES || 1)
+	Number(process.env.CSE_SEGMENT_MAX_PAGES || 1),
 );
 const CSE_SEGMENT_QUERY_LIMIT = Math.max(
 	2,
-	Number(process.env.CSE_SEGMENT_QUERY_LIMIT || 4)
+	Number(process.env.CSE_SEGMENT_QUERY_LIMIT || 4),
 );
 const CSE_SEGMENT_STOP_AFTER = Math.max(
 	10,
-	Number(process.env.CSE_SEGMENT_STOP_AFTER || 40)
+	Number(process.env.CSE_SEGMENT_STOP_AFTER || 40),
 );
 const CSE_SEGMENT_IMG_SIZES = parseCseSizeList(
-	process.env.CSE_SEGMENT_IMG_SIZES
+	process.env.CSE_SEGMENT_IMG_SIZES,
 ) || [CSE_PREFERRED_IMG_SIZE, CSE_FALLBACK_IMG_SIZE];
 
 const VALID_RATIOS = [
@@ -261,6 +261,7 @@ const SHORTS_REDUNDANT_NGRAM = 3;
 const SHORTS_ADJACENT_SIMILARITY_MAX = 0.72;
 const SHORTS_INTRO_SIMILARITY_MAX = 0.5;
 const SHORTS_MIN_UNIQUE_IMAGE_RATIO = 1;
+const MIN_FEED_IMAGES = 3;
 const SEGMENT_IMAGE_QA_MAX_CHECKS = 14;
 const TEXTY_IMAGE_URL_RE =
 	/(logo|poster|banner|cover|keyart|titlecard|thumbnail|thumb|promo|template|vector|watermark|wallpaper)/i;
@@ -520,6 +521,9 @@ const PROMPT_CHAR_LIMIT = 220;
 const norm = (p) => (p ? p.replace(/\\/g, "/") : p);
 const choose = (a) => a[Math.floor(Math.random() * a.length)];
 const toBool = (v) => v === true || v === "true" || v === 1 || v === "1";
+const REQUIRE_TRENDS_FOR_SCHEDULES = toBool(
+	process.env.REQUIRE_TRENDS_FOR_SCHEDULES,
+);
 const looksLikeAITopic = (t) => AI_TOPIC_RE.test(String(t || ""));
 
 function parseCseSizeList(value) {
@@ -617,7 +621,7 @@ function stripExtraRankPrefixes(text = "", rank = null, label = "") {
 	const remainder = removeLeadingLabel(stripCountdownPrefix(text), label);
 	const noLabel = stripLeadingLabel(
 		remainder || stripCountdownPrefix(text),
-		label
+		label,
 	);
 	return noLabel || stripCountdownPrefix(text) || text || "";
 }
@@ -1057,7 +1061,7 @@ function buildAnchorPhrasesFromStory(trendStory = null) {
 				: []),
 			...(Array.isArray(trendStory.entityNames) ? trendStory.entityNames : []),
 		].filter(Boolean),
-		10
+		10,
 	);
 }
 
@@ -1146,7 +1150,7 @@ function trimAnchorClause(anchor = "") {
 	const cleaned = String(anchor || "").trim();
 	if (!cleaned) return "";
 	const clauseMatch = cleaned.match(
-		/\b(who|that|which|after|when|while|as|because|with|over|about|before)\b/i
+		/\b(who|that|which|after|when|while|as|because|with|over|about|before)\b/i,
 	);
 	if (!clauseMatch) return cleaned;
 	const idx = cleaned.toLowerCase().indexOf(clauseMatch[0].toLowerCase());
@@ -1158,16 +1162,16 @@ function detectFictionalContext(text = "") {
 	const hay = String(text || "").toLowerCase();
 	if (!hay) return false;
 	const hasStrong = FICTIONAL_CONTEXT_STRONG_TOKENS.some((tok) =>
-		hay.includes(tok)
+		hay.includes(tok),
 	);
 	if (hasStrong) return true;
 	const hasWeak = FICTIONAL_CONTEXT_WEAK_TOKENS.some((tok) =>
-		hay.includes(tok)
+		hay.includes(tok),
 	);
 	if (!hasWeak) return false;
 	return (
 		/\b(did|does|do)\s+\w[\w\s]{0,40}\b(die|dies|died|killed|survive|survives|alive)\b/.test(
-			hay
+			hay,
 		) ||
 		/\bending explained\b/.test(hay) ||
 		/\bwho\s+(dies|died|survives|survived)\b/.test(hay)
@@ -1190,13 +1194,13 @@ function scoreTopicAnchorCandidate(candidate = "", baseTokens = []) {
 		Math.max(0, wordCount - 8) * 0.4;
 	if (
 		/^(did|does|do|is|are|was|were|will|can|could|should|would|has|have|had)\b/i.test(
-			cleaned
+			cleaned,
 		)
 	) {
 		score -= 0.7;
 	}
 	const isGenericOnly = tokens.every(
-		(t) => TOPIC_STOP_WORDS.has(t) || GENERIC_TOPIC_TOKENS.has(t)
+		(t) => TOPIC_STOP_WORDS.has(t) || GENERIC_TOPIC_TOKENS.has(t),
 	);
 	if (isGenericOnly) score -= 2;
 	return score;
@@ -1262,7 +1266,7 @@ function buildShortsTopicContextStrings({
 function pickShortsAnchorPhrase(topic = "", trendStory, contextStrings = []) {
 	const baseTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
 	const storyTokens = filterSpecificTopicTokens(
-		collectStoryTokens(topic, trendStory)
+		collectStoryTokens(topic, trendStory),
 	);
 	const anchorTokens = baseTokens.length ? baseTokens : storyTokens;
 	const candidates = new Set();
@@ -1304,7 +1308,7 @@ function pickIntentEvidenceLine(contextStrings = [], anchor = "", topic = "") {
 		const hit = lines.find((l) =>
 			String(l || "")
 				.toLowerCase()
-				.includes(anchorLower)
+				.includes(anchorLower),
 		);
 		if (hit) return String(hit || "").slice(0, 160);
 	}
@@ -1314,8 +1318,8 @@ function pickIntentEvidenceLine(contextStrings = [], anchor = "", topic = "") {
 			baseTokens.some((t) =>
 				String(l || "")
 					.toLowerCase()
-					.includes(t)
-			)
+					.includes(t),
+			),
 		);
 		if (hit) return String(hit || "").slice(0, 160);
 	}
@@ -1425,7 +1429,7 @@ function buildShortsTopicList({
 function ensureAnchorInShortsSegments(
 	segments = [],
 	anchor = "",
-	domain = "real"
+	domain = "real",
 ) {
 	if (!anchor || !segments.length) return segments;
 	const first = segments[0];
@@ -1456,7 +1460,7 @@ function hasInstallmentEvidence(text = "") {
 
 function stripUnverifiedInstallmentDetails(
 	text,
-	{ anchor = "", allowInstallmentNumbers = false } = {}
+	{ anchor = "", allowInstallmentNumbers = false } = {},
 ) {
 	if (!text || allowInstallmentNumbers) return text;
 	let updated = String(text);
@@ -1467,20 +1471,20 @@ function stripUnverifiedInstallmentDetails(
 		updated = updated
 			.replace(
 				new RegExp(`\\b${escaped}\\s+\\d+\\s+episode\\s+\\d+\\b`, "gi"),
-				cleanedAnchor
+				cleanedAnchor,
 			)
 			.replace(
 				new RegExp(`\\b${escaped}\\s+episode\\s+\\d+\\b`, "gi"),
-				cleanedAnchor
+				cleanedAnchor,
 			)
 			.replace(
 				new RegExp(`\\b${escaped}\\s+season\\s+\\d+\\b`, "gi"),
-				cleanedAnchor
+				cleanedAnchor,
 			);
 		if (!/\d/.test(cleanedAnchor)) {
 			updated = updated.replace(
 				new RegExp(`\\b${escaped}\\s+\\d+\\b`, "gi"),
-				cleanedAnchor
+				cleanedAnchor,
 			);
 		}
 	}
@@ -1496,9 +1500,9 @@ function stripUnverifiedInstallmentDetails(
 		updated = updated.replace(
 			new RegExp(
 				`\\b${escaped}\\s+the\\s+(episode|season|part|chapter|volume)\\b`,
-				"gi"
+				"gi",
 			),
-			cleanedAnchor
+			cleanedAnchor,
 		);
 	}
 	return updated
@@ -1509,7 +1513,7 @@ function stripUnverifiedInstallmentDetails(
 
 function enforceShortsSpecificityGuards(
 	segments = [],
-	{ topic, trendStory, liveContext, articleText, anchor } = {}
+	{ topic, trendStory, liveContext, articleText, anchor } = {},
 ) {
 	const contextStrings = buildShortsTopicContextStrings({
 		topic,
@@ -1567,17 +1571,17 @@ function normalizeTopicTokens(tokens = []) {
 				.map((t) =>
 					String(t || "")
 						.toLowerCase()
-						.trim()
+						.trim(),
 				)
-				.filter(Boolean)
-		)
+				.filter(Boolean),
+		),
 	);
 }
 
 function filterSpecificTopicTokens(tokens = []) {
 	const norm = normalizeTopicTokens(tokens);
 	const filtered = norm.filter(
-		(t) => t.length >= 3 && !GENERIC_TOPIC_TOKENS.has(t)
+		(t) => t.length >= 3 && !GENERIC_TOPIC_TOKENS.has(t),
 	);
 	return filtered.length ? filtered : norm;
 }
@@ -1662,7 +1666,7 @@ function enforceTop5Order(planSegments = []) {
 		const idx = remaining.findIndex(
 			(s) =>
 				(s?.type || (s?.rank ? "rank" : null)) === exp.type &&
-				(exp.rank === null ? true : Number(s.rank) === exp.rank)
+				(exp.rank === null ? true : Number(s.rank) === exp.rank),
 		);
 		if (idx === -1) return null;
 		take.push(remaining[idx]);
@@ -1922,16 +1926,16 @@ function normalizeTrendPotentialImages(list = []) {
 				item.url ||
 				item.link ||
 				item.originalUrl ||
-				""
+				"",
 		).trim();
 		if (!url || !/^https?:\/\//i.test(url)) continue;
 		out.push({
 			url,
 			source: String(
-				item.source || item.pageUrl || item.contextLink || ""
+				item.source || item.pageUrl || item.contextLink || "",
 			).trim(),
 			title: String(
-				item.description || item.title || item.caption || ""
+				item.description || item.title || item.caption || "",
 			).trim(),
 			width: item.width || null,
 			height: item.height || null,
@@ -1947,7 +1951,7 @@ function sanitizeAudienceFacingText(text, { allowAITopic = false } = {}) {
 
 	cleaned = cleaned.replace(
 		/\bAI\s+(voiceover|voice over|narration|script)\b/gi,
-		"narration"
+		"narration",
 	);
 
 	if (!allowAITopic) {
@@ -1980,7 +1984,7 @@ function enforceEngagementOutroText(text, { topic, wordCap, category }) {
 		updated = updated
 			.replace(
 				/\b(like)\s*&\s*(subscribe|sub|follow)?\b/gi,
-				"like and subscribe"
+				"like and subscribe",
 			)
 			.replace(/\b(like)\s+and\s+follow\b/gi, "like and subscribe")
 			.replace(/\bcomment\s+down\s+below\b/gi, "comment in the comments")
@@ -1988,7 +1992,7 @@ function enforceEngagementOutroText(text, { topic, wordCap, category }) {
 			.replace(/\bcomment\s+in\s+the\b/gi, "comment in the comments")
 			.replace(
 				/\b(tell me|let me know|share)\b([^.!?]{0,40})\bin the\b/gi,
-				"$1$2 in the comments"
+				"$1$2 in the comments",
 			)
 			.replace(/\.\.\.+/g, ".");
 		return updated.replace(/\s+/g, " ").trim();
@@ -2007,20 +2011,20 @@ function enforceEngagementOutroText(text, { topic, wordCap, category }) {
 					"Do you agree with this ranking?",
 					"What would you swap on this list?",
 					"Which pick shocked you most?",
-			  ])
+				])
 			: choose(
 					safeTopic
 						? [
 								`What do you make of ${safeTopic}?`,
 								`Does ${safeTopic} surprise you?`,
 								`Where do you stand on ${safeTopic}?`,
-						  ]
+							]
 						: [
 								"What do you think?",
 								"Did this surprise you?",
 								"What stood out to you?",
-						  ]
-			  );
+							],
+				);
 	const cta = choose([
 		"Like and subscribe, then drop your take in the comments.",
 		"Like and subscribe for more, and tell me your angle in the comments.",
@@ -2072,7 +2076,7 @@ function enforceEngagementOutroText(text, { topic, wordCap, category }) {
 		let picked = "";
 		for (const candidate of candidates) {
 			const normalized = normalizeSegmentCompletion(
-				normalizeOutroCopy(candidate)
+				normalizeOutroCopy(candidate),
 			);
 			const words = countWords(normalized);
 			const hasCTA =
@@ -2128,13 +2132,13 @@ function ensureClickableLinks(text) {
 			s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
 			s = s.replace(
 				/(https?:\/\/)?(www\.)?(serenejannat\.com[^\s)]*)/gi,
-				(_m, _scheme, _www, domain) => `https://${domain}`
+				(_m, _scheme, _www, domain) => `https://${domain}`,
 			);
 			// general bare domain -> clickable
 			s = s.replace(
 				/(^|\s)([a-z0-9.-]+\.[a-z]{2,}[^\s)]*)/gi,
 				(_m, prefix, url) =>
-					`${prefix}https://${url.replace(/^https?:\/\//i, "")}`
+					`${prefix}https://${url.replace(/^https?:\/\//i, "")}`,
 			);
 			// strip trailing punctuation that breaks linkification
 			s = s.replace(/(https?:\/\/[^\s)]+)[).,;:]+$/g, "$1");
@@ -2309,17 +2313,17 @@ function humanizeLargeNumber(num) {
 	if (!Number.isFinite(num)) return null;
 	if (num >= 1e9) {
 		return `${trimTrailingZeros(
-			(num / 1e9).toFixed(num % 1e9 === 0 ? 0 : 2)
+			(num / 1e9).toFixed(num % 1e9 === 0 ? 0 : 2),
 		)} billion`;
 	}
 	if (num >= 1e6) {
 		return `${trimTrailingZeros(
-			(num / 1e6).toFixed(num % 1e6 === 0 ? 0 : 2)
+			(num / 1e6).toFixed(num % 1e6 === 0 ? 0 : 2),
 		)} million`;
 	}
 	if (num >= 1e3) {
 		return `${trimTrailingZeros(
-			(num / 1e3).toFixed(num % 1e3 === 0 ? 0 : 2)
+			(num / 1e3).toFixed(num % 1e3 === 0 ? 0 : 2),
 		)} thousand`;
 	}
 	if (num >= 1 && num < 10000) {
@@ -2352,10 +2356,10 @@ function improveTTSPronunciation(text) {
 	};
 
 	text = text.replace(/#\s*([1-5])\s*[---:]?/gi, (_, n) =>
-		NUM_WORD[n] ? `Number ${NUM_WORD[n]}: ` : `Number ${n}: `
+		NUM_WORD[n] ? `Number ${NUM_WORD[n]}: ` : `Number ${n}: `,
 	);
 	text = text.replace(/\b#\s*([1-5])\b/gi, (_, n) =>
-		NUM_WORD[n] ? `Number ${NUM_WORD[n]}` : `Number ${n}`
+		NUM_WORD[n] ? `Number ${NUM_WORD[n]}` : `Number ${n}`,
 	);
 
 	text = text.replace(
@@ -2363,7 +2367,7 @@ function improveTTSPronunciation(text) {
 		(_, num, scale) => {
 			const spoken = numberToEnglish(parseInt(num, 10)) || num;
 			return scale ? `${spoken} plus ${scale}` : `${spoken} plus`;
-		}
+		},
 	);
 
 	text = text.replace(
@@ -2372,7 +2376,7 @@ function improveTTSPronunciation(text) {
 			const spoken = numberToEnglish(parseInt(num, 10));
 			if (!spoken) return m;
 			return scale ? `${spoken} ${scale}` : spoken;
-		}
+		},
 	);
 
 	text = text.replace(
@@ -2381,7 +2385,7 @@ function improveTTSPronunciation(text) {
 			const scale = SCALE_MAP[String(scaleToken || "").toLowerCase()] || 1;
 			const spoken = scaleNumberForSpeech(num, scale);
 			return spoken || m;
-		}
+		},
 	);
 
 	text = text.replace(/\b(\d{1,3}(?:,\d{3})+)\b/g, (m, num) => {
@@ -2400,7 +2404,7 @@ function improveTTSPronunciation(text) {
 			const scale = SCALE_MAP[String(scaleToken || "").toLowerCase()] || 1;
 			const spoken = scaleNumberForSpeech(num, scale);
 			return spoken ? `population of ${spoken} people` : m;
-		}
+		},
 	);
 
 	const replaceScaledUnit = (regex, unitLabel) => {
@@ -2413,31 +2417,31 @@ function improveTTSPronunciation(text) {
 
 	replaceScaledUnit(
 		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:sq\.?\s*ft|sqft|square\s*feet?|ft2|ft\^2)\b/gi,
-		"square feet"
+		"square feet",
 	);
 	replaceScaledUnit(
 		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:sq\.?\s*m|sqm|square\s*meters?|m2|m\^2)\b/gi,
-		"square meters"
+		"square meters",
 	);
 	replaceScaledUnit(
 		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:sq\.?\s*km|square\s*kilometers?|km2|km\^2)\b/gi,
-		"square kilometers"
+		"square kilometers",
 	);
 	replaceScaledUnit(
 		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:sq\.?\s*mi|square\s*miles?|mi2|mi\^2)\b/gi,
-		"square miles"
+		"square miles",
 	);
 	replaceScaledUnit(
 		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:acres?)\b/gi,
-		"acres"
+		"acres",
 	);
 	replaceScaledUnit(
 		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:hectares?)\b/gi,
-		"hectares"
+		"hectares",
 	);
 	replaceScaledUnit(
 		/\b(\d[\d,\.]*)(?:\s*(k|m|bn?|billion|million|thousand))?\s*(?:mph|miles per hour)\b/gi,
-		"miles per hour"
+		"miles per hour",
 	);
 
 	text = text.replace(/\b([1-9]|1[0-9]|20)\b/g, (_, n) => NUM_WORD[n] || n);
@@ -2630,7 +2634,7 @@ function mergeAnchorIntoLeadText(text = "", anchor = "", domain = "real") {
 	if (prefixLen >= 2) {
 		const remainder = stripLeadingTokenSequence(
 			rawText,
-			textTokens.slice(0, prefixLen)
+			textTokens.slice(0, prefixLen),
 		);
 		if (!remainder) return safeAnchor;
 		const cleanedRemainder = remainder.replace(/^[,.;!?]\s*/, "");
@@ -2835,7 +2839,7 @@ function segmentLooksFragmentary(text = "") {
 	if (orphanTail.has(lastWord)) return true;
 	if (
 		/\b(?:in|on|for|with|of|about|from|into|over|under|between|after|before|during|within|without|via)\s+(?:the|a|an)\s*$/i.test(
-			t
+			t,
 		)
 	)
 		return true;
@@ -2849,7 +2853,7 @@ function segmentLooksFragmentary(text = "") {
 async function repairNarrationSegments(
 	segments = [],
 	segWordCaps = [],
-	{ topic = "", category = "", language = DEFAULT_LANGUAGE } = {}
+	{ topic = "", category = "", language = DEFAULT_LANGUAGE } = {},
 ) {
 	if (!Array.isArray(segments) || !segments.length) return segments;
 
@@ -2920,7 +2924,7 @@ Return ONLY JSON:
 async function ensureSegmentsCompleteForTTS(
 	segments = [],
 	segWordCaps = [],
-	{ topic = "", category = "", language = DEFAULT_LANGUAGE } = {}
+	{ topic = "", category = "", language = DEFAULT_LANGUAGE } = {},
 ) {
 	if (!Array.isArray(segments) || !segments.length) return segments;
 
@@ -2943,7 +2947,8 @@ async function ensureSegmentsCompleteForTTS(
 	const capsLine = Array.isArray(segWordCaps)
 		? fragTargets
 				.map(
-					({ idx, index }) => `#${index}: <= ${segWordCaps[idx] || "n/a"} words`
+					({ idx, index }) =>
+						`#${index}: <= ${segWordCaps[idx] || "n/a"} words`,
 				)
 				.join(", ")
 		: "";
@@ -3061,7 +3066,7 @@ function countPhraseOccurrences(text = "", phrase = "") {
 
 function contentTokenSet(text = "") {
 	const tokens = tokenizeForDedup(text).filter(
-		(t) => t.length >= 3 && !isStopwordToken(t)
+		(t) => t.length >= 3 && !isStopwordToken(t),
 	);
 	return new Set(tokens);
 }
@@ -3076,7 +3081,7 @@ function jaccardSimilarity(a = new Set(), b = new Set()) {
 
 function analyzeShortsScriptQuality(
 	segments = [],
-	{ topic = "", trendStory = null, anchor = "", segWordCaps = [] } = {}
+	{ topic = "", trendStory = null, anchor = "", segWordCaps = [] } = {},
 ) {
 	const issues = [];
 	const stats = {
@@ -3201,7 +3206,7 @@ async function rewriteShortsSegmentsForQuality(
 		segWordCaps = [],
 		topicIntent = null,
 		issues = [],
-	} = {}
+	} = {},
 ) {
 	if (!process.env.CHATGPT_API_TOKEN) return segments;
 	if (!Array.isArray(segments) || !segments.length) return segments;
@@ -3287,7 +3292,7 @@ Return ONLY JSON:
 async function tightenSegmentsToWordCaps(
 	segments = [],
 	segWordCaps = [],
-	language = DEFAULT_LANGUAGE
+	language = DEFAULT_LANGUAGE,
 ) {
 	if (!Array.isArray(segments) || !segments.length) return segments;
 	const langNote = normalizeLanguageLabel(language || DEFAULT_LANGUAGE);
@@ -3315,8 +3320,8 @@ Language: ${langNote}.
 							messages: [{ role: "user", content: ask }],
 						});
 						s.scriptText = choices[0].message.content.trim();
-				  })()
-		)
+					})(),
+		),
 	);
 
 	return segments;
@@ -3333,7 +3338,7 @@ async function applyShortsScriptQualityGuard(
 		topicIntent = null,
 		maxAttempts = MAX_SHORTS_QA_REWRITES,
 		label = "pre",
-	} = {}
+	} = {},
 ) {
 	let current = Array.isArray(segments) ? segments.slice() : [];
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -3421,7 +3426,7 @@ function deriveVoiceSettings(text, category = "Other") {
 function recomputeSegmentDurationsFromScript(
 	segments,
 	targetTotalSeconds,
-	opts = {}
+	opts = {},
 ) {
 	if (
 		!Array.isArray(segments) ||
@@ -3450,8 +3455,8 @@ function recomputeSegmentDurationsFromScript(
 					? 0.22
 					: 0.32
 				: isTop5
-				? 0.14
-				: 0.23;
+					? 0.14
+					: 0.23;
 		const countdownPause = s?.countdownRank ? (isTop5 ? 0.12 : 0.18) : 0;
 		const cadencePad = isTop5 ? TOP5_FINISH_PAD : 0;
 		const wps = isTop5 ? TOP5_NATURAL_WPS : NATURAL_WPS;
@@ -3496,8 +3501,8 @@ function computeEngagementTail(duration, category = "") {
 	let tail = Math.round(
 		Math.max(
 			ENGAGEMENT_TAIL_MIN,
-			Math.min(ENGAGEMENT_TAIL_MAX, duration * 0.12 || ENGAGEMENT_TAIL_MIN)
-		)
+			Math.min(ENGAGEMENT_TAIL_MAX, duration * 0.12 || ENGAGEMENT_TAIL_MIN),
+		),
 	);
 	if (duration < 12) tail = ENGAGEMENT_TAIL_MIN;
 	return tail;
@@ -3506,7 +3511,7 @@ function computeEngagementTail(duration, category = "") {
 function computeOptionalOutroTolerance(
 	tailSeconds,
 	category = "",
-	duration = 0
+	duration = 0,
 ) {
 	const needed = MIN_OUTRO_WORDS / wordsPerSecForCaps(category); // seconds needed to comfortably fit CTA
 	const deficit = +(needed - tailSeconds).toFixed(2);
@@ -3514,8 +3519,8 @@ function computeOptionalOutroTolerance(
 	const maxTol = isTop5
 		? Math.min(
 				TOP5_OUTRO_TOLERANCE_MAX,
-				Math.max(0, TOP5_MAX_EXTRA_SECONDS - tailSeconds)
-		  )
+				Math.max(0, TOP5_MAX_EXTRA_SECONDS - tailSeconds),
+			)
 		: OUTRO_TOLERANCE_MAX;
 	const minTol = isTop5
 		? duration && duration >= 40
@@ -3531,7 +3536,7 @@ function computeInitialSegLens(
 	category,
 	duration,
 	tailSeconds,
-	toleranceSeconds
+	toleranceSeconds,
 ) {
 	if (category === "Top5") {
 		const INTRO = 3;
@@ -3555,11 +3560,11 @@ function computeInitialSegLens(
 	const contentTarget = Math.max(duration - INTRO, MIN_SEG_SECONDS * 2);
 	const contentSegCount = Math.max(
 		2,
-		Math.min(4, Math.round(contentTarget / 8))
+		Math.min(4, Math.round(contentTarget / 8)),
 	);
 	const baseContent = Math.max(
 		MIN_SEG_SECONDS + 1,
-		Math.floor(contentTarget / contentSegCount)
+		Math.floor(contentTarget / contentSegCount),
 	);
 	let remainder = contentTarget - baseContent * contentSegCount;
 
@@ -3684,7 +3689,7 @@ async function exactLen(src, target, out, opts = {}) {
 	const { ratio = null, enhance = false } = opts;
 
 	const meta = await new Promise((resolve, reject) =>
-		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
+		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data))),
 	);
 
 	const inDur = meta.format?.duration || target;
@@ -3710,7 +3715,7 @@ async function exactLen(src, target, out, opts = {}) {
 			if (needsResize) {
 				vf.push(
 					`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
-					`crop=${width}:${height}`
+					`crop=${width}:${height}`,
 				);
 			}
 		}
@@ -3746,7 +3751,7 @@ async function exactLen(src, target, out, opts = {}) {
 				"yuv420p",
 				"-movflags",
 				"+faststart",
-				"-y"
+				"-y",
 			)
 			.save(norm(out));
 	});
@@ -3755,7 +3760,7 @@ async function exactLen(src, target, out, opts = {}) {
 async function exactLenAudio(src, target, out, opts = {}) {
 	const { maxAtempo = MAX_ATEMPO, forceTrim = false } = opts;
 	const meta = await new Promise((resolve, reject) =>
-		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data)))
+		ffmpeg.ffprobe(src, (err, data) => (err ? reject(err) : resolve(data))),
 	);
 
 	const inDur = meta.format?.duration || target;
@@ -3811,8 +3816,8 @@ async function probeDurationSeconds(filePath) {
 	try {
 		const meta = await new Promise((resolve, reject) =>
 			ffmpeg.ffprobe(filePath, (err, data) =>
-				err ? reject(err) : resolve(data)
-			)
+				err ? reject(err) : resolve(data),
+			),
 		);
 		const dur = meta?.format?.duration;
 		return Number.isFinite(dur) ? +dur.toFixed(3) : 0;
@@ -3895,8 +3900,8 @@ function capTop5SegLensToMaxTotal(segLens = [], maxTotal = 0) {
 			idx === 0
 				? MIN_INTRO
 				: idx === normalized.length - 1
-				? MIN_OUTRO
-				: MIN_CONTENT;
+					? MIN_OUTRO
+					: MIN_CONTENT;
 		return +Math.max(min, sec * scale).toFixed(2);
 	});
 
@@ -3909,7 +3914,7 @@ function capTop5SegLensToMaxTotal(segLens = [], maxTotal = 0) {
 		delta = +(maxTotal - total).toFixed(2);
 		if (delta < -0.05) {
 			scaled[lastIdx] = +Math.max(MIN_OUTRO, scaled[lastIdx] + delta).toFixed(
-				2
+				2,
 			);
 			total = +scaled.reduce((a, b) => a + b, 0).toFixed(2);
 			delta = +(maxTotal - total).toFixed(2);
@@ -3966,7 +3971,7 @@ function buildShortsWatermarkFilter(ratio) {
 	const marginX = Math.max(12, Math.round(width * SHORTS_WATERMARK_MARGIN_PCT));
 	const marginY = Math.max(
 		12,
-		Math.round(height * SHORTS_WATERMARK_MARGIN_PCT)
+		Math.round(height * SHORTS_WATERMARK_MARGIN_PCT),
 	);
 	const rawText = SHORTS_WATERMARK_TEXT;
 	const text = escapeDrawtext(rawText);
@@ -3980,7 +3985,7 @@ function buildShortsWatermarkFilter(ratio) {
 	}
 
 	return `drawtext=fontfile=${FONT_PATH_FFMPEG}:text='${text}':fontsize=${fontSize}:fontcolor=white@${SHORTS_WATERMARK_OPACITY.toFixed(
-		2
+		2,
 	)}:shadowcolor=black@0.55:shadowx=2:shadowy=2:x=w-text_w-${marginX}:y=h-text_h-${marginY}`;
 }
 
@@ -4012,7 +4017,7 @@ async function overlayCountdownSlate({
 	const wrapped = wrapOverlayText(
 		`#${rank}- ${label || ""}`,
 		res?.width || 1080,
-		fontSize
+		fontSize,
 	);
 	const text = escapeDrawtext(wrapped);
 	const alphaExpr = `if(lt(t\\,${fadeIn})\\, t/${fadeIn}\\, if(lt(t\\,${fadeOutStart})\\, 1\\, if(lt(t\\,${visibleUntil})\\, (${visibleUntil}-t)/${fadeOut}\\, 0)))`;
@@ -4036,16 +4041,16 @@ async function overlayCountdownSlate({
 				"yuv420p",
 				"-movflags",
 				"+faststart",
-				"-y"
+				"-y",
 			)
-			.save(norm(out))
+			.save(norm(out)),
 	);
 	return out;
 }
 
 async function probeVideoDuration(file) {
 	const meta = await new Promise((resolve, reject) =>
-		ffmpeg.ffprobe(file, (err, data) => (err ? reject(err) : resolve(data)))
+		ffmpeg.ffprobe(file, (err, data) => (err ? reject(err) : resolve(data))),
 	);
 	return meta.format?.duration || 0;
 }
@@ -4055,7 +4060,7 @@ async function concatWithTransitions(
 	durationsHint = [],
 	ratio = null,
 	transitionDuration = 0.85,
-	options = {}
+	options = {},
 ) {
 	/* KNOBS YOU CARE ABOUT:
 	 * 1) transitionDuration (4th argument at call-site)
@@ -4096,7 +4101,7 @@ async function concatWithTransitions(
 			if (targetRes?.width && targetRes?.height) {
 				vf.push(
 					`scale=${targetRes.width}:${targetRes.height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd+full_chroma_int`,
-					`crop=${targetRes.width}:${targetRes.height}`
+					`crop=${targetRes.width}:${targetRes.height}`,
 				);
 			}
 			vf.push("format=yuv420p", "setsar=1", "fps=30", "setpts=PTS-STARTPTS");
@@ -4111,7 +4116,7 @@ async function concatWithTransitions(
 				"18",
 				"-movflags",
 				"+faststart",
-				"-y"
+				"-y",
 			);
 
 			return cmd.save(norm(normOut));
@@ -4141,7 +4146,7 @@ async function concatWithTransitions(
 		let fadeDur = Math.min(
 			maxFadeSeconds,
 			realDur * maxFadeFraction,
-			realDur / 2
+			realDur / 2,
 		);
 
 		// Enforce a sensible floor
@@ -4165,7 +4170,7 @@ async function concatWithTransitions(
 		if (doFadeOut) {
 			const fadeStartOut = Math.max(0, realDur - fadeDur);
 			filters.push(
-				`fade=t=out:st=${fadeStartOut.toFixed(3)}:d=${fadeDur.toFixed(3)}`
+				`fade=t=out:st=${fadeStartOut.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
 			);
 		}
 
@@ -4187,7 +4192,7 @@ async function concatWithTransitions(
 				"yuv420p",
 				"-movflags",
 				"+faststart",
-				"-y"
+				"-y",
 			);
 
 			return cmd.save(norm(outFade));
@@ -4208,7 +4213,7 @@ async function concatWithTransitions(
 	const listFile = tmpFile("list_concat", ".txt");
 	fs.writeFileSync(
 		listFile,
-		fadedClips.map((p) => `file '${norm(p)}'`).join("\n")
+		fadedClips.map((p) => `file '${norm(p)}'`).join("\n"),
 	);
 
 	const out = tmpFile("transitioned", ".mp4");
@@ -4220,7 +4225,7 @@ async function concatWithTransitions(
 			// All clips are re-encoded the same way above,
 			// so we can safely stream-copy video here.
 			.outputOptions("-c:v", "copy", "-y")
-			.save(norm(out))
+			.save(norm(out)),
 	);
 
 	// 4) Cleanup temp files
@@ -4261,7 +4266,7 @@ function isSportsTopic(topic = "", category = "", trendStory = null) {
 		.concat(trendStory?.entityNames || [])
 		.map((t) => String(t || "").toLowerCase());
 	return haystack.some((t) =>
-		Array.from(SPORTS_KEYWORDS_SET).some((k) => t.includes(k))
+		Array.from(SPORTS_KEYWORDS_SET).some((k) => t.includes(k)),
 	);
 }
 const SPORTS_KEYWORDS = [
@@ -4363,7 +4368,7 @@ function normaliseTrendImageBriefs(briefs = [], topic = "") {
 			byAspect.set(ar, {
 				aspectRatio: ar,
 				visualHook: String(
-					raw.visualHook || raw.idea || raw.hook || raw.description || ""
+					raw.visualHook || raw.idea || raw.hook || raw.description || "",
 				).trim(),
 				emotion: String(raw.emotion || "").trim(),
 				rationale: String(raw.rationale || raw.note || "").trim(),
@@ -4410,7 +4415,7 @@ async function fetchTrendingStory(
 		userId = null,
 		topicsLimit = 1,
 		isLongVideo = false,
-	} = {}
+	} = {},
 ) {
 	const id = resolveTrendsCategoryId(category);
 	const safeTopics = Number.isFinite(Number(topicsLimit))
@@ -4446,12 +4451,12 @@ async function fetchTrendingStory(
 					(Array.isArray(usedTopics)
 						? usedTopics
 						: usedTopics
-						? [usedTopics]
-						: []
+							? [usedTopics]
+							: []
 					)
 						.filter(Boolean)
-						.map(normTitle)
-			  );
+						.map(normTitle),
+				);
 	const usedList = Array.from(usedSet);
 	const isTermUsed = (term) => {
 		if (!term) return false;
@@ -4501,7 +4506,7 @@ async function fetchTrendingStory(
 		let picked = null;
 		for (const s of stories) {
 			const primaryTitle = String(
-				s.trendDialogTitle || s.title || s.rawTitle || s.dialogTitle || ""
+				s.trendDialogTitle || s.title || s.rawTitle || s.dialogTitle || "",
 			).trim();
 			const effectiveCandidate =
 				primaryTitle ||
@@ -4512,7 +4517,7 @@ async function fetchTrendingStory(
 					s.title ||
 					s.trendDialogTitle ||
 					s.dialogTitle ||
-					primaryTitle
+					primaryTitle,
 			).trim();
 			if (!effectiveCandidate && !rawCandidate) continue;
 
@@ -4543,7 +4548,7 @@ async function fetchTrendingStory(
 						s.dialogTitle ||
 						s.youtubeShortTitle ||
 						s.seoTitle ||
-						""
+						"",
 				).trim() || String(s.title || s.rawTitle || "").trim();
 			picked = { story: s, effectiveTitle };
 		}
@@ -4558,14 +4563,14 @@ async function fetchTrendingStory(
 			image: a.image || null,
 		}));
 		const rawTitle = String(
-			s.rawTitle || s.title || s.trendDialogTitle || s.dialogTitle || ""
+			s.rawTitle || s.title || s.trendDialogTitle || s.dialogTitle || "",
 		).trim();
 		const dialogTitle = String(
-			s.trendDialogTitle || s.dialogTitle || ""
+			s.trendDialogTitle || s.dialogTitle || "",
 		).trim();
 		const viralBriefs = normaliseTrendImageBriefs(
 			s.viralImageBriefs || s.imageDirectives || [],
-			effectiveTitle
+			effectiveTitle,
 		);
 		const imageComment = String(s.imageComment || s.imageHook || "").trim();
 		const searchPhrases = cleanStrings(
@@ -4577,13 +4582,13 @@ async function fetchTrendingStory(
 				...(Array.isArray(s.searchPhrases) ? s.searchPhrases : []),
 				...sanitizedArticles.slice(0, 3).map((a) => a.title),
 			],
-			10
+			10,
 		);
 		const entityNames = cleanStrings(
-			Array.isArray(s.entityNames) ? s.entityNames : [rawTitle, dialogTitle]
+			Array.isArray(s.entityNames) ? s.entityNames : [rawTitle, dialogTitle],
 		);
 		const potentialImageCandidates = normalizeTrendPotentialImages(
-			s.potentialImages || s.potentialImageCandidates || []
+			s.potentialImages || s.potentialImageCandidates || [],
 		);
 		const providedImages = (() => {
 			const out = [];
@@ -4608,31 +4613,31 @@ async function fetchTrendingStory(
 				? {
 						"1280:720": Array.isArray(s.imagesByAspect["1280:720"])
 							? s.imagesByAspect["1280:720"].filter(
-									(u) => typeof u === "string" && /^https?:\/\//i.test(u)
-							  )
+									(u) => typeof u === "string" && /^https?:\/\//i.test(u),
+								)
 							: [],
 						"720:1280": Array.isArray(s.imagesByAspect["720:1280"])
 							? s.imagesByAspect["720:1280"].filter(
-									(u) => typeof u === "string" && /^https?:\/\//i.test(u)
-							  )
+									(u) => typeof u === "string" && /^https?:\/\//i.test(u),
+								)
 							: [],
 						square: Array.isArray(s.imagesByAspect.square)
 							? s.imagesByAspect.square.filter(
-									(u) => typeof u === "string" && /^https?:\/\//i.test(u)
-							  )
+									(u) => typeof u === "string" && /^https?:\/\//i.test(u),
+								)
 							: [],
 						unknown: Array.isArray(s.imagesByAspect.unknown)
 							? s.imagesByAspect.unknown.filter(
-									(u) => typeof u === "string" && /^https?:\/\//i.test(u)
-							  )
+									(u) => typeof u === "string" && /^https?:\/\//i.test(u),
+								)
 							: [],
-				  }
+					}
 				: {
 						"1280:720": [],
 						"720:1280": [],
 						square: [],
 						unknown: [],
-				  };
+					};
 
 		if (providedImages.length) {
 			return {
@@ -4731,7 +4736,7 @@ async function fetchTrendingStory(
 		if (images.length > 1) {
 			console.log(
 				"[Trending] additional images:",
-				images.slice(1, 5).join(" | ")
+				images.slice(1, 5).join(" | "),
 			);
 		}
 
@@ -4767,7 +4772,7 @@ async function fetchTrendingStory(
 						"[Trending] response data snippet:",
 						typeof e.response.data === "string"
 							? e.response.data.slice(0, 300)
-							: JSON.stringify(e.response.data).slice(0, 300)
+							: JSON.stringify(e.response.data).slice(0, 300),
 					);
 				} catch (_) {
 					console.warn("[Trending] response data snippet: [unserializable]");
@@ -4777,7 +4782,7 @@ async function fetchTrendingStory(
 		if (requireStory) {
 			const tag = scheduleId ? ` for schedule ${scheduleId}` : "";
 			throw new Error(
-				`Google Trends required${tag} but failed: ${e.message || e}`
+				`Google Trends required${tag} but failed: ${e.message || e}`,
 			);
 		}
 		return null;
@@ -4789,7 +4794,7 @@ function shouldSkipArticleText(url = "") {
 	try {
 		const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
 		return ARTICLE_TEXT_BLOCKLIST_HOSTS.some(
-			(b) => host === b || host.endsWith("." + b)
+			(b) => host === b || host.endsWith("." + b),
 		);
 	} catch {
 		return false;
@@ -4821,7 +4826,7 @@ async function scrapeArticleText(url) {
 						"[Scrape] response data snippet: ",
 						typeof e.response.data === "string"
 							? e.response.data.slice(0, 300)
-							: JSON.stringify(e.response.data).slice(0, 300)
+							: JSON.stringify(e.response.data).slice(0, 300),
 					);
 				} catch (_) {}
 			}
@@ -4834,7 +4839,7 @@ async function generateSeoTitle(
 	headlinesOrTopic,
 	category,
 	language = DEFAULT_LANGUAGE,
-	articleTextSnippet = ""
+	articleTextSnippet = "",
 ) {
 	const items = Array.isArray(headlinesOrTopic)
 		? headlinesOrTopic
@@ -4854,8 +4859,8 @@ You are an experienced YouTube editor writing titles for ${
 		isSports
 			? "an official sports league channel"
 			: isTop5
-			? "a playful countdown Shorts channel"
-			: "a serious news channel"
+				? "a playful countdown Shorts channel"
+				: "a serious news channel"
 	}.
 
 Write ONE highly searchable, professional YouTube Shorts title that mirrors how people actually search.
@@ -4871,8 +4876,8 @@ Hard constraints:
 		isSports
 			? "like ESPN or an official league/NFL/NBA channel, not a meme or fan channel."
 			: isTop5
-			? "like a fun, high-energy countdown viewers want to watch, not a classroom lecture."
-			: "like a major newspaper or broadcaster, not a clickbait channel."
+				? "like a fun, high-energy countdown viewers want to watch, not a classroom lecture."
+				: "like a major newspaper or broadcaster, not a clickbait channel."
 	}
 ${
 	category === "Top5"
@@ -4891,8 +4896,8 @@ SEO behavior:
 		isSports
 			? '"start time", "how to watch", "full card", "highlights", "preview", "results".'
 			: isTop5
-			? '"top 5", "best", "most popular", "countdown", "list".'
-			: '"explained", "update", "analysis", "what to know", "timeline", "breaking news".'
+				? '"top 5", "best", "most popular", "countdown", "list".'
+				: '"explained", "update", "analysis", "what to know", "timeline", "breaking news".'
 	}
 - Avoid filler words; every word should boost search intent or clarity.
 
@@ -4954,7 +4959,7 @@ async function pullTrendsTopicList(
 	category,
 	geo = "US",
 	language = DEFAULT_LANGUAGE,
-	{ userId = null, topicsLimit = 10, isLongVideo = false } = {}
+	{ userId = null, topicsLimit = 10, isLongVideo = false } = {},
 ) {
 	const id = resolveTrendsCategoryId(category);
 	const safeTopics = Number.isFinite(Number(topicsLimit))
@@ -4984,8 +4989,8 @@ async function pullTrendsTopicList(
 		const titles = stories
 			.map((s) =>
 				String(
-					s.trendDialogTitle || s.title || s.rawTitle || s.dialogTitle || ""
-				).trim()
+					s.trendDialogTitle || s.title || s.rawTitle || s.dialogTitle || "",
+				).trim(),
 			)
 			.filter(Boolean);
 		return Array.from(new Set(titles));
@@ -4999,7 +5004,7 @@ async function pickTrendingTopicFresh(
 	category,
 	language,
 	country,
-	{ userId = null, isLongVideo = false } = {}
+	{ userId = null, isLongVideo = false } = {},
 ) {
 	const geo =
 		country && country.toLowerCase() !== "all countries"
@@ -5075,7 +5080,7 @@ Keep everything in ${language}. Do not include any other keys or free-text.
 			}
 		} catch (err) {
 			console.warn(
-				`[GPT] Top-5 outline attempt ${attempt} failed ? ${err.message}`
+				`[GPT] Top-5 outline attempt ${attempt} failed ? ${err.message}`,
 			);
 		}
 	}
@@ -5087,7 +5092,7 @@ function stripCountdownPrefix(text = "") {
 		.replace(/^\s*#\s*[1-5]\s*[\u2013\u2014-]?\s*/i, "")
 		.replace(
 			/^\s*Number\s+(one|two|three|four|five)\s*[:\u2013\u2014-]?\s*/i,
-			""
+			"",
 		)
 		.trim();
 }
@@ -5148,7 +5153,7 @@ function applyTop5CountdownStructure(segments, outline) {
 		const overlayBase = `#${rank}: ${label}`.trim();
 		const overlayBody = removeLeadingLabel(
 			stripCountdownPrefix(seg.overlayText || ""),
-			label
+			label,
 		);
 		const overlayText = overlayBody
 			? `${overlayBase} - ${overlayBody}`
@@ -5169,7 +5174,7 @@ function applyTop5CountdownStructure(segments, outline) {
 async function punchUpTop5Scripts(
 	segments = [],
 	segWordCaps = [],
-	language = DEFAULT_LANGUAGE
+	language = DEFAULT_LANGUAGE,
 ) {
 	if (!Array.isArray(segments) || !segments.length) return segments;
 
@@ -5230,7 +5235,7 @@ Original: "${seg.scriptText}"
 			if (rank) {
 				const remainder = removeLeadingLabel(
 					stripCountdownPrefix(rewritten),
-					label
+					label,
 				);
 				const body = remainder || stripCountdownPrefix(rewritten) || "";
 				rewritten = body
@@ -5254,7 +5259,7 @@ Original: "${seg.scriptText}"
 async function tightenTop5TimingAndClarity(
 	segments = [],
 	segLens = [],
-	language = DEFAULT_LANGUAGE
+	language = DEFAULT_LANGUAGE,
 ) {
 	if (!Array.isArray(segments) || !segments.length) return segments;
 	const langNote =
@@ -5268,10 +5273,10 @@ async function tightenTop5TimingAndClarity(
 							s * TOP5_WORDS_PER_SEC -
 								(idx === segLens.length - 1 ? 0 : 0.5) -
 								1 -
-								(idx >= segLens.length - 2 ? 1 : 0) // extra cushion for #1 + outro
-						)
-					)
-			  )
+								(idx >= segLens.length - 2 ? 1 : 0), // extra cushion for #1 + outro
+						),
+					),
+				)
 			: segments.map(() => 18);
 
 	const tightened = [];
@@ -5289,13 +5294,13 @@ async function tightenTop5TimingAndClarity(
 				const body = stripExtraRankPrefixes(
 					cleanForTTS(seg.scriptText, langNote),
 					seg.countdownRank,
-					seg.countdownLabel || seg.overlayText || ""
+					seg.countdownLabel || seg.overlayText || "",
 				);
 				const clean = buildCleanRankLine(
 					seg.countdownRank,
 					seg.countdownLabel || seg.overlayText || "",
 					body,
-					langNote
+					langNote,
 				);
 				tightened.push({ ...seg, scriptText: clean });
 			} else {
@@ -5314,10 +5319,10 @@ async function tightenTop5TimingAndClarity(
 			rank && rank >= 1 && rank <= 5
 				? "rank line"
 				: i === 0
-				? "intro"
-				: i === segments.length - 1
-				? "outro"
-				: "transition";
+					? "intro"
+					: i === segments.length - 1
+						? "outro"
+						: "transition";
 
 		const ask = `
 Rewrite this Top 5 ${role} so it lands within ${target} words (±1) for a ${
@@ -5358,7 +5363,7 @@ Original: "${seg.scriptText}"
 					rank,
 					label,
 					body || seg.scriptText,
-					langNote
+					langNote,
 				);
 			} else if (role === "intro" && !/top\s*5/i.test(rewritten)) {
 				rewritten = buildTop5IntroLine(label || seg.scriptText || "");
@@ -5410,12 +5415,12 @@ function buildGoogleImagesApiCandidates() {
 		list.push(`${trimmed}/api/google-images`);
 		if (/localhost/i.test(trimmed)) {
 			list.push(
-				`${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`
+				`${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`,
 			);
 		}
 		if (/\[::1\]/.test(trimmed)) {
 			list.push(
-				`${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`
+				`${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`,
 			);
 		}
 	}
@@ -5441,7 +5446,7 @@ function isLikelyThumbnailUrl(u = "") {
 
 async function fetchGoogleImagesFromService(
 	query,
-	{ limit = GOOGLE_IMAGES_RESULTS_PER_QUERY, topicTokens = [] } = {}
+	{ limit = GOOGLE_IMAGES_RESULTS_PER_QUERY, topicTokens = [] } = {},
 ) {
 	if (!GOOGLE_IMAGES_SEARCH_ENABLED) return [];
 	const q = sanitizeImageQuery(query);
@@ -5472,7 +5477,7 @@ async function fetchGoogleImagesFromService(
 			let pool = urls;
 			if (normTokens.length) {
 				const matched = urls.filter(
-					(u) => topicMatchInfo(normTokens, [u]).count >= minMatches
+					(u) => topicMatchInfo(normTokens, [u]).count >= minMatches,
 				);
 				if (matched.length) {
 					const matchedSet = new Set(matched);
@@ -5581,7 +5586,7 @@ async function pickBestImageFromSearch(
 	ratio = null,
 	label = "",
 	avoidSet = new Set(),
-	options = {}
+	options = {},
 ) {
 	if (!Array.isArray(items) || !items.length) return null;
 	const target = targetResolutionForRatio(ratio);
@@ -5719,7 +5724,7 @@ async function pickBestImageFromSearch(
 async function fetchTop5LiveContext(outline = [], topic = "", cseMeter = null) {
 	if (!canUseGoogleSearch()) {
 		console.warn(
-			"[Top5] Google Custom Search credentials missing - skipping live context"
+			"[Top5] Google Custom Search credentials missing - skipping live context",
 		);
 		return [];
 	}
@@ -5803,7 +5808,7 @@ function extractRecencyFromSnippet(text = "") {
 	}
 	const match =
 		raw.match(
-			/(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|day|days|week|weeks|month|months|year|years)\s+ago/
+			/(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|day|days|week|weeks|month|months|year|years)\s+ago/,
 		) || [];
 	if (!match.length) return null;
 	const count = Number(match[1] || 0);
@@ -5866,7 +5871,7 @@ function extractRecencyFromItem(item = {}) {
 
 function buildLiveContextQueries(
 	topic = "",
-	{ category = "", trendStory = null } = {}
+	{ category = "", trendStory = null } = {},
 ) {
 	const year = dayjs().format("YYYY");
 	const isSports = isSportsTopic(topic, category, trendStory);
@@ -5884,7 +5889,7 @@ function buildLiveContextQueries(
 
 async function fetchLiveCseItems(
 	query,
-	{ limit = 3, dateRestrict = null, cseMeter = null, csePhase = "" } = {}
+	{ limit = 3, dateRestrict = null, cseMeter = null, csePhase = "" } = {},
 ) {
 	const num = Math.max(1, Math.min(Number(limit) || 3, 10));
 	try {
@@ -5915,7 +5920,7 @@ async function fetchLiveCseItems(
 async function fetchLiveContextForTopic(
 	topic = "",
 	limit = 3,
-	{ category = "", trendStory = null, cseMeter = null } = {}
+	{ category = "", trendStory = null, cseMeter = null } = {},
 ) {
 	if (!canUseGoogleSearch() || !topic) return [];
 	const max = Math.max(1, Math.min(Number(limit) || 3, 5));
@@ -6030,7 +6035,7 @@ async function fetchCseImageItems(
 		stopAfter = null,
 		cseMeter = null,
 		csePhase = "",
-	} = {}
+	} = {},
 ) {
 	if (!canUseGoogleSearch()) return { items: [], rateLimited: false };
 	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
@@ -6041,7 +6046,7 @@ async function fetchCseImageItems(
 	let rateLimited = false;
 	const perPage = Math.min(
 		CSE_MAX_PAGE_SIZE,
-		Math.max(1, Number(pageSize) || CSE_MAX_PAGE_SIZE)
+		Math.max(1, Number(pageSize) || CSE_MAX_PAGE_SIZE),
 	);
 	const pageCap = Math.min(CSE_MAX_PAGES, Math.max(1, Number(maxPages) || 1));
 
@@ -6050,7 +6055,7 @@ async function fetchCseImageItems(
 			q,
 			imgSize || CSE_PREFERRED_IMG_SIZE,
 			perPage,
-			pageCap
+			pageCap,
 		);
 		const cached = getCseCache(cacheKey);
 		if (cached && cached.length) {
@@ -6158,9 +6163,9 @@ function extractMetaContent(html = "", key = "") {
 	if (!html || !key) return "";
 	const re = new RegExp(
 		`<meta[^>]+(?:property|name)=[\"']${escapeRegex(
-			key
+			key,
 		)}[\"'][^>]*content=[\"']([^\"']+)[\"']`,
-		"i"
+		"i",
 	);
 	const match = html.match(re);
 	return match && match[1] ? String(match[1]).trim() : "";
@@ -6396,7 +6401,7 @@ function scoreImageCandidateByRatio({
 	const mp = w && h ? (w * h) / 1_000_000 : 0;
 	const sourceBonus =
 		/nytimes|espn|reuters|apnews|bbc|cnn|cnbc|bloomberg|guardian|washingtonpost/i.test(
-			source || ""
+			source || "",
 		)
 			? 1.5
 			: 0.3;
@@ -6492,7 +6497,7 @@ async function fetchHighQualityImagesForTopic({
 			: [url, source, title].some((field) => {
 					const hay = String(field || "").toLowerCase();
 					return anchorPhrases.some((p) => hay.includes(p));
-			  });
+				});
 		const ok = combinedOk && primaryOk && (requireAnchor ? anchorHit : true);
 		return {
 			...combinedInfo,
@@ -6520,98 +6525,6 @@ async function fetchHighQualityImagesForTopic({
 			origin: "og",
 		});
 		dedupeSet.add(og);
-	}
-
-	// 2) Google CSE search
-	const canUseCse = allowCse && canUseGoogleSearch();
-	if (canUseCse) {
-		const combinedQueries = uniqueStrings([...queries, ...fallbackQueries], {
-			limit: Math.max(1, Number(cseQueryLimit) || 10),
-		});
-		const sizeVariants =
-			Array.isArray(cseImgSizes) && cseImgSizes.length
-				? cseImgSizes
-				: [CSE_ULTRA_IMG_SIZE, CSE_PREFERRED_IMG_SIZE, CSE_FALLBACK_IMG_SIZE];
-		const minShortEdge = Math.max(
-			minEdgeForRatio(ratio) || 0,
-			strictTopicMatch
-				? CSE_MIN_IMAGE_SHORT_EDGE
-				: CSE_RELAXED_MIN_IMAGE_SHORT_EDGE
-		);
-		const cappedPages = Math.max(
-			1,
-			Number.isFinite(Number(cseMaxPages))
-				? Math.min(CSE_MAX_PAGES, Number(cseMaxPages))
-				: CSE_MAX_PAGES
-		);
-
-		for (const imgSize of sizeVariants) {
-			if (cseRateLimited) break;
-			const { items, rateLimited } = await fetchCseImageItems(combinedQueries, {
-				imgSize,
-				maxPages: cappedPages,
-				stopAfter: cseStopAfter,
-				cseMeter,
-				csePhase,
-			});
-			if (rateLimited) {
-				cseRateLimited = true;
-				console.warn("[ImageSearch] CSE throttled; stopping CSE loop", {
-					imgSize,
-				});
-				break;
-			}
-			if (!items.length) continue;
-
-			for (const it of items) {
-				const url = it.link;
-				if (!url || dedupeSet.has(url)) continue;
-				const w = Number(it.image?.width || 0);
-				const h = Number(it.image?.height || 0);
-				const shortEdge = w && h ? Math.min(w, h) : 0;
-				if (shortEdge && shortEdge < minShortEdge) continue;
-				const host = (() => {
-					try {
-						return new URL(url).hostname.toLowerCase();
-					} catch {
-						return "";
-					}
-				})();
-				if (
-					IMAGE_BLOCKLIST_HOSTS.some(
-						(b) => host === b || host.endsWith(`.${b}`)
-					)
-				)
-					continue;
-				if (textyUrlRe.test(url)) continue;
-				const title = [it.title, it.snippet].filter(Boolean).join(" ");
-				if (mergeNegativeTitleRe(title.toLowerCase())) continue;
-				const source = it.image?.contextLink || it.displayLink || "";
-				const gate = topicGate(url, source, title);
-				if (!gate.ok) continue;
-				candidates.push({
-					url,
-					width: w,
-					height: h,
-					source,
-					title,
-					topicMatchCount: gate.count,
-					anchorHit: gate.anchorHit,
-					origin: "cse",
-				});
-				dedupeSet.add(url);
-				if (candidates.length >= maxCandidates) break;
-			}
-			if (candidates.length >= maxCandidates) break;
-		}
-	} else if (!allowCse) {
-		console.log("[ImageSearch] CSE disabled for this request", { topic });
-	} else {
-		console.warn("[ImageSearch] Google CSE disabled (missing key/cx)");
-	}
-
-	if (cseRateLimited) {
-		console.warn("[ImageSearch] CSE throttled; using fallback pools only");
 	}
 
 	const variantLimit =
@@ -6666,6 +6579,104 @@ async function fetchHighQualityImagesForTopic({
 		}
 	}
 
+	// 2) Google CSE search (last resort)
+	const canUseCse = allowCse && canUseGoogleSearch();
+	if (canUseCse && candidates.length < desiredCount) {
+		const combinedQueries = uniqueStrings([...queries, ...fallbackQueries], {
+			limit: Math.max(1, Number(cseQueryLimit) || 10),
+		});
+		const sizeVariants =
+			Array.isArray(cseImgSizes) && cseImgSizes.length
+				? cseImgSizes
+				: [CSE_ULTRA_IMG_SIZE, CSE_PREFERRED_IMG_SIZE, CSE_FALLBACK_IMG_SIZE];
+		const minShortEdge = Math.max(
+			minEdgeForRatio(ratio) || 0,
+			strictTopicMatch
+				? CSE_MIN_IMAGE_SHORT_EDGE
+				: CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
+		);
+		const cappedPages = Math.max(
+			1,
+			Number.isFinite(Number(cseMaxPages))
+				? Math.min(CSE_MAX_PAGES, Number(cseMaxPages))
+				: CSE_MAX_PAGES,
+		);
+
+		for (const imgSize of sizeVariants) {
+			if (cseRateLimited) break;
+			const { items, rateLimited } = await fetchCseImageItems(combinedQueries, {
+				imgSize,
+				maxPages: cappedPages,
+				stopAfter: cseStopAfter,
+				cseMeter,
+				csePhase,
+			});
+			if (rateLimited) {
+				cseRateLimited = true;
+				console.warn("[ImageSearch] CSE throttled; stopping CSE loop", {
+					imgSize,
+				});
+				break;
+			}
+			if (!items.length) continue;
+
+			for (const it of items) {
+				const url = it.link;
+				if (!url || dedupeSet.has(url)) continue;
+				const w = Number(it.image?.width || 0);
+				const h = Number(it.image?.height || 0);
+				const shortEdge = w && h ? Math.min(w, h) : 0;
+				if (shortEdge && shortEdge < minShortEdge) continue;
+				const host = (() => {
+					try {
+						return new URL(url).hostname.toLowerCase();
+					} catch {
+						return "";
+					}
+				})();
+				if (
+					IMAGE_BLOCKLIST_HOSTS.some(
+						(b) => host === b || host.endsWith(`.${b}`),
+					)
+				)
+					continue;
+				if (textyUrlRe.test(url)) continue;
+				const title = [it.title, it.snippet].filter(Boolean).join(" ");
+				if (mergeNegativeTitleRe(title.toLowerCase())) continue;
+				const source = it.image?.contextLink || it.displayLink || "";
+				const gate = topicGate(url, source, title);
+				if (!gate.ok) continue;
+				candidates.push({
+					url,
+					width: w,
+					height: h,
+					source,
+					title,
+					topicMatchCount: gate.count,
+					anchorHit: gate.anchorHit,
+					origin: "cse",
+				});
+				dedupeSet.add(url);
+				if (candidates.length >= maxCandidates) break;
+			}
+			if (candidates.length >= maxCandidates) break;
+		}
+	} else if (!allowCse) {
+		console.log("[ImageSearch] CSE disabled for this request", { topic });
+	} else if (!canUseGoogleSearch()) {
+		console.warn("[ImageSearch] Google CSE disabled (missing key/cx)");
+	} else {
+		console.log("[ImageSearch] CSE skipped; enough scrape results", {
+			topic,
+			candidates: candidates.length,
+			desiredCount,
+		});
+	}
+
+	if (cseRateLimited) {
+		console.warn("[ImageSearch] CSE throttled; using fallback pools only");
+	}
+
 	const scored = candidates
 		.map((c) => ({
 			...c,
@@ -6689,12 +6700,12 @@ async function fetchHighQualityImagesForTopic({
 
 	const urls = dedupeImageUrls(
 		scored.map((c) => c.url),
-		limit
+		limit,
 	);
 
 	const sliced = urls.slice(
 		0,
-		Math.max(desiredCount, Math.min(limit, urls.length))
+		Math.max(desiredCount, Math.min(limit, urls.length)),
 	);
 
 	console.log("[ImageSearch] candidates", {
@@ -6853,7 +6864,7 @@ function buildSegmentImageQueryVariants({
 		: normalizeTopicTokens([...coreTokens, ...anchorTokens]);
 	const matchTokenSet = new Set(normalizeTopicTokens(matchTokensSource));
 	const coreTokenSet = new Set(
-		normalizeTopicTokens(coreTokens.length ? coreTokens : matchTokensSource)
+		normalizeTopicTokens(coreTokens.length ? coreTokens : matchTokensSource),
 	);
 	const primaryMatchTokens = new Set(
 		normalizeTopicTokens([...matchTokensSource, ...anchorTokens]).filter(
@@ -6863,11 +6874,11 @@ function buildSegmentImageQueryVariants({
 				if (TOPIC_STOP_WORDS.has(tok)) return false;
 				if (GENERIC_TOPIC_TOKENS.has(tok)) return false;
 				return true;
-			}
-		)
+			},
+		),
 	);
 	const primaryMatches = primaryTokens.filter((tok) =>
-		primaryMatchTokens.has(tok)
+		primaryMatchTokens.has(tok),
 	);
 	const primaryMatchThreshold = primaryMatchTokens.size > 1 ? 2 : 1;
 	const primaryHasMatch = matchTokenSet.size
@@ -6933,7 +6944,7 @@ function buildSegmentImageQueryVariants({
 function pickSegmentImageUrl(
 	candidates = [],
 	usedUrlKeys = new Set(),
-	usedHosts = new Set()
+	usedHosts = new Set(),
 ) {
 	if (!Array.isArray(candidates) || !candidates.length) return "";
 
@@ -6992,7 +7003,7 @@ async function prepareSegmentImagePairsForShorts({
 	const potentialUrlKeys = new Set(
 		normalizeTrendPotentialImages(trendStory?.potentialImages || [])
 			.map((c) => normalizeImageKey(c.url))
-			.filter(Boolean)
+			.filter(Boolean),
 	);
 	for (const pair of pairs) {
 		if (!pair) continue;
@@ -7168,10 +7179,10 @@ async function prepareSegmentImagePairsForShorts({
 			trendStory?.trendSearchTerm ||
 			trendStory?.title ||
 			topic ||
-			""
+			"",
 	);
 	const imageAnchor = cleanAnchorCandidate(
-		trendStory?.trendSearchTerm || topic || ""
+		trendStory?.trendSearchTerm || topic || "",
 	);
 	const anchor = imageAnchor || intentAnchor;
 	const anchorTokens = topicTokensFromTitle(anchor);
@@ -7185,7 +7196,7 @@ async function prepareSegmentImagePairsForShorts({
 	});
 	const matchTokens = uniqueStrings(
 		coreTokens.length ? [...coreTokens, ...relatedTokens] : topicTokens,
-		{ limit: 12 }
+		{ limit: 12 },
 	);
 	const topicTokenSet = new Set(matchTokens);
 	const anchorTokenSet = new Set(anchorTokens);
@@ -7198,11 +7209,11 @@ async function prepareSegmentImagePairsForShorts({
 	const pageSignalCache = new Map();
 	const desiredUniqueCount = Math.max(
 		1,
-		Math.ceil(safeSegments.length * SHORTS_MIN_UNIQUE_IMAGE_RATIO)
+		Math.ceil(safeSegments.length * SHORTS_MIN_UNIQUE_IMAGE_RATIO),
 	);
 	const maxNewPairs = Math.min(
 		Math.max(desiredUniqueCount, safeSegments.length) * 2,
-		12
+		12,
 	);
 	let addedPairs = 0;
 	const stats = {
@@ -7241,7 +7252,7 @@ async function prepareSegmentImagePairsForShorts({
 		} else if (matchTokens.length) {
 			const cueTokens = tokenizeLabel(seg.visualCue || "");
 			const cueMatches = cueTokens.filter(
-				(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok)
+				(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok),
 			);
 			if (!cueMatches.length) {
 				seg.visualCue = buildSegmentPrimaryPhrase({
@@ -7262,7 +7273,7 @@ async function prepareSegmentImagePairsForShorts({
 			maxTokens: 4,
 		});
 		const segmentTokenMatches = segmentTokens.filter(
-			(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok)
+			(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok),
 		);
 		if (
 			!segmentTokenMatches.length &&
@@ -7282,15 +7293,15 @@ async function prepareSegmentImagePairsForShorts({
 			allowTopicFallback: false,
 		});
 		const filteredGuardTokens = segmentGuardTokens.filter(
-			(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok)
+			(tok) => topicTokenSet.has(tok) || anchorTokenSet.has(tok),
 		);
 		const guardTokens = uniqueStrings(
 			[...filteredGuardTokens, ...anchorTokens],
-			{ limit: 4 }
+			{ limit: 4 },
 		);
 		const searchTokens = uniqueStrings(
 			[...segmentTokens, ...anchorTokens, ...matchTokens],
-			{ limit: 6 }
+			{ limit: 6 },
 		);
 		const strictSearch = segmentTokens.length >= 2;
 		const segmentAnchors = buildSegmentAnchorPhrases({
@@ -7364,7 +7375,7 @@ async function prepareSegmentImagePairsForShorts({
 
 		candidates = dedupeImageCandidates(
 			normalizeImageCandidates(candidates),
-			18
+			18,
 		);
 		if (guardTokens.length >= 1) {
 			const gated = candidates.filter((cand) => {
@@ -7431,7 +7442,7 @@ async function prepareSegmentImagePairsForShorts({
 				});
 				const normalized = dedupeImageCandidates(
 					normalizeImageCandidates(fallback),
-					18
+					18,
 				);
 				qaCandidates = await qaSegmentImageCandidates(normalized, {
 					...qaOpts,
@@ -7514,7 +7525,7 @@ async function prepareSegmentImagePairsForShorts({
 				const picked = pickSegmentImageUrl(
 					pool.length ? pool : remaining,
 					usedUrlKeys,
-					usedHosts
+					usedHosts,
 				);
 				if (!picked) return false;
 				try {
@@ -7527,7 +7538,7 @@ async function prepareSegmentImagePairsForShorts({
 						ratio,
 						`aivideomatic/trend_seeds/${safeSlug(topic || "shorts", 32)}_seg_${
 							seg.index || i + 1
-						}`
+						}`,
 					);
 					pairs.push({ originalUrl: picked, cloudinaryUrl: up.url, origin });
 					const newIdx = pairs.length - 1;
@@ -7549,7 +7560,7 @@ async function prepareSegmentImagePairsForShorts({
 						addBlockedHost(picked);
 					}
 					remaining = remaining.filter(
-						(u) => normalizeImageKey(u) !== normalizeImageKey(picked)
+						(u) => normalizeImageKey(u) !== normalizeImageKey(picked),
 					);
 					console.warn("[Shorts] segment image upload failed", {
 						segment: seg.index || i + 1,
@@ -7593,7 +7604,7 @@ async function prepareSegmentImagePairsForShorts({
 		let rr = 0;
 		const available = Array.from(
 			{ length: pairs.length },
-			(_, idx) => idx
+			(_, idx) => idx,
 		).filter((idx) => !usedIndexes.has(idx));
 		for (let i = 0; i < safeSegments.length; i++) {
 			const seg = safeSegments[i];
@@ -7620,7 +7631,7 @@ async function prepareSegmentImagePairsForShorts({
 			) {
 				indexCounts.set(
 					seg.imageIndex,
-					(indexCounts.get(seg.imageIndex) || 0) + 1
+					(indexCounts.get(seg.imageIndex) || 0) + 1,
 				);
 			}
 		}
@@ -7656,7 +7667,7 @@ async function prepareSegmentImagePairsForShorts({
 			});
 			const searchTokens = uniqueStrings(
 				[...segmentTokens, ...anchorTokens, ...matchTokens],
-				{ limit: 6 }
+				{ limit: 6 },
 			);
 			const fallbackQuery = [seg.visualCue, topic].filter(Boolean).join(" ");
 			if (!fallbackQuery) continue;
@@ -7679,7 +7690,7 @@ async function prepareSegmentImagePairsForShorts({
 			});
 			const normalized = dedupeImageCandidates(
 				normalizeImageCandidates(fallback),
-				12
+				12,
 			);
 			let qaCandidates = await qaSegmentImageCandidates(normalized, {
 				segmentTokens,
@@ -7715,7 +7726,7 @@ async function prepareSegmentImagePairsForShorts({
 					ratio,
 					`aivideomatic/trend_seeds/${safeSlug(topic || "shorts", 32)}_uniq_${
 						seg.index || i + 1
-					}`
+					}`,
 				);
 				pairs.push({ originalUrl: picked, cloudinaryUrl: up.url, origin });
 				const newIdx = pairs.length - 1;
@@ -7743,7 +7754,7 @@ async function prepareSegmentImagePairsForShorts({
 	const uniqueAssigned = new Set(
 		safeSegments
 			.map((s) => (Number.isInteger(s.imageIndex) ? s.imageIndex : null))
-			.filter((v) => v !== null)
+			.filter((v) => v !== null),
 	).size;
 	const uniqueRatio = safeSegments.length
 		? uniqueAssigned / safeSegments.length
@@ -7770,11 +7781,11 @@ async function fetchTop5ImagePool(
 	outline = [],
 	topic = "",
 	ratio = null,
-	cseMeter = null
+	cseMeter = null,
 ) {
 	if (!canUseGoogleSearch()) {
 		console.warn(
-			"[Top5] Google Custom Search credentials missing - skipping live image pool"
+			"[Top5] Google Custom Search credentials missing - skipping live image pool",
 		);
 		return [];
 	}
@@ -7782,7 +7793,7 @@ async function fetchTop5ImagePool(
 	const yearHint = dayjs().format("YYYY");
 	const negativeTitleRe = /(stock|wallpaper|logo|cartoon|illustration)/i;
 	const requireTokensByLabel = new Map(
-		(outline || []).map((o) => [o.label, requiredTokensForLabel(o.label)])
+		(outline || []).map((o) => [o.label, requiredTokensForLabel(o.label)]),
 	);
 	const topicTokens = topicTokensFromTitle(topic);
 
@@ -7830,7 +7841,7 @@ async function fetchTop5ImagePool(
 					requireTokens: requireTokensByLabel.get(item.label) || [],
 					topicTokens,
 					requireAnyToken: true,
-				}
+				},
 			);
 			if (best?.link) {
 				try {
@@ -7894,7 +7905,7 @@ async function fetchTop5ReplacementImage(
 	topic,
 	ratio,
 	avoidSet = new Set(),
-	cseMeter = null
+	cseMeter = null,
 ) {
 	const canUseCse = canUseGoogleSearch();
 	if (!canUseCse && !GOOGLE_IMAGES_SEARCH_ENABLED) return null;
@@ -7938,7 +7949,7 @@ async function fetchTop5ReplacementImage(
 					requireTokens: requiredTokens,
 					topicTokens: combinedTokens,
 					requireAnyToken: true,
-				}
+				},
 			);
 			if (picked?.link) return picked;
 		} catch (e) {
@@ -8013,7 +8024,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 		if (!sizeIssue) {
 			console.warn(
 				"[Cloudinary] Remote fetch failed, retrying via local download",
-				{ url }
+				{ url },
 			);
 			const rawPath = await downloadImageToTemp(url, ".jpg");
 			try {
@@ -8036,7 +8047,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 			} catch (err) {
 				console.warn(
 					"[Cloudinary] Local upload failed; skipping image",
-					err?.message || err
+					err?.message || err,
 				);
 				throw e;
 			} finally {
@@ -8047,7 +8058,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 		}
 
 		console.warn(
-			"[Cloudinary] Size limit hit, pre-downscaling locally and retrying …"
+			"[Cloudinary] Size limit hit, pre-downscaling locally and retrying …",
 		);
 
 		const { width, height } = targetResolutionForRatio(ratio);
@@ -8059,7 +8070,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 			if (width && height) {
 				vf.push(
 					`scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos`,
-					`crop=${width}:${height}`
+					`crop=${width}:${height}`,
 				);
 			}
 
@@ -8070,12 +8081,12 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 						.videoFilters(vf.join(","))
 						// Lower quality to keep under Cloudinary's 10MB hard cap
 						.outputOptions("-frames:v", "1", "-q:v", "4", "-y")
-						.save(norm(scaledPath))
+						.save(norm(scaledPath)),
 				);
 			} catch (err) {
 				console.warn(
 					"[Cloudinary] Primary downscale failed, retrying safe scale",
-					err.message
+					err.message,
 				);
 				await ffmpegPromise((c) =>
 					c
@@ -8085,10 +8096,10 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 								height || 1920
 							}:force_original_aspect_ratio=increase:flags=lanczos,crop:${
 								width || 1080
-							}:${height || 1920}`
+							}:${height || 1920}`,
 						)
 						.outputOptions("-frames:v", "1", "-q:v", "5", "-y")
-						.save(norm(scaledPath))
+						.save(norm(scaledPath)),
 				);
 			}
 		} finally {
@@ -8157,7 +8168,7 @@ async function generateOpenAIImagesForTop5(segments, ratio, topic) {
 			const uploaded = await uploadTrendImageToCloudinary(
 				imgUrl,
 				ratio,
-				`aivideomatic/top5_${i}_${Date.now()}`
+				`aivideomatic/top5_${i}_${Date.now()}`,
 			);
 			outputs.push({
 				originalUrl: imgUrl,
@@ -8166,7 +8177,7 @@ async function generateOpenAIImagesForTop5(segments, ratio, topic) {
 		} catch (e) {
 			console.warn(
 				`[OpenAI Image] Top5 segment ${i + 1} image generation failed:`,
-				e.message || e
+				e.message || e,
 			);
 		}
 	}
@@ -8187,7 +8198,7 @@ async function generateOpenAIImageSingle(prompt, ratio, publicIdBase) {
 	const uploaded = await uploadTrendImageToCloudinary(
 		imgUrl,
 		ratio,
-		publicIdBase
+		publicIdBase,
 	);
 	return {
 		originalUrl: imgUrl,
@@ -8206,10 +8217,10 @@ async function gptTop5Plan(topic, language = DEFAULT_LANGUAGE, segLens = []) {
 						s * TOP5_WORDS_PER_SEC -
 							(idx === segTiming.length - 1 ? 0 : 0.5) -
 							1 -
-							(idx >= segTiming.length - 2 ? 1 : 0) // extra cushion for #1 + outro
-					)
-				)
-		  )
+							(idx >= segTiming.length - 2 ? 1 : 0), // extra cushion for #1 + outro
+					),
+				),
+			)
 		: [];
 	const timingLines = segTiming
 		? segTiming
@@ -8220,10 +8231,10 @@ async function gptTop5Plan(topic, language = DEFAULT_LANGUAGE, segLens = []) {
 						idx === 0
 							? "Intro"
 							: idx === segTiming.length - 1
-							? "Outro"
-							: `#${6 - idx}`;
+								? "Outro"
+								: `#${6 - idx}`;
 					return `- Segment ${idx + 1} (${label}): ~${s.toFixed(
-						1
+						1,
 					)}s, aim for ${target}±1 words.`;
 				})
 				.join("\n")
@@ -8328,7 +8339,7 @@ async function buildTop5FallbackPlan(topic, language = DEFAULT_LANGUAGE) {
 	const ranks = sorted.map((o, idx) => {
 		const rank = Number(o.rank) || 5 - idx;
 		const label = stripTrailingLocation(
-			normalizeLabelForTopic(o.label || `Pick ${rank}`, topic)
+			normalizeLabelForTopic(o.label || `Pick ${rank}`, topic),
 		);
 		const body =
 			String(o.oneLine || "").trim() || "Buzzing right now for travelers.";
@@ -8423,7 +8434,7 @@ async function searchAndUploadTop5Image({
 	}
 
 	const publicIdBase = `aivideomatic/top5_refs/${slug}/${rankSlug(
-		rank
+		rank,
 	)}_${safeSlug(label || topic, 32)}`;
 
 	if (!Array.isArray(urlCandidates) || !urlCandidates.length) {
@@ -8433,7 +8444,7 @@ async function searchAndUploadTop5Image({
 		const aiImage = await generateOpenAIImageSingle(
 			aiPrompt,
 			ratio,
-			publicIdBase
+			publicIdBase,
 		);
 		return aiImage;
 	}
@@ -8445,7 +8456,7 @@ async function searchAndUploadTop5Image({
 		} catch (e) {
 			console.warn(
 				"[Top5] Upload failed for candidate, trying next",
-				e.message
+				e.message,
 			);
 		}
 	}
@@ -8457,7 +8468,7 @@ async function searchAndUploadTop5Image({
 	const aiImage = await generateOpenAIImageSingle(
 		aiPrompt,
 		ratio,
-		publicIdBase
+		publicIdBase,
 	);
 	return aiImage;
 }
@@ -8483,10 +8494,10 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 		const segType = p.type || (p.rank ? "rank" : idx === 0 ? "intro" : "outro");
 		const rank = segType === "rank" ? p.rank || 6 - idx : null;
 		const labelRaw = String(
-			p.label || (segType === "intro" ? topic : "Outro")
+			p.label || (segType === "intro" ? topic : "Outro"),
 		).trim();
 		const label = stripTrailingLocation(
-			normalizeLabelForTopic(labelRaw, topic)
+			normalizeLabelForTopic(labelRaw, topic),
 		);
 		const baseQuery =
 			p.imageQuery ||
@@ -8497,7 +8508,7 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 		const rawScript = String(p.script || "").trim();
 		const cleanBody = removeLeadingLabel(
 			stripCountdownPrefix(rawScript),
-			label
+			label,
 		);
 		const scriptText =
 			segType === "intro"
@@ -8505,17 +8516,17 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 				: buildCountdownLine(rank || "", label, cleanBody || rawScript);
 		const overlayBody = removeLeadingLabel(
 			stripCountdownPrefix(p.overlay || label),
-			label
+			label,
 		);
 		const overlayBodyClean = stripTrailingLocation(overlayBody);
 		const overlayText =
 			segType === "rank"
 				? `#${rank}: ${overlayBodyClean || label}`.trim()
 				: segType === "intro"
-				? `Top 5 ${introTopic || label}`.trim()
-				: String(p.overlay || label).trim();
+					? `Top 5 ${introTopic || label}`.trim()
+					: String(p.overlay || label).trim();
 		const runwayPrompt = String(
-			p.runwayPrompt || `${label} cinematic action shot`
+			p.runwayPrompt || `${label} cinematic action shot`,
 		).trim();
 
 		let img = await searchAndUploadTop5Image({
@@ -8531,7 +8542,7 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 			console.warn(
 				`[Top5] Primary image search failed for segment ${
 					idx + 1
-				}, attempting AI fallback`
+				}, attempting AI fallback`,
 			);
 			try {
 				const aiPrompt = `Cinematic, photorealistic vertical photo for ${
@@ -8540,12 +8551,12 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 				img = await generateOpenAIImageSingle(
 					aiPrompt,
 					ratio,
-					`${slug}/fallback_${idx + 1}`
+					`${slug}/fallback_${idx + 1}`,
 				);
 			} catch (e) {
 				console.warn(
 					`[Top5] AI fallback image failed for segment ${idx + 1} ?`,
-					e.message
+					e.message,
 				);
 			}
 		}
@@ -8555,7 +8566,7 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 				trendImagePairs[0];
 			if (reuse && reuse.cloudinaryUrl) {
 				console.warn(
-					`[Top5] Reusing earlier image for segment ${idx + 1} to avoid failure`
+					`[Top5] Reusing earlier image for segment ${idx + 1} to avoid failure`,
 				);
 				img = reuse;
 			}
@@ -8581,7 +8592,7 @@ async function buildTop5SegmentsAndImages({ topic, ratio, language, segLens }) {
 
 	if (trendImagePairs.length !== 7) {
 		throw new Error(
-			"Top5 requires exactly 7 images; planning failed to secure all slots."
+			"Top5 requires exactly 7 images; planning failed to secure all slots.",
 		);
 	}
 
@@ -8607,7 +8618,7 @@ async function uploadReferenceImagesForTop5(
 	segments,
 	ratio,
 	topic,
-	top5Outline
+	top5Outline,
 ) {
 	const pairs = [];
 	const urlToIdx = new Map();
@@ -8648,17 +8659,17 @@ async function uploadReferenceImagesForTop5(
 				attempted.has(url) ||
 				(labelTokens.length || topicTokens.length
 					? !matchesAnyToken(url, [...labelTokens, ...topicTokens]) &&
-					  !matchesAnyToken(decodeURIComponent(url), [
+						!matchesAnyToken(decodeURIComponent(url), [
 							...labelTokens,
 							...topicTokens,
-					  ])
+						])
 					: false)
 			) {
 				const replacement = await fetchTop5ReplacementImage(
 					segLabel,
 					topic,
 					ratio,
-					attempted
+					attempted,
 				);
 				url = replacement?.url || replacement?.link || "";
 			}
@@ -8680,7 +8691,7 @@ async function uploadReferenceImagesForTop5(
 			})();
 			if (
 				IMAGE_UPLOAD_SOFT_BLOCK.some(
-					(b) => host === b || host.endsWith(`.${b}`)
+					(b) => host === b || host.endsWith(`.${b}`),
 				)
 			) {
 				url = "";
@@ -8699,7 +8710,7 @@ async function uploadReferenceImagesForTop5(
 				const up = await uploadTrendImageToCloudinary(
 					url,
 					ratio,
-					`aivideomatic/top5_refs/${safeSlug}_${i}`
+					`aivideomatic/top5_refs/${safeSlug}_${i}`,
 				);
 				const idx = pairs.length;
 				const rankVal =
@@ -8739,7 +8750,7 @@ async function uploadReferenceImagesForTop5(
 				label,
 				topic,
 				ratio,
-				attempted
+				attempted,
 			);
 			nextUrl = replacement?.url || replacement?.link || "";
 
@@ -8769,7 +8780,7 @@ async function uploadReferenceImagesForTop5(
 				const up = await uploadTrendImageToCloudinary(
 					nextUrl,
 					ratio,
-					`aivideomatic/top5_refs/${safeSlug}_fill_${rank}`
+					`aivideomatic/top5_refs/${safeSlug}_fill_${rank}`,
 				);
 				pairs.push({ originalUrl: nextUrl, cloudinaryUrl: up.url, rank });
 			} catch (e) {
@@ -8836,7 +8847,7 @@ async function enforceTop5ImageRelevance({
 	const avoid = new Set(
 		trendImagePairs
 			.map((p) => p?.originalUrl || p?.cloudinaryUrl || "")
-			.filter(Boolean)
+			.filter(Boolean),
 	);
 
 	for (let i = 0; i < safeSegments.length; i++) {
@@ -8854,7 +8865,7 @@ async function enforceTop5ImageRelevance({
 			label,
 			topic,
 			ratio,
-			avoid
+			avoid,
 		);
 		if (!replacement || !replacement.url) continue;
 		avoid.add(normalizeImageKey(replacement.url));
@@ -8864,8 +8875,8 @@ async function enforceTop5ImageRelevance({
 				replacement.url,
 				ratio,
 				`aivideomatic/top5_refs/${safeSlug(topic || "top5")}/${rankSlug(
-					seg?.countdownRank || seg?.rank || pairIdx + 1
-				)}_${safeSlug(label || "rank", 24)}_reval`
+					seg?.countdownRank || seg?.rank || pairIdx + 1,
+				)}_${safeSlug(label || "rank", 24)}_reval`,
 			);
 			const newPair = {
 				originalUrl: replacement.url,
@@ -8916,7 +8927,7 @@ async function pollRunway(id, tk, lbl) {
 							} catch {
 								return "[unserializable response data]";
 							}
-					  })()
+						})()
 					: undefined,
 			});
 			throw e;
@@ -8936,7 +8947,7 @@ async function pollRunway(id, tk, lbl) {
 				failure: data.failure,
 			});
 			const err = new Error(
-				`${lbl} failed (Runway: ${data.failureCode || "FAILED"})`
+				`${lbl} failed (Runway: ${data.failureCode || "FAILED"})`,
 			);
 			if (/SAFETY/i.test(String(data.failureCode || ""))) err.isSafety = true;
 			err.failureCode = data.failureCode || null;
@@ -8958,7 +8969,7 @@ async function retry(fn, max, lbl) {
 			console.warn(
 				`[Retry] ${lbl} attempt ${a} failed${
 					status ? ` (HTTP ${status})` : ""
-				} ? ${e.message}`
+				} ? ${e.message}`,
 			);
 			if (e.response?.data) {
 				try {
@@ -8969,7 +8980,7 @@ async function retry(fn, max, lbl) {
 					console.warn(`[Retry] ${lbl} response data snippet:`, snippet);
 				} catch (_) {
 					console.warn(
-						`[Retry] ${lbl} response data snippet: [unserializable]`
+						`[Retry] ${lbl} response data snippet: [unserializable]`,
 					);
 				}
 			}
@@ -9023,18 +9034,18 @@ async function generateItvClipFromImage({
 						Authorization: `Bearer ${RUNWAY_ADMIN_KEY}`,
 						"X-Runway-Version": RUNWAY_VERSION,
 					},
-				}
+				},
 			);
 			return data.id;
 		},
 		1,
-		itvLabel
+		itvLabel,
 	);
 
 	const vidUrl = await retry(
 		() => pollRunway(idVid, RUNWAY_ADMIN_KEY, pollLabel),
 		1,
-		pollLabel
+		pollLabel,
 	);
 
 	const p = tmpFile(`seg_itv_${segmentIndex}`, ".mp4");
@@ -9042,8 +9053,8 @@ async function generateItvClipFromImage({
 		axios
 			.get(vidUrl, { responseType: "stream" })
 			.then(({ data }) =>
-				data.pipe(fs.createWriteStream(p)).on("finish", r).on("error", j)
-			)
+				data.pipe(fs.createWriteStream(p)).on("finish", r).on("error", j),
+			),
 	);
 	return p;
 }
@@ -9079,7 +9090,7 @@ async function generateStaticClipFromImage({
 
 	console.log(
 		`[Seg ${segmentIndex}] Using static image fallback. Candidates:`,
-		candidates
+		candidates,
 	);
 
 	let lastErr;
@@ -9095,13 +9106,13 @@ async function generateStaticClipFromImage({
 					if (width && height) {
 						vf.push(
 							`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
-							`crop=${width}:${height}`
+							`crop=${width}:${height}`,
 						);
 					}
 					const minEdge = Math.min(width || 0, height || 0);
 					if (zoomPan && width && height && minEdge >= 960) {
 						vf.push(
-							`zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
+							`zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`,
 						);
 					}
 					return vf;
@@ -9111,7 +9122,7 @@ async function generateStaticClipFromImage({
 					if (width && height) {
 						vf.push(
 							`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
-							`crop=${width}:${height}`
+							`crop=${width}:${height}`,
 						);
 					}
 					// no zoompan
@@ -9148,7 +9159,7 @@ async function generateStaticClipFromImage({
 								"yuv420p",
 								"-r",
 								"30",
-								"-y"
+								"-y",
 							)
 							.save(norm(out));
 					});
@@ -9159,7 +9170,7 @@ async function generateStaticClipFromImage({
 						`[Seg ${segmentIndex}] Static fallback filter attempt ${
 							attempt + 1
 						} failed for ${url}`,
-						inner.message
+						inner.message,
 					);
 				}
 			}
@@ -9171,7 +9182,7 @@ async function generateStaticClipFromImage({
 			if (!success) throw lastErr || new Error("Static filter failed");
 
 			console.log(
-				`[Seg ${segmentIndex}] Static fallback clip created from ${url}`
+				`[Seg ${segmentIndex}] Static fallback clip created from ${url}`,
 			);
 
 			return out;
@@ -9179,13 +9190,13 @@ async function generateStaticClipFromImage({
 			lastErr = e;
 			console.warn(
 				`[Seg ${segmentIndex}] Static fallback failed for ${url} ?`,
-				e.message
+				e.message,
 			);
 		}
 	}
 
 	console.warn(
-		`[Seg ${segmentIndex}] All static fallbacks failed, using placeholder clip`
+		`[Seg ${segmentIndex}] All static fallbacks failed, using placeholder clip`,
 	);
 	return await generatePlaceholderClip({
 		segmentIndex,
@@ -9212,7 +9223,7 @@ async function generatePlaceholderClip({
 				const p = tmpFile(`placeholder_${segmentIndex}`, ".png");
 				fs.writeFileSync(p, Buffer.from(b64, "base64"));
 				return p;
-		  })()
+			})()
 		: null;
 	try {
 		if (hasLavfi) {
@@ -9225,7 +9236,7 @@ async function generatePlaceholderClip({
 							"format=yuv420p",
 							"setsar=1",
 							`zoompan=z='min(1.0+0.001*n,1.04)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${size}:fps=30`,
-						].join(",")
+						].join(","),
 					)
 					.outputOptions(
 						"-t",
@@ -9240,9 +9251,9 @@ async function generatePlaceholderClip({
 						"yuv420p",
 						"-r",
 						"30",
-						"-y"
+						"-y",
 					)
-					.save(norm(out))
+					.save(norm(out)),
 			);
 		} else {
 			await ffmpegPromise((c) => {
@@ -9250,10 +9261,10 @@ async function generatePlaceholderClip({
 				if (width && height) {
 					vf.push(
 						`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos`,
-						`crop=${width}:${height}`
+						`crop=${width}:${height}`,
 					);
 					vf.push(
-						`zoompan=z='min(1.0+0.001*n,1.02)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`
+						`zoompan=z='min(1.0+0.001*n,1.02)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`,
 					);
 				}
 				return c
@@ -9273,7 +9284,7 @@ async function generatePlaceholderClip({
 						"yuv420p",
 						"-r",
 						"30",
-						"-y"
+						"-y",
 					)
 					.save(norm(out));
 			});
@@ -9283,7 +9294,7 @@ async function generatePlaceholderClip({
 		const simple = tmpFile(`seg_placeholder_simple_${segmentIndex}`, ".mp4");
 		console.warn(
 			`[Seg ${segmentIndex}] Placeholder zoompan failed, falling back to solid frame`,
-			e.message
+			e.message,
 		);
 		if (hasLavfi) {
 			await ffmpegPromise((c) =>
@@ -9304,9 +9315,9 @@ async function generatePlaceholderClip({
 						"yuv420p",
 						"-r",
 						"30",
-						"-y"
+						"-y",
 					)
-					.save(norm(simple))
+					.save(norm(simple)),
 			);
 		} else {
 			await ffmpegPromise((c) =>
@@ -9327,9 +9338,9 @@ async function generatePlaceholderClip({
 						"yuv420p",
 						"-r",
 						"30",
-						"-y"
+						"-y",
 					)
-					.save(norm(simple))
+					.save(norm(simple)),
 			);
 		}
 		return simple;
@@ -9381,7 +9392,7 @@ function buildRunwayPrompt(seg, globalStyle, category = "") {
 		negParts.push(
 			...String(TOP5_RUNWAY_NEGATIVE || "")
 				.split(/[,|]/)
-				.map((t) => t.trim())
+				.map((t) => t.trim()),
 		);
 	}
 	const negativeJoined = negParts.filter(Boolean).join(", ");
@@ -9426,7 +9437,7 @@ function buildYouTubeOAuth2Client(source) {
 	const o = new google.auth.OAuth2(
 		process.env.YOUTUBE_CLIENT_ID,
 		process.env.YOUTUBE_CLIENT_SECRET,
-		process.env.YOUTUBE_REDIRECT_URI
+		process.env.YOUTUBE_REDIRECT_URI,
 	);
 	o.setCredentials(creds);
 	return o;
@@ -9475,7 +9486,7 @@ async function uploadToYouTube(u, fp, { title, description, tags, category }) {
 			},
 			media: { body: fs.createReadStream(fp) },
 		},
-		{ maxContentLength: Infinity, maxBodyLength: Infinity }
+		{ maxContentLength: Infinity, maxBodyLength: Infinity },
 	);
 	return `https://www.youtube.com/watch?v=${data.id}`;
 }
@@ -9584,7 +9595,7 @@ async function fetchElevenVoices() {
 async function recentVoiceIdsForUser(
 	userId,
 	language,
-	limit = RECENT_VOICE_AVOID_COUNT
+	limit = RECENT_VOICE_AVOID_COUNT,
 ) {
 	if (!userId) return [];
 	try {
@@ -9613,7 +9624,7 @@ async function recentVoiceIdsForUser(
 	} catch (e) {
 		console.warn(
 			"[Eleven] Unable to load recent ElevenLabs voices ?",
-			e.message
+			e.message,
 		);
 		return [];
 	}
@@ -9623,7 +9634,7 @@ async function selectBestElevenVoice(
 	language,
 	category,
 	sampleText,
-	avoidVoiceIds = []
+	avoidVoiceIds = [],
 ) {
 	const avoidSet = new Set((avoidVoiceIds || []).filter(Boolean));
 
@@ -9631,7 +9642,7 @@ async function selectBestElevenVoice(
 	const staticDefaultVoice = ELEVEN_VOICES[DEFAULT_LANGUAGE];
 
 	const fallbackCandidates = [staticLanguageVoice, staticDefaultVoice].filter(
-		(id, idx, arr) => id && arr.indexOf(id) === idx && !avoidSet.has(id)
+		(id, idx, arr) => id && arr.indexOf(id) === idx && !avoidSet.has(id),
 	);
 	const fallbackId =
 		fallbackCandidates[0] || staticLanguageVoice || staticDefaultVoice || null;
@@ -9695,7 +9706,7 @@ async function selectBestElevenVoice(
 		if (egyptian.length) {
 			candidates = egyptian;
 			console.log(
-				`[Eleven] Prioritising Egyptian Arabic voices (${egyptian.length})`
+				`[Eleven] Prioritising Egyptian Arabic voices (${egyptian.length})`,
 			);
 		} else if (arabic.length) {
 			candidates = arabic;
@@ -9723,11 +9734,11 @@ async function selectBestElevenVoice(
 		if (americanCandidates.length) {
 			candidates = americanCandidates;
 			console.log(
-				`[Eleven] Restricted to ${americanCandidates.length} American English voices`
+				`[Eleven] Restricted to ${americanCandidates.length} American English voices`,
 			);
 		} else if (fallbackId) {
 			console.warn(
-				"[Eleven] No explicit American English voices detected in /voices – using static fallback voice."
+				"[Eleven] No explicit American English voices detected in /voices – using static fallback voice.",
 			);
 			return {
 				voiceId: fallbackId,
@@ -9743,12 +9754,12 @@ async function selectBestElevenVoice(
 		const filtered = candidates.filter((v) => !avoidSet.has(v.id));
 		if (filtered.length) {
 			console.log(
-				`[Eleven] Avoiding previously used voice(s) ${[...avoidSet].join(", ")}`
+				`[Eleven] Avoiding previously used voice(s) ${[...avoidSet].join(", ")}`,
 			);
 			candidates = filtered;
 		} else {
 			console.warn(
-				"[Eleven] All candidate voices are in the avoid list – keeping full candidate set."
+				"[Eleven] All candidate voices are in the avoid list – keeping full candidate set.",
 			);
 		}
 	}
@@ -9816,7 +9827,7 @@ Return ONLY JSON:
 		const reused = avoidSet.has(fallbackId);
 		if (reused) {
 			console.warn(
-				`[Eleven] Fallback voice ${fallbackId} is the same as last used; no alternative available.`
+				`[Eleven] Fallback voice ${fallbackId} is the same as last used; no alternative available.`,
 			);
 		}
 		return {
@@ -9836,7 +9847,7 @@ async function elevenLabsTTS(
 	language,
 	outPath,
 	category = "Other",
-	voiceIdOverride = null
+	voiceIdOverride = null,
 ) {
 	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
 	const langNote = normalizeLanguageLabel(language || DEFAULT_LANGUAGE);
@@ -9892,7 +9903,7 @@ async function elevenLabsTTS(
 	if (res.status >= 300)
 		throw new Error(`ElevenLabs TTS failed (${res.status})`);
 	await new Promise((r, j) =>
-		res.data.pipe(fs.createWriteStream(outPath)).on("finish", r).on("error", j)
+		res.data.pipe(fs.createWriteStream(outPath)).on("finish", r).on("error", j),
 	);
 
 	return tone;
@@ -9936,8 +9947,8 @@ async function buildVideoPlanWithGPT({
 	const ratioBrief =
 		ratio && imageBriefs.length
 			? imageBriefs.find((b) => b.aspectRatio === ratio) ||
-			  imageBriefs[0] ||
-			  null
+				imageBriefs[0] ||
+				null
 			: imageBriefs[0] || null;
 	const imageComment = String(trendStory?.imageComment || "").trim();
 	const top5Context = Array.isArray(top5LiveContext) ? top5LiveContext : [];
@@ -9947,7 +9958,7 @@ async function buildVideoPlanWithGPT({
 		const title = String(item?.title || "").slice(0, 160);
 		const snippet = String(item?.snippet || "").slice(0, 200);
 		const publishedAt = String(
-			item?.publishedAt || item?.timeLabel || item?.published || ""
+			item?.publishedAt || item?.timeLabel || item?.published || "",
 		).trim();
 		const timeSuffix = publishedAt ? ` (${publishedAt})` : "";
 		if (title && snippet) return `- ${title} - ${snippet}${timeSuffix}`;
@@ -9992,7 +10003,7 @@ Topic intent (must follow; do NOT drift):
 			(sec, i) =>
 				`Segment ${i + 1}: ~${sec.toFixed(1)}s, = ${
 					segWordCaps[i]
-				} spoken words.`
+				} spoken words.`,
 		)
 		.join("\n");
 	const totalSegSeconds = segLens.reduce((a, b) => a + b, 0) || 1;
@@ -10002,8 +10013,8 @@ Topic intent (must follow; do NOT drift):
 			? Math.round(
 					(segLens.slice(0, runwayStoryCount).reduce((a, b) => a + b, 0) /
 						totalSegSeconds) *
-						100
-			  )
+						100,
+				)
 			: 0;
 
 	const categoryTone = TONE_HINTS[category] || "";
@@ -10079,7 +10090,7 @@ ${
 	runwayStoryCount
 		? `- Segments 1${
 				runwayStoryCount === 1 ? "" : `-${runwayStoryCount}`
-		  } carry the core visuals and together use about ${runwaySharePct}% of the runtime; pack the key beats there so later segments can stay simple.`
+			} carry the core visuals and together use about ${runwaySharePct}% of the runtime; pack the key beats there so later segments can stay simple.`
 		: ""
 }
 ${outroDirective.replace("3-5s tolerance buffer", "3-5s max buffer")}
@@ -10118,7 +10129,7 @@ Image notes for the orchestrator:
 						(b) =>
 							`- ${b.aspectRatio}: ${b.visualHook}${
 								b.emotion ? " | emotion: " + b.emotion : ""
-							}`
+							}`,
 					)
 					.join("\n  ")
 			: "- (no hooks provided)"
@@ -10213,7 +10224,7 @@ ${
 					(ctx) =>
 						`#${ctx.rank}: ${ctx.label || ""} | ${ctx.title || ""}${
 							ctx.snippet ? " - " + ctx.snippet : ""
-						}`
+						}`,
 				)
 				.join("\n")
 		: "- No live snippets found; avoid dated claims or speculation."
@@ -10229,7 +10240,7 @@ ${
 					(img) =>
 						`#${img.rank}: ${img.label || ""} -> ${img.url}${
 							img.source ? ` (source: ${img.source})` : ""
-						}`
+						}`,
 				)
 				.join("\n")
 		: "- None provided; pick new, descriptive editorial photos from current search results, not stock icons or thumbnails."
@@ -10357,7 +10368,7 @@ Return JSON:
 		throw new Error(
 			`GPT plan returned ${
 				plan.segments?.length || 0
-			} segments, expected ${segCnt}`
+			} segments, expected ${segCnt}`,
 		);
 	}
 
@@ -10370,7 +10381,7 @@ Return JSON:
 			index: typeof s.index === "number" ? s.index : idx + 1,
 			scriptText: String(s.scriptText || "").trim(),
 			visualCue: String(
-				s.visualCue || s.imageCue || s.visual || s.cue || ""
+				s.visualCue || s.imageCue || s.visual || s.cue || "",
 			).trim(),
 			runwayPrompt,
 			runwayNegativePrompt: negativePromptRaw,
@@ -10510,7 +10521,7 @@ exports.createVideo = async (req, res) => {
 			const expectedCat = String(scheduleJobMeta.category);
 			if (expectedCat && expectedCat !== category) {
 				throw new Error(
-					`Scheduled run category mismatch (expected ${expectedCat}, got ${category})`
+					`Scheduled run category mismatch (expected ${expectedCat}, got ${category})`,
 				);
 			}
 		}
@@ -10519,7 +10530,7 @@ exports.createVideo = async (req, res) => {
 			? ` schedule=${scheduleJobMeta?.scheduleId || "unknown"}`
 			: "";
 		console.log(
-			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}  useRunway=${useSora}${scheduleTag}`
+			`[Job] user=${user.email}  cat=${category}  dur=${duration}s  geo=${country}  useRunway=${useSora}${scheduleTag}`,
 		);
 
 		// Preload recent topics for this user/category (last 3 days) to avoid duplicates
@@ -10578,16 +10589,19 @@ exports.createVideo = async (req, res) => {
 		let trendStory = null;
 		let trendArticleText = null;
 		let liveWebContext = [];
+		sendPhase("FETCHING_TRENDS", {
+			msg: "Selecting a topic and pulling trend data...",
+		});
 
 		const hasVideoImage = Boolean(videoImage);
 		const hasCustomPrompt = customPrompt.length > 0;
-		const requireScheduledTrends = isScheduledJob && category !== "Top5";
+		const requireScheduledTrends =
+			REQUIRE_TRENDS_FOR_SCHEDULES && isScheduledJob && category !== "Top5";
 		const shouldFetchTrendStory =
 			category !== "Top5" && (!hasVideoImage || isScheduledJob);
-		const allowTrendsImageSearch =
-			category !== "Top5" && (!hasVideoImage || isScheduledJob);
+		const allowTrendsImageSearch = category !== "Top5";
 
-		// 1) Try Trends story first (Top5 skips; scheduled runs force Trends even with overrides)
+		// 1) Try Trends story first (Top5 skips; schedules prefer Trends, can be enforced via env)
 		if (shouldFetchTrendStory) {
 			trendStory = await fetchTrendingStory(
 				category,
@@ -10604,7 +10618,7 @@ exports.createVideo = async (req, res) => {
 					userId: user?._id || user?.id || null,
 					topicsLimit: 1,
 					isLongVideo: false,
-				}
+				},
 			);
 			if (trendStory && trendStory.title && !hasCustomPrompt) {
 				topic = trendStory.title;
@@ -10614,7 +10628,7 @@ exports.createVideo = async (req, res) => {
 			}
 			if (requireScheduledTrends && (!trendStory || !trendStory.title)) {
 				throw new Error(
-					"Scheduled run requires a Google Trends topic; none was returned"
+					"Scheduled run requires a Google Trends topic; none was returned",
 				);
 			}
 		}
@@ -10632,8 +10646,8 @@ exports.createVideo = async (req, res) => {
 			const key = top5TitleKey(topic);
 			const allowedMap = new Map(
 				ALL_TOP5_TOPICS.map((t) => [top5TitleKey(t), t]).filter(([k]) =>
-					Boolean(k)
-				)
+					Boolean(k),
+				),
 			);
 			const isAllowed = key && allowedMap.has(key);
 			const isUsed = key && usedTop5Keys.has(key);
@@ -10644,7 +10658,7 @@ exports.createVideo = async (req, res) => {
 				})).filter((c) => c.key && !usedTop5Keys.has(c.key));
 				if (candidateList.length) {
 					console.log(
-						"[Top5] Custom topic rejected (duplicate or off-list); selecting unused preset topic"
+						"[Top5] Custom topic rejected (duplicate or off-list); selecting unused preset topic",
 					);
 					topic = candidateList[0].topic;
 				}
@@ -10673,12 +10687,13 @@ exports.createVideo = async (req, res) => {
 		}
 
 		console.log(`[Job] final topic="${topic}"`);
+		sendPhase("TOPIC_READY", { topic });
 		const topicIsAITopic = looksLikeAITopic(topic);
 
 		// Scrape a bit of article text for richer context, if we have a Trends story
 		if (trendStory && trendStory.articles && trendStory.articles.length) {
 			trendArticleText = await scrapeArticleText(
-				trendStory.articles[0].url || null
+				trendStory.articles[0].url || null,
 			);
 		}
 		if (category !== "Top5" && topic && canUseGoogleSearch()) {
@@ -10700,7 +10715,7 @@ exports.createVideo = async (req, res) => {
 		const tolerancePadSeconds = computeOptionalOutroTolerance(
 			requestedTailSeconds,
 			category,
-			duration
+			duration,
 		);
 		console.log(
 			"[Job] ratio + target duration",
@@ -10709,13 +10724,13 @@ exports.createVideo = async (req, res) => {
 				durationCore: duration,
 				tailSeconds: requestedTailSeconds,
 				tolerancePadSeconds,
-			})
+			}),
 		);
 		let segLens = computeInitialSegLens(
 			category,
 			duration,
 			requestedTailSeconds,
-			tolerancePadSeconds
+			tolerancePadSeconds,
 		);
 		let segCnt = segLens.length;
 		let engagementTailSeconds = segLens[segCnt - 1];
@@ -10723,7 +10738,7 @@ exports.createVideo = async (req, res) => {
 		let top5DurationCap =
 			category === "Top5" ? duration + TOP5_MAX_EXTRA_SECONDS : null;
 		const segWordCaps = segLens.map((s) =>
-			Math.floor(s * wordsPerSecForCaps(category))
+			Math.floor(s * wordsPerSecForCaps(category)),
 		);
 		if (segWordCaps.length) {
 			const lastIdx = segWordCaps.length - 1;
@@ -10742,6 +10757,11 @@ exports.createVideo = async (req, res) => {
 		let top5Slug = safeSlug(topic || "top5");
 
 		/* 4. Search & upload Trends images to Cloudinary (single target ratio) */
+		if (allowTrendsImageSearch) {
+			sendPhase("SEARCHING_IMAGES", {
+				msg: "Gathering at least 3 unique topic images...",
+			});
+		}
 		let trendImagePairs = []; // [{ originalUrl, cloudinaryUrl }]
 		let trendImagesForRatio = [];
 		const originByKey = new Map();
@@ -10758,17 +10778,20 @@ exports.createVideo = async (req, res) => {
 				: strongTopicTokens;
 			const anchorPhrases = buildAnchorPhrasesFromStory(trendStory);
 			const anchorTokens = topicTokensFromTitle(
-				trendStory?.trendSearchTerm || trendStory?.title || topic
+				trendStory?.trendSearchTerm || trendStory?.title || topic,
 			);
 			const negativeTitleRe =
 				/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i;
 			const targetPoolSize = Math.min(6, Math.max(4, segLens.length || 6));
+			const minFeedImages = MIN_FEED_IMAGES;
+			const desiredPoolSize = Math.max(targetPoolSize, minFeedImages);
 			const pageSignalCache = new Map();
+			let usedTopUp = false;
 			const seedCandidates = [];
 			potentialUrlKeys.clear();
 			if (trendStory) {
 				const potentialCandidates = normalizeTrendPotentialImages(
-					trendStory.potentialImages || []
+					trendStory.potentialImages || [],
 				);
 				if (potentialCandidates.length) {
 					for (const cand of potentialCandidates) {
@@ -10789,7 +10812,7 @@ exports.createVideo = async (req, res) => {
 			}
 			const normalizedSeeds = dedupeImageCandidates(
 				normalizeImageCandidates(seedCandidates),
-				24
+				24,
 			);
 			let qaSeedCandidates = [];
 			if (normalizedSeeds.length) {
@@ -10835,53 +10858,93 @@ exports.createVideo = async (req, res) => {
 				});
 			}
 
-			const needsTopUp = combinedCandidates.length < 4;
-			const allowCseTopup = needsTopUp && canUseGoogleSearch();
-			if (needsTopUp) {
-				console.log("[Trending] image pool below minimum, topup", {
-					count: combinedCandidates.length,
-					target: 4,
-					allowCse: allowCseTopup,
+			const runQa = async (list = [], strict = true) =>
+				qaSegmentImageCandidates(list, {
+					segmentTokens: [],
+					anchorTokens,
+					topicTokens: tokenSet,
+					strict,
+					pageSignalCache,
 				});
+
+			const topUpCandidates = async ({
+				allowCse,
+				phase,
+				desiredCount,
+				label,
+			} = {}) => {
+				usedTopUp = true;
 				const requireTokenMatch = tokenSet.length > 0;
+				console.log("[Trending] image pool topup", {
+					count: combinedCandidates.length,
+					target: desiredCount,
+					allowCse,
+					label,
+				});
 				const fallback = await fetchHighQualityImagesForTopic({
 					topic,
 					ratio,
 					articleLinks,
-					desiredCount: 4,
-					limit: 10,
+					desiredCount,
+					limit: Math.max(10, desiredCount * 2),
 					topicTokens: tokenSet,
 					requireAnyToken: requireTokenMatch,
 					negativeTitleRe,
 					strictTopicMatch: true,
 					phraseAnchors: anchorPhrases,
 					requireAnchorPhrase: anchorPhrases.length > 0,
-					allowCse: allowCseTopup,
-					googleVariantLimit: needsTopUp ? GOOGLE_IMAGES_VARIANT_LIMIT : 0,
+					allowCse,
+					googleVariantLimit: GOOGLE_IMAGES_VARIANT_LIMIT,
 					cseMeter,
-					csePhase: "trend_pool_og_topup",
+					csePhase: phase,
+					returnMeta: true,
 				});
 				const normalizedFallback = dedupeImageCandidates(
 					normalizeImageCandidates(fallback),
-					18
+					24,
 				);
-				let qaFallback = await qaSegmentImageCandidates(normalizedFallback, {
-					segmentTokens: [],
-					anchorTokens,
-					topicTokens: tokenSet,
-					strict: true,
-					pageSignalCache,
-				});
+				let qaFallback = await runQa(normalizedFallback, true);
 				if (!qaFallback.length) {
-					qaFallback = await qaSegmentImageCandidates(normalizedFallback, {
-						segmentTokens: [],
-						anchorTokens,
-						topicTokens: tokenSet,
-						strict: false,
-						pageSignalCache,
-					});
+					qaFallback = await runQa(normalizedFallback, false);
 				}
-				combinedCandidates = mergeCandidates([combinedCandidates, qaFallback]);
+				if (qaFallback.length) {
+					combinedCandidates = mergeCandidates([
+						combinedCandidates,
+						qaFallback,
+					]);
+				}
+			};
+
+			let qaStrict = combinedCandidates.length
+				? await runQa(combinedCandidates, true)
+				: [];
+			if (qaStrict.length < desiredPoolSize) {
+				await topUpCandidates({
+					allowCse: false,
+					phase: "trend_pool_scrape_topup",
+					desiredCount: desiredPoolSize,
+					label: "scrape",
+				});
+				qaStrict = combinedCandidates.length
+					? await runQa(combinedCandidates, true)
+					: [];
+			}
+			if (qaStrict.length < minFeedImages) {
+				await topUpCandidates({
+					allowCse: true,
+					phase: "trend_pool_cse_fallback",
+					desiredCount: minFeedImages,
+					label: "cse",
+				});
+				qaStrict = combinedCandidates.length
+					? await runQa(combinedCandidates, true)
+					: [];
+			}
+
+			if (qaStrict.length < minFeedImages) {
+				throw new Error(
+					`Need at least ${minFeedImages} unique, topic-relevant images; found ${qaStrict.length || 0}.`,
+				);
 			}
 
 			originByKey.clear();
@@ -10898,7 +10961,8 @@ exports.createVideo = async (req, res) => {
 			recordOrigin(combinedCandidates);
 			recordOrigin(normalizedSeeds);
 
-			const ranked = combinedCandidates.slice().sort((a, b) => {
+			const rankedSource = qaStrict.length ? qaStrict : combinedCandidates;
+			const ranked = rankedSource.slice().sort((a, b) => {
 				const aW = Number(a.width) || 0;
 				const aH = Number(a.height) || 0;
 				const bW = Number(b.width) || 0;
@@ -10911,10 +10975,17 @@ exports.createVideo = async (req, res) => {
 				if (aEdge !== bEdge) return bEdge - aEdge;
 				return (b.qaScore || 0) - (a.qaScore || 0);
 			});
-			trendImagesForRatio = filterUploadCandidates(
-				ranked.map((c) => c.url).filter(Boolean),
-				targetPoolSize
+			const rankedUrls = ranked.map((c) => c.url).filter(Boolean);
+			const filteredRanked = filterUploadCandidates(
+				rankedUrls,
+				Math.max(desiredPoolSize * 3, rankedUrls.length),
 			);
+			trendImagesForRatio = dedupeImageUrls(filteredRanked, desiredPoolSize);
+			if (trendImagesForRatio.length < minFeedImages) {
+				throw new Error(
+					`Need at least ${minFeedImages} unique, topic-relevant images after filtering; found ${trendImagesForRatio.length}.`,
+				);
+			}
 			if (
 				!trendImagesForRatio.length &&
 				trendStory &&
@@ -10923,7 +10994,7 @@ exports.createVideo = async (req, res) => {
 			) {
 				trendImagesForRatio = filterUploadCandidates(
 					trendStory.images,
-					targetPoolSize
+					targetPoolSize,
 				);
 				if (trendImagesForRatio.length) {
 					console.log("[Trending] using raw Trends images fallback", {
@@ -10936,7 +11007,7 @@ exports.createVideo = async (req, res) => {
 				const rawSeedUrls = normalizedSeeds.map((c) => c.url).filter(Boolean);
 				trendImagesForRatio = filterUploadCandidates(
 					rawSeedUrls,
-					targetPoolSize
+					targetPoolSize,
 				);
 				if (!trendImagesForRatio.length) {
 					trendImagesForRatio = rawSeedUrls.slice(0, targetPoolSize);
@@ -10951,7 +11022,7 @@ exports.createVideo = async (req, res) => {
 			console.log("[Trending] image pool ready", {
 				count: trendImagesForRatio.length,
 				target: targetPoolSize,
-				usedFallback: needsTopUp || usedRawSeedFallback,
+				usedFallback: usedTopUp || usedRawSeedFallback,
 			});
 		}
 		const canUseTrendsImages =
@@ -10975,7 +11046,7 @@ exports.createVideo = async (req, res) => {
 					const up = await uploadTrendImageToCloudinary(
 						url,
 						ratio,
-						`aivideomatic/trend_seeds/${slugBase}_${i}`
+						`aivideomatic/trend_seeds/${slugBase}_${i}`,
 					);
 					trendImagePairs.push({
 						originalUrl: url,
@@ -10996,7 +11067,7 @@ exports.createVideo = async (req, res) => {
 			}
 			if (!trendImagePairs.length) {
 				console.warn(
-					"[Cloudinary] All Trends uploads failed - falling back to prompt-only mode"
+					"[Cloudinary] All Trends uploads failed - falling back to prompt-only mode",
 				);
 			} else {
 				console.log("[Cloudinary] Trends images uploaded", {
@@ -11006,17 +11077,30 @@ exports.createVideo = async (req, res) => {
 				});
 				if (trendImagePairs.length < 5) {
 					console.warn(
-						"[Cloudinary] Fewer than 5 ratio-matched images uploaded; will reuse where needed."
+						"[Cloudinary] Fewer than 5 ratio-matched images uploaded; will reuse where needed.",
 					);
 				}
 			}
+		}
+
+		if (allowTrendsImageSearch) {
+			const sourceSummary = trendImagePairs.reduce((acc, pair) => {
+				const key = pair?.origin || "trend";
+				acc[key] = (acc[key] || 0) + 1;
+				return acc;
+			}, {});
+			sendPhase("IMAGE_POOL_READY", {
+				msg: "Image pool ready",
+				count: trendImagePairs.length,
+				sources: sourceSummary,
+			});
 		}
 
 		let hasTrendImages = trendImagePairs.length > 0;
 		const hadPlanImages = hasTrendImages;
 		if (requireScheduledTrends && !hasTrendImages) {
 			throw new Error(
-				"Scheduled run requires topic images; none were found or uploadable"
+				"Scheduled run requires topic images; none were found or uploadable",
 			);
 		}
 		const forceStaticVisuals = !useSora;
@@ -11024,6 +11108,9 @@ exports.createVideo = async (req, res) => {
 		let segments;
 		let topicIntent = null;
 		if (category === "Top5") {
+			sendPhase("PLANNING_SCRIPT", {
+				msg: "Planning countdown outline...",
+			});
 			const built = await buildTop5SegmentsAndImages({
 				topic,
 				ratio,
@@ -11042,6 +11129,9 @@ exports.createVideo = async (req, res) => {
 			segments = await tightenTop5TimingAndClarity(segments, segLens, language);
 		} else {
 			/* 5. Let OpenAI orchestrate segments + visuals */
+			sendPhase("PLANNING_SCRIPT", {
+				msg: "Planning script and visual beats...",
+			});
 			console.log("[GPT] building full video plan …");
 
 			const plan = await buildVideoPlanWithGPT({
@@ -11082,7 +11172,7 @@ exports.createVideo = async (req, res) => {
 					.sort(
 						(a, b) =>
 							(typeof a.index === "number" ? a.index : 0) -
-							(typeof b.index === "number" ? b.index : 0)
+							(typeof b.index === "number" ? b.index : 0),
 					);
 			}
 		}
@@ -11122,7 +11212,7 @@ exports.createVideo = async (req, res) => {
 			segments = ensureAnchorInShortsSegments(
 				segments,
 				topicIntent.anchor,
-				topicIntent.domain || "real"
+				topicIntent.domain || "real",
 			);
 		}
 		if (category !== "Top5") {
@@ -11151,7 +11241,7 @@ exports.createVideo = async (req, res) => {
 			segments = await tightenSegmentsToWordCaps(
 				segments,
 				segWordCaps,
-				language
+				language,
 			);
 			segments = segments.map((seg) => ({
 				...seg,
@@ -11166,7 +11256,7 @@ exports.createVideo = async (req, res) => {
 				segments = ensureAnchorInShortsSegments(
 					segments,
 					topicIntent.anchor,
-					topicIntent.domain || "real"
+					topicIntent.domain || "real",
 				);
 			}
 			segments = enforceShortsSpecificityGuards(segments, {
@@ -11233,7 +11323,7 @@ exports.createVideo = async (req, res) => {
 		const recomputed = recomputeSegmentDurationsFromScript(
 			segments,
 			totalDurationTarget,
-			{ category, targetSegLens: segLens }
+			{ category, targetSegLens: segLens },
 		);
 		if (recomputed && recomputed.length === segLens.length) {
 			console.log("[Timing] Recomputed segment durations from script:", {
@@ -11295,14 +11385,14 @@ exports.createVideo = async (req, res) => {
 						trendStory.seoTitle,
 						trendStory.rawTitle,
 						...(trendStory.articles || []).map((a) => a.title),
-				  ].filter(Boolean)
+					].filter(Boolean)
 				: [topic];
 			const snippet = trendArticleText ? trendArticleText.slice(0, 800) : "";
 			seoTitle = await generateSeoTitle(
 				seedHeadlines,
 				category,
 				language,
-				snippet
+				snippet,
 			);
 		} catch (e) {
 			console.warn("[SEO title] generation outer failed ?", e.message);
@@ -11333,7 +11423,7 @@ exports.createVideo = async (req, res) => {
 				],
 			});
 			const parsed = parseJsonFlexible(
-				strip(tagResp.choices[0].message.content)
+				strip(tagResp.choices[0].message.content),
 			);
 			if (Array.isArray(parsed)) tags.push(...parsed);
 		} catch (e) {
@@ -11357,7 +11447,7 @@ exports.createVideo = async (req, res) => {
 			avoidVoiceIds = await recentVoiceIdsForUser(
 				user._id,
 				language,
-				RECENT_VOICE_AVOID_COUNT
+				RECENT_VOICE_AVOID_COUNT,
 			);
 			lastVoiceMeta = await Video.findOne({
 				user: user._id,
@@ -11378,7 +11468,7 @@ exports.createVideo = async (req, res) => {
 		} catch (e) {
 			console.warn(
 				"[TTS] Unable to load last ElevenLabs voice metadata ?",
-				e.message
+				e.message,
 			);
 		}
 
@@ -11389,7 +11479,7 @@ exports.createVideo = async (req, res) => {
 				language,
 				category,
 				fullScript,
-				avoidVoiceIds
+				avoidVoiceIds,
 			);
 			if (chosenVoice) {
 				console.log("[TTS] Using ElevenLabs voice", {
@@ -11442,7 +11532,7 @@ exports.createVideo = async (req, res) => {
 				searchTerms.push(
 					topic.split(" ")[0],
 					`${category.toLowerCase()} instrumental`,
-					"ambient instrumental no vocals"
+					"ambient instrumental no vocals",
 				);
 			}
 
@@ -11467,7 +11557,7 @@ exports.createVideo = async (req, res) => {
 				const ws = fs.createWriteStream(music);
 				const { data } = await axios.get(jamUrl, { responseType: "stream" });
 				await new Promise((r, j) =>
-					data.pipe(ws).on("finish", r).on("error", j)
+					data.pipe(ws).on("finish", r).on("error", j),
 				);
 			}
 		} catch (e) {
@@ -11505,7 +11595,7 @@ exports.createVideo = async (req, res) => {
 
 			const toneText = normalizeScriptForTTS(
 				ttsParts.join(" ").trim(),
-				language
+				language,
 			);
 			const localTone = deriveVoiceSettings(toneText, category);
 			if (!voiceToneSample) voiceToneSample = localTone;
@@ -11522,14 +11612,14 @@ exports.createVideo = async (req, res) => {
 						language,
 						partPath,
 						category,
-						chosenVoice?.voiceId || null
+						chosenVoice?.voiceId || null,
 					);
 				} catch (e) {
 					console.warn(
 						`[TTS] ElevenLabs failed for seg ${i + 1} part ${
 							pIdx + 1
 						}, falling back to OpenAI ?`,
-						e.message
+						e.message,
 					);
 
 					const tts = await openai.audio.speech.create({
@@ -11566,9 +11656,9 @@ exports.createVideo = async (req, res) => {
 										"1",
 										"-ar",
 										"44100",
-										"-y"
+										"-y",
 									)
-									.save(norm(targetSilence))
+									.save(norm(targetSilence)),
 							);
 							silenceBuilt = true;
 						} catch (err) {
@@ -11576,7 +11666,7 @@ exports.createVideo = async (req, res) => {
 								`[TTS] lavfi silence failed for seg ${
 									i + 1
 								}, using PCM fallback`,
-								err.message
+								err.message,
 							);
 						}
 					}
@@ -11618,7 +11708,7 @@ exports.createVideo = async (req, res) => {
 							"44100",
 							"-c:a",
 							"pcm_s16le",
-							"-y"
+							"-y",
 						)
 						.save(norm(raw));
 				});
@@ -11689,18 +11779,18 @@ exports.createVideo = async (req, res) => {
 			category === "Top5"
 				? Math.min(
 						TOP5_MAX_ATEMPO,
-						language === "English" ? MAX_ATEMPO_VOICE_EN : MAX_ATEMPO
-				  )
+						language === "English" ? MAX_ATEMPO_VOICE_EN : MAX_ATEMPO,
+					)
 				: language === "English"
-				? MAX_ATEMPO_VOICE_EN
-				: MAX_ATEMPO;
+					? MAX_ATEMPO_VOICE_EN
+					: MAX_ATEMPO;
 
 		for (let i = 0; i < rawVoicePieces.length; i++) {
 			const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
 			const rawPath = rawVoicePieces[i];
 			if (!rawPath || !fs.existsSync(rawPath)) {
 				console.warn(
-					`[TTS] Missing raw audio for segment ${i + 1}, skipping prebuilt fit`
+					`[TTS] Missing raw audio for segment ${i + 1}, skipping prebuilt fit`,
 				);
 				continue;
 			}
@@ -11746,7 +11836,7 @@ exports.createVideo = async (req, res) => {
 			const { promptText, negativePrompt } = buildRunwayPrompt(
 				seg,
 				globalStyle,
-				category
+				category,
 			);
 			const canUseRunway =
 				allowRunway &&
@@ -11757,8 +11847,8 @@ exports.createVideo = async (req, res) => {
 
 			console.log(
 				`[Seg ${segIndex}/${segCnt}] targetDuration=${d.toFixed(
-					2
-				)}s runwayDuration=${rw}s useRunway=${canUseRunway ? "yes" : "no"}`
+					2,
+				)}s runwayDuration=${rw}s useRunway=${canUseRunway ? "yes" : "no"}`,
 			);
 
 			let clipPath = null;
@@ -11774,7 +11864,7 @@ exports.createVideo = async (req, res) => {
 					idx = baseIdx;
 				} else {
 					const unused = Array.from({ length: imgCount }, (_, k) => k).find(
-						(k) => !staticFallbackUsed.has(k)
+						(k) => !staticFallbackUsed.has(k),
 					);
 					idx = unused !== undefined ? unused : baseIdx;
 				}
@@ -11800,7 +11890,7 @@ exports.createVideo = async (req, res) => {
 				} catch (err) {
 					console.warn(
 						`[Seg ${segIndex}] Static clip failed, using placeholder`,
-						err.message
+						err.message,
 					);
 					clipPath = await generatePlaceholderClip({
 						segmentIndex: segIndex,
@@ -11844,7 +11934,7 @@ exports.createVideo = async (req, res) => {
 					} catch (err) {
 						console.warn(
 							`[Seg ${segIndex}] Static fallback failed, using placeholder`,
-							err.message
+							err.message,
 						);
 						clipPath = await generatePlaceholderClip({
 							segmentIndex: segIndex,
@@ -11876,7 +11966,7 @@ exports.createVideo = async (req, res) => {
 						staticFallbackUsed.add(runwayIdx);
 						console.warn(
 							`[Seg ${segIndex}] Runway image_to_video failed for image #${runwayIdx}`,
-							msg
+							msg,
 						);
 						try {
 							clipPath = await generateStaticClipFromImage({
@@ -11889,7 +11979,7 @@ exports.createVideo = async (req, res) => {
 						} catch (err) {
 							console.warn(
 								`[Seg ${segIndex}] Static fallback failed after Runway, using placeholder`,
-								err.message
+								err.message,
 							);
 							clipPath = await generatePlaceholderClip({
 								segmentIndex: segIndex,
@@ -11923,7 +12013,7 @@ exports.createVideo = async (req, res) => {
 					} catch (err) {
 						console.warn(
 							`[Seg ${segIndex}] Static clip failed, using placeholder`,
-							err.message
+							err.message,
 						);
 						clipPath = await generatePlaceholderClip({
 							segmentIndex: segIndex,
@@ -11976,7 +12066,7 @@ exports.createVideo = async (req, res) => {
 				} catch (e) {
 					console.warn(
 						`[Top5] Slate overlay failed for segment ${segIndex} ?`,
-						e.message
+						e.message,
 					);
 					clips.push(fixed);
 				}
@@ -12010,12 +12100,12 @@ exports.createVideo = async (req, res) => {
 		} catch (err) {
 			console.warn(
 				"[Transitions] Fade pipeline failed, falling back to direct concat:",
-				err && err.stack ? err.stack : err?.message || err
+				err && err.stack ? err.stack : err?.message || err,
 			);
 			const listFile = tmpFile("list", ".txt");
 			fs.writeFileSync(
 				listFile,
-				clips.map((p) => `file '${norm(p)}'`).join("\n")
+				clips.map((p) => `file '${norm(p)}'`).join("\n"),
 			);
 
 			silent = tmpFile("silent", ".mp4");
@@ -12024,7 +12114,7 @@ exports.createVideo = async (req, res) => {
 					.input(norm(listFile))
 					.inputOptions("-f", "concat", "-safe", "0")
 					.outputOptions("-c", "copy", "-y")
-					.save(norm(silent))
+					.save(norm(silent)),
 			);
 			try {
 				fs.unlinkSync(listFile);
@@ -12050,18 +12140,18 @@ exports.createVideo = async (req, res) => {
 
 		if (!fixedPieces || fixedPieces.length !== segCnt) {
 			console.warn(
-				"[TTS] Prebuilt voice tracks missing; regenerating during audio stage."
+				"[TTS] Prebuilt voice tracks missing; regenerating during audio stage.",
 			);
 			fixedPieces = [];
 			const voiceAtempoCap =
 				category === "Top5"
 					? Math.min(
 							TOP5_MAX_ATEMPO,
-							language === "English" ? MAX_ATEMPO_VOICE_EN : MAX_ATEMPO
-					  )
+							language === "English" ? MAX_ATEMPO_VOICE_EN : MAX_ATEMPO,
+						)
 					: language === "English"
-					? MAX_ATEMPO_VOICE_EN
-					: MAX_ATEMPO;
+						? MAX_ATEMPO_VOICE_EN
+						: MAX_ATEMPO;
 			for (let i = 0; i < segCnt; i++) {
 				const fixed = tmpFile(`tts_fix_${i + 1}`, ".wav");
 				const ttsPlan = buildTtsPartsForSegment(segments[i], category);
@@ -12073,12 +12163,12 @@ exports.createVideo = async (req, res) => {
 					.filter((p) => p.length);
 				if (!ttsParts.length)
 					ttsParts.push(
-						String(segments[i].scriptText || "").trim() || "Update"
+						String(segments[i].scriptText || "").trim() || "Update",
 					);
 
 				const toneText = normalizeScriptForTTS(
 					ttsParts.join(" ").trim(),
-					language
+					language,
 				);
 				const localTone = deriveVoiceSettings(toneText, category);
 				if (!voiceToneSample) voiceToneSample = localTone;
@@ -12095,14 +12185,14 @@ exports.createVideo = async (req, res) => {
 							language,
 							partPath,
 							category,
-							chosenVoice?.voiceId || null
+							chosenVoice?.voiceId || null,
 						);
 					} catch (e) {
 						console.warn(
 							`[TTS] ElevenLabs failed for seg ${i + 1} part ${
 								pIdx + 1
 							}, falling back to OpenAI ?`,
-							e.message
+							e.message,
 						);
 
 						const tts = await openai.audio.speech.create({
@@ -12139,9 +12229,9 @@ exports.createVideo = async (req, res) => {
 											"1",
 											"-ar",
 											"44100",
-											"-y"
+											"-y",
 										)
-										.save(norm(targetSilence))
+										.save(norm(targetSilence)),
 								);
 								silenceBuilt = true;
 							} catch (err) {
@@ -12149,7 +12239,7 @@ exports.createVideo = async (req, res) => {
 									`[TTS] lavfi silence failed for seg ${
 										i + 1
 									}, using PCM fallback`,
-									err.message
+									err.message,
 								);
 							}
 						}
@@ -12191,7 +12281,7 @@ exports.createVideo = async (req, res) => {
 								"44100",
 								"-c:a",
 								"pcm_s16le",
-								"-y"
+								"-y",
 							)
 							.save(norm(raw));
 					});
@@ -12222,7 +12312,7 @@ exports.createVideo = async (req, res) => {
 		const audioConcatList = tmpFile("audio_list", ".txt");
 		fs.writeFileSync(
 			audioConcatList,
-			fixedPieces.map((p) => `file '${norm(p)}'`).join("\n")
+			fixedPieces.map((p) => `file '${norm(p)}'`).join("\n"),
 		);
 		const ttsJoin = tmpFile("tts_join", ".wav");
 		await ffmpegPromise((c) =>
@@ -12230,7 +12320,7 @@ exports.createVideo = async (req, res) => {
 				.input(norm(audioConcatList))
 				.inputOptions("-f", "concat", "-safe", "0")
 				.outputOptions("-c", "copy", "-y")
-				.save(norm(ttsJoin))
+				.save(norm(ttsJoin)),
 		);
 		try {
 			fs.unlinkSync(audioConcatList);
@@ -12249,7 +12339,7 @@ exports.createVideo = async (req, res) => {
 				c
 					.input(norm(music))
 					.outputOptions("-t", String(totalDurationTarget), "-y")
-					.save(norm(trim))
+					.save(norm(trim)),
 			);
 			try {
 				fs.unlinkSync(music);
@@ -12265,7 +12355,7 @@ exports.createVideo = async (req, res) => {
 						"[a0][a1]amix=inputs=2:duration=first[aout]",
 					])
 					.outputOptions("-map", "[aout]", "-c:a", "pcm_s16le", "-y")
-					.save(norm(mixedRaw))
+					.save(norm(mixedRaw)),
 			);
 			try {
 				fs.unlinkSync(trim);
@@ -12276,7 +12366,7 @@ exports.createVideo = async (req, res) => {
 					.input(norm(ttsJoin))
 					.audioFilters("volume=1.4")
 					.outputOptions("-c:a", "pcm_s16le", "-y")
-					.save(norm(mixedRaw))
+					.save(norm(mixedRaw)),
 			);
 		}
 		try {
@@ -12287,11 +12377,11 @@ exports.createVideo = async (req, res) => {
 			category === "Top5"
 				? Math.min(
 						TOP5_MAX_ATEMPO,
-						language === "English" ? MAX_ATEMPO_MIX_EN : MAX_ATEMPO
-				  )
+						language === "English" ? MAX_ATEMPO_MIX_EN : MAX_ATEMPO,
+					)
 				: language === "English"
-				? MAX_ATEMPO_MIX_EN
-				: MAX_ATEMPO;
+					? MAX_ATEMPO_MIX_EN
+					: MAX_ATEMPO;
 
 		await exactLenAudio(mixedRaw, totalDurationTarget, mixed, {
 			maxAtempo: mixAtempoCap,
@@ -12331,9 +12421,9 @@ exports.createVideo = async (req, res) => {
 					"-c:a",
 					"aac",
 					"-shortest",
-					"-y"
+					"-y",
 				)
-				.save(norm(finalPath))
+				.save(norm(finalPath)),
 		);
 		try {
 			fs.unlinkSync(silentFixed);
@@ -12370,7 +12460,7 @@ exports.createVideo = async (req, res) => {
 						},
 						media: { body: fs.createReadStream(finalPath) },
 					},
-					{ maxContentLength: Infinity, maxBodyLength: Infinity }
+					{ maxContentLength: Infinity, maxBodyLength: Infinity },
 				);
 				youtubeLink = `https://www.youtube.com/watch?v=${data.id}`;
 				sendPhase("VIDEO_UPLOADED", { youtubeLink });
@@ -12391,7 +12481,7 @@ exports.createVideo = async (req, res) => {
 						category,
 						language,
 						tone: voiceToneSample || null,
-				  }
+					}
 				: null;
 
 		/* 16. Persist to Mongo */
@@ -12423,8 +12513,8 @@ exports.createVideo = async (req, res) => {
 			youtubeTokenExpiresAt: youtubeTokens?.expiry_date
 				? new Date(youtubeTokens.expiry_date)
 				: req.body.youtubeTokenExpiresAt
-				? new Date(req.body.youtubeTokenExpiresAt)
-				: undefined,
+					? new Date(req.body.youtubeTokenExpiresAt)
+					: undefined,
 			elevenLabsVoice,
 			backgroundMusic: backgroundMusicMeta,
 		});
@@ -12438,7 +12528,7 @@ exports.createVideo = async (req, res) => {
 			let next = dayjs.tz(
 				`${startDateStr} ${timeOfDay}`,
 				"YYYY-MM-DD HH:mm",
-				PST_TZ
+				PST_TZ,
 			);
 
 			const nowPST = dayjs().tz(PST_TZ);
@@ -12494,18 +12584,18 @@ exports.createVideo = async (req, res) => {
 		if (err?.response) {
 			console.error(
 				"[createVideo] ERROR response status:",
-				err.response.status
+				err.response.status,
 			);
 			try {
 				console.error(
 					"[createVideo] ERROR response data snippet:",
 					typeof err.response.data === "string"
 						? err.response.data.slice(0, 500)
-						: JSON.stringify(err.response.data).slice(0, 500)
+						: JSON.stringify(err.response.data).slice(0, 500),
 				);
 			} catch (_) {
 				console.error(
-					"[createVideo] ERROR response data snippet: [unserializable]"
+					"[createVideo] ERROR response data snippet: [unserializable]",
 				);
 			}
 		}
@@ -12553,7 +12643,7 @@ exports.getVideoById = async (req, res, next) => {
 
 		const video = await Video.findById(videoId).populate(
 			"user",
-			"name email role"
+			"name email role",
 		);
 
 		if (!video) {
