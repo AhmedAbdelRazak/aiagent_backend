@@ -162,12 +162,19 @@ const PRESENTER_FACE_LOCK_REGIONS = [
 	PRESENTER_FACE_LOCK_REGION,
 	PRESENTER_FACE_LOCK_CHIN_REGION,
 ];
+const PRESENTER_UPPER_LOCK_ENABLED = true;
+const PRESENTER_UPPER_LOCK_REGION = {
+	x: 0,
+	y: 0,
+	w: 1,
+	h: 0.62,
+};
 const PRESENTER_TORSO_BLEND_ENABLED = true;
 const PRESENTER_TORSO_BLEND_REGION = {
 	x: 0.18,
-	y: 0.46,
+	y: 0.62,
 	w: 0.64,
-	h: 0.54,
+	h: 0.38,
 };
 const PRESENTER_TORSO_BLEND_FEATHER_PCT = 0.015;
 
@@ -437,6 +444,7 @@ function comparePresenterSimilarity(originalPath, candidatePath) {
 		PRESENTER_FACE_LOCK_EYES_REGION,
 		PRESENTER_FACE_LOCK_REGION,
 		PRESENTER_FACE_LOCK_CHIN_REGION,
+		PRESENTER_UPPER_LOCK_REGION,
 	];
 	const scores = [];
 	for (const region of regions) {
@@ -554,6 +562,40 @@ async function enforcePresenterFaceLock({
 		applied: true,
 		scoreBefore,
 		scoreAfter,
+	};
+}
+
+async function enforcePresenterUpperLock({
+	jobId,
+	tmpDir,
+	basePath,
+	editedPath,
+	log,
+}) {
+	if (!PRESENTER_UPPER_LOCK_ENABLED || !editedPath) {
+		return { path: editedPath, applied: false };
+	}
+	if (!ffmpegPath) {
+		if (log) log("presenter upper lock skipped (ffmpeg unavailable)", {});
+		return { path: editedPath, applied: false };
+	}
+	const outPath = path.join(
+		tmpDir || os.tmpdir(),
+		`presenter_upper_lock_${jobId || "job"}.png`,
+	);
+	await applyPresenterFaceLock({
+		basePath,
+		editedPath,
+		outPath,
+		regions: [PRESENTER_UPPER_LOCK_REGION],
+	});
+	if (log)
+		log("presenter upper lock applied", {
+			region: PRESENTER_UPPER_LOCK_REGION,
+		});
+	return {
+		path: outPath,
+		applied: true,
 	};
 }
 
@@ -1212,6 +1254,21 @@ async function generatePresenterAdjustedImage({
 				if (lockResult?.path && lockResult.path !== workingPath) {
 					safeUnlink(workingPath);
 					workingPath = lockResult.path;
+					ensurePresenterFile(workingPath);
+				}
+			}
+
+			if (PRESENTER_UPPER_LOCK_ENABLED) {
+				const upperResult = await enforcePresenterUpperLock({
+					jobId,
+					tmpDir: workingDir,
+					basePath: presenterLocalPath,
+					editedPath: workingPath,
+					log,
+				});
+				if (upperResult?.path && upperResult.path !== workingPath) {
+					safeUnlink(workingPath);
+					workingPath = upperResult.path;
 					ensurePresenterFile(workingPath);
 				}
 			}
