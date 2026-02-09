@@ -3100,10 +3100,7 @@ function normalizeImageUrlKey(url = "") {
 		parsed.search = "";
 		return parsed.toString().toLowerCase();
 	} catch {
-		return sanitizeImageUrl(url)
-			.split("?")[0]
-			.split("#")[0]
-			.toLowerCase();
+		return sanitizeImageUrl(url).split("?")[0].split("#")[0].toLowerCase();
 	}
 }
 
@@ -4297,9 +4294,8 @@ async function evaluateImageSegmentDiversity({
 		const pick = cloud[0] || raw[0] || "";
 		if (pick) primaryUrls.push(pick);
 	}
-	const uniquePrimary = new Set(
-		primaryUrls.map((u) => normalizeImageUrlKey(u)),
-	).size;
+	const uniquePrimary = new Set(primaryUrls.map((u) => normalizeImageUrlKey(u)))
+		.size;
 
 	let uniqueHash = null;
 	if (segmentImagePaths instanceof Map) {

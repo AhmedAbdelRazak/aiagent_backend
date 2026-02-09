@@ -208,6 +208,99 @@ function detectImageType(filePath) {
 	return null;
 }
 
+function parsePngSize(buf) {
+	if (!buf || buf.length < 24) return null;
+	if (
+		buf[0] !== 0x89 ||
+		buf[1] !== 0x50 ||
+		buf[2] !== 0x4e ||
+		buf[3] !== 0x47
+	)
+		return null;
+	const width = buf.readUInt32BE(16);
+	const height = buf.readUInt32BE(20);
+	return width && height ? { width, height } : null;
+}
+
+function parseJpegSize(buf) {
+	if (!buf || buf.length < 4) return null;
+	if (buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+	let i = 2;
+	while (i + 1 < buf.length) {
+		if (buf[i] !== 0xff) {
+			i += 1;
+			continue;
+		}
+		while (buf[i] === 0xff) i += 1;
+		const marker = buf[i];
+		i += 1;
+		if (marker === 0xd9 || marker === 0xda) break;
+		if (i + 1 >= buf.length) break;
+		const len = buf.readUInt16BE(i);
+		if (len < 2) break;
+		if (
+			(marker >= 0xc0 && marker <= 0xc3) ||
+			(marker >= 0xc5 && marker <= 0xc7) ||
+			(marker >= 0xc9 && marker <= 0xcb) ||
+			(marker >= 0xcd && marker <= 0xcf)
+		) {
+			if (i + 7 >= buf.length) break;
+			const height = buf.readUInt16BE(i + 3);
+			const width = buf.readUInt16BE(i + 5);
+			return width && height ? { width, height } : null;
+		}
+		i += len;
+	}
+	return null;
+}
+
+function parseWebpSize(buf) {
+	if (!buf || buf.length < 30) return null;
+	if (
+		buf.toString("ascii", 0, 4) !== "RIFF" ||
+		buf.toString("ascii", 8, 12) !== "WEBP"
+	)
+		return null;
+	const chunk = buf.toString("ascii", 12, 16);
+	if (chunk === "VP8X" && buf.length >= 30) {
+		const width = 1 + buf.readUIntLE(24, 3);
+		const height = 1 + buf.readUIntLE(27, 3);
+		return width && height ? { width, height } : null;
+	}
+	if (chunk === "VP8 " && buf.length >= 30) {
+		const width = buf.readUInt16LE(26) & 0x3fff;
+		const height = buf.readUInt16LE(28) & 0x3fff;
+		return width && height ? { width, height } : null;
+	}
+	if (chunk === "VP8L" && buf.length >= 25) {
+		const b0 = buf[21];
+		const b1 = buf[22];
+		const b2 = buf[23];
+		const b3 = buf[24];
+		const width = 1 + ((b0 | ((b1 & 0x3f) << 8)) >>> 0);
+		const height =
+			1 + (((b1 & 0xc0) >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10));
+		return width && height ? { width, height } : null;
+	}
+	return null;
+}
+
+function fallbackImageDimensions(filePath) {
+	const kind = detectImageType(filePath);
+	const head = readFileHeader(filePath, 65536);
+	if (!head) return { width: 0, height: 0 };
+	if (kind === "png") return parsePngSize(head) || { width: 0, height: 0 };
+	if (kind === "jpg") return parseJpegSize(head) || { width: 0, height: 0 };
+	if (kind === "webp") return parseWebpSize(head) || { width: 0, height: 0 };
+	const png = parsePngSize(head);
+	if (png) return png;
+	const jpg = parseJpegSize(head);
+	if (jpg) return jpg;
+	const webp = parseWebpSize(head);
+	if (webp) return webp;
+	return { width: 0, height: 0 };
+}
+
 function resolveFfprobePath() {
 	let ffprobePath = "ffprobe";
 	if (ffmpegPath) {
@@ -232,6 +325,14 @@ function ffprobeDimensions(filePath) {
 	} catch {
 		return { width: 0, height: 0 };
 	}
+}
+
+function getImageDimensions(filePath) {
+	const dims = ffprobeDimensions(filePath);
+	if (dims.width && dims.height) return dims;
+	const fallback = fallbackImageDimensions(filePath);
+	if (fallback.width && fallback.height) return fallback;
+	return dims;
 }
 
 function runFfmpeg(args, label = "ffmpeg") {
@@ -265,7 +366,7 @@ function runFfmpegBuffer(args, label = "ffmpeg_buffer") {
 
 function computeImageHash(filePath, regionPct = null) {
 	if (!ffmpegPath) return null;
-	const dims = ffprobeDimensions(filePath);
+	const dims = getImageDimensions(filePath);
 	if (!dims.width || !dims.height) return null;
 	let crop = "";
 	if (regionPct && dims.width && dims.height) {
@@ -342,7 +443,7 @@ async function applyPresenterFaceLock({
 	region = PRESENTER_FACE_LOCK_REGION,
 	featherPct = PRESENTER_FACE_LOCK_FEATHER_PCT,
 }) {
-	const dims = ffprobeDimensions(basePath);
+	const dims = getImageDimensions(basePath);
 	if (!dims.width || !dims.height)
 		throw new Error("face_lock_dimensions_missing");
 	const w = Math.max(2, Math.round(dims.width));
