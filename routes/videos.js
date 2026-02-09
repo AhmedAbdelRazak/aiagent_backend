@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const {
 	createVideo,
+	preflightVideoImages,
 	listVideos,
 	getVideoById,
 	updateVideo,
@@ -18,6 +19,9 @@ const { authorize } = require("../middlewares/roleMiddleware");
 
 // @route   POST /api/videos
 router.post("/videos", protect, createVideo);
+
+// @route   POST /api/videos/preflight
+router.post("/videos/preflight", protect, preflightVideoImages);
 
 // @route   GET /api/videos
 router.get("/videos", protect, listVideos);

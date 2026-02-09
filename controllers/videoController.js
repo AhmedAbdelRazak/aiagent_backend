@@ -10547,6 +10547,232 @@ Return JSON:
 	return { segments, topicIntent };
 }
 
+async function buildPreflightImagePool({
+	topic,
+	ratio,
+	trendStory,
+	segLens = [],
+	cseMeter = null,
+}) {
+	const articleLinks =
+		trendStory && Array.isArray(trendStory.articles)
+			? trendStory.articles.map((a) => a.url).filter(Boolean)
+			: [];
+	const strongTopicTokens = collectStoryTokens(topic, trendStory);
+	const specificTopicTokens = filterSpecificTopicTokens(strongTopicTokens);
+	const tokenSet = specificTopicTokens.length
+		? specificTopicTokens
+		: strongTopicTokens;
+	const anchorPhrases = buildAnchorPhrasesFromStory(trendStory);
+	const anchorTokens = topicTokensFromTitle(
+		trendStory?.trendSearchTerm || trendStory?.title || topic,
+	);
+	const negativeTitleRe =
+		/(stock|wallpaper|logo|template|vector|illustration|clipart|cartoon|poster|banner|cover|keyart|titlecard|thumbnail|promo)/i;
+	const targetPoolSize = Math.min(6, Math.max(4, segLens.length || 6));
+	const minFeedImages = MIN_FEED_IMAGES;
+	const desiredPoolSize = Math.max(targetPoolSize, minFeedImages);
+	const pageSignalCache = new Map();
+	let usedTopUp = false;
+	const seedCandidates = [];
+	const potentialUrlKeys = new Set();
+
+	if (trendStory) {
+		const potentialCandidates = normalizeTrendPotentialImages(
+			trendStory.potentialImages || [],
+		);
+		if (potentialCandidates.length) {
+			for (const cand of potentialCandidates) {
+				if (cand?.url) potentialUrlKeys.add(normalizeImageKey(cand.url));
+			}
+			seedCandidates.push(...potentialCandidates);
+		}
+		const seedUrls = pickTrendImagesForRatio(trendStory, ratio, 14);
+		for (const url of seedUrls) {
+			if (!url) continue;
+			seedCandidates.push({
+				url,
+				source: trendStory.trendSearchTerm || trendStory.title || "",
+				title: trendStory.title || "",
+				origin: "trend",
+			});
+		}
+	}
+
+	const normalizedSeeds = dedupeImageCandidates(
+		normalizeImageCandidates(seedCandidates),
+		24,
+	);
+	let qaSeedCandidates = [];
+	if (normalizedSeeds.length) {
+		qaSeedCandidates = await qaSegmentImageCandidates(normalizedSeeds, {
+			segmentTokens: [],
+			anchorTokens,
+			topicTokens: tokenSet,
+			strict: true,
+			pageSignalCache,
+		});
+		if (!qaSeedCandidates.length) {
+			qaSeedCandidates = await qaSegmentImageCandidates(normalizedSeeds, {
+				segmentTokens: [],
+				anchorTokens,
+				topicTokens: tokenSet,
+				strict: false,
+				pageSignalCache,
+			});
+		}
+	}
+
+	const mergeCandidates = (lists = []) => {
+		const out = [];
+		const seen = new Set();
+		for (const list of lists) {
+			for (const cand of list || []) {
+				const url = cand?.url;
+				if (!url) continue;
+				const key = normalizeImageKey(url);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				out.push(cand);
+			}
+		}
+		return out;
+	};
+
+	let combinedCandidates = qaSeedCandidates;
+	if (!combinedCandidates.length && normalizedSeeds.length) {
+		combinedCandidates = normalizedSeeds;
+	}
+
+	const runQa = async (list = [], strict = true) =>
+		qaSegmentImageCandidates(list, {
+			segmentTokens: [],
+			anchorTokens,
+			topicTokens: tokenSet,
+			strict,
+			pageSignalCache,
+		});
+
+	const topUpCandidates = async ({
+		allowCse,
+		phase,
+		desiredCount,
+	} = {}) => {
+		usedTopUp = true;
+		const requireTokenMatch = tokenSet.length > 0;
+		const fallback = await fetchHighQualityImagesForTopic({
+			topic,
+			ratio,
+			articleLinks,
+			desiredCount,
+			limit: Math.max(10, desiredCount * 2),
+			topicTokens: tokenSet,
+			requireAnyToken: requireTokenMatch,
+			negativeTitleRe,
+			strictTopicMatch: true,
+			phraseAnchors: anchorPhrases,
+			requireAnchorPhrase: anchorPhrases.length > 0,
+			allowCse,
+			googleVariantLimit: GOOGLE_IMAGES_VARIANT_LIMIT,
+			cseMeter,
+			csePhase: phase,
+			returnMeta: true,
+		});
+		const normalizedFallback = dedupeImageCandidates(
+			normalizeImageCandidates(fallback),
+			24,
+		);
+		let qaFallback = await runQa(normalizedFallback, true);
+		if (!qaFallback.length) {
+			qaFallback = await runQa(normalizedFallback, false);
+		}
+		if (qaFallback.length) {
+			combinedCandidates = mergeCandidates([combinedCandidates, qaFallback]);
+		}
+	};
+
+	let qaStrict = combinedCandidates.length
+		? await runQa(combinedCandidates, true)
+		: [];
+	if (qaStrict.length < desiredPoolSize) {
+		await topUpCandidates({
+			allowCse: false,
+			phase: "preflight_pool_scrape_topup",
+			desiredCount: desiredPoolSize,
+		});
+		qaStrict = combinedCandidates.length
+			? await runQa(combinedCandidates, true)
+			: [];
+	}
+	if (qaStrict.length < minFeedImages) {
+		await topUpCandidates({
+			allowCse: true,
+			phase: "preflight_pool_cse_fallback",
+			desiredCount: minFeedImages,
+		});
+		qaStrict = combinedCandidates.length
+			? await runQa(combinedCandidates, true)
+			: [];
+	}
+
+	if (qaStrict.length < minFeedImages) {
+		throw new Error(
+			`Need at least ${minFeedImages} unique, topic-relevant images; found ${qaStrict.length || 0}.`,
+		);
+	}
+
+	const originByKey = new Map();
+	const recordOrigin = (list = []) => {
+		for (const cand of list || []) {
+			const url = cand?.url;
+			if (!url) continue;
+			const key = normalizeImageKey(url);
+			if (originByKey.has(key)) continue;
+			const origin = cand.origin || "";
+			originByKey.set(key, origin);
+		}
+	};
+	recordOrigin(combinedCandidates);
+	recordOrigin(normalizedSeeds);
+
+	const ranked = qaStrict.slice().sort((a, b) => {
+		const aW = Number(a.width) || 0;
+		const aH = Number(a.height) || 0;
+		const bW = Number(b.width) || 0;
+		const bH = Number(b.height) || 0;
+		const aMatch = aspectMatchesRatio(ratio, aW, aH) ? 1 : 0;
+		const bMatch = aspectMatchesRatio(ratio, bW, bH) ? 1 : 0;
+		if (aMatch !== bMatch) return bMatch - aMatch;
+		const aEdge = aW && aH ? Math.min(aW, aH) : 0;
+		const bEdge = bW && bH ? Math.min(bW, bH) : 0;
+		if (aEdge !== bEdge) return bEdge - aEdge;
+		return (b.qaScore || 0) - (a.qaScore || 0);
+	});
+
+	const rankedUrls = ranked.map((c) => c.url).filter(Boolean);
+	const filteredRanked = filterUploadCandidates(
+		rankedUrls,
+		Math.max(desiredPoolSize * 3, rankedUrls.length),
+	);
+	const trendImagesForRatio = dedupeImageUrls(filteredRanked, desiredPoolSize);
+	if (trendImagesForRatio.length < minFeedImages) {
+		throw new Error(
+			`Need at least ${minFeedImages} unique, topic-relevant images after filtering; found ${trendImagesForRatio.length}.`,
+		);
+	}
+
+	const sourceSummary = trendImagesForRatio.reduce((acc, url) => {
+		const key = normalizeImageKey(url);
+		let origin = originByKey.get(key) || "";
+		if (potentialUrlKeys.has(key)) origin = "potential";
+		const bucket = origin || "trend";
+		acc[bucket] = (acc[bucket] || 0) + 1;
+		return acc;
+	}, {});
+
+	return { images: trendImagesForRatio, sources: sourceSummary, usedTopUp };
+}
+
 /* ---------------------------------------------------------------
  *  Main controller – createVideo
  * ------------------------------------------------------------- */
@@ -12719,6 +12945,164 @@ exports.createVideo = async (req, res) => {
 	}
 };
 
+exports.preflightVideoImages = async (req, res) => {
+	try {
+		const { category, ratio: ratioIn, duration: durIn } = req.body;
+
+		if (!category || !YT_CATEGORY_MAP[category]) {
+			return res.status(400).json({ error: "Bad category" });
+		}
+		if (!VALID_RATIOS.includes(ratioIn)) {
+			return res.status(400).json({ error: "Bad ratio" });
+		}
+	if (durIn && !goodDur(durIn)) {
+		return res.status(400).json({ error: "Bad duration" });
+	}
+	if (!isOwnerOnlyUser(req)) {
+		return res.status(403).json({
+			error: "Video creation is temporarily restricted to the owner.",
+		});
+	}
+
+		const ratio = ratioIn;
+		const duration = goodDur(durIn) ? +durIn : 30;
+		const cseMeter = createCseMeter();
+
+		const {
+			language: langIn,
+			country: countryIn,
+			customPrompt: customPromptRaw = "",
+		} = req.body;
+		const user = req.user;
+		const language = normalizeLanguageLabel(langIn || DEFAULT_LANGUAGE);
+		const country =
+			countryIn && countryIn.toLowerCase() !== "all countries"
+				? countryIn.trim()
+				: "US";
+		const customPrompt = customPromptRaw.trim();
+
+		const threeDaysAgo = dayjs().subtract(3, "day").toDate();
+		const recentVideos = await Video.find({
+			user: user._id,
+			category,
+			isLongVideo: false,
+			createdAt: { $gte: threeDaysAgo },
+		}).select("topic seoTitle topics");
+		const usedTopics = new Set();
+		for (const v of recentVideos) {
+			const candidates = [
+				v.topic,
+				v.seoTitle,
+				...(Array.isArray(v.topics) ? v.topics : []),
+			].filter(Boolean);
+			for (const candidate of candidates) {
+				const base = String(candidate || "").trim();
+				if (!base) continue;
+				const normFull = base.toLowerCase().replace(/\s+/g, " ").trim();
+				if (normFull) usedTopics.add(normFull);
+				const firstTwo = normFull.split(" ").slice(0, 2).join(" ");
+				if (firstTwo && firstTwo.length >= 4) usedTopics.add(firstTwo);
+				const firstThree = normFull.split(" ").slice(0, 3).join(" ");
+				if (firstThree && firstThree.length >= 6) usedTopics.add(firstThree);
+			}
+		}
+
+		let topic = "";
+		let trendStory = null;
+		if (category !== "Top5") {
+			trendStory = await fetchTrendingStory(
+				category,
+				country,
+				usedTopics,
+				language,
+				{
+					requireStory: false,
+					userId: user?._id || user?.id || null,
+					topicsLimit: 1,
+					isLongVideo: false,
+				},
+			);
+			if (trendStory && trendStory.title && !customPrompt) {
+				topic = trendStory.title;
+				usedTopics.add(topic);
+			}
+		}
+
+		if (customPrompt && !topic) {
+			try {
+				topic = await topicFromCustomPrompt(customPrompt);
+			} catch {
+				/* fallback below */
+			}
+		}
+
+		if (!topic) {
+			if (category === "Top5") {
+				topic = ALL_TOP5_TOPICS[0] || "Top 5";
+			} else {
+				const list = await pickTrendingTopicFresh(
+					category,
+					language,
+					country,
+					{
+						userId: user?._id || user?.id || null,
+						isLongVideo: false,
+					},
+				);
+				topic = list.find((t) => !usedTopics.has(t)) || list[0];
+			}
+		}
+
+		if (!topic) {
+			return res.status(422).json({
+				error: "Unable to determine a topic for preflight validation.",
+			});
+		}
+
+		if (category === "Top5") {
+			return res.json({
+				ok: true,
+				topic,
+				note: "Top5 uses a separate image pipeline; preflight skipped.",
+			});
+		}
+
+		const requestedTailSeconds = computeEngagementTail(duration, category);
+		const tolerancePadSeconds = computeOptionalOutroTolerance(
+			requestedTailSeconds,
+			category,
+			duration,
+		);
+		const segLens = computeInitialSegLens(
+			category,
+			duration,
+			requestedTailSeconds,
+			tolerancePadSeconds,
+		);
+
+		const { images, sources } = await buildPreflightImagePool({
+			topic,
+			ratio,
+			trendStory,
+			segLens,
+			cseMeter,
+		});
+
+		return res.json({
+			ok: true,
+			topic,
+			imageCount: images.length,
+			minRequired: MIN_FEED_IMAGES,
+			sources,
+			sampleImages: images.slice(0, MIN_FEED_IMAGES),
+			cseUsage: cseMeter.total ? cseMeter.snapshot() : null,
+		});
+	} catch (err) {
+		const msg = err?.message || "Preflight failed";
+		console.error("[Preflight] error", msg);
+		return res.status(422).json({ error: msg });
+	}
+};
 /* expose helpers for tests / cli */
 exports.buildYouTubeOAuth2Client = buildYouTubeOAuth2Client;
 exports.refreshYouTubeTokensIfNeeded = refreshYouTubeTokensIfNeeded;
@@ -12925,3 +13309,5 @@ exports.listVideos = async (req, res, next) => {
 		next(err);
 	}
 };
+
+
