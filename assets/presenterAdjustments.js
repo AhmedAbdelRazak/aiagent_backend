@@ -3,6 +3,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const child_process = require("child_process");
 const axios = require("axios");
 const cloudinary = require("cloudinary").v2;
 const { OpenAI } = require("openai");
@@ -27,6 +28,14 @@ const PRESENTER_CLOUDINARY_PUBLIC_PREFIX = "presenter_master";
 const CHAT_MODEL = "gpt-5.2";
 const ORCHESTRATOR_PRESENTER_REF_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767066355/aivideomatic/long_presenters/presenter_master_4b76c718-6a2a-4749-895e-e05bd2b2ecfc_1767066355424.png";
+
+let ffmpegPath = "";
+try {
+	// eslint-disable-next-line import/no-extraneous-dependencies
+	ffmpegPath = require("ffmpeg-static");
+} catch {
+	ffmpegPath = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+}
 
 const WARDROBE_VARIANTS = [
 	"dark charcoal matte button-up, open collar, no blazer",
@@ -126,6 +135,42 @@ const SERIOUS_CONTEXT_TOKENS = Array.from(
 	]),
 ).map((token) => String(token || "").toLowerCase());
 
+const PRESENTER_WARDROBE_ATTEMPTS = 2;
+const PRESENTER_FACE_LOCK_ENABLED = true;
+const PRESENTER_FACE_LOCK_ALWAYS = true;
+const PRESENTER_FACE_SIMILARITY_MIN = 0.98;
+const PRESENTER_FACE_LOCK_FEATHER_PCT = 0.04;
+const PRESENTER_FACE_LOCK_REGION = {
+	x: 0.24,
+	y: 0.02,
+	w: 0.52,
+	h: 0.44,
+};
+const PRESENTER_FACE_LOCK_CHIN_REGION = {
+	x: 0.3,
+	y: 0.3,
+	w: 0.4,
+	h: 0.16,
+};
+const PRESENTER_FACE_LOCK_EYES_REGION = {
+	x: 0.3,
+	y: 0.08,
+	w: 0.4,
+	h: 0.18,
+};
+const PRESENTER_FACE_LOCK_REGIONS = [
+	PRESENTER_FACE_LOCK_REGION,
+	PRESENTER_FACE_LOCK_CHIN_REGION,
+];
+const PRESENTER_TORSO_BLEND_ENABLED = true;
+const PRESENTER_TORSO_BLEND_REGION = {
+	x: 0.18,
+	y: 0.46,
+	w: 0.64,
+	h: 0.54,
+};
+const PRESENTER_TORSO_BLEND_FEATHER_PCT = 0.015;
+
 const openai = process.env.CHATGPT_API_TOKEN
 	? new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN })
 	: null;
@@ -143,6 +188,12 @@ function safeUnlink(p) {
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
+}
+
+function clampNumber(n, min, max) {
+	const x = Number(n);
+	if (!Number.isFinite(x)) return min;
+	return Math.max(min, Math.min(max, x));
 }
 
 function readFileHeader(filePath, bytes = 16) {
@@ -174,6 +225,418 @@ function detectImageType(filePath) {
 	)
 		return "webp";
 	return null;
+}
+
+function parsePngSize(buf) {
+	if (!buf || buf.length < 24) return null;
+	if (buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47)
+		return null;
+	const width = buf.readUInt32BE(16);
+	const height = buf.readUInt32BE(20);
+	return width && height ? { width, height } : null;
+}
+
+function parseJpegSize(buf) {
+	if (!buf || buf.length < 4) return null;
+	if (buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+	let i = 2;
+	while (i + 1 < buf.length) {
+		if (buf[i] !== 0xff) {
+			i += 1;
+			continue;
+		}
+		while (buf[i] === 0xff) i += 1;
+		const marker = buf[i];
+		i += 1;
+		if (marker === 0xd9 || marker === 0xda) break;
+		if (i + 1 >= buf.length) break;
+		const len = buf.readUInt16BE(i);
+		if (len < 2) break;
+		if (
+			(marker >= 0xc0 && marker <= 0xc3) ||
+			(marker >= 0xc5 && marker <= 0xc7) ||
+			(marker >= 0xc9 && marker <= 0xcb) ||
+			(marker >= 0xcd && marker <= 0xcf)
+		) {
+			if (i + 7 >= buf.length) break;
+			const height = buf.readUInt16BE(i + 3);
+			const width = buf.readUInt16BE(i + 5);
+			return width && height ? { width, height } : null;
+		}
+		i += len;
+	}
+	return null;
+}
+
+function parseWebpSize(buf) {
+	if (!buf || buf.length < 30) return null;
+	if (
+		buf.toString("ascii", 0, 4) !== "RIFF" ||
+		buf.toString("ascii", 8, 12) !== "WEBP"
+	)
+		return null;
+	const chunk = buf.toString("ascii", 12, 16);
+	if (chunk === "VP8X" && buf.length >= 30) {
+		const width = 1 + buf.readUIntLE(24, 3);
+		const height = 1 + buf.readUIntLE(27, 3);
+		return width && height ? { width, height } : null;
+	}
+	if (chunk === "VP8 " && buf.length >= 30) {
+		const width = buf.readUInt16LE(26) & 0x3fff;
+		const height = buf.readUInt16LE(28) & 0x3fff;
+		return width && height ? { width, height } : null;
+	}
+	if (chunk === "VP8L" && buf.length >= 25) {
+		const b0 = buf[21];
+		const b1 = buf[22];
+		const b2 = buf[23];
+		const b3 = buf[24];
+		const width = 1 + ((b0 | ((b1 & 0x3f) << 8)) >>> 0);
+		const height = 1 + (((b1 & 0xc0) >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10));
+		return width && height ? { width, height } : null;
+	}
+	return null;
+}
+
+function fallbackImageDimensions(filePath) {
+	const kind = detectImageType(filePath);
+	const head = readFileHeader(filePath, 65536);
+	if (!head) return { width: 0, height: 0 };
+	if (kind === "png") return parsePngSize(head) || { width: 0, height: 0 };
+	if (kind === "jpg") return parseJpegSize(head) || { width: 0, height: 0 };
+	if (kind === "webp") return parseWebpSize(head) || { width: 0, height: 0 };
+	const png = parsePngSize(head);
+	if (png) return png;
+	const jpg = parseJpegSize(head);
+	if (jpg) return jpg;
+	const webp = parseWebpSize(head);
+	if (webp) return webp;
+	return { width: 0, height: 0 };
+}
+
+function resolveFfprobePath() {
+	let ffprobePath = "ffprobe";
+	if (ffmpegPath) {
+		const candidate = ffmpegPath.replace(/ffmpeg(\.exe)?$/i, "ffprobe$1");
+		if (candidate && candidate !== ffmpegPath) ffprobePath = candidate;
+	}
+	return ffprobePath;
+}
+
+function ffprobeDimensions(filePath) {
+	try {
+		const ffprobePath = resolveFfprobePath();
+		const out = child_process
+			.execSync(
+				`"${ffprobePath}" -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "${filePath}"`,
+				{ stdio: ["ignore", "pipe", "ignore"] },
+			)
+			.toString()
+			.trim();
+		const [w, h] = out.split("x").map((n) => Number(n) || 0);
+		return { width: w || 0, height: h || 0 };
+	} catch {
+		return { width: 0, height: 0 };
+	}
+}
+
+function getImageDimensions(filePath) {
+	const dims = ffprobeDimensions(filePath);
+	if (dims.width && dims.height) return dims;
+	const fallback = fallbackImageDimensions(filePath);
+	if (fallback.width && fallback.height) return fallback;
+	return dims;
+}
+
+function runFfmpeg(args, label = "ffmpeg") {
+	return new Promise((resolve, reject) => {
+		if (!ffmpegPath) return reject(new Error("ffmpeg not available"));
+		const proc = child_process.spawn(ffmpegPath, args, {
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		let stderr = "";
+		proc.stderr.on("data", (d) => (stderr += d.toString()));
+		proc.on("error", reject);
+		proc.on("close", (code) => {
+			if (code === 0) return resolve();
+			const head = stderr.slice(0, 4000);
+			reject(new Error(`${label} failed (code ${code}): ${head}`));
+		});
+	});
+}
+
+function runFfmpegBuffer(args, label = "ffmpeg_buffer") {
+	if (!ffmpegPath) throw new Error("ffmpeg not available");
+	const res = child_process.spawnSync(ffmpegPath, args, {
+		encoding: null,
+		windowsHide: true,
+	});
+	if (res.status === 0) return res.stdout || Buffer.alloc(0);
+	const err = (res.stderr || Buffer.alloc(0)).toString().slice(0, 4000);
+	throw new Error(`${label} failed (code ${res.status}): ${err}`);
+}
+
+function computeImageHash(filePath, regionPct = null) {
+	if (!ffmpegPath) return null;
+	const dims = getImageDimensions(filePath);
+	if (!dims.width || !dims.height) return null;
+	let crop = "";
+	if (regionPct && dims.width && dims.height) {
+		const rx = Math.max(0, Math.round(dims.width * (regionPct.x || 0)));
+		const ry = Math.max(0, Math.round(dims.height * (regionPct.y || 0)));
+		const rw = Math.max(1, Math.round(dims.width * (regionPct.w || 1)));
+		const rh = Math.max(1, Math.round(dims.height * (regionPct.h || 1)));
+		crop = `crop=${rw}:${rh}:${rx}:${ry},`;
+	}
+	const filter = `${crop}scale=9:8:flags=area,format=gray`;
+	const args = [
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-i",
+		filePath,
+		"-vf",
+		filter,
+		"-frames:v",
+		"1",
+		"-f",
+		"rawvideo",
+		"pipe:1",
+	];
+	try {
+		const buf = runFfmpegBuffer(args, "presenter_hash");
+		if (!buf || buf.length < 72) return null;
+		const bits = new Array(64);
+		let idx = 0;
+		for (let y = 0; y < 8; y++) {
+			for (let x = 0; x < 8; x++) {
+				const left = buf[y * 9 + x];
+				const right = buf[y * 9 + x + 1];
+				bits[idx] = left > right ? 1 : 0;
+				idx += 1;
+			}
+		}
+		return bits;
+	} catch {
+		return null;
+	}
+}
+
+function hashSimilarity(a, b) {
+	if (!a || !b || a.length !== b.length) return null;
+	let diff = 0;
+	for (let i = 0; i < a.length; i++) {
+		if (a[i] !== b[i]) diff += 1;
+	}
+	return 1 - diff / a.length;
+}
+
+function comparePresenterSimilarity(originalPath, candidatePath) {
+	const regions = [
+		PRESENTER_FACE_LOCK_EYES_REGION,
+		PRESENTER_FACE_LOCK_REGION,
+		PRESENTER_FACE_LOCK_CHIN_REGION,
+	];
+	const scores = [];
+	for (const region of regions) {
+		const a = computeImageHash(originalPath, region);
+		const b = computeImageHash(candidatePath, region);
+		const score = hashSimilarity(a, b);
+		if (Number.isFinite(score)) scores.push(score);
+	}
+	if (!scores.length) return null;
+	const sum = scores.reduce((acc, v) => acc + v, 0);
+	return sum / scores.length;
+}
+
+async function applyPresenterFaceLock({
+	basePath,
+	editedPath,
+	outPath,
+	region = PRESENTER_FACE_LOCK_REGION,
+	regions = null,
+	featherPct = PRESENTER_FACE_LOCK_FEATHER_PCT,
+}) {
+	const dims = getImageDimensions(basePath);
+	if (!dims.width || !dims.height)
+		throw new Error("face_lock_dimensions_missing");
+	const w = Math.max(2, Math.round(dims.width));
+	const h = Math.max(2, Math.round(dims.height));
+	const regionsList =
+		Array.isArray(regions) && regions.length ? regions : [region];
+	const drawBoxes = regionsList
+		.map((r) => {
+			const rx = Math.max(0, Math.round(w * (r.x || 0)));
+			const ry = Math.max(0, Math.round(h * (r.y || 0)));
+			const rw = Math.max(2, Math.round(w * (r.w || 1)));
+			const rh = Math.max(2, Math.round(h * (r.h || 1)));
+			return `drawbox=x=${rx}:y=${ry}:w=${rw}:h=${rh}:color=white@1:t=fill`;
+		})
+		.join(",");
+	const feather = Math.max(2, Math.round(h * clampNumber(featherPct, 0, 0.2)));
+	const mask = `color=black:s=${w}x${h},format=gray,${drawBoxes},boxblur=luma_radius=${feather}:luma_power=1[mask]`;
+	const filter = [
+		`[0:v]scale=${w}:${h}:flags=lanczos,format=rgba[base]`,
+		`[1:v]scale=${w}:${h}:flags=lanczos,format=rgba[edit]`,
+		mask,
+		`[base][mask]alphamerge[basea]`,
+		`[edit][basea]overlay=0:0:format=auto[out]`,
+	].join(";");
+	await runFfmpeg(
+		[
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-i",
+			basePath,
+			"-i",
+			editedPath,
+			"-filter_complex",
+			filter,
+			"-map",
+			"[out]",
+			"-frames:v",
+			"1",
+			"-y",
+			outPath,
+		],
+		"presenter_face_lock",
+	);
+	return outPath;
+}
+
+async function enforcePresenterFaceLock({
+	jobId,
+	tmpDir,
+	basePath,
+	editedPath,
+	log,
+}) {
+	if (!PRESENTER_FACE_LOCK_ENABLED || !editedPath) {
+		return { path: editedPath, applied: false, scoreBefore: null };
+	}
+	const scoreBefore = comparePresenterSimilarity(basePath, editedPath);
+	const threshold = clampNumber(PRESENTER_FACE_SIMILARITY_MIN, 0.9, 0.995);
+	if (!PRESENTER_FACE_LOCK_ALWAYS && Number.isFinite(scoreBefore)) {
+		if (scoreBefore >= threshold) {
+			return { path: editedPath, applied: false, scoreBefore };
+		}
+	}
+	if (!ffmpegPath) {
+		if (Number.isFinite(scoreBefore) && scoreBefore < threshold) {
+			throw new Error("face_lock_unavailable_low_similarity");
+		}
+		return { path: editedPath, applied: false, scoreBefore };
+	}
+	const outPath = path.join(
+		tmpDir || os.tmpdir(),
+		`presenter_face_lock_${jobId || "job"}.png`,
+	);
+	await applyPresenterFaceLock({
+		basePath,
+		editedPath,
+		outPath,
+		regions: PRESENTER_FACE_LOCK_REGIONS,
+	});
+	const scoreAfter = comparePresenterSimilarity(basePath, outPath);
+	if (log)
+		log("presenter face lock applied", {
+			scoreBefore,
+			scoreAfter,
+			threshold,
+		});
+	if (Number.isFinite(scoreAfter) && scoreAfter < threshold) {
+		throw new Error("face_lock_similarity_too_low");
+	}
+	return {
+		path: outPath,
+		applied: true,
+		scoreBefore,
+		scoreAfter,
+	};
+}
+
+async function applyPresenterTorsoBlend({
+	basePath,
+	editedPath,
+	outPath,
+	region = PRESENTER_TORSO_BLEND_REGION,
+	featherPct = PRESENTER_TORSO_BLEND_FEATHER_PCT,
+}) {
+	const dims = getImageDimensions(basePath);
+	if (!dims.width || !dims.height)
+		throw new Error("torso_blend_dimensions_missing");
+	const w = Math.max(2, Math.round(dims.width));
+	const h = Math.max(2, Math.round(dims.height));
+	const rx = Math.max(0, Math.round(w * (region.x || 0)));
+	const ry = Math.max(0, Math.round(h * (region.y || 0)));
+	const rw = Math.max(2, Math.round(w * (region.w || 1)));
+	const rh = Math.max(2, Math.round(h * (region.h || 1)));
+	const feather = Math.max(2, Math.round(h * clampNumber(featherPct, 0, 0.2)));
+	const mask = `color=black:s=${w}x${h},format=gray,drawbox=x=${rx}:y=${ry}:w=${rw}:h=${rh}:color=white@1:t=fill,boxblur=luma_radius=${feather}:luma_power=1[mask]`;
+	const filter = [
+		`[0:v]scale=${w}:${h}:flags=lanczos,format=rgba[base]`,
+		`[1:v]scale=${w}:${h}:flags=lanczos,format=rgba[edit]`,
+		mask,
+		`[edit][mask]alphamerge[edita]`,
+		`[base][edita]overlay=0:0:format=auto[out]`,
+	].join(";");
+	await runFfmpeg(
+		[
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-i",
+			basePath,
+			"-i",
+			editedPath,
+			"-filter_complex",
+			filter,
+			"-map",
+			"[out]",
+			"-frames:v",
+			"1",
+			"-y",
+			outPath,
+		],
+		"presenter_torso_blend",
+	);
+	return outPath;
+}
+
+async function enforcePresenterTorsoBlend({
+	jobId,
+	tmpDir,
+	basePath,
+	editedPath,
+	log,
+}) {
+	if (!PRESENTER_TORSO_BLEND_ENABLED || !editedPath) {
+		return { path: editedPath, applied: false };
+	}
+	if (!ffmpegPath) {
+		if (log) log("presenter torso blend skipped (ffmpeg unavailable)", {});
+		return { path: editedPath, applied: false };
+	}
+	const outPath = path.join(
+		tmpDir || os.tmpdir(),
+		`presenter_torso_${jobId || "job"}.png`,
+	);
+	await applyPresenterTorsoBlend({
+		basePath,
+		editedPath,
+		outPath,
+	});
+	if (log)
+		log("presenter torso blend applied", {
+			region: PRESENTER_TORSO_BLEND_REGION,
+			featherPct: PRESENTER_TORSO_BLEND_FEATHER_PCT,
+		});
+	return {
+		path: outPath,
+		applied: true,
+	};
 }
 
 function ensurePresenterFile(filePath) {
@@ -296,6 +759,8 @@ Change ONLY the outfit on the torso/upper body area to a dark, classy outfit. Ou
 Outfit colors must be dark only (charcoal, black, deep navy, deep forest green, dark burgundy, oxblood, deep teal, dark aubergine). No bright or light colors.
 Outfit must be intact: no rips, tears, holes, or missing fabric; shirt placket straight and buttons aligned.
 Do NOT alter the face or head at all. Keep glasses, beard, hairline, skin texture, and facial features exactly as in @presenter_ref. Single face only, no ghosting.
+Do not move, resize, warp, or shift the presenter or head/neck alignment in any way. Preserve the exact geometry and proportions.
+Everything above the collarbone must be identical to the reference image (pixel-for-pixel intent).
 Studio background, desk, lighting, camera angle, and all props must remain EXACTLY the same.
 No crop/zoom, no borders/letterboxing/vignettes, no added blur or beautification; keep exact framing and processing.
 No candles, no extra objects, no text, no logos. Topic context: ${topicLine}.
@@ -361,6 +826,8 @@ Return JSON only with key: wardrobePrompt.
 	Rules:
 	- Use @presenter_ref as the only person reference.
 	- Face is strictly locked: do NOT alter the face or head in any way; no double face, no ghosting, no artifacts, no retouching or smoothing.
+	- Do not move, resize, warp, or shift the presenter or head/neck alignment in any way. Preserve the exact geometry and proportions.
+	- Everything above the collarbone must remain identical to the reference image (pixel-for-pixel intent).
 	- Keep studio/desk/background/camera/framing/lighting unchanged; no crop/zoom, no borders/letterboxing/vignettes, no added blur or processing.
 	- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; include it exactly. If the cue says "no blazer", do not add a blazer. Use dark colors only and an open collar.
 - Outfit must be intact: no rips, tears, holes, missing fabric, or broken seams; shirt placket straight and buttons aligned.
@@ -686,49 +1153,127 @@ async function generatePresenterAdjustedImage({
 	ensureDir(workingDir);
 	ensurePresenterFile(presenterLocalPath);
 
-	const prompts = await buildOrchestratedPrompts({
-		jobId,
-		title,
-		topics,
-		categoryLabel,
-		avoidOutfits: recentOutfits,
-		log,
-	});
-	const presenterOutfit = String(prompts.wardrobeVariant || "").trim();
+	const attemptedOutfits = [];
+	let lastError = null;
 
-	let outfitPath = null;
-	let finalUpload = null;
-
-	try {
-		outfitPath = await generateRunwayOutfitStage({
+	for (let attempt = 0; attempt < PRESENTER_WARDROBE_ATTEMPTS; attempt++) {
+		const prompts = await buildOrchestratedPrompts({
 			jobId,
-			tmpDir: workingDir,
-			presenterLocalPath,
-			wardrobePrompt: prompts.wardrobePrompt,
+			title,
+			topics,
+			categoryLabel,
+			avoidOutfits: [...(recentOutfits || []), ...attemptedOutfits],
 			log,
 		});
-		ensurePresenterFile(outfitPath);
-		finalUpload = await uploadPresenterToCloudinary(
-			outfitPath,
-			jobId,
-			PRESENTER_CLOUDINARY_PUBLIC_PREFIX,
-		);
-	} catch (e) {
+		const presenterOutfit = String(prompts.wardrobeVariant || "").trim();
+		if (presenterOutfit) attemptedOutfits.push(presenterOutfit);
 		if (log)
-			log("runway wardrobe stage failed", {
-				error: e?.message || String(e),
+			log("presenter outfit attempt", {
+				attempt: attempt + 1,
+				outfit: presenterOutfit || "unknown",
 			});
-		throw e;
+
+		let outfitPath = null;
+		let workingPath = null;
+		try {
+			outfitPath = await generateRunwayOutfitStage({
+				jobId,
+				tmpDir: workingDir,
+				presenterLocalPath,
+				wardrobePrompt: prompts.wardrobePrompt,
+				log,
+			});
+			ensurePresenterFile(outfitPath);
+			workingPath = outfitPath;
+
+			if (PRESENTER_TORSO_BLEND_ENABLED) {
+				const torsoResult = await enforcePresenterTorsoBlend({
+					jobId,
+					tmpDir: workingDir,
+					basePath: presenterLocalPath,
+					editedPath: workingPath,
+					log,
+				});
+				if (torsoResult?.path && torsoResult.path !== workingPath) {
+					safeUnlink(workingPath);
+					workingPath = torsoResult.path;
+					ensurePresenterFile(workingPath);
+				}
+			}
+
+			if (PRESENTER_FACE_LOCK_ENABLED) {
+				const lockResult = await enforcePresenterFaceLock({
+					jobId,
+					tmpDir: workingDir,
+					basePath: presenterLocalPath,
+					editedPath: workingPath,
+					log,
+				});
+				if (lockResult?.path && lockResult.path !== workingPath) {
+					safeUnlink(workingPath);
+					workingPath = lockResult.path;
+					ensurePresenterFile(workingPath);
+				}
+			}
+
+			const similarity = comparePresenterSimilarity(
+				presenterLocalPath,
+				workingPath,
+			);
+			const threshold = clampNumber(PRESENTER_FACE_SIMILARITY_MIN, 0.9, 0.995);
+			if (log)
+				log("presenter strict similarity", {
+					score: similarity,
+					threshold,
+				});
+			if (!Number.isFinite(similarity)) {
+				throw new Error("presenter_similarity_unavailable");
+			}
+			if (similarity < threshold) {
+				throw new Error("presenter_similarity_too_low");
+			}
+
+			const finalUpload = await uploadPresenterToCloudinary(
+				workingPath,
+				jobId,
+				PRESENTER_CLOUDINARY_PUBLIC_PREFIX,
+			);
+
+			return {
+				localPath: workingPath,
+				url: finalUpload?.url || "",
+				publicId: finalUpload?.public_id || "",
+				width: finalUpload?.width || 0,
+				height: finalUpload?.height || 0,
+				method: "runway_outfit_strict",
+				presenterOutfit,
+			};
+		} catch (e) {
+			lastError = e;
+			if (log)
+				log("presenter outfit attempt failed", {
+					attempt: attempt + 1,
+					error: e?.message || String(e),
+				});
+			if (workingPath && workingPath !== presenterLocalPath)
+				safeUnlink(workingPath);
+			if (outfitPath && outfitPath !== workingPath) safeUnlink(outfitPath);
+		}
 	}
 
+	if (log)
+		log("presenter strict fallback to original", {
+			error: lastError?.message || String(lastError || "unknown"),
+		});
+
 	return {
-		localPath: outfitPath,
-		url: finalUpload?.url || "",
-		publicId: finalUpload?.public_id || "",
-		width: finalUpload?.width || 0,
-		height: finalUpload?.height || 0,
-		method: "runway_outfit",
-		presenterOutfit,
+		localPath: presenterLocalPath,
+		url: "",
+		publicId: "",
+		width: 0,
+		height: 0,
+		method: "strict_fallback_original",
+		presenterOutfit: "",
 	};
 }
 
