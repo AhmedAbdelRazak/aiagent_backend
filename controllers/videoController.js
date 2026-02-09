@@ -2254,6 +2254,9 @@ const NUM_WORD = Object.freeze({
 	20: "twenty",
 });
 
+let STATIC_ZOOMPAN_ENABLED = true;
+let staticZoompanDisabledLogged = false;
+
 function numberToEnglish(n) {
 	if (!Number.isFinite(n) || n < 0) return null;
 	if (n === 0) return "zero";
@@ -9183,6 +9186,9 @@ async function generateStaticClipFromImage({
 			const localPath = await downloadImageToTemp(url, ".jpg");
 			const out = tmpFile(`seg_static_${segmentIndex}`, ".mp4");
 			const { width, height } = targetResolutionForRatio(ratio);
+			const minEdge = Math.min(width || 0, height || 0);
+			const allowZoomPan =
+				zoomPan && STATIC_ZOOMPAN_ENABLED && width && height && minEdge >= 960;
 			const filterPresets = [
 				() => {
 					const vf = ["format=yuv420p", "setsar=1"];
@@ -9192,8 +9198,7 @@ async function generateStaticClipFromImage({
 							`crop=${width}:${height}`,
 						);
 					}
-					const minEdge = Math.min(width || 0, height || 0);
-					if (zoomPan && width && height && minEdge >= 960) {
+					if (allowZoomPan) {
 						vf.push(
 							`zoompan=z='min(1.0+0.0015*n,1.06)':d=1:x='iw/2-(iw/2)/zoom':y='ih/2-(ih/2)/zoom':s=${width}x${height}:fps=30`,
 						);
@@ -9222,7 +9227,12 @@ async function generateStaticClipFromImage({
 				const vf = filterPresets[attempt]();
 				try {
 					await ffmpegPromise((c) => {
-						c.input(norm(localPath)).inputOptions("-loop", "1");
+						c.input(norm(localPath)).inputOptions(
+							"-loop",
+							"1",
+							"-framerate",
+							"30",
+						);
 
 						if (vf.length) {
 							c.videoFilters(vf.join(","));
@@ -9249,6 +9259,22 @@ async function generateStaticClipFromImage({
 					success = true;
 				} catch (inner) {
 					lastErr = inner;
+					if (
+						attempt === 0 &&
+						allowZoomPan &&
+						STATIC_ZOOMPAN_ENABLED &&
+						/reinitializing filters|filter network|invalid argument/i.test(
+							String(inner?.message || ""),
+						)
+					) {
+						STATIC_ZOOMPAN_ENABLED = false;
+						if (!staticZoompanDisabledLogged) {
+							staticZoompanDisabledLogged = true;
+							console.warn(
+								"[StaticZoompan] Disabled after filter failure; using non-zoom fallback",
+							);
+						}
+					}
 					console.warn(
 						`[Seg ${segmentIndex}] Static fallback filter attempt ${
 							attempt + 1
@@ -10653,11 +10679,7 @@ async function buildPreflightImagePool({
 			pageSignalCache,
 		});
 
-	const topUpCandidates = async ({
-		allowCse,
-		phase,
-		desiredCount,
-	} = {}) => {
+	const topUpCandidates = async ({ allowCse, phase, desiredCount } = {}) => {
 		usedTopUp = true;
 		const requireTokenMatch = tokenSet.length > 0;
 		const fallback = await fetchHighQualityImagesForTopic({
@@ -12955,14 +12977,14 @@ exports.preflightVideoImages = async (req, res) => {
 		if (!VALID_RATIOS.includes(ratioIn)) {
 			return res.status(400).json({ error: "Bad ratio" });
 		}
-	if (durIn && !goodDur(durIn)) {
-		return res.status(400).json({ error: "Bad duration" });
-	}
-	if (!isOwnerOnlyUser(req)) {
-		return res.status(403).json({
-			error: "Video creation is temporarily restricted to the owner.",
-		});
-	}
+		if (durIn && !goodDur(durIn)) {
+			return res.status(400).json({ error: "Bad duration" });
+		}
+		if (!isOwnerOnlyUser(req)) {
+			return res.status(403).json({
+				error: "Video creation is temporarily restricted to the owner.",
+			});
+		}
 
 		const ratio = ratioIn;
 		const duration = goodDur(durIn) ? +durIn : 30;
@@ -13040,15 +13062,10 @@ exports.preflightVideoImages = async (req, res) => {
 			if (category === "Top5") {
 				topic = ALL_TOP5_TOPICS[0] || "Top 5";
 			} else {
-				const list = await pickTrendingTopicFresh(
-					category,
-					language,
-					country,
-					{
-						userId: user?._id || user?.id || null,
-						isLongVideo: false,
-					},
-				);
+				const list = await pickTrendingTopicFresh(category, language, country, {
+					userId: user?._id || user?.id || null,
+					isLongVideo: false,
+				});
 				topic = list.find((t) => !usedTopics.has(t)) || list[0];
 			}
 		}
@@ -13309,5 +13326,3 @@ exports.listVideos = async (req, res, next) => {
 		next(err);
 	}
 };
-
-

@@ -423,6 +423,7 @@ const IMAGE_SEGMENT_TARGET_SEC = clampNumber(3.8, 2.5, 8);
 const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
 const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(6, 2, 10);
 const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(4.8, 3, 12);
+const IMAGE_SEGMENT_MIN_UNIQUE_RATIO = clampNumber(0.5, 0.4, 1);
 const IMAGE_SEARCH_MAX_QUERY_VARIANTS = clampNumber(10, 4, 12);
 const IMAGE_SEARCH_CANDIDATE_MULTIPLIER = clampNumber(7, 2, 8);
 const GOOGLE_IMAGES_SEARCH_ENABLED = true;
@@ -950,6 +951,18 @@ function detectFileType(filePath) {
 	if (ascii12.slice(4, 8) === "ftyp") return { kind: "video", ext: "mp4" };
 
 	return null;
+}
+
+async function hashFileSha1(filePath) {
+	if (!filePath || !fs.existsSync(filePath))
+		throw new Error("hash input missing");
+	return new Promise((resolve, reject) => {
+		const hash = crypto.createHash("sha1");
+		const stream = fs.createReadStream(filePath);
+		stream.on("error", reject);
+		stream.on("data", (chunk) => hash.update(chunk));
+		stream.on("end", () => resolve(hash.digest("hex")));
+	});
 }
 
 /* ---------------------------------------------------------------
@@ -3072,14 +3085,22 @@ function getUrlHost(url = "") {
 	}
 }
 
+function sanitizeImageUrl(raw = "") {
+	let url = String(raw || "").trim();
+	if (!url) return "";
+	url = url.replace(/&amp;|&#38;|&#038;|\\u0026/gi, "&");
+	url = url.replace(/\s/g, "%20");
+	return url;
+}
+
 function normalizeImageUrlKey(url = "") {
 	try {
-		const parsed = new URL(String(url || ""));
+		const parsed = new URL(sanitizeImageUrl(url));
 		parsed.hash = "";
 		parsed.search = "";
 		return parsed.toString().toLowerCase();
 	} catch {
-		return String(url || "")
+		return sanitizeImageUrl(url)
 			.split("?")[0]
 			.split("#")[0]
 			.toLowerCase();
@@ -3105,7 +3126,7 @@ function dedupeUrlsPreserveOrder(urls = []) {
 	const out = [];
 	const seen = new Set();
 	for (const raw of Array.isArray(urls) ? urls : []) {
-		const url = String(raw || "").trim();
+		const url = sanitizeImageUrl(raw);
 		if (!url) continue;
 		const key = normalizeImageUrlKey(url);
 		if (seen.has(key)) continue;
@@ -3215,7 +3236,7 @@ async function downloadSegmentImages(
 	const usedUrls = [];
 	const seen = new Set();
 	for (let i = 0; i < urls.length; i++) {
-		const url = urls[i];
+		const url = sanitizeImageUrl(urls[i]);
 		if (!url) continue;
 		const key = normalizeImageUrlKey(url);
 		if (seen.has(key)) continue;
@@ -4244,6 +4265,138 @@ async function prepareImageSegments({
 	}
 
 	return { timeline: updated, segmentImagePaths, imagePlanSummary };
+}
+
+async function evaluateImageSegmentDiversity({
+	timeline = [],
+	segmentImagePaths,
+	jobId,
+}) {
+	const imageSegments = (timeline || []).filter(
+		(seg) => seg.visualType === "image",
+	);
+	const segmentCount = imageSegments.length;
+	if (!segmentCount) {
+		return {
+			ok: true,
+			segmentCount: 0,
+			minUnique: 0,
+			unique: 0,
+			ratio: 1,
+			perTopic: [],
+		};
+	}
+
+	const segmentKeys = new Map();
+	const primaryUrls = [];
+	for (const seg of imageSegments) {
+		const cloud = Array.isArray(seg.imageCloudinaryUrls)
+			? seg.imageCloudinaryUrls
+			: [];
+		const raw = Array.isArray(seg.imageUrls) ? seg.imageUrls : [];
+		const pick = cloud[0] || raw[0] || "";
+		if (pick) primaryUrls.push(pick);
+	}
+	const uniquePrimary = new Set(
+		primaryUrls.map((u) => normalizeImageUrlKey(u)),
+	).size;
+
+	let uniqueHash = null;
+	if (segmentImagePaths instanceof Map) {
+		const hashes = [];
+		for (const seg of imageSegments) {
+			const paths = segmentImagePaths.get(seg.index) || [];
+			const p = paths[0];
+			if (!p) continue;
+			try {
+				const h = await hashFileSha1(p);
+				hashes.push(h);
+				segmentKeys.set(seg.index, `hash:${h}`);
+			} catch (e) {
+				logJob(jobId, "segment image hash failed", {
+					segment: seg.index,
+					error: e.message,
+				});
+			}
+		}
+		if (hashes.length) {
+			uniqueHash = new Set(hashes).size;
+		}
+	}
+
+	for (const seg of imageSegments) {
+		if (segmentKeys.has(seg.index)) continue;
+		const cloud = Array.isArray(seg.imageCloudinaryUrls)
+			? seg.imageCloudinaryUrls
+			: [];
+		const raw = Array.isArray(seg.imageUrls) ? seg.imageUrls : [];
+		const pick = cloud[0] || raw[0] || "";
+		if (pick) {
+			segmentKeys.set(seg.index, `url:${normalizeImageUrlKey(pick)}`);
+		}
+	}
+
+	const topics = new Map();
+	for (const seg of imageSegments) {
+		const topicIndex = Number.isFinite(Number(seg.topicIndex))
+			? Number(seg.topicIndex)
+			: 0;
+		const topicLabel = String(seg.topicLabel || "").trim();
+		const key = `${topicIndex}:${topicLabel || "topic"}`;
+		const list = topics.get(key) || {
+			topicIndex,
+			topicLabel,
+			segments: [],
+		};
+		list.segments.push(seg);
+		topics.set(key, list);
+	}
+
+	const perTopic = [];
+	let ok = true;
+	for (const [key, data] of topics.entries()) {
+		const segs = data.segments || [];
+		const segCount = segs.length;
+		const minUnique = Math.max(
+			1,
+			Math.ceil(segCount * IMAGE_SEGMENT_MIN_UNIQUE_RATIO),
+		);
+		const uniqSet = new Set();
+		for (const seg of segs) {
+			const k = segmentKeys.get(seg.index);
+			if (k) uniqSet.add(k);
+		}
+		const unique = uniqSet.size;
+		const ratio = segCount ? unique / segCount : 1;
+		const entry = {
+			topicKey: key,
+			topicIndex: data.topicIndex,
+			topicLabel: data.topicLabel,
+			segmentCount: segCount,
+			minUnique,
+			unique,
+			ratio: Number(ratio.toFixed(3)),
+		};
+		if (unique < minUnique) ok = false;
+		perTopic.push(entry);
+	}
+
+	const totalMinUnique = Math.max(
+		1,
+		Math.ceil(segmentCount * IMAGE_SEGMENT_MIN_UNIQUE_RATIO),
+	);
+	const unique = Number.isFinite(uniqueHash) ? uniqueHash : uniquePrimary;
+	const ratio = segmentCount ? unique / segmentCount : 1;
+	return {
+		ok,
+		segmentCount,
+		minUnique: totalMinUnique,
+		unique,
+		uniquePrimary,
+		uniqueHash,
+		ratio: Number(ratio.toFixed(3)),
+		perTopic,
+	};
 }
 
 /* ---------------------------------------------------------------
@@ -13112,6 +13265,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			uniqueImages: uniqueImageUrls.size,
 			duplicates: duplicateImageCount,
 		});
+		const imageDiversity = await evaluateImageSegmentDiversity({
+			timeline,
+			segmentImagePaths,
+			jobId,
+		});
+		logJob(jobId, "segment image diversity", imageDiversity);
 		if (imagePlanSummary.length) {
 			logJob(jobId, "segment image plan", {
 				count: imagePlanSummary.length,
@@ -13131,8 +13290,28 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					unique: uniqueImageUrls.size,
 					duplicates: duplicateImageCount,
 				},
+				imageDiversity,
 			},
 		});
+		if (!imageDiversity.ok) {
+			const failingTopics = (imageDiversity.perTopic || []).filter(
+				(t) => t.unique < t.minUnique,
+			);
+			const failText = failingTopics
+				.map(
+					(t) =>
+						`${t.topicLabel || `topic_${t.topicIndex}`}: ${t.unique}/${
+							t.segmentCount
+						} (min ${t.minUnique})`,
+				)
+				.join("; ");
+			const message = `Not enough unique feed images per topic: ${failText || `${imageDiversity.unique}/${imageDiversity.segmentCount} unique (min ${imageDiversity.minUnique})`}.`;
+			logJob(jobId, "segment image diversity failed", {
+				...imageDiversity,
+				message,
+			});
+			throw new Error(message);
+		}
 
 		const presenterSegSet = new Set(finalPresenterSegments);
 		const presenterOnlySegments = segments.filter((s) =>
