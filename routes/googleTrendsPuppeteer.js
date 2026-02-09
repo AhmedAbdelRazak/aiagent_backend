@@ -1613,21 +1613,29 @@ async function hydrateArticleImages(stories) {
 
 function normalizeImageUrlKey(rawUrl = "") {
 	try {
-		const parsed = new URL(rawUrl);
+		const parsed = new URL(sanitizeImageUrl(rawUrl));
 		return `${parsed.origin}${parsed.pathname}`.toLowerCase();
 	} catch {
-		return String(rawUrl || "").toLowerCase();
+		return String(sanitizeImageUrl(rawUrl) || "").toLowerCase();
 	}
 }
 
+function sanitizeImageUrl(rawUrl = "") {
+	let url = String(rawUrl || "").trim();
+	if (!url) return "";
+	url = url.replace(/&amp;|&#38;|&#038;|\\u0026/gi, "&");
+	url = url.replace(/\s/g, "%20");
+	return url;
+}
+
 function normalizePossibleUrl(rawUrl = "", baseUrl = "") {
-	const value = String(rawUrl || "").trim();
+	const value = sanitizeImageUrl(rawUrl);
 	if (!value) return "";
 	if (value.startsWith("//")) return `https:${value}`;
 	if (/^https?:\/\//i.test(value)) return value;
 	if (!baseUrl) return value;
 	try {
-		return new URL(value, baseUrl).toString();
+		return sanitizeImageUrl(new URL(value, baseUrl).toString());
 	} catch {
 		return value;
 	}

@@ -41,45 +41,45 @@ function clampNumber(n, min, max) {
 const SHORTS_WIDTH = clampNumber(
 	toNumber(process.env.SHORTS_WIDTH, 720),
 	480,
-	1440
+	1440,
 );
 const SHORTS_HEIGHT = clampNumber(
 	toNumber(process.env.SHORTS_HEIGHT, 1280),
 	720,
-	2560
+	2560,
 );
 const SHORTS_MIN_SEC = clampNumber(
 	toNumber(process.env.SHORTS_MIN_SEC, 25),
 	25,
-	45
+	45,
 );
 const SHORTS_MAX_SEC = clampNumber(
 	toNumber(process.env.SHORTS_MAX_SEC, 45),
 	25,
-	45
+	45,
 );
 const SHORTS_TARGET_SECONDS = [25, 35, 45];
 const SHORTS_MAX_CLIPS = clampNumber(
 	toNumber(process.env.SHORTS_MAX_CLIPS, 6),
 	1,
-	10
+	10,
 );
 const SHORTS_MIN_CLIPS = clampNumber(
 	toNumber(process.env.SHORTS_MIN_CLIPS, 3),
 	1,
-	SHORTS_MAX_CLIPS
+	SHORTS_MAX_CLIPS,
 );
 const SHORTS_CRF = clampNumber(toNumber(process.env.SHORTS_CRF, 20), 16, 28);
 const SHORTS_AUDIO_BITRATE = process.env.SHORTS_AUDIO_BITRATE || "160k";
 const SHORTS_UPLOAD_DELAY_HOURS = clampNumber(
 	toNumber(process.env.SHORTS_UPLOAD_DELAY_HOURS, 24),
 	1,
-	72
+	72,
 );
 const SHORTS_UPLOAD_GAP_HOURS = clampNumber(
 	toNumber(process.env.SHORTS_UPLOAD_GAP_HOURS, 24),
 	24,
-	168
+	168,
 );
 const SHORTS_WATERMARK_TEXT = "https://serenejannat.com";
 const SHORTS_WATERMARK_OPACITY = 0.55;
@@ -135,7 +135,7 @@ function cleanClipTitleBase(text = "") {
 	cleaned = cleaned.replace(/^["']+|["']+$/g, "");
 	cleaned = cleaned.replace(
 		/^(here's|here is|this is|there's|there is|today|right now)\b[:,-]?\s*/i,
-		""
+		"",
 	);
 	cleaned = cleaned.replace(/^[\-\s]+/, "");
 	cleaned = cleaned.replace(/[.!?]+$/g, "");
@@ -146,7 +146,7 @@ function cleanClipTitleBase(text = "") {
 function buildClipTitleCandidates(line = "", fallbackBase = "") {
 	const base = trimTitleToLimit(
 		cleanClipTitleBase(line) || String(fallbackBase || "").trim(),
-		95
+		95,
 	);
 	if (!base) return [];
 	const variants = [
@@ -158,7 +158,7 @@ function buildClipTitleCandidates(line = "", fallbackBase = "") {
 		`${base} | The detail people missed`,
 	];
 	return uniqueStrings(variants, { limit: 8 }).map((t) =>
-		trimTitleToLimit(t, 95)
+		trimTitleToLimit(t, 95),
 	);
 }
 
@@ -247,7 +247,7 @@ function makeEven(n) {
 
 function resolveShortsFontFile() {
 	const env = String(
-		process.env.FFMPEG_FONT_PATH || process.env.FFMPEG_FONT || ""
+		process.env.FFMPEG_FONT_PATH || process.env.FFMPEG_FONT || "",
 	).trim();
 	if (env && fs.existsSync(env)) return env;
 	const candidates = [
@@ -305,7 +305,7 @@ function buildShortsWatermarkFilter(width, height) {
 		? `:fontfile='${escapeDrawtext(SHORTS_WATERMARK_FONT_FILE)}'`
 		: "";
 	return `drawtext=text='${text}'${fontFile}:fontsize=${fontSize}:fontcolor=white@${SHORTS_WATERMARK_OPACITY.toFixed(
-		2
+		2,
 	)}:shadowcolor=black@0.55:shadowx=2:shadowy=2:x=w-text_w-${marginX}:y=h-text_h-${marginY}`;
 }
 
@@ -370,12 +370,12 @@ function normalizeClipCandidates(shortsDetails, segments = []) {
 	const fallbackBase = String(
 		raw.angle ||
 			(Array.isArray(raw.titleCandidates) ? raw.titleCandidates[0] : "") ||
-			""
+			"",
 	).trim();
 	const normalized = candidates
 		.map((c, idx) => {
 			const segmentIndex = Number(
-				c?.segmentIndex ?? c?.segment_index ?? c?.index ?? idx
+				c?.segmentIndex ?? c?.segment_index ?? c?.index ?? idx,
 			);
 			if (!Number.isFinite(segmentIndex) || segmentIndex < 0) return null;
 			if (segments.length && segmentIndex >= segments.length) return null;
@@ -385,28 +385,28 @@ function normalizeClipCandidates(shortsDetails, segments = []) {
 				c?.titleCandidates ||
 					c?.title_candidates ||
 					c?.seoTitleCandidates ||
-					c?.seo_title_candidates
+					c?.seo_title_candidates,
 			)
 				? c.titleCandidates ||
-				  c.title_candidates ||
-				  c.seoTitleCandidates ||
-				  c.seo_title_candidates
+					c.title_candidates ||
+					c.seoTitleCandidates ||
+					c.seo_title_candidates
 				: [];
 			let titleCandidates = uniqueStrings(
 				(rawTitleCandidates || [])
 					.map((t) => String(t || "").trim())
 					.filter(Boolean),
-				{ limit: 8 }
+				{ limit: 8 },
 			);
 			if (titleCandidates.length < 3) {
 				const fallbackTitles = buildClipTitleCandidates(line, fallbackBase);
 				titleCandidates = uniqueStrings(
 					[...titleCandidates, ...fallbackTitles],
-					{ limit: 8 }
+					{ limit: 8 },
 				);
 			}
 			const rawThumbCandidates = Array.isArray(
-				c?.thumbnailTextCandidates || c?.thumbnail_text_candidates
+				c?.thumbnailTextCandidates || c?.thumbnail_text_candidates,
 			)
 				? c.thumbnailTextCandidates || c.thumbnail_text_candidates
 				: [];
@@ -414,16 +414,16 @@ function normalizeClipCandidates(shortsDetails, segments = []) {
 				(rawThumbCandidates || [])
 					.map((t) => String(t || "").trim())
 					.filter(Boolean),
-				{ limit: 8 }
+				{ limit: 8 },
 			);
 			if (thumbnailTextCandidates.length < 3) {
 				const fallbackThumbs = buildClipThumbnailTextCandidates(
 					line,
-					fallbackBase
+					fallbackBase,
 				);
 				thumbnailTextCandidates = uniqueStrings(
 					[...thumbnailTextCandidates, ...fallbackThumbs],
-					{ limit: 8 }
+					{ limit: 8 },
 				);
 			}
 			return {
@@ -434,7 +434,7 @@ function normalizeClipCandidates(shortsDetails, segments = []) {
 				openLoop: typeof c?.openLoop === "boolean" ? c.openLoop : false,
 				ctaLine: String(c?.ctaLine || c?.cta_line || SHORTS_DEFAULT_CTA_LINE),
 				targetSeconds: normalizeTargetSeconds(
-					c?.targetSeconds ?? c?.target_seconds
+					c?.targetSeconds ?? c?.target_seconds,
 				),
 				titleCandidates,
 				thumbnailTextCandidates,
@@ -489,7 +489,7 @@ function stripClipCandidateForPlan(candidate) {
 
 function mergeShortRecordsIntoCandidates(
 	clipCandidates = [],
-	shortRecords = []
+	shortRecords = [],
 ) {
 	if (!Array.isArray(clipCandidates) || !clipCandidates.length) return [];
 	const byId = new Map();
@@ -537,11 +537,11 @@ function fallbackShortsDetails(video) {
 		targetSeconds: 25,
 		titleCandidates: buildClipTitleCandidates(
 			String(seg.text || "").trim(),
-			fallbackBase
+			fallbackBase,
 		),
 		thumbnailTextCandidates: buildClipThumbnailTextCandidates(
 			String(seg.text || "").trim(),
-			fallbackBase
+			fallbackBase,
 		),
 		status: "pending",
 		uploaded: false,
@@ -571,7 +571,7 @@ async function resolveSourceVideoPath(video, req) {
 		if (isHttpUrl(outputUrl) && outputUrl.endsWith(".mp4")) {
 			const out = path.join(
 				SHORTS_SOURCE_DIR,
-				`source_${String(video._id)}.mp4`
+				`source_${String(video._id)}.mp4`,
 			);
 			if (!fs.existsSync(out)) await downloadToFile(outputUrl, out, 120000);
 			return { path: out, source: "download" };
@@ -584,7 +584,7 @@ async function resolveSourceVideoPath(video, req) {
 		return { path: out, source: "download" };
 	}
 	throw new Error(
-		"Source video not found. Persist the long video output or provide sourceVideoUrl."
+		"Source video not found. Persist the long video output or provide sourceVideoUrl.",
 	);
 }
 
@@ -663,7 +663,7 @@ async function createShortClip({
 			outputPath,
 		],
 		"shorts_clip",
-		{ timeoutMs: 240000 }
+		{ timeoutMs: 240000 },
 	);
 	return outputPath;
 }
@@ -679,7 +679,7 @@ function buildShortsTitle({
 		: [];
 	const fallback = buildClipTitleCandidates(
 		String(candidate?.line || "").trim(),
-		fallbackTitle
+		fallbackTitle,
 	);
 	const pool = uniqueStrings([...explicit, ...fallback], { limit: 8 });
 	return pickUniqueTitle({
@@ -707,14 +707,7 @@ function buildShortsDescription(candidate) {
 	const fullVideoLine = fullVideoUrl
 		? `Watch the full video: ${fullVideoUrl}`
 		: "";
-	const parts = [
-		fullVideoLine,
-		line,
-		"",
-		cta,
-		"",
-		"#shorts",
-	];
+	const parts = [fullVideoLine, line, "", cta, "", "#shorts"];
 	return parts.filter((p) => p !== "").join("\n");
 }
 
@@ -765,7 +758,7 @@ exports.createShortsFromLong = async (req, res) => {
 		const limit = clampNumber(
 			Number(maxClips || 0) || 0,
 			SHORTS_MIN_CLIPS,
-			SHORTS_MAX_CLIPS
+			SHORTS_MAX_CLIPS,
 		);
 
 		const video = await Video.findById(videoId);
@@ -808,19 +801,19 @@ exports.createShortsFromLong = async (req, res) => {
 		const fullVideoUrl = isHttpUrl(video.youtubeLink)
 			? video.youtubeLink
 			: isHttpUrl(video.outputUrl)
-			? video.outputUrl
-			: "";
+				? video.outputUrl
+				: "";
 
 		const existingShorts = await ShortVideo.find({
 			longVideo: video._id,
 		}).lean();
 		const existingById = new Map(
-			(existingShorts || []).map((s) => [String(s.clipId || ""), s])
+			(existingShorts || []).map((s) => [String(s.clipId || ""), s]),
 		);
 		const usedTitles = new Set(
 			(existingShorts || [])
 				.map((s) => normalizeTitleKey(s.title || ""))
-				.filter(Boolean)
+				.filter(Boolean),
 		);
 
 		let generatedCount = 0;
@@ -839,7 +832,7 @@ exports.createShortsFromLong = async (req, res) => {
 			) {
 				candidate.titleCandidates = buildClipTitleCandidates(
 					candidate.line,
-					fallbackBase
+					fallbackBase,
 				);
 			}
 			if (
@@ -848,7 +841,7 @@ exports.createShortsFromLong = async (req, res) => {
 			) {
 				candidate.thumbnailTextCandidates = buildClipThumbnailTextCandidates(
 					candidate.line,
-					fallbackBase
+					fallbackBase,
 				);
 			}
 
@@ -883,14 +876,14 @@ exports.createShortsFromLong = async (req, res) => {
 							clipIndex: i,
 							fallbackTitle: String(video?.seoTitle || "Short update").trim(),
 							usedTitles,
-					  });
+						});
 			const description =
 				!forceRegenerate && existing?.description
 					? existing.description
 					: buildShortsDescription({
 							...candidate,
 							fullVideoUrl: candidate.fullVideoUrl || fullVideoUrl,
-					  });
+						});
 			const status =
 				!forceRegenerate && existing?.status === "uploaded"
 					? "uploaded"
@@ -927,15 +920,15 @@ exports.createShortsFromLong = async (req, res) => {
 					youtubeLink: forceRegenerate ? "" : existing?.youtubeLink || "",
 					uploadedAt: forceRegenerate ? null : existing?.uploadedAt || null,
 				},
-				{ upsert: true, new: true, setDefaultsOnInsert: true }
+				{ upsert: true, new: true, setDefaultsOnInsert: true },
 			);
 		}
 
 		const nextUploadAt = new Date(
-			Date.now() + SHORTS_UPLOAD_DELAY_HOURS * 60 * 60 * 1000
+			Date.now() + SHORTS_UPLOAD_DELAY_HOURS * 60 * 60 * 1000,
 		).toISOString();
 		const plannedCandidates = candidatesToProcess.map((c) =>
-			stripClipCandidateForPlan(c)
+			stripClipCandidateForPlan(c),
 		);
 		video.shortsDetails = {
 			...shortsDetails,
@@ -954,7 +947,7 @@ exports.createShortsFromLong = async (req, res) => {
 			...video.shortsDetails,
 			clipCandidates: mergeShortRecordsIntoCandidates(
 				video.shortsDetails.clipCandidates || [],
-				shortsRecords
+				shortsRecords,
 			),
 		};
 
@@ -995,9 +988,9 @@ exports.getShortsFromLong = async (req, res) => {
 					...normalized,
 					clipCandidates: mergeShortRecordsIntoCandidates(
 						normalized.clipCandidates || [],
-						shortsRecords
+						shortsRecords,
 					),
-			  }
+				}
 			: null;
 
 		return res.json({
@@ -1067,8 +1060,8 @@ exports.processPendingShortUploads = async ({ limit = 3 } = {}) => {
 		const fullVideoUrl = isHttpUrl(video.youtubeLink)
 			? video.youtubeLink
 			: isHttpUrl(video.outputUrl)
-			? video.outputUrl
-			: "";
+				? video.outputUrl
+				: "";
 		const shortsToUpload = await ShortVideo.find({
 			longVideo: video._id,
 			status: "ready",
@@ -1092,7 +1085,7 @@ exports.processPendingShortUploads = async ({ limit = 3 } = {}) => {
 		} else if (resolvedFullUrl) {
 			const updatedDescription = ensureFullVideoLinkInDescription(
 				shortDoc.description,
-				resolvedFullUrl
+				resolvedFullUrl,
 			);
 			if (updatedDescription !== shortDoc.description) {
 				shortDoc.description = updatedDescription;
@@ -1131,7 +1124,7 @@ exports.processPendingShortUploads = async ({ limit = 3 } = {}) => {
 			video.shortsDetails = {
 				...video.shortsDetails,
 				nextUploadAt: new Date(
-					uploadedAt.getTime() + SHORTS_UPLOAD_GAP_HOURS * 60 * 60 * 1000
+					uploadedAt.getTime() + SHORTS_UPLOAD_GAP_HOURS * 60 * 60 * 1000,
 				).toISOString(),
 				updatedAt: nowIso(),
 			};

@@ -705,12 +705,20 @@ const IMAGE_UPLOAD_SOFT_BLOCK = [
 	"lookaside.instagram.com",
 ];
 
+function sanitizeImageUrl(raw = "") {
+	let url = String(raw || "").trim();
+	if (!url) return "";
+	url = url.replace(/&amp;|&#38;|&#038;|\\u0026/gi, "&");
+	url = url.replace(/\s/g, "%20");
+	return url;
+}
+
 function normalizeImageKey(url) {
 	try {
-		const u = new URL(url);
+		const u = new URL(sanitizeImageUrl(url));
 		return `${u.hostname}${u.pathname}`.toLowerCase();
 	} catch {
-		return url;
+		return sanitizeImageUrl(url);
 	}
 }
 
@@ -944,6 +952,7 @@ const GENERIC_TOPIC_TOKENS = new Set([
 ]);
 
 const TOPIC_TOKEN_ALIASES = Object.freeze({
+	superbowl: ["super bowl", "super-bowl"],
 	oscar: [
 		"oscars",
 		"academy award",
@@ -1785,8 +1794,8 @@ function dedupeImageUrls(urls, limit = 8) {
 	const hostCount = new Map();
 	for (const url of urls) {
 		if (!url || typeof url !== "string") continue;
-		if (!/^https?:\/\//i.test(url)) continue;
-		const trimmed = url.trim();
+		const trimmed = sanitizeImageUrl(url.trim());
+		if (!/^https?:\/\//i.test(trimmed)) continue;
 		if (seen.has(trimmed)) continue;
 		let host = "";
 		try {
@@ -1814,15 +1823,16 @@ function filterUploadCandidates(urls, limit = 7) {
 	const out = [];
 	for (const u of urls) {
 		if (!u || typeof u !== "string") continue;
+		const cleaned = sanitizeImageUrl(u);
 		let host = "";
 		try {
-			host = new URL(u).hostname.toLowerCase();
+			host = new URL(cleaned).hostname.toLowerCase();
 		} catch {
 			continue;
 		}
 		if (isBlockedHost(host) || isSoftBlockedHost(host)) continue;
-		if (isLikelyThumbnailUrl(u)) continue;
-		out.push(u);
+		if (isLikelyThumbnailUrl(cleaned)) continue;
+		out.push(cleaned);
 		if (out.length >= limit) break;
 	}
 	return out;
@@ -1906,10 +1916,11 @@ function pickTrendImagesForRatio(trendStory, ratio, desiredCount = 5) {
 	const picked = [];
 	for (const url of pools) {
 		if (!url || typeof url !== "string") continue;
-		if (!/^https?:\/\//i.test(url)) continue;
-		if (seen.has(url)) continue;
-		seen.add(url);
-		picked.push(url);
+		const cleaned = sanitizeImageUrl(url);
+		if (!/^https?:\/\//i.test(cleaned)) continue;
+		if (seen.has(cleaned)) continue;
+		seen.add(cleaned);
+		picked.push(cleaned);
 		if (picked.length >= desiredCount) break;
 	}
 	return picked.slice(0, desiredCount);
@@ -1920,7 +1931,7 @@ function normalizeTrendPotentialImages(list = []) {
 	const out = [];
 	for (const item of list) {
 		if (!item) continue;
-		const url = String(
+		const rawUrl = String(
 			item.imageurl ||
 				item.imageUrl ||
 				item.url ||
@@ -1928,6 +1939,7 @@ function normalizeTrendPotentialImages(list = []) {
 				item.originalUrl ||
 				"",
 		).trim();
+		const url = sanitizeImageUrl(rawUrl);
 		if (!url || !/^https?:\/\//i.test(url)) continue;
 		out.push({
 			url,
@@ -2184,9 +2196,10 @@ function tmpFile(tag, ext = "") {
 }
 
 async function downloadImageToTemp(url, ext = ".jpg") {
+	const safeUrl = sanitizeImageUrl(url);
 	const tmp = tmpFile("trend_raw", ext);
 	const writer = fs.createWriteStream(tmp);
-	const resp = await axios.get(url, {
+	const resp = await axios.get(safeUrl, {
 		responseType: "stream",
 		timeout: 15000,
 		maxRedirects: 3,
@@ -6232,10 +6245,13 @@ function normalizeImageCandidates(list = []) {
 		.map((item) => {
 			if (!item) return null;
 			if (typeof item === "string") {
-				return { url: item, source: "", title: "" };
+				const cleaned = sanitizeImageUrl(item);
+				if (!cleaned || !/^https?:\/\//i.test(cleaned)) return null;
+				return { url: cleaned, source: "", title: "" };
 			}
-			const url = item.url || item.link || item.originalUrl || "";
-			if (!url) return null;
+			const rawUrl = item.url || item.link || item.originalUrl || "";
+			const url = sanitizeImageUrl(rawUrl);
+			if (!url || !/^https?:\/\//i.test(url)) return null;
 			const width = item.width || item.imageWidth || item.w || null;
 			const height = item.height || item.imageHeight || item.h || null;
 			return {
@@ -6456,7 +6472,10 @@ async function fetchHighQualityImagesForTopic({
 	const tokensAvailable = normTopicTokens.length > 0;
 	const minTopicMatch = strictTopicMatch
 		? tokensAvailable
-			? Math.max(1, minTopicTokenMatches(normTopicTokens))
+			? Math.max(
+					1,
+					Math.min(primaryMinMatch || 1, minTopicTokenMatches(normTopicTokens)),
+				)
 			: 0
 		: 0;
 	const requireMatch = (requireAnyToken || strictTopicMatch) && tokensAvailable;
@@ -7540,7 +7559,11 @@ async function prepareSegmentImagePairsForShorts({
 							seg.index || i + 1
 						}`,
 					);
-					pairs.push({ originalUrl: picked, cloudinaryUrl: up.url, origin });
+					pairs.push({
+						originalUrl: sanitizeImageUrl(picked),
+						cloudinaryUrl: up.url,
+						origin,
+					});
 					const newIdx = pairs.length - 1;
 					urlToIndex.set(normalizeImageKey(picked), newIdx);
 					seg.imageIndex = newIdx;
@@ -7728,7 +7751,11 @@ async function prepareSegmentImagePairsForShorts({
 						seg.index || i + 1
 					}`,
 				);
-				pairs.push({ originalUrl: picked, cloudinaryUrl: up.url, origin });
+				pairs.push({
+					originalUrl: sanitizeImageUrl(picked),
+					cloudinaryUrl: up.url,
+					origin,
+				});
 				const newIdx = pairs.length - 1;
 				urlToIndex.set(normalizeImageKey(picked), newIdx);
 				indexCounts.set(seg.imageIndex, count - 1);
@@ -7751,6 +7778,43 @@ async function prepareSegmentImagePairsForShorts({
 		}
 	}
 
+	if (pairs.length) {
+		const indexCounts = new Map();
+		for (const seg of safeSegments) {
+			if (
+				Number.isInteger(seg.imageIndex) &&
+				seg.imageIndex >= 0 &&
+				seg.imageIndex < pairs.length
+			) {
+				indexCounts.set(
+					seg.imageIndex,
+					(indexCounts.get(seg.imageIndex) || 0) + 1,
+				);
+			}
+		}
+		const unused = Array.from({ length: pairs.length }, (_, idx) => idx).filter(
+			(idx) => !indexCounts.has(idx),
+		);
+		if (unused.length) {
+			for (const seg of safeSegments) {
+				if (!unused.length) break;
+				if (
+					!Number.isInteger(seg.imageIndex) ||
+					seg.imageIndex < 0 ||
+					seg.imageIndex >= pairs.length
+				) {
+					continue;
+				}
+				const count = indexCounts.get(seg.imageIndex) || 0;
+				if (count <= 1) continue;
+				const nextIdx = unused.shift();
+				indexCounts.set(seg.imageIndex, count - 1);
+				indexCounts.set(nextIdx, 1);
+				seg.imageIndex = nextIdx;
+			}
+		}
+	}
+
 	const uniqueAssigned = new Set(
 		safeSegments
 			.map((s) => (Number.isInteger(s.imageIndex) ? s.imageIndex : null))
@@ -7759,6 +7823,16 @@ async function prepareSegmentImagePairsForShorts({
 	const uniqueRatio = safeSegments.length
 		? uniqueAssigned / safeSegments.length
 		: 1;
+	if (pairs.length < MIN_FEED_IMAGES) {
+		throw new Error(
+			`Need at least ${MIN_FEED_IMAGES} unique, topic-relevant images; found ${pairs.length}.`,
+		);
+	}
+	if (uniqueAssigned < MIN_FEED_IMAGES) {
+		throw new Error(
+			`Need at least ${MIN_FEED_IMAGES} unique images assigned to segments; found ${uniqueAssigned}.`,
+		);
+	}
 	if (uniqueRatio < SHORTS_MIN_UNIQUE_IMAGE_RATIO) {
 		console.warn("[Shorts] image diversity below target", {
 			uniqueAssigned,
@@ -7987,7 +8061,8 @@ async function fetchTop5ReplacementImage(
  *  Cloudinary helpers for Trends images
  * ------------------------------------------------------------- */
 async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
-	if (!url) throw new Error("Missing Trends image URL");
+	const safeUrl = sanitizeImageUrl(url);
+	if (!safeUrl) throw new Error("Missing Trends image URL");
 
 	const publicIdBase =
 		slugBase || `aivideomatic/trend_seeds/${Date.now()}_${crypto.randomUUID()}`;
@@ -8002,7 +8077,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 	const transform = buildCloudinaryTransformForRatio(ratio);
 
 	try {
-		const result = await cloudinary.uploader.upload(url, {
+		const result = await cloudinary.uploader.upload(safeUrl, {
 			...baseOpts,
 			transformation: transform,
 		});
@@ -8024,9 +8099,9 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 		if (!sizeIssue) {
 			console.warn(
 				"[Cloudinary] Remote fetch failed, retrying via local download",
-				{ url },
+				{ url: safeUrl },
 			);
-			const rawPath = await downloadImageToTemp(url, ".jpg");
+			const rawPath = await downloadImageToTemp(safeUrl, ".jpg");
 			try {
 				const result = await cloudinary.uploader.upload(rawPath, {
 					...baseOpts,
@@ -8062,7 +8137,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 		);
 
 		const { width, height } = targetResolutionForRatio(ratio);
-		const rawPath = await downloadImageToTemp(url, ".jpg");
+		const rawPath = await downloadImageToTemp(safeUrl, ".jpg");
 		const scaledPath = tmpFile("trend_scaled", ".jpg");
 
 		try {
@@ -8094,7 +8169,7 @@ async function uploadTrendImageToCloudinary(url, ratio, slugBase) {
 						.videoFilters(
 							`scale=${width || 1080}:${
 								height || 1920
-							}:force_original_aspect_ratio=increase:flags=lanczos,crop:${
+							}:force_original_aspect_ratio=increase:flags=lanczos,crop=${
 								width || 1080
 							}:${height || 1920}`,
 						)
@@ -8171,7 +8246,7 @@ async function generateOpenAIImagesForTop5(segments, ratio, topic) {
 				`aivideomatic/top5_${i}_${Date.now()}`,
 			);
 			outputs.push({
-				originalUrl: imgUrl,
+				originalUrl: sanitizeImageUrl(imgUrl),
 				cloudinaryUrl: uploaded.url,
 			});
 		} catch (e) {
@@ -8201,7 +8276,7 @@ async function generateOpenAIImageSingle(prompt, ratio, publicIdBase) {
 		publicIdBase,
 	);
 	return {
-		originalUrl: imgUrl,
+		originalUrl: sanitizeImageUrl(imgUrl),
 		cloudinaryUrl: uploaded.url,
 	};
 }
@@ -8452,7 +8527,7 @@ async function searchAndUploadTop5Image({
 	for (const url of urlCandidates) {
 		try {
 			const up = await uploadTrendImageToCloudinary(url, ratio, publicIdBase);
-			return { originalUrl: url, cloudinaryUrl: up.url };
+			return { originalUrl: sanitizeImageUrl(url), cloudinaryUrl: up.url };
 		} catch (e) {
 			console.warn(
 				"[Top5] Upload failed for candidate, trying next",
@@ -8720,7 +8795,11 @@ async function uploadReferenceImagesForTop5(
 						const m = String(segLabel || "").match(/#(\d+)/);
 						return m ? Number(m[1]) : null;
 					})();
-				pairs.push({ originalUrl: url, cloudinaryUrl: up.url, rank: rankVal });
+				pairs.push({
+					originalUrl: sanitizeImageUrl(url),
+					cloudinaryUrl: up.url,
+					rank: rankVal,
+				});
 				urlToIdx.set(url, idx);
 				segments[i].referenceImageUrl = url;
 				uploaded = true;
@@ -8782,7 +8861,11 @@ async function uploadReferenceImagesForTop5(
 					ratio,
 					`aivideomatic/top5_refs/${safeSlug}_fill_${rank}`,
 				);
-				pairs.push({ originalUrl: nextUrl, cloudinaryUrl: up.url, rank });
+				pairs.push({
+					originalUrl: sanitizeImageUrl(nextUrl),
+					cloudinaryUrl: up.url,
+					rank,
+				});
 			} catch (e) {
 				console.warn("[Top5] Fallback fill upload failed", e.message);
 			}
@@ -8879,7 +8962,7 @@ async function enforceTop5ImageRelevance({
 				)}_${safeSlug(label || "rank", 24)}_reval`,
 			);
 			const newPair = {
-				originalUrl: replacement.url,
+				originalUrl: sanitizeImageUrl(replacement.url),
 				cloudinaryUrl: up.url,
 				rank: seg?.countdownRank || pair?.rank || null,
 			};
@@ -9934,11 +10017,17 @@ async function buildVideoPlanWithGPT({
 	const segCnt = segLens.length;
 	const wordRate = wordsPerSecForCaps(category);
 	const segWordCaps = segLens.map((s) => Math.floor(s * wordRate));
-	const hasImages =
-		trendImagesForPlanning &&
-		Array.isArray(trendImagesForPlanning) &&
-		trendImagesForPlanning.length > 0;
-	const images = hasImages ? trendImagesForPlanning.slice(0, 8) : [];
+	const rawImages =
+		trendImagesForPlanning && Array.isArray(trendImagesForPlanning)
+			? trendImagesForPlanning
+			: [];
+	const images = dedupeImageUrls(
+		rawImages
+			.map((url) => sanitizeImageUrl(url))
+			.filter((url) => /^https?:\/\//i.test(url)),
+		8,
+	);
+	const hasImages = images.length > 0;
 	const articleTitles = (trendStory?.articles || [])
 		.map((a) => a.title)
 		.filter(Boolean);
@@ -10342,20 +10431,42 @@ Return JSON:
 `.trim();
 	}
 
-	const contentParts = [{ type: "text", text: promptText }];
-	if (hasImages) {
-		images.forEach((url) => {
-			contentParts.push({
-				type: "image_url",
-				image_url: { url },
+	const buildContentParts = (withImages) => {
+		const parts = [{ type: "text", text: promptText }];
+		if (withImages) {
+			images.forEach((url) => {
+				parts.push({
+					type: "image_url",
+					image_url: { url },
+				});
 			});
-		});
-	}
+		}
+		return parts;
+	};
 
-	const { choices } = await openai.chat.completions.create({
-		model: CHAT_MODEL,
-		messages: [{ role: "user", content: contentParts }],
-	});
+	const runPlan = async (withImages) =>
+		openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: buildContentParts(withImages) }],
+		});
+
+	let choices;
+	try {
+		({ choices } = await runPlan(hasImages));
+	} catch (err) {
+		const msg = String(err?.message || "");
+		const shouldRetry =
+			hasImages &&
+			(/Error while downloading/i.test(msg) ||
+				/400/i.test(msg) ||
+				/invalid.*image/i.test(msg));
+		if (!shouldRetry) throw err;
+		console.warn(
+			"[GPT] image download failed, retrying plan without images",
+			msg,
+		);
+		({ choices } = await runPlan(false));
+	}
 
 	const raw = strip(choices[0].message.content);
 	const plan = parseJsonFlexible(raw);
@@ -11049,7 +11160,7 @@ exports.createVideo = async (req, res) => {
 						`aivideomatic/trend_seeds/${slugBase}_${i}`,
 					);
 					trendImagePairs.push({
-						originalUrl: url,
+						originalUrl: sanitizeImageUrl(url),
 						cloudinaryUrl: up.url,
 						origin,
 					});
@@ -11059,7 +11170,7 @@ exports.createVideo = async (req, res) => {
 						error: e?.message || e,
 					});
 					trendImagePairs.push({
-						originalUrl: url,
+						originalUrl: sanitizeImageUrl(url),
 						cloudinaryUrl: null,
 						origin,
 					});
