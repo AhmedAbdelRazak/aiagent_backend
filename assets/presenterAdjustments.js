@@ -132,18 +132,24 @@ const SERIOUS_CONTEXT_TOKENS = Array.from(
 		"hospitalized",
 		"critical",
 		"emergency",
-	])
+	]),
 ).map((token) => String(token || "").toLowerCase());
 
 const PRESENTER_FACE_LOCK_ENABLED = true;
 const PRESENTER_FACE_LOCK_ALWAYS = true;
-const PRESENTER_FACE_SIMILARITY_MIN = 0.92;
-const PRESENTER_FACE_LOCK_FEATHER_PCT = 0.03;
+const PRESENTER_FACE_SIMILARITY_MIN = 0.96;
+const PRESENTER_FACE_LOCK_FEATHER_PCT = 0.04;
 const PRESENTER_FACE_LOCK_REGION = {
 	x: 0.28,
 	y: 0.04,
 	w: 0.44,
 	h: 0.5,
+};
+const PRESENTER_FACE_LOCK_CHIN_REGION = {
+	x: 0.32,
+	y: 0.4,
+	w: 0.36,
+	h: 0.18,
 };
 const PRESENTER_FACE_LOCK_EYES_REGION = {
 	x: 0.32,
@@ -151,6 +157,18 @@ const PRESENTER_FACE_LOCK_EYES_REGION = {
 	w: 0.36,
 	h: 0.2,
 };
+const PRESENTER_FACE_LOCK_REGIONS = [
+	PRESENTER_FACE_LOCK_REGION,
+	PRESENTER_FACE_LOCK_CHIN_REGION,
+];
+const PRESENTER_TORSO_BLEND_ENABLED = true;
+const PRESENTER_TORSO_BLEND_REGION = {
+	x: 0.18,
+	y: 0.36,
+	w: 0.64,
+	h: 0.64,
+};
+const PRESENTER_TORSO_BLEND_FEATHER_PCT = 0.045;
 
 const openai = process.env.CHATGPT_API_TOKEN
 	? new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN })
@@ -210,12 +228,7 @@ function detectImageType(filePath) {
 
 function parsePngSize(buf) {
 	if (!buf || buf.length < 24) return null;
-	if (
-		buf[0] !== 0x89 ||
-		buf[1] !== 0x50 ||
-		buf[2] !== 0x4e ||
-		buf[3] !== 0x47
-	)
+	if (buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47)
 		return null;
 	const width = buf.readUInt32BE(16);
 	const height = buf.readUInt32BE(20);
@@ -278,8 +291,7 @@ function parseWebpSize(buf) {
 		const b2 = buf[23];
 		const b3 = buf[24];
 		const width = 1 + ((b0 | ((b1 & 0x3f) << 8)) >>> 0);
-		const height =
-			1 + (((b1 & 0xc0) >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10));
+		const height = 1 + (((b1 & 0xc0) >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10));
 		return width && height ? { width, height } : null;
 	}
 	return null;
@@ -423,6 +435,7 @@ function comparePresenterSimilarity(originalPath, candidatePath) {
 	const regions = [
 		PRESENTER_FACE_LOCK_EYES_REGION,
 		PRESENTER_FACE_LOCK_REGION,
+		PRESENTER_FACE_LOCK_CHIN_REGION,
 	];
 	const scores = [];
 	for (const region of regions) {
@@ -441,6 +454,7 @@ async function applyPresenterFaceLock({
 	editedPath,
 	outPath,
 	region = PRESENTER_FACE_LOCK_REGION,
+	regions = null,
 	featherPct = PRESENTER_FACE_LOCK_FEATHER_PCT,
 }) {
 	const dims = getImageDimensions(basePath);
@@ -448,15 +462,19 @@ async function applyPresenterFaceLock({
 		throw new Error("face_lock_dimensions_missing");
 	const w = Math.max(2, Math.round(dims.width));
 	const h = Math.max(2, Math.round(dims.height));
-	const rx = Math.max(0, Math.round(w * (region.x || 0)));
-	const ry = Math.max(0, Math.round(h * (region.y || 0)));
-	const rw = Math.max(2, Math.round(w * (region.w || 1)));
-	const rh = Math.max(2, Math.round(h * (region.h || 1)));
-	const feather = Math.max(
-		2,
-		Math.round(h * clampNumber(featherPct, 0, 0.2)),
-	);
-	const mask = `color=black:s=${w}x${h},format=gray,drawbox=x=${rx}:y=${ry}:w=${rw}:h=${rh}:color=white@1:t=fill,boxblur=luma_radius=${feather}:luma_power=1[mask]`;
+	const regionsList =
+		Array.isArray(regions) && regions.length ? regions : [region];
+	const drawBoxes = regionsList
+		.map((r) => {
+			const rx = Math.max(0, Math.round(w * (r.x || 0)));
+			const ry = Math.max(0, Math.round(h * (r.y || 0)));
+			const rw = Math.max(2, Math.round(w * (r.w || 1)));
+			const rh = Math.max(2, Math.round(h * (r.h || 1)));
+			return `drawbox=x=${rx}:y=${ry}:w=${rw}:h=${rh}:color=white@1:t=fill`;
+		})
+		.join(",");
+	const feather = Math.max(2, Math.round(h * clampNumber(featherPct, 0, 0.2)));
+	const mask = `color=black:s=${w}x${h},format=gray,${drawBoxes},boxblur=luma_radius=${feather}:luma_power=1[mask]`;
 	const filter = [
 		`[0:v]scale=${w}:${h}:flags=lanczos,format=rgba[base]`,
 		`[1:v]scale=${w}:${h}:flags=lanczos,format=rgba[edit]`,
@@ -485,6 +503,88 @@ async function applyPresenterFaceLock({
 		"presenter_face_lock",
 	);
 	return outPath;
+}
+
+async function applyPresenterTorsoBlend({
+	basePath,
+	editedPath,
+	outPath,
+	region = PRESENTER_TORSO_BLEND_REGION,
+	featherPct = PRESENTER_TORSO_BLEND_FEATHER_PCT,
+}) {
+	const dims = getImageDimensions(basePath);
+	if (!dims.width || !dims.height)
+		throw new Error("torso_blend_dimensions_missing");
+	const w = Math.max(2, Math.round(dims.width));
+	const h = Math.max(2, Math.round(dims.height));
+	const rx = Math.max(0, Math.round(w * (region.x || 0)));
+	const ry = Math.max(0, Math.round(h * (region.y || 0)));
+	const rw = Math.max(2, Math.round(w * (region.w || 1)));
+	const rh = Math.max(2, Math.round(h * (region.h || 1)));
+	const feather = Math.max(2, Math.round(h * clampNumber(featherPct, 0, 0.25)));
+	const mask = `color=black:s=${w}x${h},format=gray,drawbox=x=${rx}:y=${ry}:w=${rw}:h=${rh}:color=white@1:t=fill,boxblur=luma_radius=${feather}:luma_power=1[mask]`;
+	const filter = [
+		`[0:v]scale=${w}:${h}:flags=lanczos,format=rgba[base]`,
+		`[1:v]scale=${w}:${h}:flags=lanczos,format=rgba[edit]`,
+		mask,
+		`[edit][mask]alphamerge[edita]`,
+		`[base][edita]overlay=0:0:format=auto[out]`,
+	].join(";");
+	await runFfmpeg(
+		[
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-i",
+			basePath,
+			"-i",
+			editedPath,
+			"-filter_complex",
+			filter,
+			"-map",
+			"[out]",
+			"-frames:v",
+			"1",
+			"-y",
+			outPath,
+		],
+		"presenter_torso_blend",
+	);
+	return outPath;
+}
+
+async function enforcePresenterTorsoBlend({
+	jobId,
+	tmpDir,
+	basePath,
+	editedPath,
+	log,
+}) {
+	if (!PRESENTER_TORSO_BLEND_ENABLED || !editedPath) {
+		return { path: editedPath, applied: false };
+	}
+	if (!ffmpegPath) {
+		if (log) log("presenter torso blend skipped (ffmpeg unavailable)", {});
+		return { path: editedPath, applied: false };
+	}
+	const outPath = path.join(
+		tmpDir || os.tmpdir(),
+		`presenter_torso_${jobId || "job"}.png`,
+	);
+	await applyPresenterTorsoBlend({
+		basePath,
+		editedPath,
+		outPath,
+	});
+	if (log)
+		log("presenter torso blend applied", {
+			region: PRESENTER_TORSO_BLEND_REGION,
+			featherPct: PRESENTER_TORSO_BLEND_FEATHER_PCT,
+		});
+	return {
+		path: outPath,
+		applied: true,
+	};
 }
 
 async function enforcePresenterFaceLock({
@@ -518,6 +618,7 @@ async function enforcePresenterFaceLock({
 		basePath,
 		editedPath,
 		outPath,
+		regions: PRESENTER_FACE_LOCK_REGIONS,
 	});
 	const scoreAfter = comparePresenterSimilarity(basePath, outPath);
 	if (log)
@@ -621,29 +722,29 @@ function pickWardrobeVariant({
 			.map((v) =>
 				String(v || "")
 					.trim()
-					.toLowerCase()
+					.toLowerCase(),
 			)
-			.filter(Boolean)
+			.filter(Boolean),
 	);
 	const prefersFormal = isFormalContext({ title, topics, categoryLabel });
 	const noBlazerVariants = WARDROBE_VARIANTS.filter((variant) =>
-		NO_BLAZER_PATTERN.test(variant)
+		NO_BLAZER_PATTERN.test(variant),
 	);
 	const blazerVariants = WARDROBE_VARIANTS.filter(
-		(variant) => !NO_BLAZER_PATTERN.test(variant)
+		(variant) => !NO_BLAZER_PATTERN.test(variant),
 	);
 	const primaryPool = prefersFormal ? blazerVariants : noBlazerVariants;
 	const candidates = primaryPool.filter(
-		(v) => !normalizedAvoid.has(String(v).toLowerCase())
+		(v) => !normalizedAvoid.has(String(v).toLowerCase()),
 	);
 	const fallbackPool = WARDROBE_VARIANTS.filter(
-		(v) => !normalizedAvoid.has(String(v).toLowerCase())
+		(v) => !normalizedAvoid.has(String(v).toLowerCase()),
 	);
 	const pool = candidates.length
 		? candidates
 		: fallbackPool.length
-		? fallbackPool
-		: WARDROBE_VARIANTS;
+			? fallbackPool
+			: WARDROBE_VARIANTS;
 	const jitter = `${Date.now()}-${Math.random()}`;
 	const seed = `${jobId || ""}|${title || ""}|${topicText}|${jitter}`;
 	const idx = hashStringToInt(seed) % pool.length;
@@ -658,6 +759,7 @@ Outfit colors must be dark only (charcoal, black, deep navy, deep forest green, 
 Outfit must be intact: no rips, tears, holes, or missing fabric; shirt placket straight and buttons aligned.
 Do NOT alter any pixels of the face or head at all. Keep glasses, beard, hairline, skin texture, and facial features exactly as in @presenter_ref. Single face only, no ghosting.
 Face is LOCKED: no edits above the collarbone, no smoothing, no retouching, no lighting changes on the face, no eye or mouth changes.
+Do not move, resize, or shift the presenter; keep exact head/neck alignment with the body and the original framing.
 Studio background, desk, lighting, camera angle, and all props must remain EXACTLY the same.
 No crop/zoom, no borders/letterboxing/vignettes, no added blur or beautification; keep exact framing and processing.
 No candles, no extra objects, no text, no logos. Topic context: ${topicLine}.
@@ -723,6 +825,7 @@ Return JSON only with key: wardrobePrompt.
 	Rules:
 	- Use @presenter_ref as the only person reference.
 	- Face is strictly locked: do NOT alter any pixels of the face or head in any way; no double face, no ghosting, no artifacts, no retouching or smoothing. Treat everything above the collarbone as read-only.
+	- Do not move, resize, or shift the presenter; keep exact head/neck alignment with the body and the original framing.
 	- Keep studio/desk/background/camera/framing/lighting unchanged; no crop/zoom, no borders/letterboxing/vignettes, no added blur or processing.
 	- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; include it exactly. If the cue says "no blazer", do not add a blazer. Use dark colors only and an open collar.
 - Outfit must be intact: no rips, tears, holes, missing fabric, or broken seams; shirt placket straight and buttons aligned.
@@ -818,7 +921,7 @@ async function runwayCreateEphemeralUpload({ filePath, filename }) {
 			headers: runwayHeadersJson(),
 			timeout: 20000,
 			validateStatus: (s) => s < 500,
-		}
+		},
 	);
 	if (init.status >= 300) {
 		const msg =
@@ -826,7 +929,7 @@ async function runwayCreateEphemeralUpload({ filePath, filename }) {
 				? init.data
 				: JSON.stringify(init.data || {});
 		throw new Error(
-			`Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`
+			`Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`,
 		);
 	}
 	const { uploadUrl, fields, runwayUri } = init.data || {};
@@ -860,7 +963,7 @@ async function runwayCreateEphemeralUpload({ filePath, filename }) {
 	}
 
 	throw new Error(
-		"Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'"
+		"Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'",
 	);
 }
 
@@ -882,7 +985,7 @@ async function pollRunwayTask(taskId, label) {
 					? res.data
 					: JSON.stringify(res.data || {});
 			throw new Error(
-				`${label} polling failed (${res.status}): ${msg.slice(0, 500)}`
+				`${label} polling failed (${res.status}): ${msg.slice(0, 500)}`,
 			);
 		}
 		const data = res.data || {};
@@ -894,7 +997,7 @@ async function pollRunwayTask(taskId, label) {
 		}
 		if (status === "FAILED") {
 			throw new Error(
-				`${label} failed: ${data.failureCode || data.error || "FAILED"}`
+				`${label} failed: ${data.failureCode || data.error || "FAILED"}`,
 			);
 		}
 	}
@@ -919,14 +1022,14 @@ async function runwayTextToImage({ promptText, referenceImages, ratio }) {
 			headers: runwayHeadersJson(),
 			timeout: 30000,
 			validateStatus: (s) => s < 500,
-		}
+		},
 	);
 
 	if (res.status >= 300 || !res.data?.id) {
 		const msg =
 			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
 		throw new Error(
-			`Runway text_to_image failed (${res.status}): ${msg.slice(0, 700)}`
+			`Runway text_to_image failed (${res.status}): ${msg.slice(0, 700)}`,
 		);
 	}
 	return await pollRunwayTask(res.data.id, "runway_text_to_image");
@@ -961,7 +1064,7 @@ function assertCloudinaryReady() {
 		!process.env.CLOUDINARY_API_SECRET
 	) {
 		throw new Error(
-			"Cloudinary credentials missing (CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET)."
+			"Cloudinary credentials missing (CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET).",
 		);
 	}
 	cloudinary.config({
@@ -1070,6 +1173,37 @@ async function generatePresenterAdjustedImage({
 			log,
 		});
 		ensurePresenterFile(outfitPath);
+		if (PRESENTER_TORSO_BLEND_ENABLED) {
+			try {
+				const torsoResult = await enforcePresenterTorsoBlend({
+					jobId,
+					tmpDir: workingDir,
+					basePath: presenterLocalPath,
+					editedPath: outfitPath,
+					log,
+				});
+				if (torsoResult?.path && torsoResult.path !== outfitPath) {
+					safeUnlink(outfitPath);
+					outfitPath = torsoResult.path;
+					ensurePresenterFile(outfitPath);
+				}
+			} catch (e) {
+				if (log)
+					log("presenter torso blend failed; using original presenter", {
+						error: e?.message || String(e),
+					});
+				safeUnlink(outfitPath);
+				return {
+					localPath: presenterLocalPath,
+					url: "",
+					publicId: "",
+					width: 0,
+					height: 0,
+					method: "torso_blend_fallback_original",
+					presenterOutfit: "",
+				};
+			}
+		}
 		if (PRESENTER_FACE_LOCK_ENABLED) {
 			try {
 				const lockResult = await enforcePresenterFaceLock({
@@ -1104,7 +1238,7 @@ async function generatePresenterAdjustedImage({
 		finalUpload = await uploadPresenterToCloudinary(
 			outfitPath,
 			jobId,
-			PRESENTER_CLOUDINARY_PUBLIC_PREFIX
+			PRESENTER_CLOUDINARY_PUBLIC_PREFIX,
 		);
 	} catch (e) {
 		if (log)

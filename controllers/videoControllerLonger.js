@@ -249,7 +249,7 @@ const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"natural head and neck movement with very occasional micro-nods (not repetitive); head mostly steady; slow and controlled; avoid rhythmic bobbing; no fast turns or jerky motion; shoulders mostly still; hands resting or out of frame with minimal movement; human blink rate with slight variation (every few seconds), soft eyelid closures, subtle breathing, soft micro-expressions, natural jaw movement, relaxed eyes, natural forehead movement; mouth neutral or very light smile when appropriate; avoid robotic or looped motion; no exaggerated expressions";
+	"ultra-calm, minimal motion; head nearly still with only tiny micro-movements; no head translation forward/backward and no scale/zoom illusion; no head tilts beyond a few degrees; no rhythmic bobbing; no fast turns or jerky motion; shoulders locked and still; hands resting or out of frame with minimal movement; human blink rate with slight variation, soft eyelid closures, subtle breathing, soft micro-expressions; mouth neutral or very light smile only when appropriate; avoid robotic or looped motion; absolutely no exaggerated expressions";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -4770,12 +4770,12 @@ function buildBaselinePrompt(
 
 	const variantHint =
 		variant === 1
-			? "Add tiny head tilts and micro shifts in posture; keep movement subtle."
+			? "Use a barely noticeable blink cadence variation; keep head and shoulders essentially still."
 			: variant === 2
-				? "Use a slightly different blink cadence and a soft head turn or two."
+				? "Allow a tiny, slow head micro-shift (no tilt) and a subtle blink cadence change; movement must remain minimal."
 				: "";
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance: gentle head movement with rare micro-nods (no repeated nodding); head mostly steady; slow and controlled; no fast turns or jerky motion; hands resting with minimal movement; avoid robotic or looped motion."
+		? "Match the natural motion style from the reference performance but reduce the amplitude by at least 50%: keep head mostly fixed, no forward/back translation, no noticeable tilts; rare micro-nods only; slow and controlled; no fast turns or jerky motion; shoulders still; hands resting with minimal movement; avoid robotic or looped motion."
 		: PRESENTER_MOTION_STYLE;
 
 	return `
@@ -10785,8 +10785,8 @@ async function createPresenterIntroMotion({
 	);
 
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance: gentle head movement with rare micro-nods (no repeated nodding), human blink rate with slight variation, hands resting with minimal movement, avoid robotic or looped motion."
-		: "Natural head and neck movement, human blink rate with slight variation, subtle breathing, hands resting with minimal movement.";
+		? "Match the natural motion style from the reference performance but reduce the amplitude by at least 50%: head nearly still, no forward/back translation, no noticeable tilts; rare micro-nods only; human blink rate with slight variation; hands resting with minimal movement; avoid robotic or looped motion."
+		: "Ultra-calm minimal motion: head nearly still, no forward/back translation, no noticeable tilts; human blink rate with slight variation; subtle breathing; hands resting with minimal movement.";
 	const introFace = pickIntroExpression(jobId);
 	const titleTarget = `${Math.round(
 		INTRO_TEXT_X_PCT * 100,
