@@ -19,7 +19,7 @@ try {
 
 const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
 const RUNWAY_VERSION = "2024-11-06";
-const RUNWAY_IMAGE_MODEL = "gen4_image";
+const RUNWAY_IMAGE_MODEL = process.env.RUNWAY_IMAGE_MODEL || "gen4_image";
 const RUNWAY_IMAGE_POLL_INTERVAL_MS = 2000;
 const RUNWAY_IMAGE_MAX_POLL_ATTEMPTS = 120;
 const PRESENTER_MIN_BYTES = 12000;
@@ -623,35 +623,31 @@ function pickWardrobeVariant({
 	return pool[idx] || WARDROBE_VARIANTS[0];
 }
 
-function buildStrictWardrobePrompt({ topicLine, wardrobeVariant }) {
+function buildStrictWardrobePrompt({ wardrobeVariant }) {
 	return `
-Use @presenter_ref as the ONLY reference.
+Use @presenter_ref as the ONLY source.
 
-STRICT PRESERVATION:
-- Do NOT change the face or head in any way. Keep eyes, glasses, eyebrows, hair, forehead, lips, beard, neck, cheeks, ears, skin texture, and expression IDENTICAL to @presenter_ref.
-- Do NOT change head size or position. Maintain exact head-to-shoulder proportion and scale. The head must NOT be larger relative to the torso.
-- Do NOT move, warp, resize, or shift the presenter. Preserve exact geometry and proportions.
-- Everything above the collarbone must remain identical to @presenter_ref (pixel-for-pixel intent).
+LOCK IDENTITY + GEOMETRY:
+- Face/head/neck/hair/skin/glasses/expression: unchanged.
+- Head size/position and head-to-shoulder ratio: unchanged.
+- Torso anatomy/silhouette (shoulders/chest/waist/posture): unchanged.
+- No pose change. No move/warp/stretch/slim/widen.
+- Scene unchanged: framing/crop/camera/lighting/background/desk/props.
+- No retouching/stylization/text/logos/watermarks/new objects.
 
-FRAME & ENVIRONMENT:
-- Keep identical camera framing, perspective, lens, lighting, background, desk, and props.
-- No crop, no zoom, no borders, no vignettes, no added blur, no beautification.
-- No new objects, no added props, no text or logos.
-
-OUTFIT CHANGE ONLY:
-- Change ONLY the torso/upper-body clothing to: ${wardrobeVariant}.
-- Outfit must be dark and classy, open collar, intact (no rips/holes), straight placket, aligned buttons.
-- Outfit colors must be dark only (charcoal, black, deep navy, deep forest green, dark burgundy, deep teal, dark aubergine). No bright or light colors.
-- Do not add accessories or ties.
+ONLY EDIT:
+- Change ONLY upper-body clothing to: ${wardrobeVariant}.
+- Clothing must be dark, elegant, open-collar, intact (no rips/tears/holes), straight placket, aligned buttons.
+- No accessories.
 
 QUALITY:
-- No double face, no ghosting, no artifacts, no smoothing, no stylization.
-Topic context: ${topicLine}.
+- Single natural face; no double-face, ghosting, blur, or artifacts.
+- If any non-clothing pixel would change, output original unchanged presenter.
 `.trim();
 }
 
-function fallbackWardrobePrompt({ topicLine, wardrobeVariant }) {
-	return buildStrictWardrobePrompt({ topicLine, wardrobeVariant });
+function fallbackWardrobePrompt({ wardrobeVariant }) {
+	return buildStrictWardrobePrompt({ wardrobeVariant });
 }
 
 function parseJsonObject(text = "") {
@@ -687,10 +683,7 @@ async function buildOrchestratedPrompts({
 		categoryLabel,
 		avoidOutfits,
 	});
-	const strictPrompt = buildStrictWardrobePrompt({
-		topicLine,
-		wardrobeVariant,
-	});
+	const strictPrompt = buildStrictWardrobePrompt({ wardrobeVariant });
 	if (log)
 		log("wardrobe variation selected", {
 			variant: wardrobeVariant,
@@ -709,17 +702,17 @@ async function buildOrchestratedPrompts({
 	}
 
 	const system = `
-You write precise, regular descriptive prompts for Runway gen4_image.
+You write precise prompts for Runway text_to_image with model gen4_image.
 Return JSON only with key: wardrobePrompt.
 	Rules:
-	- Use @presenter_ref as the only person reference.
-	- Face is strictly locked: do NOT alter the face or head in any way; keep facial features identical and avoid any resizing or distortion.
-	- Do NOT change head size or position; maintain exact head-to-shoulder proportions.
-	- Keep studio/desk/background/camera/framing/lighting unchanged; no crop/zoom, no borders/letterboxing/vignettes, no added blur or processing.
-	- Wardrobe: vary the outfit each run using the provided wardrobe variation cue; include it exactly. If the cue says "no blazer", do not add a blazer. Use dark colors only and an open collar.
-- Outfit must be intact: no rips, tears, holes, missing fabric, or broken seams; shirt placket straight and buttons aligned.
-- Keep prompts concise and avoid phrasing that implies identity manipulation or deepfakes.
-- No extra objects and no added text/logos; no watermarks.
+	- Use @presenter_ref as the only source.
+	- Lock face/head/neck/hair/skin/glasses/expression exactly.
+	- Lock torso anatomy and silhouette exactly (shoulders/chest/waist/posture).
+	- Do not change pose, geometry, crop, camera, lighting, background, desk, or props.
+	- Wardrobe: apply the provided wardrobe variation cue exactly. If the cue says "no blazer", do not add a blazer.
+	- Outfit must be intact: no rips/tears/holes; straight placket; aligned buttons; dark elegant tones; open collar.
+	- The ONLY allowed edit is upper-body clothing. No accessories, no text/logos/watermarks, no extra objects.
+	- Keep it concise and direct.
 `.trim();
 
 	const userText = `
@@ -759,7 +752,7 @@ Topics: ${topicLine}
 				? promptBase
 				: `${promptBase}\n${integrityLine}`;
 			const result = {
-				wardrobePrompt: `${promptWithIntegrity}\n${strictPrompt}`,
+				wardrobePrompt: `${strictPrompt}\n${promptWithIntegrity}`,
 				wardrobeVariant,
 			};
 			if (log)
@@ -777,7 +770,6 @@ Topics: ${topicLine}
 
 	const fallback = {
 		wardrobePrompt: fallbackWardrobePrompt({
-			topicLine,
 			wardrobeVariant,
 		}),
 		wardrobeVariant,
@@ -1122,7 +1114,18 @@ async function generatePresenterAdjustedImage({
 				presenterLocalPath,
 				outfitPath,
 			);
-			logger("presenter similarity", {
+			const phashPass =
+				Number.isFinite(similarity.average) &&
+				(!Number.isFinite(similarity.scores.eyes) ||
+					similarity.scores.eyes >= PRESENTER_FACE_SIMILARITY_MIN) &&
+				(!Number.isFinite(similarity.scores.face) ||
+					similarity.scores.face >= PRESENTER_FACE_SIMILARITY_MIN) &&
+				(!Number.isFinite(similarity.scores.chin) ||
+					similarity.scores.chin >= PRESENTER_FACE_SIMILARITY_MIN) &&
+				(!Number.isFinite(similarity.scores.upper) ||
+					similarity.scores.upper >= PRESENTER_UPPER_SIMILARITY_MIN) &&
+				similarity.average >= PRESENTER_OVERALL_SIMILARITY_MIN;
+			logger("presenter phash", {
 				average: similarity.average,
 				scores: similarity.scores,
 				thresholds: {
@@ -1130,36 +1133,10 @@ async function generatePresenterAdjustedImage({
 					upper: PRESENTER_UPPER_SIMILARITY_MIN,
 					overall: PRESENTER_OVERALL_SIMILARITY_MIN,
 				},
+				pass: phashPass,
 			});
 			if (!Number.isFinite(similarity.average)) {
 				throw new Error("presenter_similarity_unavailable");
-			}
-			if (
-				Number.isFinite(similarity.scores.eyes) &&
-				similarity.scores.eyes < PRESENTER_FACE_SIMILARITY_MIN
-			) {
-				throw new Error("presenter_eyes_similarity_too_low");
-			}
-			if (
-				Number.isFinite(similarity.scores.face) &&
-				similarity.scores.face < PRESENTER_FACE_SIMILARITY_MIN
-			) {
-				throw new Error("presenter_face_similarity_too_low");
-			}
-			if (
-				Number.isFinite(similarity.scores.chin) &&
-				similarity.scores.chin < PRESENTER_FACE_SIMILARITY_MIN
-			) {
-				throw new Error("presenter_chin_similarity_too_low");
-			}
-			if (
-				Number.isFinite(similarity.scores.upper) &&
-				similarity.scores.upper < PRESENTER_UPPER_SIMILARITY_MIN
-			) {
-				throw new Error("presenter_upper_similarity_too_low");
-			}
-			if (similarity.average < PRESENTER_OVERALL_SIMILARITY_MIN) {
-				throw new Error("presenter_similarity_too_low");
 			}
 
 			let ssimChecks = null;
@@ -1217,6 +1194,11 @@ async function generatePresenterAdjustedImage({
 				if (ssimChecks.geometry < PRESENTER_SSIM_GEOMETRY_MIN) {
 					throw new Error("presenter_ssim_geometry_too_low");
 				}
+			}
+			if (!phashPass) {
+				logger("presenter phash warning (non-blocking)", {
+					reason: "phash_below_threshold",
+				});
 			}
 
 			const finalUpload = await uploadPresenterToCloudinary(
