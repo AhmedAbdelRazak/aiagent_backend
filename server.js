@@ -2,6 +2,7 @@
 /* eslint-disable no-console */
 
 const path = require("path");
+const crypto = require("crypto");
 
 // Always load .env from the same directory as this file (works reliably with PM2)
 require("dotenv").config({ path: path.join(__dirname, ".env") });
@@ -123,7 +124,7 @@ app.use(
 		methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
 		allowedHeaders: ["Content-Type", "Authorization"],
 		credentials: true,
-	})
+	}),
 );
 
 /* ---------- Health endpoints ---------- */
@@ -168,36 +169,146 @@ let processing = false;
 
 const FAIL_BACKOFF_MINUTES = toInt(
 	process.env.SCHEDULE_FAIL_BACKOFF_MINUTES,
-	10
+	10,
 );
 const MAX_SCHEDULE_FAILURES = Math.max(
 	1,
-	toInt(process.env.SCHEDULE_MAX_FAILURES, 3)
+	toInt(process.env.SCHEDULE_MAX_FAILURES, 3),
 );
 const SHORTS_UPLOAD_BATCH_MIN = toInt(process.env.SHORTS_UPLOAD_BATCH_MIN, 3);
 const SHORTS_UPLOAD_BATCH_MAX = toInt(process.env.SHORTS_UPLOAD_BATCH_MAX, 6);
 const SHORTS_CRON_TZ = process.env.SHORTS_CRON_TZ || PST_TZ;
 const SHORTS_CRON_SCHEDULE = process.env.SHORTS_CRON_SCHEDULE || "0 */2 * * *";
+const SCHEDULE_RUN_HISTORY_MAX = Math.max(
+	1,
+	toInt(process.env.SCHEDULE_RUN_HISTORY_MAX, 20),
+);
+const SCHEDULE_QUEUE_STALL_WARN_MINUTES = Math.max(
+	1,
+	toInt(process.env.SCHEDULE_QUEUE_STALL_WARN_MINUTES, 20),
+);
+
+let activeQueueJob = null;
+
+function clipRunReason(v) {
+	const msg = String(v || "").trim();
+	return msg ? msg.slice(0, 500) : "";
+}
+
+function buildScheduleRunEntry({
+	runId,
+	status,
+	startedAt,
+	finishedAt,
+	reason,
+	nextRun,
+	failCount,
+}) {
+	const started =
+		startedAt instanceof Date && !Number.isNaN(startedAt.getTime())
+			? startedAt
+			: null;
+	const finished =
+		finishedAt instanceof Date && !Number.isNaN(finishedAt.getTime())
+			? finishedAt
+			: new Date();
+	return {
+		runId: String(runId || ""),
+		status,
+		startedAt: started || finished,
+		finishedAt: finished,
+		durationMs:
+			started && finished
+				? Math.max(0, finished.getTime() - started.getTime())
+				: 0,
+		reason: clipRunReason(reason),
+		nextRun:
+			nextRun instanceof Date && !Number.isNaN(nextRun.getTime())
+				? nextRun
+				: null,
+		failCount:
+			Number.isFinite(Number(failCount)) && Number(failCount) >= 0
+				? Math.floor(Number(failCount))
+				: 0,
+	};
+}
+
+function appendScheduleRunEntry(sched, entry) {
+	const history = Array.isArray(sched.runHistory) ? [...sched.runHistory] : [];
+	history.push(entry);
+	if (history.length > SCHEDULE_RUN_HISTORY_MAX) {
+		history.splice(0, history.length - SCHEDULE_RUN_HISTORY_MAX);
+	}
+	sched.lastRun = entry;
+	sched.runHistory = history;
+}
+
+async function markScheduleRunStarted(sched, runContext) {
+	const startedEntry = buildScheduleRunEntry({
+		runId: runContext.runId,
+		status: "started",
+		startedAt: runContext.startedAt,
+		finishedAt: runContext.startedAt,
+		reason: "started",
+		nextRun: sched.nextRun,
+		failCount: getScheduleFailCount(sched),
+	});
+	sched.lastRun = startedEntry;
+	await sched.save();
+}
+
+function getControllerErrorText(payload) {
+	if (!payload) return "";
+	if (typeof payload === "string") return payload.slice(0, 500);
+	if (typeof payload.error === "string") return payload.error.slice(0, 500);
+	if (typeof payload.message === "string") return payload.message.slice(0, 500);
+	try {
+		return JSON.stringify(payload).slice(0, 500);
+	} catch {
+		return "";
+	}
+}
 
 async function processQueue() {
 	if (processing) return;
 	processing = true;
+	console.log(`[Queue] Worker started; queue size ${jobQueue.length}`);
 
-	while (jobQueue.length) {
-		const sched = jobQueue.shift();
-		try {
-			await handleSchedule(sched);
-		} catch (err) {
-			console.error(
-				"[Queue] job error:",
-				err && err.message ? err.message : err
-			);
-		} finally {
-			queuedIds.delete(String(sched._id));
+	try {
+		while (jobQueue.length) {
+			const sched = jobQueue.shift();
+			const scheduleId = String(sched?._id || "");
+			if (!scheduleId) {
+				console.warn("[Queue] Dropping invalid queued job payload");
+				continue;
+			}
+			activeQueueJob = { scheduleId, startedAt: Date.now() };
+			try {
+				console.log(
+					`[Queue] Starting schedule ${scheduleId}; remaining queue ${jobQueue.length}`,
+				);
+				await handleSchedule(sched);
+			} catch (err) {
+				console.error(
+					`[Queue] job error for schedule ${scheduleId}:`,
+					err && err.message ? err.message : err,
+				);
+			} finally {
+				queuedIds.delete(scheduleId);
+				activeQueueJob = null;
+			}
+		}
+	} catch (err) {
+		console.error("[Queue] fatal loop error:", err?.message || err);
+	} finally {
+		processing = false;
+		console.log(`[Queue] Worker idle; queue size ${jobQueue.length}`);
+		if (jobQueue.length) {
+			setImmediate(() => {
+				void processQueue();
+			});
 		}
 	}
-
-	processing = false;
 }
 
 function parseTimeOfDay(timeOfDay) {
@@ -251,7 +362,7 @@ function computeNextRunForSchedule({
 
 async function applyScheduleFailureBackoff(
 	sched,
-	{ nowPST, scheduleType, reason, err } = {}
+	{ nowPST, scheduleType, reason, err, runContext } = {},
 ) {
 	const currentFails = getScheduleFailCount(sched);
 	const nextFails = currentFails + 1;
@@ -270,36 +381,81 @@ async function applyScheduleFailureBackoff(
 		});
 		sched.nextRun = next ? next.toDate() : nowPST.add(1, "day").toDate();
 		sched.failCount = 0;
+		appendScheduleRunEntry(
+			sched,
+			buildScheduleRunEntry({
+				runId: runContext?.runId,
+				status: "failed",
+				startedAt: runContext?.startedAt,
+				reason: `${msg || "schedule run failed"} (failure limit reached)`,
+				nextRun: sched.nextRun,
+				failCount: nextFails,
+			}),
+		);
 		await sched.save();
 		console.log(
 			`[Queue] Failure limit reached (${MAX_SCHEDULE_FAILURES}) for schedule ${
 				sched._id
-			}; nextRun ${dayjs(sched.nextRun).tz(PST_TZ).format()} PST`
+			}; nextRun ${dayjs(sched.nextRun).tz(PST_TZ).format()} PST`,
 		);
 		return { deferred: true };
 	}
 
 	sched.nextRun = nowPST.add(FAIL_BACKOFF_MINUTES, "minute").toDate();
+	appendScheduleRunEntry(
+		sched,
+		buildScheduleRunEntry({
+			runId: runContext?.runId,
+			status: "failed",
+			startedAt: runContext?.startedAt,
+			reason: msg || "schedule run failed",
+			nextRun: sched.nextRun,
+			failCount: nextFails,
+		}),
+	);
 	await sched.save();
 	console.log(
 		`[Queue] Backoff attempt ${nextFails}/${MAX_SCHEDULE_FAILURES} for schedule ${
 			sched._id
-		}; retry at ${dayjs(sched.nextRun).tz(PST_TZ).format()} PST`
+		}; retry at ${dayjs(sched.nextRun).tz(PST_TZ).format()} PST`,
 	);
 	return { deferred: false };
 }
 
 async function handleSchedule(sched) {
 	const nowPST = dayjs().tz(PST_TZ);
+	const runContext = {
+		runId: crypto.randomUUID(),
+		startedAt: new Date(),
+	};
+	try {
+		await markScheduleRunStarted(sched, runContext);
+	} catch (err) {
+		console.warn(
+			`[Queue] Failed to persist run start for schedule ${sched._id}:`,
+			err?.message || err,
+		);
+	}
 
 	// Basic validation to prevent “bad data” infinite loops
 	const t = parseTimeOfDay(sched.timeOfDay);
 	if (!t) {
 		console.error(
 			`[Queue] Invalid timeOfDay for schedule ${sched._id}:`,
-			sched.timeOfDay
+			sched.timeOfDay,
 		);
 		sched.active = false;
+		appendScheduleRunEntry(
+			sched,
+			buildScheduleRunEntry({
+				runId: runContext.runId,
+				status: "failed",
+				startedAt: runContext.startedAt,
+				reason: `invalid timeOfDay: ${sched.timeOfDay}`,
+				nextRun: sched.nextRun,
+				failCount: getScheduleFailCount(sched),
+			}),
+		);
 		await sched.save();
 		return;
 	}
@@ -312,6 +468,17 @@ async function handleSchedule(sched) {
 		endPST = dayjs.tz(`${endDateStr} 23:59:59`, "YYYY-MM-DD HH:mm:ss", PST_TZ);
 		if (nowPST.isAfter(endPST)) {
 			sched.active = false;
+			appendScheduleRunEntry(
+				sched,
+				buildScheduleRunEntry({
+					runId: runContext.runId,
+					status: "skipped",
+					startedAt: runContext.startedAt,
+					reason: "schedule expired by endDate",
+					nextRun: sched.nextRun,
+					failCount: getScheduleFailCount(sched),
+				}),
+			);
 			await sched.save();
 			console.log(`[Queue] Schedule ${sched._id} expired & deactivated`);
 			return;
@@ -324,12 +491,13 @@ async function handleSchedule(sched) {
 	const scheduleCategory = normalizeScheduleValue(sched.category);
 	if (!scheduleCategory) {
 		console.error(
-			`[Queue] Schedule ${sched._id} missing category; delaying with backoff`
+			`[Queue] Schedule ${sched._id} missing category; delaying with backoff`,
 		);
 		await applyScheduleFailureBackoff(sched, {
 			nowPST,
 			scheduleType,
 			reason: "missing category",
+			runContext,
 		});
 		return;
 	}
@@ -373,12 +541,13 @@ async function handleSchedule(sched) {
 		const normBaseCategory = normalizeScheduleValue(initialVideo?.category);
 		if (normBaseCategory && normBaseCategory !== resolvedCategory) {
 			console.error(
-				`[Queue] Schedule ${sched._id} category mismatch (schedule=${resolvedCategory}, seed=${normBaseCategory})`
+				`[Queue] Schedule ${sched._id} category mismatch (schedule=${resolvedCategory}, seed=${normBaseCategory})`,
 			);
 			await applyScheduleFailureBackoff(sched, {
 				nowPST,
 				scheduleType,
 				reason: "category mismatch with seed video",
+				runContext,
 			});
 			return;
 		}
@@ -386,24 +555,26 @@ async function handleSchedule(sched) {
 		const normLatestCategory = normalizeScheduleValue(latestVideo?.category);
 		if (normLatestCategory && normLatestCategory !== resolvedCategory) {
 			console.error(
-				`[Queue] Schedule ${sched._id} category mismatch (schedule=${resolvedCategory}, latest=${normLatestCategory})`
+				`[Queue] Schedule ${sched._id} category mismatch (schedule=${resolvedCategory}, latest=${normLatestCategory})`,
 			);
 			await applyScheduleFailureBackoff(sched, {
 				nowPST,
 				scheduleType,
 				reason: "category mismatch with latest schedule video",
+				runContext,
 			});
 			return;
 		}
 
 		if (!seedVideo) {
 			console.error(
-				`[Queue] Schedule ${sched._id} missing seed video; delaying with backoff`
+				`[Queue] Schedule ${sched._id} missing seed video; delaying with backoff`,
 			);
 			await applyScheduleFailureBackoff(sched, {
 				nowPST,
 				scheduleType,
 				reason: "missing seed video",
+				runContext,
 			});
 			return;
 		}
@@ -422,24 +593,26 @@ async function handleSchedule(sched) {
 		initialDuration !== latestDuration
 	) {
 		console.error(
-			`[Queue] Schedule ${sched._id} duration mismatch (seed=${initialDuration}, latest=${latestDuration})`
+			`[Queue] Schedule ${sched._id} duration mismatch (seed=${initialDuration}, latest=${latestDuration})`,
 		);
 		await applyScheduleFailureBackoff(sched, {
 			nowPST,
 			scheduleType,
 			reason: "duration mismatch across schedule videos",
+			runContext,
 		});
 		return;
 	}
 	const resolvedDuration = latestDuration || initialDuration;
 	if (!isLongSchedule && !resolvedDuration) {
 		console.error(
-			`[Queue] Schedule ${sched._id} missing duration from seed videos; delaying with backoff`
+			`[Queue] Schedule ${sched._id} missing duration from seed videos; delaying with backoff`,
 		);
 		await applyScheduleFailureBackoff(sched, {
 			nowPST,
 			scheduleType,
 			reason: "missing duration from schedule videos",
+			runContext,
 		});
 		return;
 	}
@@ -468,7 +641,7 @@ async function handleSchedule(sched) {
 				youtubeRefreshToken: longConfig?.youtubeRefreshToken || "",
 				youtubeTokenExpiresAt: longConfig?.youtubeTokenExpiresAt || "",
 				youtubeCategory: longConfig?.youtubeCategory || "",
-		  }
+			}
 		: {
 				category: resolvedCategory,
 				ratio: seedVideo?.ratio || "720:1280",
@@ -483,7 +656,7 @@ async function handleSchedule(sched) {
 				youtubeRefreshToken: seedVideo?.youtubeRefreshToken,
 				youtubeTokenExpiresAt: seedVideo?.youtubeTokenExpiresAt,
 				youtubeEmail: seedVideo?.youtubeEmail,
-		  };
+			};
 	const scheduleJobMeta = {
 		scheduleId: String(sched._id),
 		category: resolvedCategory,
@@ -494,22 +667,55 @@ async function handleSchedule(sched) {
 
 	// Mock req/res so createVideo can run from cron/queue
 	const reqMock = { body, user, scheduleJobMeta };
+	const controllerResponse = {
+		statusCode: 200,
+		body: null,
+		sawErrorPhase: false,
+	};
 	const resMock = {
 		headersSent: false,
+		statusCode: 200,
 		setHeader() {},
 		setTimeout() {},
-		write() {},
-		status() {
+		flushHeaders() {},
+		flush() {},
+		write(chunk) {
+			const text = String(chunk || "");
+			if (!text || !text.includes("data:")) return;
+			const lines = text.split("\n");
+			for (const line of lines) {
+				if (!line.startsWith("data:")) continue;
+				const payloadText = line.slice(5).trim();
+				if (!payloadText) continue;
+				try {
+					const payload = JSON.parse(payloadText);
+					if (payload?.phase === "ERROR") {
+						controllerResponse.sawErrorPhase = true;
+					}
+				} catch {
+					// ignore non-json SSE chunks
+				}
+			}
+		},
+		status(code) {
+			const n = Number(code);
+			if (Number.isFinite(n) && n > 0) {
+				this.statusCode = n;
+				controllerResponse.statusCode = n;
+			}
 			return this;
 		},
-		json() {},
+		json(payload) {
+			controllerResponse.body = payload;
+			return this;
+		},
 		end() {},
 	};
 
 	console.log(
 		`[Queue] Generating ${
 			isLongSchedule ? "long video" : "video"
-		} for schedule ${sched._id} (${resolvedCategory})`
+		} for schedule ${sched._id} (${resolvedCategory})`,
 	);
 
 	// IMPORTANT: Prevent “infinite retry loop” if createVideo fails:
@@ -520,18 +726,34 @@ async function handleSchedule(sched) {
 		} else {
 			await createVideo(reqMock, resMock);
 		}
+		const controllerStatus = Number(controllerResponse.statusCode) || 200;
+		if (controllerStatus >= 400) {
+			const errText = getControllerErrorText(controllerResponse.body);
+			throw new Error(
+				`controller returned HTTP ${controllerStatus}${
+					errText ? `: ${errText}` : ""
+				}`,
+			);
+		}
+		if (!isLongSchedule && controllerResponse.sawErrorPhase) {
+			const errText = getControllerErrorText(controllerResponse.body);
+			throw new Error(
+				`controller emitted ERROR phase${errText ? `: ${errText}` : ""}`,
+			);
+		}
 		sched.failCount = 0;
 		sched.lastFailReason = undefined;
 		console.log(`[Queue] ✔ Video done for schedule ${sched._id}`);
 	} catch (err) {
 		console.error(
 			`[Queue] ✖ createVideo failed for schedule ${sched._id}:`,
-			err?.message || err
+			err?.message || err,
 		);
 		await applyScheduleFailureBackoff(sched, {
 			nowPST,
 			scheduleType,
 			err,
+			runContext,
 		});
 		return;
 	}
@@ -545,7 +767,18 @@ async function handleSchedule(sched) {
 	});
 	if (!next) {
 		console.error(
-			`[Queue] Invalid nextRun calc for schedule ${sched._id}; keeping current`
+			`[Queue] Invalid nextRun calc for schedule ${sched._id}; keeping current`,
+		);
+		appendScheduleRunEntry(
+			sched,
+			buildScheduleRunEntry({
+				runId: runContext.runId,
+				status: "failed",
+				startedAt: runContext.startedAt,
+				reason: "invalid nextRun calculation",
+				nextRun: sched.nextRun,
+				failCount: getScheduleFailCount(sched),
+			}),
 		);
 		await sched.save();
 		return;
@@ -554,17 +787,31 @@ async function handleSchedule(sched) {
 	if (endPST && next.isAfter(endPST)) {
 		sched.active = false;
 		console.log(
-			`[Queue] Schedule ${sched._id} reached endDate, marking inactive`
+			`[Queue] Schedule ${sched._id} reached endDate, marking inactive`,
 		);
 	} else {
 		sched.nextRun = next.toDate();
 	}
 
+	appendScheduleRunEntry(
+		sched,
+		buildScheduleRunEntry({
+			runId: runContext.runId,
+			status: "success",
+			startedAt: runContext.startedAt,
+			reason:
+				endPST && next.isAfter(endPST)
+					? "run completed; deactivated at endDate boundary"
+					: "run completed",
+			nextRun: sched.nextRun,
+			failCount: getScheduleFailCount(sched),
+		}),
+	);
 	await sched.save();
 	console.log(
 		`[Queue] Schedule ${
 			sched._id
-		} → nextRun ${next.format()} PST (stored ${sched.nextRun.toISOString()})`
+		} → nextRun ${next.format()} PST (stored ${sched.nextRun.toISOString()})`,
 	);
 }
 
@@ -577,6 +824,22 @@ const cronTask = cron.schedule(
 			if (mongoose.connection.readyState !== 1) {
 				console.warn("[Cron] DB not connected yet; skipping this tick.");
 				return;
+			}
+			if (processing && activeQueueJob?.startedAt) {
+				const ageMs = Date.now() - activeQueueJob.startedAt;
+				const warnMs = SCHEDULE_QUEUE_STALL_WARN_MINUTES * 60 * 1000;
+				if (
+					ageMs >= warnMs &&
+					(!activeQueueJob.lastWarnAt ||
+						Date.now() - activeQueueJob.lastWarnAt >= warnMs)
+				) {
+					activeQueueJob.lastWarnAt = Date.now();
+					console.warn(
+						`[Queue] Long-running job detected for schedule ${
+							activeQueueJob.scheduleId
+						}; age=${Math.round(ageMs / 60000)}m, queued=${jobQueue.length}`,
+					);
+				}
 			}
 
 			const nowPSTDate = dayjs().tz(PST_TZ).toDate();
@@ -602,15 +865,15 @@ const cronTask = cron.schedule(
 
 			if (newlyEnqueued > 0) {
 				console.log(
-					`[Cron] Enqueued ${newlyEnqueued} job(s); queue size ${jobQueue.length}`
+					`[Cron] Enqueued ${newlyEnqueued} job(s); queue size ${jobQueue.length}`,
 				);
-				processQueue();
+				void processQueue();
 			}
 		} catch (err) {
 			console.error("[Cron] fatal:", err);
 		}
 	},
-	{ timezone: PST_TZ }
+	{ timezone: PST_TZ },
 );
 
 /* ---------- Shorts uploader cron (every 2 hours) ---------- */
@@ -645,7 +908,7 @@ const shortsCronTask = cron.schedule(
 			shortsProcessing = false;
 		}
 	},
-	{ timezone: SHORTS_CRON_TZ }
+	{ timezone: SHORTS_CRON_TZ },
 );
 
 /* ---------- Socket.IO handlers ---------- */
@@ -656,25 +919,25 @@ io.on("connection", (socket) => {
 	socket.on("leaveRoom", ({ chatId }) => chatId && socket.leave(chatId));
 
 	socket.on("typing", ({ chatId, userId }) =>
-		io.to(chatId).emit("typing", { chatId, userId })
+		io.to(chatId).emit("typing", { chatId, userId }),
 	);
 	socket.on("stopTyping", ({ chatId, userId }) =>
-		io.to(chatId).emit("stopTyping", { chatId, userId })
+		io.to(chatId).emit("stopTyping", { chatId, userId }),
 	);
 
 	socket.on("sendMessage", (msg) =>
-		io.to(msg.chatId).emit("receiveMessage", msg)
+		io.to(msg.chatId).emit("receiveMessage", msg),
 	);
 	socket.on("newChat", (d) => io.emit("newChat", d));
 	socket.on("deleteMessage", ({ chatId, messageId }) =>
-		io.to(chatId).emit("messageDeleted", { chatId, messageId })
+		io.to(chatId).emit("messageDeleted", { chatId, messageId }),
 	);
 
 	socket.on("disconnect", (reason) =>
-		console.log(`User disconnected: ${reason}`)
+		console.log(`User disconnected: ${reason}`),
 	);
 	socket.on("connect_error", (error) =>
-		console.error(`Connection error: ${error.message}`)
+		console.error(`Connection error: ${error.message}`),
 	);
 });
 
@@ -689,7 +952,7 @@ const PORT = toInt(process.env.PORT, 8102);
 const mongoUri = process.env.MONGODB_URI || process.env.DATABASE;
 if (!mongoUri) {
 	console.error(
-		"Missing MongoDB connection string. Set MONGODB_URI (preferred) or DATABASE in your .env"
+		"Missing MongoDB connection string. Set MONGODB_URI (preferred) or DATABASE in your .env",
 	);
 	process.exit(1);
 }
@@ -758,7 +1021,7 @@ async function start() {
 			console.log(
 				`Allowed origins: ${
 					ALLOW_ALL_ORIGINS ? "*" : ALLOWED_ORIGINS.join(", ")
-				}`
+				}`,
 			);
 			console.log(`Cron timezone: ${PST_TZ}`);
 		});

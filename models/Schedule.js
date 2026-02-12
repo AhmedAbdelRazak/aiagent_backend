@@ -1,6 +1,41 @@
 // models/Schedule.js
 const mongoose = require("mongoose");
 
+const scheduleRunSchema = new mongoose.Schema(
+	{
+		runId: {
+			type: String,
+			trim: true,
+		},
+		status: {
+			type: String,
+			enum: ["started", "success", "failed", "skipped"],
+			required: true,
+		},
+		startedAt: {
+			type: Date,
+		},
+		finishedAt: {
+			type: Date,
+		},
+		durationMs: {
+			type: Number,
+		},
+		reason: {
+			type: String,
+			trim: true,
+		},
+		nextRun: {
+			type: Date,
+		},
+		failCount: {
+			type: Number,
+			default: 0,
+		},
+	},
+	{ _id: false }
+);
+
 const scheduleSchema = new mongoose.Schema(
 	{
 		user: {
@@ -65,6 +100,14 @@ const scheduleSchema = new mongoose.Schema(
 		},
 		lastFailReason: {
 			type: String,
+		},
+		lastRun: {
+			type: scheduleRunSchema,
+			default: null,
+		},
+		runHistory: {
+			type: [scheduleRunSchema],
+			default: [],
 		},
 		active: {
 			type: Boolean,
