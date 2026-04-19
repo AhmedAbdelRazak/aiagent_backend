@@ -398,12 +398,36 @@ const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 
 // Music
-const MUSIC_VOLUME = clampNumber(0.16, 0.06, 0.5);
-const MUSIC_DUCK_THRESHOLD = clampNumber(0.09, 0.03, 0.3);
-const MUSIC_DUCK_RATIO = clampNumber(6, 2, 14);
-const MUSIC_DUCK_ATTACK = clampNumber(25, 5, 200);
-const MUSIC_DUCK_RELEASE = clampNumber(260, 40, 1200);
-const MUSIC_DUCK_MAKEUP = clampNumber(1.6, 1, 4);
+const MUSIC_VOLUME = clampNumber(
+	process.env.LONG_VIDEO_MUSIC_VOLUME ?? 0.09,
+	0.03,
+	0.5,
+);
+const MUSIC_DUCK_THRESHOLD = clampNumber(
+	process.env.LONG_VIDEO_MUSIC_DUCK_THRESHOLD ?? 0.06,
+	0.02,
+	0.3,
+);
+const MUSIC_DUCK_RATIO = clampNumber(
+	process.env.LONG_VIDEO_MUSIC_DUCK_RATIO ?? 8,
+	2,
+	16,
+);
+const MUSIC_DUCK_ATTACK = clampNumber(
+	process.env.LONG_VIDEO_MUSIC_DUCK_ATTACK ?? 12,
+	5,
+	200,
+);
+const MUSIC_DUCK_RELEASE = clampNumber(
+	process.env.LONG_VIDEO_MUSIC_DUCK_RELEASE ?? 420,
+	40,
+	1600,
+);
+const MUSIC_DUCK_MAKEUP = clampNumber(
+	process.env.LONG_VIDEO_MUSIC_DUCK_MAKEUP ?? 1.0,
+	1,
+	3,
+);
 
 const DEFAULT_MUSIC_URL = "";
 const DEFAULT_MUSIC_PATH = "";
@@ -7094,17 +7118,17 @@ function enforceRealWorldFraming(segments = [], topicContextFlags = []) {
 const INTRO_TEMPLATES = {
 	neutral: {
 		single: [
-			"Here's what people are searching for: {topic1}.",
+			"Here's what matters in {topic1}.",
 			"Here's the latest on {topic1}.",
-			"Here's what's driving searches on {topic1}.",
+			"Here's the key angle on {topic1}.",
 		],
 		dual: [
-			"Two stories to cover: {topicList}.",
+			"Two stories that matter: {topicList}.",
 			"First: {topic1}. Then: {topic2}.",
-			"Two updates driving searches: {topicList}.",
+			"Two updates in focus: {topicList}.",
 		],
 		multi: [
-			"Three stories in focus: {topicList}.",
+			"Three stories that matter right now: {topicList}.",
 			"Here's the quick rundown: {topicList}.",
 			"Today's lineup: {topicList}.",
 		],
@@ -7168,6 +7192,19 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	return sanitizeIntroOutroLine(line);
 }
 
+function isSportsLikeTopicLabel(text = "") {
+	const t = String(text || "").toLowerCase();
+	return (
+		/\bvs\.?\b|\bversus\b/.test(t) ||
+		/\b(game|matchup|recap|highlights?|takeaways?|postgame|halftime|final four|sweet sixteen|elite eight|playoffs?|tournament)\b/.test(
+			t,
+		) ||
+		/\b(nfl|nba|mlb|nhl|ncaa|ncaa tournament|college basketball|college football|march madness)\b/.test(
+			t,
+		)
+	);
+}
+
 function buildTopicEngagementQuestionForLabel(
 	topicLabel,
 	mood = "neutral",
@@ -7180,6 +7217,11 @@ function buildTopicEngagementQuestionForLabel(
 	});
 	const fallback = "What detail still feels unresolved?";
 	if (!label) return fallback;
+	if (isSportsLikeTopicLabel(label)) {
+		return compact
+			? `What was the turning point in ${label}?`
+			: `What was the turning point for you in ${label}?`;
+	}
 	if (compact)
 		return mood === "serious"
 			? `Which detail about ${label} still feels unresolved?`
@@ -7643,6 +7685,133 @@ function ensureTopicEngagementQuestions(
 	});
 }
 
+function isSportsCategoryLabel(categoryLabel = "", topics = []) {
+	const normalized = normalizeCategoryLabel(categoryLabel).toLowerCase();
+	if (normalized === "sports") return true;
+	return Array.isArray(topics)
+		? topics.some((topic) =>
+				isSportsLikeTopicLabel(
+					topic?.displayTopic || topic?.topic || String(topic || ""),
+				),
+			)
+		: false;
+}
+
+function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
+	if (!isSportsCategoryLabel(categoryLabel, topics)) {
+		return {
+			isSports: false,
+			lines: [
+				"- Write for spoken delivery first. Translate keyword-style phrases into natural sentences a presenter would actually say.",
+				"- Attribute the reporting source, analyst, or outlet itself. Do not treat a platform host like YouTube, TikTok, Reddit, Instagram, or X as the authority.",
+				"- Avoid search-query phrasing unless it is essential to the hook. After the opening, stay in story mode, not search-results mode.",
+				"- Avoid symbol-heavy wording that sounds awkward in voiceover. Prefer naturally spoken phrasing over shorthand.",
+			],
+		};
+	}
+
+	return {
+		isSports: true,
+		lines: [
+			"- For sports topics, write like a sharp postgame or pregame breakdown, not a search-trends explainer.",
+			"- Open on the matchup tension, turning point, or strategic edge. Do NOT open on what people are searching for.",
+			"- Use natural sports language: pace, shot quality, rebounding, turnovers, foul trouble, coverage change, rotation pressure, late-game execution, and momentum swing.",
+			'- If a source is a preview, recap, or analyst hit, attribute the analyst and outlet. Say "Jon Rothstein on CBS Sports" rather than "According to YouTube".',
+			'- Translate keyword phrases into normal speech. Never say quoted fragments like "where to watch" or "score today" as standalone ideas in the body of the script.',
+			"- Mention odds or betting only if they clarify expectations, and state them plainly without sportsbook-promotional framing.",
+			"- Focus on what actually changed the game: the matchup edge, the run that flipped it, the coaching adjustment, and what the result means next.",
+			'- Keep sports scores and runs easy to read aloud. Prefer phrases like "an eight to nothing run" over symbol-heavy shorthand.',
+		],
+	};
+}
+
+const SCRIPT_SEARCH_META_PATTERNS = [
+	/\bwhat(?:'s| is)\s+driving\s+searches\b/i,
+	/\bwhat\s+people\s+are\s+searching\s+for\b/i,
+	/\bwhere\s+to\s+watch\b/i,
+	/\bscore\s+today\b/i,
+	/\bwhat\s+people\s+are\s+asking\b/i,
+	/\bshot\s+up\s+in\s+search(?:es)?\b/i,
+	/\bspiked?\s+in\s+search(?:es)?\b/i,
+	/\btrending\s+search(?:es)?\b/i,
+];
+
+const SCRIPT_PLATFORM_ATTRIBUTION_PATTERNS = [
+	/\baccording\s+to\s+youtube\b/i,
+	/\baccording\s+to\s+tiktok\b/i,
+	/\baccording\s+to\s+reddit\b/i,
+	/\baccording\s+to\s+instagram\b/i,
+	/\baccording\s+to\s+x\.com\b/i,
+	/\baccording\s+to\s+x\b/i,
+];
+
+const SCRIPT_BETTING_PROMO_PATTERNS = [
+	/\bhard\s+rock\s+bet\b/i,
+	/\bbetting\s+preview(?:s)?\b/i,
+	/\bsportsbook\b/i,
+];
+
+const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
+	/\bvs\.?\b/i,
+	/\b\d{1,3}\s*[\u2013-]\s*\d{1,3}\b/,
+];
+
+function analyzeScriptSpeakability({
+	script,
+	topics = [],
+	categoryLabel = "",
+}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	const isSports = isSportsCategoryLabel(categoryLabel, topics);
+	const searchMetaSegments = [];
+	const platformAttributionSegments = [];
+	const bettingPromoSegments = [];
+	const speechAwkwardSegments = [];
+
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i] || {};
+		const text = String(seg.text || "").trim();
+		if (!text) continue;
+		if (SCRIPT_SEARCH_META_PATTERNS.some((rx) => rx.test(text))) {
+			searchMetaSegments.push(i);
+		}
+		if (SCRIPT_PLATFORM_ATTRIBUTION_PATTERNS.some((rx) => rx.test(text))) {
+			platformAttributionSegments.push(i);
+		}
+		if (isSports && SCRIPT_BETTING_PROMO_PATTERNS.some((rx) => rx.test(text))) {
+			bettingPromoSegments.push(i);
+		}
+		if (SCRIPT_SPEECH_AWKWARD_PATTERNS.some((rx) => rx.test(text))) {
+			speechAwkwardSegments.push(i);
+		}
+	}
+
+	const warnings = [];
+	if (searchMetaSegments.length) warnings.push("search_meta_phrasing_detected");
+	if (platformAttributionSegments.length)
+		warnings.push("platform_attribution_detected");
+	if (bettingPromoSegments.length) warnings.push("sportsbook_framing_detected");
+	if (speechAwkwardSegments.length)
+		warnings.push("tts_awkward_symbol_phrasing_detected");
+
+	const needsRewrite =
+		platformAttributionSegments.length > 0 ||
+		searchMetaSegments.length >= (isSports ? 1 : 2) ||
+		bettingPromoSegments.length > 0 ||
+		speechAwkwardSegments.length >= 3;
+
+	return {
+		needsRewrite,
+		warnings,
+		stats: {
+			searchMetaSegments,
+			platformAttributionSegments,
+			bettingPromoSegments,
+			speechAwkwardSegments,
+		},
+	};
+}
+
 async function generateScript({
 	jobId,
 	topics = [],
@@ -7653,6 +7822,7 @@ async function generateScript({
 	topicContexts,
 	tonePlan,
 	topicContextFlags = [],
+	categoryLabel = "",
 	includeOutro = false,
 	contentMode = "trends",
 }) {
@@ -7666,6 +7836,7 @@ async function generateScript({
 	const topicCount = safeTopics.length;
 	const topicLabelFor = (t) => String(t?.displayTopic || t?.topic || "").trim();
 	const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
+	const categoryGuide = buildCategoryScriptGuide(categoryLabel, safeTopics);
 	const briefLine = isPromptMode
 		? topicCount > 1
 			? "This is a multi-topic brief based on a user request."
@@ -7673,7 +7844,9 @@ async function generateScript({
 		: "This is a multi-topic news brief.";
 	const trendSignalLabel = isPromptMode
 		? "Context signals (use if present; do NOT invent):"
-		: "Trending signals (address the #1 rising reason early if present):";
+		: categoryGuide.isSports
+			? "Search signals (use as audience context for the hook; translate them into natural sports language and do NOT quote them verbatim):"
+			: "Trending signals (address the #1 rising reason early if present):";
 	const evidenceLine = isPromptMode
 		? '- If a topic\'s evidence is "(none)", keep statements high-level and avoid specific claims; frame it as an open question.'
 		: "- If a topic's evidence is \"(none)\", keep statements high-level and avoid specific claims; say it's trending and frame it as an open question.";
@@ -7709,7 +7882,7 @@ async function generateScript({
 
 	const topicHintLines = safeTopics
 		.map((t, i) => {
-			const hints = uniqueStrings(
+			const rawHints = uniqueStrings(
 				[
 					...(Array.isArray(t.keywords) ? t.keywords : []),
 					...(t.trendStory?.searchPhrases || []),
@@ -7723,6 +7896,14 @@ async function generateScript({
 				],
 				{ limit: 8 },
 			);
+			const hints = categoryGuide.isSports
+				? rawHints.filter(
+						(hint) =>
+							!SCRIPT_SEARCH_META_PATTERNS.some((rx) =>
+								rx.test(String(hint || "")),
+							),
+					)
+				: rawHints;
 			const articles = (t.trendStory?.articles || [])
 				.map((a) => a.title)
 				.filter(Boolean)
@@ -7829,6 +8010,7 @@ Current date: ${dayjs().format("YYYY-MM-DD")}
 Write a YouTube talking-head script for a US audience.
 ${briefLine}
 Language: ${languageLabel}
+Category: ${categoryLabel || "General"}
 Tone plan: ${mood} (${toneGuide})
 
 Topics in order (do NOT change order):
@@ -7931,6 +8113,10 @@ Style rules (IMPORTANT):
 - Avoid phrasing like "sad news" unless it is a real-world tragedy.
 - Use the topic anchor phrase in the FIRST segment of each topic.
 ${evidenceLine}
+- Category-specific guidance:
+${categoryGuide.lines.join("\n")}
+- Voiceover clarity matters. Write lines that ElevenLabs can say naturally on the first pass.
+- Avoid quote-like keyword strings, platform-led attribution, scoreboard shorthand, slashes, and compressed phrasing that sounds robotic when read aloud.
 - If the line is happy, use a light smile; if very happy, a brief small smile with slight teeth (never a wide grin).
 - Keep expressions coherent across segments; avoid abrupt mood flips and avoid exaggerated expressions.
 - Each segment must include EXACTLY one overlayCues entry with a search query that matches that segment.
@@ -8207,6 +8393,7 @@ function analyzeScriptQuality({
 	topics = [],
 	topicContexts = [],
 	wordCaps = [],
+	categoryLabel = "",
 }) {
 	const issues = [];
 	const warnings = [];
@@ -8277,10 +8464,20 @@ function analyzeScriptQuality({
 	if (trendCoverage.missingTopics.length)
 		warnings.push("missing_trend_signal_coverage");
 
+	const speakability = analyzeScriptSpeakability({
+		script,
+		topics,
+		categoryLabel,
+	});
+	for (const warning of speakability.warnings || []) {
+		if (!warnings.includes(warning)) warnings.push(warning);
+	}
+
 	const needsRewrite =
 		duplicatePairs.length > 0 ||
 		missingAttributionTopics.length > 0 ||
-		trendCoverage.missingTopics.length > 0;
+		trendCoverage.missingTopics.length > 0 ||
+		speakability.needsRewrite;
 	const hasCritical = issues.length > 0;
 
 	return {
@@ -8295,6 +8492,11 @@ function analyzeScriptQuality({
 			shortSegments: shortSegments.map((s) => s.index),
 			missingAttributionTopics,
 			missingTrendSignalTopics: trendCoverage.missingTopics,
+			searchMetaSegments: speakability.stats?.searchMetaSegments || [],
+			platformAttributionSegments:
+				speakability.stats?.platformAttributionSegments || [],
+			bettingPromoSegments: speakability.stats?.bettingPromoSegments || [],
+			speechAwkwardSegments: speakability.stats?.speechAwkwardSegments || [],
 		},
 	};
 }
@@ -8356,6 +8558,24 @@ function formatSourceLabel(host = "", topicLabel = "") {
 		.replace(/^www\./i, "")
 		.trim();
 	if (!cleaned) return "";
+	const attributionSkipHosts = new Set([
+		"youtube.com",
+		"tiktok.com",
+		"instagram.com",
+		"reddit.com",
+		"x.com",
+		"twitter.com",
+		"facebook.com",
+	]);
+	const normalizedHost = cleaned.toLowerCase();
+	if (
+		attributionSkipHosts.has(normalizedHost) ||
+		Array.from(attributionSkipHosts).some((entry) =>
+			normalizedHost.endsWith(`.${entry}`),
+		)
+	) {
+		return "";
+	}
 	const base = cleaned.replace(
 		/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
 		"",
@@ -8543,6 +8763,7 @@ async function rewriteSegmentsForQuality({
 	wordCaps = [],
 	tonePlan,
 	narrationTargetSec,
+	categoryLabel = "",
 	includeOutro = true,
 	contentMode = "trends",
 }) {
@@ -8550,9 +8771,12 @@ async function rewriteSegmentsForQuality({
 	if (!segments.length) return script;
 	const mood = tonePlan?.mood || "neutral";
 	const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
+	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
 	const trendSignalLabel = isPromptMode
 		? "Context signals (use if present; do NOT invent):"
-		: "Trending signals (address the #1 rising reason early if present):";
+		: categoryGuide.isSports
+			? "Search signals (use as audience context for the hook; translate them into natural sports language and do NOT quote them verbatim):"
+			: "Trending signals (address the #1 rising reason early if present):";
 
 	const topicSummaries = (topics || []).map((t, idx) => {
 		const ctx = Array.isArray(topicContexts?.[idx]?.context)
@@ -8587,6 +8811,7 @@ async function rewriteSegmentsForQuality({
 Improve this script for clarity, interesting facts, and attribution.
 Target narration duration: ~${Number(narrationTargetSec || 0).toFixed(1)}s
 Mood: ${mood}
+Category: ${categoryLabel || "General"}
 Topic summaries:
 ${topicSummaries.join("\n")}
 
@@ -8610,11 +8835,16 @@ Rules:
 - Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
 - Keep the overall delivery neutral and professional; avoid excited phrasing and exclamation points.
 - Add at least one short attribution per topic when sources are available (e.g., "According to Variety...").
+- Attribute the outlet or analyst, not the hosting platform. Never use phrases like "According to YouTube" or "According to TikTok".
+- Rewrite keyword-style phrasing into natural spoken language that a presenter and ElevenLabs voice can deliver cleanly.
+- Avoid scoreboard shorthand, symbol-heavy phrasing, and awkward query fragments.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
 - Keep it conversational and clear; no filler words.
 - End the last segment of each topic with a short engagement question.
 - Do NOT add like/subscribe CTAs.
+- Category-specific guidance:
+${categoryGuide.lines.join("\n")}
 
 Return JSON ONLY:
 { "segments":[{"index":0,"text":"..."}] }
@@ -9211,8 +9441,38 @@ function yearToWords(year) {
 	return String(year);
 }
 
+function numberToWordsUnder1000(value) {
+	const n = Number(value);
+	if (!Number.isFinite(n)) return String(value);
+	const v = Math.round(n);
+	if (v < 0 || v >= 1000) return String(v);
+	if (v < 100) return twoDigitNumberToWords(v);
+	const hundreds = Math.floor(v / 100);
+	const rest = v % 100;
+	const prefix = `${SMALL_NUMBER_WORDS[hundreds]} hundred`;
+	return rest ? `${prefix} ${twoDigitNumberToWords(rest)}` : prefix;
+}
+
+function normalizeSymbolPhrasesForSpeech(text = "") {
+	let t = String(text || "");
+	t = t.replace(/[\u201C\u201D]/g, '"');
+	t = t.replace(/[\u2018\u2019]/g, "'");
+	t = t.replace(/\bvs\.?\b/gi, "versus");
+	t = t.replace(/\bNo\.\s*(\d{1,3})\b/g, (_, value) => {
+		return `number ${numberToWordsUnder1000(value)}`;
+	});
+	t = t.replace(/\b(\d{1,3})\s*[\u2013-]\s*(\d{1,3})\b/g, (_, left, right) => {
+		return `${numberToWordsUnder1000(left)} to ${numberToWordsUnder1000(right)}`;
+	});
+	t = t.replace(/\b(\d{1,3})%\b/g, (_, value) => {
+		return `${numberToWordsUnder1000(value)} percent`;
+	});
+	return t;
+}
+
 function normalizeNumbersForSpeech(text = "") {
 	let t = String(text || "");
+	t = normalizeSymbolPhrasesForSpeech(t);
 	t = t.replace(/\b([A-Za-z]{2,})\+\b/g, "$1 plus");
 	t = t.replace(/\b(19\d{2}|20\d{2})\b/g, (m) => yearToWords(m));
 	return t;
@@ -9231,6 +9491,7 @@ function tightenTtsText(text = "") {
 function cleanForTTS(text = "") {
 	let t = String(text || "");
 	if (FORCE_NEUTRAL_VOICEOVER) t = softenNeutralPunctuation(t);
+	t = normalizeSymbolPhrasesForSpeech(t);
 	// remove URLs/emails
 	t = t.replace(/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi, " ");
 	// normalize numeric speech cues (years, plus sign)
@@ -9507,7 +9768,8 @@ function tightenVoiceSettings(settings = {}, attempt = 0) {
 function buildExpectedQaTokens(text = "") {
 	const base = tokenizeQaText(text);
 	const normalized = tokenizeQaText(normalizeNumbersForSpeech(text));
-	return uniqueStrings([...base, ...normalized]);
+	const cleaned = tokenizeQaText(cleanForTTS(text));
+	return uniqueStrings([...base, ...normalized, ...cleaned]);
 }
 
 function hasFillerWords(text = "") {
@@ -12086,6 +12348,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			topicContexts,
 			tonePlan: voiceTonePlan,
 			topicContextFlags,
+			categoryLabel,
 			includeOutro: true,
 			contentMode,
 		});
@@ -12095,6 +12358,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			topics: topicPicks,
 			topicContexts,
 			wordCaps,
+			categoryLabel,
 		});
 		let shortsGuardrails = analyzeShortsGuardrails(script);
 		if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
@@ -12120,6 +12384,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 					wordCaps,
 					tonePlan: voiceTonePlan,
 					narrationTargetSec,
+					categoryLabel,
 					includeOutro: true,
 					contentMode,
 				});
@@ -12135,6 +12400,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				topics: topicPicks,
 				topicContexts,
 				wordCaps,
+				categoryLabel,
 			});
 			shortsGuardrails = analyzeShortsGuardrails(script);
 			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
@@ -12171,6 +12437,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 				topics: topicPicks,
 				topicContexts,
 				wordCaps,
+				categoryLabel,
 			});
 			shortsGuardrails = analyzeShortsGuardrails(script);
 			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
@@ -12308,15 +12575,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			});
 			if (hookPlan) thumbLog("thumbnail hook plan (computed)", hookPlan);
 			let thumbExpression =
-				script?.segments?.[0]?.expression || voiceTonePlan?.mood || "warm";
-			if (
-				hookPlan?.intent === "serious_update" &&
-				["neutral", "warm"].includes(
-					String(thumbExpression || "").toLowerCase(),
-				)
-			) {
-				thumbExpression = "thoughtful";
-			}
+				script?.segments?.[0]?.expression || voiceTonePlan?.mood || "neutral";
 			const hookHeadline = String(hookPlan?.headline || "").trim();
 			const resolvedShortTitle = hookHeadline || thumbShortTitle;
 			const thumbResult = await generateThumbnailPackage({
@@ -13083,6 +13342,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			topics: topicPicks,
 			topicContexts,
 			wordCaps,
+			categoryLabel,
 		});
 		const finalEngagement = summarizeScriptEngagement(script);
 		logJob(jobId, "final script summary", {
