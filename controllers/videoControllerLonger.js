@@ -21,7 +21,7 @@
  *    - After lipsync, apply a subtle zoom-out with blurred background padding
  *
  * 5) Professional intro/outro structure:
- *    - Intro 2-4s with title overlay + voiced greeting (excited when appropriate)
+ *    - Intro 15-20s with a story hook + agenda-style voiced greeting
  *    - Outro 3-6s with engagement question + like CTA
  *    - Final fade-out for a clean finish
  *
@@ -220,7 +220,7 @@ const LONG_VIDEO_YT_CATEGORY = "Entertainment";
 const BRAND_TAG = "SereneJannat";
 const BRAND_CREDIT = "Powered by Serene Jannat";
 const CHANNEL_NAME = "Prime Time Brief";
-const INTRO_OVERLAY_TEXT = "https://serenejannat.com";
+const INTRO_HOST_NAME = "Amad";
 const MERCH_INTRO =
 	"Support the channel & customize your own merch:\n" +
 	"https://serenejannat.com/our-products?category=candles/\n" +
@@ -249,7 +249,7 @@ const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"ultra-calm, minimal motion; head nearly still with only tiny micro-movements; no head translation forward/backward and no scale/zoom illusion; no head tilts beyond a few degrees; no rhythmic bobbing; no fast turns or jerky motion; shoulders locked and still; hands resting or out of frame with minimal movement; human blink rate with slight variation, soft eyelid closures, subtle breathing, soft micro-expressions; mouth neutral or very light smile only when appropriate; avoid robotic or looped motion; absolutely no exaggerated expressions";
+	"ultra-calm, restrained talking-head motion; head centered and almost still with only tiny, slow neck-driven micro-adjustments; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, no chin lifts, no pronounced nods, no rhythmic bobbing, and no fast turns or jerky motion; shoulders and torso locked and steady; hands resting or fully out of frame with near-zero movement; human blink rate with slight variation, subtle breathing, soft micro-expressions, and natural economical mouth movement; a very light smile only when appropriate; avoid robotic motion, visible loops, or any exaggerated expression";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -289,9 +289,9 @@ const CSE_MAX_IMAGE_RESULTS = 40;
 const CSE_RELAXED_MIN_IMAGE_SHORT_EDGE = 480;
 
 // Intro (seconds)
-const DEFAULT_INTRO_SEC = 3.2;
-const INTRO_MIN_SEC = clampNumber(2, 2, 4);
-const INTRO_MAX_SEC = clampNumber(4, 2, 5);
+const DEFAULT_INTRO_SEC = 17;
+const INTRO_MIN_SEC = clampNumber(15, 12, 20);
+const INTRO_MAX_SEC = clampNumber(20, 15, 22);
 // Outro (seconds)
 const OUTRO_MIN_SEC = clampNumber(3, 3, 6);
 const OUTRO_MAX_SEC = clampNumber(6, 3, 6);
@@ -347,8 +347,8 @@ const LEAD_SILENCE_MIN_SEC = clampNumber(0.04, 0.02, 0.2);
 const LEAD_SILENCE_THRESHOLD_DB = clampNumber(-45, -60, -35);
 const GLOBAL_ATEMPO_MIN = 0.95;
 const GLOBAL_ATEMPO_MAX = 1.07;
-const INTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
-const INTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
+const INTRO_ATEMPO_MIN = clampNumber(0.88, 0.85, 1.05);
+const INTRO_ATEMPO_MAX = clampNumber(1.12, 1.0, 1.2);
 const OUTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
 const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
@@ -4794,12 +4794,12 @@ function buildBaselinePrompt(
 
 	const variantHint =
 		variant === 1
-			? "Use a barely noticeable blink cadence variation; keep head and shoulders essentially still."
+			? "Use only a barely noticeable blink cadence variation; keep head, neck, and shoulders essentially locked."
 			: variant === 2
-				? "Allow a tiny, slow head micro-shift (no tilt) and a subtle blink cadence change; movement must remain minimal."
+				? "Allow only a tiny, slow neck micro-shift with no tilt and no body movement; movement must remain extremely minimal."
 				: "";
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance but reduce the amplitude by at least 50%: keep head mostly fixed, no forward/back translation, no noticeable tilts; rare micro-nods only; slow and controlled; no fast turns or jerky motion; shoulders still; hands resting with minimal movement; avoid robotic or looped motion."
+		? "Match the natural motion style from the reference performance but reduce the amplitude by at least 70%: keep the head almost fixed, preserve only tiny neck-driven micro-adjustments, no forward/back translation, no noticeable tilts, no chin lifts, rare micro-nods only, slow and controlled, no fast turns or jerky motion, shoulders still, hands resting with near-zero movement, and avoid robotic or looped motion."
 		: PRESENTER_MOTION_STYLE;
 
 	return `
@@ -4822,7 +4822,7 @@ Do NOT try to lip-sync.
 }
 
 /* ---------------------------------------------------------------
- * Script generation (spicy US tone)
+ * Script generation (engaging US tone)
  * ------------------------------------------------------------- */
 
 function computeSegmentCount(narrationTargetSec) {
@@ -6681,6 +6681,100 @@ function normalizeShortsTargetSeconds(raw) {
 	return SHORTS_DEFAULT_TARGET_SECONDS;
 }
 
+const TITLE_SMALL_WORDS = new Set([
+	"a",
+	"an",
+	"and",
+	"as",
+	"at",
+	"but",
+	"by",
+	"for",
+	"from",
+	"in",
+	"into",
+	"nor",
+	"of",
+	"on",
+	"or",
+	"over",
+	"per",
+	"so",
+	"the",
+	"to",
+	"up",
+	"via",
+	"vs",
+	"with",
+]);
+
+function normalizeTitleWhitespace(text = "") {
+	return String(text || "")
+		.replace(/[\r\n]+/g, " ")
+		.replace(/\s+/g, " ")
+		.replace(/\s*([:|!?])/g, "$1")
+		.replace(/([:|!?])(?=\S)/g, "$1 ")
+		.replace(/\s+[\u2013\u2014]\s+/g, " - ")
+		.replace(/\s+-\s+/g, " - ")
+		.trim();
+}
+
+function isAllCapsTitleToken(token = "") {
+	return /^[A-Z0-9&+/'-]{2,}$/.test(token || "");
+}
+
+function headlineCaseToken(token = "", isBoundary = false) {
+	const match = String(token || "").match(
+		/^([^A-Za-z0-9]*)(.*?)([^A-Za-z0-9]*)$/,
+	);
+	if (!match) return token;
+	const [, prefix, core, suffix] = match;
+	if (!core) return token;
+	if (isAllCapsTitleToken(core) || /\d/.test(core)) {
+		return `${prefix}${core}${suffix}`;
+	}
+	if (/[a-z][A-Z]|[A-Z][a-z].*[A-Z]/.test(core)) {
+		return `${prefix}${core}${suffix}`;
+	}
+	const lower = core.toLowerCase();
+	if (!isBoundary && TITLE_SMALL_WORDS.has(lower)) {
+		return `${prefix}${lower}${suffix}`;
+	}
+	const capitalized = lower.replace(/(^|[-/])([a-z])/g, (_m, lead, char) => {
+		return `${lead}${char.toUpperCase()}`;
+	});
+	return `${prefix}${capitalized}${suffix}`;
+}
+
+function toHeadlineCase(text = "") {
+	const normalized = normalizeTitleWhitespace(text);
+	if (!normalized) return "";
+	const tokens = normalized.split(" ");
+	return tokens
+		.map((token, index) => {
+			const prev = tokens[index - 1] || "";
+			const isBoundary =
+				index === 0 || index === tokens.length - 1 || /[:|!-]$/.test(prev);
+			return headlineCaseToken(token, isBoundary);
+		})
+		.join(" ")
+		.replace(/\s+\|/g, " |")
+		.replace(/\|\s+/g, " | ");
+}
+
+function formatHumanTitle(text = "", max = 95) {
+	let cleaned = normalizeTitleWhitespace(text)
+		.replace(/^["'`]+|["'`]+$/g, "")
+		.replace(/([!?]){2,}/g, "$1")
+		.replace(/\.{2,}/g, "...")
+		.replace(/[.]+$/g, "")
+		.replace(/\s+[|:-]\s*$/g, "")
+		.trim();
+	if (!cleaned) return "";
+	cleaned = toHeadlineCase(cleaned);
+	return trimTitleToLimit(cleaned, max);
+}
+
 function buildTitleCandidates(baseTitle = "", shortTitle = "") {
 	const base = String(shortTitle || baseTitle || "").trim();
 	if (!base) return [];
@@ -6693,7 +6787,9 @@ function buildTitleCandidates(baseTitle = "", shortTitle = "") {
 		`The real story behind ${base}`,
 		`${base} - the missing piece`,
 	];
-	return uniqueStrings(variants, { limit: 8 }).map((t) => t.slice(0, 95));
+	return uniqueStrings(variants, { limit: 8 }).map((t) =>
+		formatHumanTitle(t, 95),
+	);
 }
 
 function trimTitleToLimit(text = "", max = 95) {
@@ -6737,7 +6833,7 @@ function buildClipTitleCandidates(line = "", fallbackBase = "") {
 		`${base} | The detail people missed`,
 	];
 	return uniqueStrings(variants, { limit: 8 }).map((t) =>
-		trimTitleToLimit(t, 95),
+		formatHumanTitle(t, 95),
 	);
 }
 
@@ -7115,80 +7211,130 @@ function enforceRealWorldFraming(segments = [], topicContextFlags = []) {
 	});
 }
 
-const INTRO_TEMPLATES = {
-	neutral: {
-		single: [
-			"Here's what matters in {topic1}.",
-			"Here's the latest on {topic1}.",
-			"Here's the key angle on {topic1}.",
-		],
-		dual: [
-			"Two stories that matter: {topicList}.",
-			"First: {topic1}. Then: {topic2}.",
-			"Two updates in focus: {topicList}.",
-		],
-		multi: [
-			"Three stories that matter right now: {topicList}.",
-			"Here's the quick rundown: {topicList}.",
-			"Today's lineup: {topicList}.",
-		],
-	},
-	excited: {
-		single: ["Here's the latest on {topic1}.", "Fresh update on {topic1}."],
-		dual: [
-			"Two updates to know: {topicList}.",
-			"First: {topic1}. Then: {topic2}.",
-		],
-		multi: [
-			"Three updates to know: {topicList}.",
-			"Here's the rundown: {topicList}.",
-		],
-	},
-	serious: {
-		single: [
-			"Here's the latest on {topic1}.",
-			"Here's the key update on {topic1}.",
-		],
-		dual: [
-			"Here are the key updates: {topicList}.",
-			"Two updates to track: {topicList}.",
-		],
-		multi: [
-			"Here are the key updates: {topicList}.",
-			"Here's the rundown: {topicList}.",
-		],
-	},
-};
+function formatAgendaList(items = []) {
+	const list = (items || []).filter(Boolean).slice(0, 4);
+	if (!list.length) return "";
+	if (list.length === 1) return list[0];
+	if (list.length === 2) return `${list[0]} and ${list[1]}`;
+	if (list.length === 3) return `${list[0]}, ${list[1]}, and ${list[2]}`;
+	return `${list[0]}, ${list[1]}, ${list[2]}, and ${list[3]}`;
+}
 
-function pickIntroTemplate(mood = "neutral", topicCount = 1, jobId) {
-	const key = INTRO_TEMPLATES[mood] ? mood : "neutral";
-	const buckets = INTRO_TEMPLATES[key] || INTRO_TEMPLATES.neutral;
-	const count = Number.isFinite(Number(topicCount)) ? Number(topicCount) : 1;
-	const pool =
-		count <= 1 ? buckets.single : count === 2 ? buckets.dual : buckets.multi;
-	const fallback = buckets.single || INTRO_TEMPLATES.neutral.single || [];
-	const safePool = pool && pool.length ? pool : fallback;
-	if (!safePool.length) return "Today: {topic1}.";
+function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
+	const labels = buildIntroTopicLabels(topics, 6);
+	const text = `${shortTitle || ""} ${labels.join(" ")}`.toLowerCase();
+	if (/\b(divorce|split|breakup|separation|custody)\b/.test(text)) {
+		return {
+			beats: [
+				"how this unfolded",
+				"when things really started turning",
+				"what the strongest reporting actually supports",
+				"the detail that could change where this goes next",
+			],
+			cardSubtitle: "Timeline, Fallout, and What Happens Next",
+		};
+	}
+	if (
+		/\b(backlash|controversy|scandal|lawsuit|court|trial|arrest|investigation|feud|accusation|claim)\b/.test(
+			text,
+		)
+	) {
+		return {
+			beats: [
+				"what set this off",
+				"why people are so split on it",
+				"what the strongest reporting actually supports",
+				"the detail that could change where this goes next",
+			],
+			cardSubtitle: "What Set It Off, Why People Are Split, and What's Next",
+		};
+	}
+	if (
+		/\b(movie|film|show|series|episode|season|album|song|tour|cast|trailer|awards?)\b/.test(
+			text,
+		)
+	) {
+		return {
+			beats: [
+				"what changed",
+				"why viewers are split on it",
+				"what the latest reporting actually supports",
+				"what to watch next",
+			],
+			cardSubtitle: "What Changed, Why People Are Split, and What to Watch",
+		};
+	}
+	return {
+		beats: [
+			"what happened",
+			"why people are reacting so strongly",
+			"what the key reporting actually supports",
+			"what could happen next",
+		],
+		cardSubtitle: "What Happened, Why It Matters, and What's Next",
+	};
+}
+
+function pickIntroLead({ sensitive = false, topicCount = 1, jobId }) {
 	const seed = jobId ? seedFromJobId(jobId) : 0;
-	return safePool[seed % safePool.length];
+	const casualSingle = [
+		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're getting into`,
+		`Hi guys, it's ${INTRO_HOST_NAME}, and we have a really interesting one today around`,
+		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're breaking down`,
+	];
+	const calmSingle = [
+		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're taking a closer look at`,
+		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're unpacking`,
+	];
+	const casualMulti = [
+		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're checking on`,
+		`Hi guys, it's ${INTRO_HOST_NAME}, and today we have a strong lineup around`,
+	];
+	const calmMulti = [
+		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're taking a closer look at`,
+	];
+	const pool =
+		topicCount <= 1
+			? sensitive
+				? calmSingle
+				: casualSingle
+			: sensitive
+				? calmMulti
+				: casualMulti;
+	return (
+		pool[seed % pool.length] ||
+		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're getting into`
+	);
+}
+
+function buildIntroCardSubtitle({ topics = [], shortTitle = "" } = {}) {
+	const profile = inferIntroAgendaProfile({ topics, shortTitle });
+	return formatHumanTitle(profile.cardSubtitle || "", 72);
+}
+
+function buildIntroCardTitle({ title = "", shortTitle = "" } = {}) {
+	return formatHumanTitle(shortTitle || title || "Quick Update", 64);
 }
 
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
-	const normalizedMood = normalizeExpression(mood);
-	const moodKey = FORCE_NEUTRAL_VOICEOVER ? "neutral" : normalizedMood;
-	const fallbackLabel = shortTopicLabel(shortTitle || "today's topic", 5);
-	const topicLabels = buildIntroTopicLabels(topics, 4);
+	const fallbackLabel = shortTopicLabel(shortTitle || "today's topic", 6);
+	const topicLabels = buildIntroTopicLabels(topics, 6);
 	const safeLabels = topicLabels.length ? topicLabels : [fallbackLabel];
 	const topicList = formatLabelList(safeLabels) || fallbackLabel;
-	const template = pickIntroTemplate(moodKey, safeLabels.length, jobId);
-	const line = template
-		.replace("{topicList}", topicList)
-		.replace("{topic1}", safeLabels[0] || topicList)
-		.replace("{topic2}", safeLabels[1] || safeLabels[0] || topicList)
-		.replace(
-			"{topic3}",
-			safeLabels[2] || safeLabels[1] || safeLabels[0] || topicList,
-		);
+	const sensitive = isSensitiveTopicText(
+		`${shortTitle || ""} ${safeLabels.join(" ")} ${mood || ""}`,
+	);
+	const introLead = pickIntroLead({
+		sensitive,
+		topicCount: safeLabels.length,
+		jobId,
+	});
+	const profile = inferIntroAgendaProfile({ topics, shortTitle });
+	const agenda = formatAgendaList(profile.beats);
+	const line =
+		safeLabels.length <= 1
+			? `${introLead} ${safeLabels[0] || topicList}. We're breaking down ${agenda}, so stay with me.`
+			: `${introLead} ${topicList}. I'll walk you through ${agenda}, so stay with me.`;
 	return sanitizeIntroOutroLine(line);
 }
 
@@ -8050,16 +8196,17 @@ ${topicIntentLines}
 Style rules (IMPORTANT):
 - Keep pacing steady and conversational; no sudden speed-ups.
 - Slightly brisk, natural American delivery; avoid drawn-out phrasing.
-- Keep the delivery consistently calm and professional across ALL segments; avoid hypey, excited, or dramatic phrasing. For entertainment topics only, allow one subtle reactionary aside (one short clause) with a light smile.
+- Keep the delivery composed and natural, not shouty. The writing should feel sharp, engaging, and lightly provocative when the story supports it, but never reckless, insulting, or overhyped.
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
 - Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic), but stay professional.
-- For entertainment topics (film, TV, music, awards), add ONE short reactionary opinion per topic from the presenter (one short clause). Keep it subtle and grounded; no hype.
+- For entertainment topics (film, TV, music, awards), add ONE or TWO short reactionary opinions per topic from the presenter (brief clauses only). Keep them grounded, fair, and clearly separate from sourced facts.
 - Use contractions. Punchy sentences. A little playful, but not cringe.
 - Avoid staccato punctuation. Do NOT put commas between single words.
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
 - Avoid exclamation points; use calm, steady punctuation.
 - Structure each topic as a mini-arc: HOOK -> TENSION -> CONTEXT -> PAYOFF -> OPEN LOOP.
 - Lead with the tension or contrast, then add context; delay the clear answer by at least one sentence.
+- If the story is controversial, explicitly surface what people are arguing about, what the evidence supports, and where the uncertainty still is.
 - Build short curiosity gaps that carry into the next segment; pay them off within 1-2 segments.
 - Make at least one segment per topic clip-ready for Shorts: a standalone line that ends with an open loop, not a full resolution.
 - Anchor each topic around one clear angle or implication; keep facts in service of that angle.
@@ -8068,10 +8215,10 @@ Style rules (IMPORTANT):
 - Every 2-3 segments, add a brief stakes ratchet: one line that signals what changes if the point is true, without fully resolving it.
 - Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
 - Use specific nouns (people, places, titles) over vague phrases like "big news" or "fans are excited".
-- Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
+- Keep the opening controlled, but make segment 0 feel like a real hook instead of a bland recap.
 - Prioritize genuinely interesting facts (history, timeline, behind-the-scenes, credible rumors, estimates) without overstating.
 - If you mention a rumor or estimate, label it clearly as unconfirmed and attribute it (\"reports suggest\", \"according to [source]\").
-- Include at least one brief source attribution per topic using the provided context (e.g., \"According to Variety...\").
+- Include at least one brief source attribution per topic using the provided context (e.g., \"According to Variety...\"). Put attribution close to the claim when the point is sensitive, disputed, or potentially controversial.
 - Target duration is a guideline; if clarity needs more time, it's OK to run longer, but still try to stay close to the target.
 - Avoid repeating the topic question or using vague filler phrasing; be specific and helpful.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
@@ -8085,7 +8232,7 @@ Style rules (IMPORTANT):
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - Segment 0 must be a strong hook that makes people stay.
-- Segment 0 should open with a tension/contrast line (what people assume vs what the evidence actually shows) in the first sentence.
+- Segment 0 should open with a tension, disagreement, contradiction, or "what people assume vs what the reporting actually suggests" line in the first sentence.
 - Do NOT start segment 0 with "Quick update on..." or restate the intro line; the intro handles that.
 - Segment 0 should read like the very next sentence after the intro, continuing the same thought without reintroducing the topic.
 - Do NOT start segment 0 with transition phrases like "And now", "Now", "Next up", or "Let's talk about".
@@ -8094,6 +8241,7 @@ Style rules (IMPORTANT):
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
 - For Topic 2+ only, the FIRST segment must START with an explicit transition line that names the topic. Do NOT use that transition for Topic 1.
 - The FIRST segment for every topic must mention the topic name in the first sentence.
+- The FIRST segment for every topic should sound like you're unpacking the angle viewers are actively debating, not just reciting background.
 - Each segment should naturally flow into the next with a quick transition phrase.
 - Each segment ends with a complete sentence and strong terminal punctuation. Do NOT end with "and", "but", "so", "because", "with", "to", "for", "that", or an open parenthetical.
 - Before the engagement question, end with a short tension line; avoid soft wrap-ups or reflective closing phrases.
@@ -8102,6 +8250,7 @@ Style rules (IMPORTANT):
 - ${ctaLine}
 - Topic questions must be short and end with a single question mark.
 - Provide "shortTitle": 2-5 words, punchy and easy to read.
+- "title" must be a clean, human YouTube headline with proper capitalization and punctuation. Use natural headline case. If you use an emoji, use at most one and place it naturally.
 - For each segment, include "expression" from: neutral, warm, serious, excited, thoughtful.
 - Default to neutral for most segments. Use warm/thoughtful sparingly (1-2 middle segments max) and keep it subtle.
 - If you include the entertainment reactionary aside, set expression to "warm" for that segment.
@@ -8289,9 +8438,10 @@ Return JSON ONLY:
 	segments = segments.map((s, i) => ({ ...s, expression: smoothed[i] }));
 
 	const fallbackTitle = safeTopics.map((t) => t.topic).join(" | ");
-	const finalTitle = String(parsed.title || fallbackTitle)
-		.trim()
-		.slice(0, 120);
+	const finalTitle =
+		formatHumanTitle(String(parsed.title || fallbackTitle).trim(), 120) ||
+		formatHumanTitle(fallbackTitle, 120) ||
+		"Quick Update";
 	const finalShortTitle = shortTitleFromText(
 		String(parsed.shortTitle || "").trim() || finalTitle,
 	).slice(0, 60);
@@ -8832,15 +8982,17 @@ Rules:
 - Preserve curiosity gaps: open with tension and delay the payoff by at least one sentence or segment.
 - Keep at least one clip-ready line per topic that ends with an open loop.
 - Prefer specific nouns over vague hype phrases.
-- Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
-- Keep the overall delivery neutral and professional; avoid excited phrasing and exclamation points.
-- Add at least one short attribution per topic when sources are available (e.g., "According to Variety...").
+- Keep the opening controlled, but make segment 0 genuinely hooky and curiosity-driven instead of flat.
+- Keep the overall delivery controlled and professional; avoid excited phrasing and exclamation points, but let the writing feel sharp and engaging.
+- If the story is controversial, surface what people are arguing about, what the reporting supports, and what still is not fully settled.
+- Add at least one short attribution per topic when sources are available (e.g., "According to Variety..."). Put the attribution near the controversial or factual claim it supports.
 - Attribute the outlet or analyst, not the hosting platform. Never use phrases like "According to YouTube" or "According to TikTok".
 - Rewrite keyword-style phrasing into natural spoken language that a presenter and ElevenLabs voice can deliver cleanly.
 - Avoid scoreboard shorthand, symbol-heavy phrasing, and awkward query fragments.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
 - Keep it conversational and clear; no filler words.
+- For entertainment topics, allow brief grounded opinionated framing when it helps explain why people are divided, but keep it fair and separate from sourced facts.
 - End the last segment of each topic with a short engagement question.
 - Do NOT add like/subscribe CTAs.
 - Category-specific guidance:
@@ -9317,7 +9469,7 @@ async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
 
 	if (process.env.CHATGPT_API_TOKEN) {
 		try {
-			const titlePrompt = `Write ONE SEO-friendly YouTube title (max 90 characters) for a long-form news brief covering: ${topicLine}. Use natural search phrasing, no quotes, no hashtags.`;
+			const titlePrompt = `Write ONE SEO-friendly YouTube title (max 90 characters) for a long-form news brief covering: ${topicLine}. Use natural search phrasing, clean punctuation, and human headline case. No quotes, no hashtags. If you use an emoji, use at most one and place it naturally.`;
 			const titleResp = await openai.chat.completions.create({
 				model: CHAT_MODEL,
 				messages: [{ role: "user", content: titlePrompt }],
@@ -9325,9 +9477,11 @@ async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
 			const t = String(titleResp.choices?.[0]?.message?.content || "")
 				.replace(/["']/g, "")
 				.trim();
-			if (t) seoTitle = t.slice(0, 90);
+			if (t) seoTitle = formatHumanTitle(t, 90) || seoTitle;
 		} catch {}
 	}
+	seoTitle =
+		formatHumanTitle(seoTitle, 90) || formatHumanTitle(scriptTitle, 90);
 
 	let seoDescription = "";
 	if (process.env.CHATGPT_API_TOKEN) {
@@ -11022,7 +11176,7 @@ async function concatClips(clips, outPath, outCfg) {
 }
 
 /* ---------------------------------------------------------------
- * Intro motion (optional, 2-4s)
+ * Intro motion (optional, 15-20s)
  * ------------------------------------------------------------- */
 
 async function createPresenterIntroMotion({
@@ -11043,12 +11197,12 @@ async function createPresenterIntroMotion({
 	const dur = clampNumber(
 		Number(durationSec) || DEFAULT_INTRO_SEC,
 		INTRO_MIN_SEC,
-		4,
+		INTRO_MAX_SEC,
 	);
 
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance but reduce the amplitude by at least 50%: head nearly still, no forward/back translation, no noticeable tilts; rare micro-nods only; human blink rate with slight variation; hands resting with minimal movement; avoid robotic or looped motion."
-		: "Ultra-calm minimal motion: head nearly still, no forward/back translation, no noticeable tilts; human blink rate with slight variation; subtle breathing; hands resting with minimal movement.";
+		? "Match the natural motion style from the reference performance but reduce the amplitude by at least 70%: head nearly still, only tiny neck-driven micro-adjustments, no forward/back translation, no noticeable tilts, no chin lifts, rare micro-nods only, natural blink rate with slight variation, hands resting with near-zero movement, and avoid robotic or looped motion."
+		: "Ultra-calm minimal motion: head nearly still, only tiny neck-driven micro-adjustments, no forward/back translation, no noticeable tilts, natural blink rate with slight variation, subtle breathing, and hands resting with near-zero movement.";
 	const introFace = pickIntroExpression(jobId);
 	const titleTarget = `${Math.round(
 		INTRO_TEXT_X_PCT * 100,
@@ -13190,7 +13344,7 @@ Topic assignment by segment (do NOT change order): ${topicsLine}
 Rules:
 - Keep the same topic and tone (US audience, fun, not formal).
 - Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic).
-- For entertainment topics (film, TV, music, awards), add ONE short reactionary opinion per topic (one short clause). Keep it subtle and grounded; no hype.
+- For entertainment topics (film, TV, music, awards), add ONE or TWO short grounded reactionary opinions per topic (brief clauses only). Keep them fair, specific, and clearly separate from sourced facts.
 - Keep EXACTLY ${segments.length} segments.
 - Preserve smooth transitions.
 - Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
@@ -13204,10 +13358,11 @@ Rules:
 - No redundancy: do not restate the same fact or idea in different words.
 - Add one fresh, concrete detail or implication per segment when possible.
 - Prefer specific nouns over vague hype phrases.
-- Keep the opening and segment 0 delivery neutral and steady; avoid hypey or shouty phrasing.
-- Keep the overall delivery calm and professional; avoid excited phrasing and exclamation points. For entertainment topics only, allow one subtle reactionary aside (one short clause) with a light smile.
+- Keep the opening controlled, but make segment 0 feel hooky and curiosity-driven instead of bland.
+- Keep the overall delivery calm and professional; avoid excited phrasing and exclamation points, but let the writing feel sharp and engaging. For entertainment topics only, allow brief grounded reactionary asides.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
-- Preserve source attributions already in the text; keep at least one brief attribution per topic when possible.
+- Preserve source attributions already in the text; keep at least one brief attribution per topic when possible, and keep attribution close to any disputed or controversial claim.
+- If the story is controversial, say what people are divided over and what the reporting actually supports.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
@@ -13794,8 +13949,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			addFades: true,
 		});
 		const introPath = path.join(tmpDir, `intro_${jobId}.mp4`);
-		const introTitle = INTRO_OVERLAY_TEXT;
-		const introSubtitle = "";
+		const introTitle = buildIntroCardTitle({
+			title: seoMeta?.seoTitle || script.title,
+			shortTitle: script.shortTitle || "",
+		});
+		const introSubtitle = buildIntroCardSubtitle({
+			topics: topicPicks,
+			shortTitle: script.shortTitle || script.title,
+		});
 		await createIntroClip({
 			title: introTitle,
 			subtitle: introSubtitle,
