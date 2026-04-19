@@ -11342,12 +11342,20 @@ function escapeDrawtext(s = "") {
 	return String(s || "")
 		.replace(/\r\n|\r|\n/g, placeholder)
 		.replace(/\\/g, "\\\\")
+		.replace(/,/g, "\\,")
 		.replace(/:/g, "\\:")
 		.replace(/'/g, "\\'")
 		.replace(/%/g, "\\%")
 		.replace(/\[/g, "\\[")
 		.replace(/\]/g, "\\]")
 		.replace(new RegExp(placeholder, "g"), "\\n")
+		.trim();
+}
+
+function escapeFilterExpr(expr = "") {
+	return String(expr || "")
+		.replace(/\\/g, "\\\\")
+		.replace(/,/g, "\\,")
 		.trim();
 }
 
@@ -11510,7 +11518,7 @@ async function createIntroClip({
 	);
 
 	const fontFile = resolveFontFile();
-	const fontOpt = fontFile ? `:fontfile='${fontFile}'` : "";
+	const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
 
 	const titleMaxChars = Math.max(18, Math.round(W / 64));
 	const subMaxChars = Math.max(22, Math.round(W / 52));
@@ -11538,11 +11546,12 @@ async function createIntroClip({
 	const textInStart = INTRO_TEXT_FADE_IN_START;
 	const textInDur = INTRO_TEXT_FADE_IN_DUR;
 	const textInEnd = textInStart + textInDur;
-	const alphaExpr = `if(lt(t,${textInStart.toFixed(
+	const alphaExprRaw = `if(lt(t,${textInStart.toFixed(
 		2,
 	)}),0, if(lt(t,${textInEnd.toFixed(2)}),(t-${textInStart.toFixed(
 		2,
 	)})/${textInDur.toFixed(2)}, 1))`;
+	const alphaExpr = escapeFilterExpr(alphaExprRaw);
 
 	const bgKind = detectFileType(bgImagePath)?.kind;
 	const isVideoBg = bgKind === "video";
@@ -11552,15 +11561,19 @@ async function createIntroClip({
 	const blurSigma = disableVideoBlur ? 0 : INTRO_VIDEO_BLUR_SIGMA;
 	const videoBlur = blurSigma > 0 ? `,gblur=sigma=${blurSigma.toFixed(2)}` : "";
 	const base = isVideoBg
-		? `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}${videoBlur},fps=${fps},format=yuv420p,`
+		? `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}${videoBlur},fps=${fps},format=yuv420p`
 		: `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},gblur=sigma=18,` +
-			`zoompan=z='min(1.12,zoom+0.0025)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps},format=yuv420p,`;
-	const vf =
-		base +
-		`drawtext=text='${safeTitle}'${fontOpt}:fontsize=${titleFontSize}:fontcolor=white:x=${titleX}:y=${titleY}-(text_h/2):shadowcolor=black:shadowx=2:shadowy=2:alpha='${alphaExpr}',` +
-		(safeSub
-			? `drawtext=text='${safeSub}'${fontOpt}:fontsize=${subFontSize}:fontcolor=white:x=${titleX}:y=${subY}-(text_h/2):shadowcolor=black:shadowx=2:shadowy=2:alpha='${alphaExpr}',`
-			: "");
+			`zoompan=z='min(1.12,zoom+0.0025)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps},format=yuv420p`;
+	const filters = [
+		base,
+		`drawtext=text='${safeTitle}'${fontOpt}:fontsize=${titleFontSize}:fontcolor=white:x=${titleX}:y=${titleY}-(text_h/2):shadowcolor=black:shadowx=2:shadowy=2:alpha='${alphaExpr}'`,
+	];
+	if (safeSub) {
+		filters.push(
+			`drawtext=text='${safeSub}'${fontOpt}:fontsize=${subFontSize}:fontcolor=white:x=${titleX}:y=${subY}-(text_h/2):shadowcolor=black:shadowx=2:shadowy=2:alpha='${alphaExpr}'`,
+		);
+	}
+	const vf = filters.join(",");
 
 	const inputArgs = isVideoBg
 		? needsSilentAudio
