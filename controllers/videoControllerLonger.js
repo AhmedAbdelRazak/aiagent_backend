@@ -113,12 +113,12 @@ const ELEVEN_TTS_MODEL_FALLBACKS = String(
 	.split(",")
 	.map((s) => s.trim())
 	.filter(Boolean);
-// TTS realism tuning (neutral, consistent delivery with light naturalness)
-const ELEVEN_TTS_STABILITY = clampNumber(0.8, 0.1, 1);
-const ELEVEN_TTS_SIMILARITY = clampNumber(0.94, 0.1, 1);
-const ELEVEN_TTS_STYLE = clampNumber(0.1, 0, 1);
+// TTS realism tuning: less locked, more human pacing and phrasing.
+const ELEVEN_TTS_STABILITY = clampNumber(0.62, 0.1, 1);
+const ELEVEN_TTS_SIMILARITY = clampNumber(0.88, 0.1, 1);
+const ELEVEN_TTS_STYLE = clampNumber(0.2, 0, 1);
 const ELEVEN_TTS_SPEAKER_BOOST = true;
-const UNIFORM_TTS_VOICE_SETTINGS = true;
+const UNIFORM_TTS_VOICE_SETTINGS = false;
 
 const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
 
@@ -130,6 +130,7 @@ const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
 const SYNC_SO_BASE = "https://api.sync.so";
 // const SYNC_SO_MODEL = "lipsync-2";
 const SYNC_SO_MODEL = "sync-3";
+const SYNC_SO_MODEL_FALLBACKS = ["lipsync-2"];
 const SYNC_SO_GENERATE_PATH = "/v2/generate";
 
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
@@ -257,7 +258,7 @@ const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"human, credible seated presenter motion; direct lens contact; head upright and centered with only tiny neck-driven micro-adjustments and occasional soft chin dips; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, no pronounced nods, no rhythmic bobbing, and no fast turns or jerky motion; shoulders and torso grounded and still; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural unhurried blink cadence, subtle breathing, brows mostly settled with only tiny occasional changes, and economical conversational mouth preparation; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
+	"human, credible seated presenter motion; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -395,14 +396,21 @@ const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(2, 0, 5);
 const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
 const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
 const REQUIRE_LIPSYNC = true;
+const SYNC_SO_FREEZE_CHECK_MIN_SEC = clampNumber(2.6, 0.5, 12);
+const SYNC_SO_FREEZE_NOISE = clampNumber(0.0012, 0.0001, 0.01);
+const SYNC_SO_FREEZE_MIN_SEC = clampNumber(0.55, 0.2, 4);
+const SYNC_SO_MAX_FREEZE_RATIO = clampNumber(0.22, 0.05, 0.6);
+const SYNC_SO_MAX_FREEZE_SEC = clampNumber(1.1, 0.2, 4);
+const SYNC_SO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
+const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 
 // Presenter stability
 const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
 const USE_MOTION_REF_BASELINE = true;
 const BASELINE_DUR_SEC = clampNumber(10, 6, 10);
-const BASELINE_VARIANTS = clampNumber(1, 1, 3);
-const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
+const BASELINE_VARIANTS = clampNumber(2, 1, 3);
+const CAMERA_ZOOM_OUT = clampNumber(0.96, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 
 // Music
@@ -1063,7 +1071,9 @@ function validateCreateBody(body = {}, controllerConfig = {}) {
 	const outroSec = clampNumber(DEFAULT_OUTRO_SEC, OUTRO_MIN_SEC, OUTRO_MAX_SEC);
 
 	const presenterAssetUrl = resolveRequestedPresenterAsset(body, cfg);
-	const voiceId = "";
+	const voiceoverUrl = String(
+		body.voiceoverUrl || body.narrationUrl || body.audioUrl || "",
+	).trim();
 	const enableRunwayPresenterMotion = cfg.enableRunwayPresenterMotion;
 	const enableWardrobeEdit = cfg.enableWardrobeEdit;
 	const disableMusic = false;
@@ -1081,8 +1091,7 @@ function validateCreateBody(body = {}, controllerConfig = {}) {
 			outroSec,
 			output: { ...outRatio, fps, scaleMode, imageScaleMode },
 			presenterAssetUrl,
-			voiceoverUrl: "",
-			voiceId,
+			voiceoverUrl,
 			musicUrl: "",
 			disableMusic,
 			dryRun: Boolean(body.dryRun),
@@ -4610,10 +4619,10 @@ function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 		: "Hands stay low near the torso, usually lightly clasped or relaxed, with only brief small open-palm emphasis gestures before settling again.";
 	return [
 		"Match the presenter's real reference behavior from motion_reference.mp4 and DemoVideo.mp4.",
-		"Face behavior: direct eye contact, friendly-neutral expression, natural unhurried blinks, brows mostly settled with only tiny occasional changes, and economical conversational mouth shapes with no over-open vowels or reaction-face peaks.",
-		"Head behavior: mostly upright and centered with only tiny neck-driven corrections, slight chin dips on emphasis, no swaying, no forward lunges, no head tilts, and no looped nodding.",
-		`Body behavior: shoulders square and steady, torso grounded in the seat, ${handLine}`,
-		"Reduce amplitude slightly further for polish, and keep the emotional read composed and consistent from start to finish.",
+		"Face behavior: direct eye contact, friendly-neutral expression, natural unhurried blinks, mildly readable brow changes, and natural speech-ready jaw and lip behavior with no over-open vowels or reaction-face peaks.",
+		"Head behavior: mostly upright and centered with tiny neck-driven corrections, soft chin dips on emphasis, and one or two light conversational nods over the shot; no swaying, no forward lunges, no head tilts, and no looped nodding.",
+		`Body behavior: shoulders square and steady but not rigid, torso grounded in the seat with subtle breathing and small posture settling, ${handLine}`,
+		"Keep the emotional read composed and consistent from start to finish, but do not let the presenter feel frozen or statue-like.",
 	].join(" ");
 }
 
@@ -4879,9 +4888,9 @@ function buildBaselinePrompt(
 
 	const variantHint =
 		variant === 1
-			? "Use only a barely noticeable blink cadence variation; keep head, neck, and shoulders essentially locked."
+			? "Use a slightly different blink cadence and allow one soft emphasis nod or chin dip across the shot; keep movement natural, restrained, and never looped."
 			: variant === 2
-				? "Allow only a tiny, slow neck micro-shift with no tilt and no body movement; movement must remain extremely minimal."
+				? "Allow a tiny shoulder-settling shift and one brief micro-lean recovery while keeping framing stable and the performance calm."
 				: "";
 	const motionHint = motionRefVideo
 		? buildPresenterReferenceMotionHint()
@@ -4895,7 +4904,7 @@ Props: keep all existing props exactly as in the reference, except remove any ca
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 ${expressionLine}
 Motion: ${motionHint} ${variantHint}
-Mouth and jaw: natural, economical speech preparation with measured openings and soft lip compression between phrases; avoid robotic, stiff, puppet-like, or over-open mouth shapes.
+Mouth and jaw: natural speech-ready jaw and lip behavior with clearly readable but restrained openings, soft lip compression between phrases, and subtle conversational mouth preparation; avoid robotic, stiff, puppet-like, under-animated, or over-open mouth shapes.
 Smiles/laughter: tiny, brief smiles only; no laughs or exaggerated emotion.
 Facial consistency: keep the emotional read restrained and stable from shot start to finish; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
@@ -9161,39 +9170,38 @@ function buildVoiceSettingsForExpression(
 ) {
 	const uniform = Boolean(opts?.uniform);
 	const forceNeutral = Boolean(opts?.forceNeutral);
-	const expr = forceNeutral
-		? "neutral"
-		: coerceExpressionForNaturalness(expression, text, mood);
-	let stability = Math.max(ELEVEN_TTS_STABILITY, uniform ? 0.72 : 0.6);
-	let style = Math.min(ELEVEN_TTS_STYLE, uniform ? 0.16 : 0.22);
+	const naturalExpr = coerceExpressionForNaturalness(expression, text, mood);
+	const expr = forceNeutral && naturalExpr === "excited" ? "warm" : naturalExpr;
+	let stability = ELEVEN_TTS_STABILITY;
+	let style = ELEVEN_TTS_STYLE;
+	const expressionScale = forceNeutral ? 0.5 : 1;
 
-	if (uniform || forceNeutral) {
-		// Lock a neutral, natural voice regardless of mood/expression.
-		stability = ELEVEN_TTS_STABILITY;
-		style = ELEVEN_TTS_STYLE;
-	} else {
-		switch (expr) {
-			case "warm":
-				stability += 0.03;
-				style += 0.06;
-				break;
-			case "excited":
-				stability -= 0.08;
-				style += 0.12;
-				break;
-			case "serious":
-				stability += 0.1;
-				style -= 0.08;
-				break;
-			case "thoughtful":
-				stability += 0.05;
-				style -= 0.03;
-				break;
-			default:
-				stability += 0.02;
-				style -= 0.02;
-				break;
-		}
+	if (uniform) {
+		stability += 0.04;
+		style -= 0.03;
+	}
+
+	switch (expr) {
+		case "warm":
+			stability -= 0.05 * expressionScale;
+			style += 0.05 * expressionScale;
+			break;
+		case "excited":
+			stability -= 0.1 * expressionScale;
+			style += 0.08 * expressionScale;
+			break;
+		case "serious":
+			stability += 0.05 * expressionScale;
+			style -= 0.04 * expressionScale;
+			break;
+		case "thoughtful":
+			stability += 0.02 * expressionScale;
+			style += 0.02 * expressionScale;
+			break;
+		default:
+			stability -= uniform ? 0 : 0.02;
+			style += uniform ? 0 : 0.01;
+			break;
 	}
 
 	return {
@@ -9991,8 +9999,7 @@ async function applyGlobalAtempoToWav(inWav, outWav, atempo) {
 
 function tightenVoiceSettings(settings = {}, attempt = 0) {
 	const base = settings || {};
-	if (!attempt || FORCE_NEUTRAL_VOICEOVER || UNIFORM_TTS_VOICE_SETTINGS)
-		return base;
+	if (!attempt || UNIFORM_TTS_VOICE_SETTINGS) return base;
 	const stability = Number(base.stability ?? ELEVEN_TTS_STABILITY);
 	const style = Number(base.style ?? ELEVEN_TTS_STYLE);
 	return {
@@ -10017,6 +10024,50 @@ function hasFillerWords(text = "") {
 	if (!text) return false;
 	const rx = new RegExp(FILLER_WORD_REGEX.source, "i");
 	return rx.test(String(text || ""));
+}
+
+function estimateSpeechSliceWeight(text = "") {
+	const cleaned = sanitizeSegmentText(text);
+	const words = Math.max(1, countWords(cleaned));
+	const sentencePauses = (cleaned.match(/[.!?]+/g) || []).length;
+	const clausePauses = (cleaned.match(/[,:;]+/g) || []).length;
+	return words + sentencePauses * 2.5 + clausePauses * 0.75;
+}
+
+function buildVoiceoverSliceDurations(segments = [], totalDurationSec = 0) {
+	const safeSegments = Array.isArray(segments) ? segments : [];
+	const total = Math.max(0.2, Number(totalDurationSec) || 0.2);
+	if (!safeSegments.length) return [];
+
+	const weights = safeSegments.map((seg) =>
+		estimateSpeechSliceWeight(seg?.text || ""),
+	);
+	const weightSum =
+		weights.reduce((sum, weight) => sum + (Number(weight) || 0), 0) ||
+		safeSegments.length;
+	const minSliceSec = Math.min(
+		1.1,
+		Math.max(0.35, total / Math.max(safeSegments.length * 2.8, 1)),
+	);
+	let durations = weights.map(
+		(weight) => ((Number(weight) || 0) / weightSum) * total,
+	);
+	durations = durations.map((dur) => Math.max(minSliceSec, dur));
+
+	const scaledTotal =
+		durations.reduce((sum, dur) => sum + (Number(dur) || 0), 0) || total;
+	const scale = total / scaledTotal;
+	durations = durations.map((dur) => dur * scale);
+
+	let assigned = 0;
+	return durations.map((dur, idx) => {
+		if (idx === durations.length - 1) {
+			return Math.max(0.15, Number((total - assigned).toFixed(3)));
+		}
+		const rounded = Math.max(0.15, Number(dur.toFixed(3)));
+		assigned += rounded;
+		return rounded;
+	});
 }
 
 async function transcribeAudioForQa(audioPath, jobId, label) {
@@ -10388,10 +10439,160 @@ async function fetchJson(url, options = {}, timeoutMs = 25000) {
 	};
 }
 
-async function requestSyncSoJob({ videoPath, audioPath, jobId }) {
+function resolveSyncAttemptPlan(attempt = 0) {
+	const primary = SYNC_SO_MODEL;
+	const secondary = SYNC_SO_MODEL_FALLBACKS[0] || primary;
+	if (attempt <= 0) return { modelId: primary, inputVariant: 0 };
+	if (attempt === 1) return { modelId: primary, inputVariant: 1 };
+	return { modelId: secondary, inputVariant: attempt };
+}
+
+async function detectFrozenVideo(
+	videoPath,
+	{ noise = SYNC_SO_FREEZE_NOISE, minFreezeSec = SYNC_SO_FREEZE_MIN_SEC } = {},
+) {
+	const durationSec = await probeDurationSeconds(videoPath);
+	if (!durationSec || !Number.isFinite(durationSec)) {
+		return { durationSec: 0, freezes: [], maxFreezeSec: 0, freezeRatio: 0 };
+	}
+
+	const res = await spawnBin(
+		ffmpegPath,
+		[
+			"-i",
+			videoPath,
+			"-vf",
+			`freezedetect=n=${Number(noise)}:d=${Number(minFreezeSec)}`,
+			"-map",
+			"0:v:0",
+			"-f",
+			"null",
+			"-",
+		],
+		"freeze_detect",
+		{ timeoutMs: 120000 },
+	);
+
+	const lines = String(res?.stderr || "").split(/\r?\n/);
+	const freezes = [];
+	let pending = null;
+
+	const maybePushPending = () => {
+		if (!pending) return;
+		const duration =
+			Number(pending.duration) ||
+			(Number.isFinite(pending.start) && Number.isFinite(pending.end)
+				? pending.end - pending.start
+				: 0);
+		if (duration > 0) {
+			const start = Number.isFinite(pending.start)
+				? pending.start
+				: Math.max(0, Number(pending.end) - duration);
+			const end = Number.isFinite(pending.end)
+				? pending.end
+				: Math.min(durationSec, start + duration);
+			freezes.push({ start, end, duration });
+		}
+		pending = null;
+	};
+
+	for (const line of lines) {
+		const startMatch = line.match(/freeze_start:\s*([0-9.]+)/i);
+		if (startMatch) {
+			maybePushPending();
+			pending = { start: Number(startMatch[1]) };
+		}
+		const endMatch = line.match(/freeze_end:\s*([0-9.]+)/i);
+		if (endMatch) {
+			pending = pending || {};
+			pending.end = Number(endMatch[1]);
+		}
+		const durationMatch = line.match(/freeze_duration:\s*([0-9.]+)/i);
+		if (durationMatch) {
+			pending = pending || {};
+			pending.duration = Number(durationMatch[1]);
+			if (pending.start != null || pending.end != null) maybePushPending();
+		}
+	}
+	maybePushPending();
+
+	const totalFrozenSec = freezes.reduce(
+		(sum, item) => sum + Math.max(0, Number(item.duration) || 0),
+		0,
+	);
+	const maxFreezeSec = freezes.reduce(
+		(max, item) => Math.max(max, Number(item.duration) || 0),
+		0,
+	);
+
+	return {
+		durationSec,
+		freezes,
+		maxFreezeSec,
+		freezeRatio: durationSec > 0 ? totalFrozenSec / durationSec : 0,
+	};
+}
+
+async function analyzeLipsyncOutput({
+	videoPath,
+	expectedDurSec,
+	jobId,
+	label,
+}) {
+	const durationSec = await probeDurationSeconds(videoPath);
+	const result = {
+		pass: true,
+		issues: [],
+		durationSec: Number(durationSec || 0),
+		durationDeltaSec: 0,
+		maxFreezeSec: 0,
+		freezeRatio: 0,
+	};
+
+	if (expectedDurSec && durationSec) {
+		const delta = Math.abs(Number(expectedDurSec) - Number(durationSec));
+		const ratio = Number(durationSec) / Math.max(0.01, Number(expectedDurSec));
+		result.durationDeltaSec = delta;
+		if (
+			Number(expectedDurSec) - Number(durationSec) >
+				SYNC_SO_MAX_SHORTFALL_SEC ||
+			ratio < SYNC_SO_MIN_DURATION_RATIO
+		) {
+			result.issues.push("sync_output_too_short");
+		}
+	}
+
+	if (durationSec >= SYNC_SO_FREEZE_CHECK_MIN_SEC) {
+		try {
+			const freezeInfo = await detectFrozenVideo(videoPath);
+			result.maxFreezeSec = Number(freezeInfo.maxFreezeSec || 0);
+			result.freezeRatio = Number(freezeInfo.freezeRatio || 0);
+			if (
+				result.maxFreezeSec >= SYNC_SO_MAX_FREEZE_SEC ||
+				result.freezeRatio >= SYNC_SO_MAX_FREEZE_RATIO
+			) {
+				result.issues.push("sync_output_frozen");
+			}
+		} catch (e) {
+			if (jobId) {
+				logJob(jobId, "lipsync freeze check failed", {
+					label,
+					error: e?.message || String(e),
+				});
+			}
+		}
+	}
+
+	result.pass = !result.issues.length;
+	return result;
+}
+
+async function requestSyncSoJob({ videoPath, audioPath, jobId, modelId }) {
 	const endpoint = `${SYNC_SO_BASE}${SYNC_SO_GENERATE_PATH}`;
 	if (!fs.existsSync(videoPath)) throw new Error("Sync input video missing");
 	if (!fs.existsSync(audioPath)) throw new Error("Sync input audio missing");
+	const effectiveModelId =
+		String(modelId || SYNC_SO_MODEL).trim() || SYNC_SO_MODEL;
 
 	if (
 		!FormDataNode &&
@@ -10402,21 +10603,23 @@ async function requestSyncSoJob({ videoPath, audioPath, jobId }) {
 		);
 	}
 
-	logJob(jobId, "sync multipart request", { endpoint });
+	logJob(jobId, "sync multipart request", {
+		endpoint,
+		modelId: effectiveModelId,
+	});
 
 	if (FormDataNode) {
-		const form = new FormDataNode();
-		form.append("model", SYNC_SO_MODEL);
-		form.append("video", fs.createReadStream(videoPath), {
-			filename: "presenter.mp4",
-			contentType: "video/mp4",
-		});
-		form.append("audio", fs.createReadStream(audioPath), {
-			filename: "segment.wav",
-			contentType: "audio/wav",
-		});
-
 		const doReq = async () => {
+			const form = new FormDataNode();
+			form.append("model", effectiveModelId);
+			form.append("video", fs.createReadStream(videoPath), {
+				filename: "presenter.mp4",
+				contentType: "video/mp4",
+			});
+			form.append("audio", fs.createReadStream(audioPath), {
+				filename: "segment.wav",
+				contentType: "audio/wav",
+			});
 			const res = await axios.post(endpoint, form, {
 				headers: { ...buildSyncSoHeaders(), ...form.getHeaders() },
 				timeout: 90000,
@@ -10445,7 +10648,7 @@ async function requestSyncSoJob({ videoPath, audioPath, jobId }) {
 
 	// Native FormData
 	const form = new FormData();
-	form.append("model", SYNC_SO_MODEL);
+	form.append("model", effectiveModelId);
 	form.append(
 		"video",
 		new Blob([fs.readFileSync(videoPath)], { type: "video/mp4" }),
@@ -10806,15 +11009,16 @@ async function renderLipsyncedSegment({
 	for (let attempt = 0; attempt <= SYNC_SO_SEGMENT_MAX_RETRIES; attempt++) {
 		try {
 			if (SYNC_SO_REQUEST_GAP_MS) await sleep(SYNC_SO_REQUEST_GAP_MS);
+			const attemptPlan = resolveSyncAttemptPlan(attempt);
 			const syncInput =
-				attempt === 0
+				attemptPlan.inputVariant === 0
 					? baseSized
 					: await createSyncFallbackInput(
 							baseSized,
 							tmpDir,
 							jobId,
 							`sync_${safeLabel}`,
-							attempt,
+							attemptPlan.inputVariant,
 						);
 
 			const fit = path.join(
@@ -10822,11 +11026,18 @@ async function renderLipsyncedSegment({
 				`base_fit_${jobId}_${safeLabel}_${attempt}.mp4`,
 			);
 			await fitVideoToDuration(syncInput, dur, fit);
+			logJob(jobId, "lipsync attempt start", {
+				label: safeLabel,
+				attempt,
+				modelId: attemptPlan.modelId,
+				inputVariant: attemptPlan.inputVariant,
+			});
 
 			const syncJob = await requestSyncSoJob({
 				videoPath: fit,
 				audioPath,
 				jobId,
+				modelId: attemptPlan.modelId,
 			});
 			const outUrl = await pollSyncSoJob({
 				id: syncJob.id,
@@ -10836,6 +11047,27 @@ async function renderLipsyncedSegment({
 
 			const raw = path.join(tmpDir, `lip_${jobId}_${safeLabel}.mp4`);
 			await downloadToFile(outUrl, raw, 120000, 2);
+			const syncQa = await analyzeLipsyncOutput({
+				videoPath: raw,
+				expectedDurSec: dur,
+				jobId,
+				label: safeLabel,
+			});
+			logJob(jobId, "lipsync qa", {
+				label: safeLabel,
+				attempt,
+				modelId: attemptPlan.modelId,
+				pass: syncQa.pass,
+				issues: syncQa.issues,
+				durationSec: Number((syncQa.durationSec || 0).toFixed(3)),
+				durationDeltaSec: Number((syncQa.durationDeltaSec || 0).toFixed(3)),
+				maxFreezeSec: Number((syncQa.maxFreezeSec || 0).toFixed(3)),
+				freezeRatio: Number((syncQa.freezeRatio || 0).toFixed(3)),
+			});
+			if (!syncQa.pass) {
+				safeUnlink(raw);
+				throw new Error(`Lipsync QA failed: ${syncQa.issues.join(", ")}`);
+			}
 
 			const fit2 = path.join(tmpDir, `lip_fit_${jobId}_${safeLabel}.mp4`);
 			await fitVideoToDuration(raw, dur, fit2, SEGMENT_PAD_SEC);
@@ -11292,7 +11524,7 @@ async function createPresenterIntroMotion({
 
 	const motionHint = motionRefVideo
 		? buildPresenterReferenceMotionHint({ intro: true })
-		: "Ultra-calm minimal motion: head nearly still, only tiny neck-driven micro-adjustments, no forward/back translation, no noticeable tilts, natural blink rate with slight variation, subtle breathing, and hands resting with near-zero movement.";
+		: "Calm broadcast intro motion: head mostly steady with tiny neck-driven corrections, soft chin dips, a natural blink cadence, subtle breathing, and one restrained emphasis gesture at most; do not let the presenter feel frozen.";
 	const introFace = pickIntroExpression(jobId);
 	const titleTarget = `${Math.round(
 		INTRO_TEXT_X_PCT * 100,
@@ -11305,7 +11537,7 @@ Framing: medium shot (not too close, not too far), upper torso to mid torso, mod
 Action: calm intro delivery with hands resting on the desk; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Expression: ${introFace}. Calm and neutral, composed and professional with a very subtle, light smile (barely noticeable, not constant).
-Mouth and jaw: natural, economical speech preparation with measured openings and soft lip compression between phrases; avoid robotic, stiff, or puppet-like mouth shapes.
+Mouth and jaw: natural speech-ready jaw and lip behavior with readable but restrained openings and soft lip compression between phrases; avoid robotic, stiff, under-animated, or puppet-like mouth shapes.
 Facial consistency: keep the emotional read restrained and stable; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; keep direct camera contact; no glassy or robotic eyes, no frequent side glances, and no exaggerated widening.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
@@ -12263,7 +12495,6 @@ async function runLongVideoJob(
 			output,
 			presenterAssetUrl,
 			voiceoverUrl,
-			voiceId,
 			musicUrl,
 			disableMusic,
 			dryRun,
@@ -12274,7 +12505,7 @@ async function runLongVideoJob(
 			youtubeCategory,
 		} = payload;
 		const hasProvidedVoiceoverUrl = Boolean(voiceoverUrl);
-		const voiceoverUrlLocked = FORCE_NEUTRAL_VOICEOVER ? "" : voiceoverUrl;
+		const voiceoverUrlLocked = String(voiceoverUrl || "").trim();
 		const enableRunwayPresenterMotion = Boolean(
 			payload.enableRunwayPresenterMotion ??
 			controllerOptions.enableRunwayPresenterMotion,
@@ -12282,7 +12513,7 @@ async function runLongVideoJob(
 		const enableWardrobeEdit = Boolean(
 			payload.enableWardrobeEdit ?? controllerOptions.enableWardrobeEdit,
 		);
-		const effectiveVoiceId = String(voiceId || ELEVEN_FIXED_VOICE_ID).trim();
+		const effectiveVoiceId = String(ELEVEN_FIXED_VOICE_ID || "").trim();
 		const contentTargetSec = Number(targetDurationSec || 0);
 		const categoryLabel =
 			normalizeCategoryLabel(category) || LONG_VIDEO_TRENDS_CATEGORY;
@@ -12321,7 +12552,7 @@ async function runLongVideoJob(
 			output,
 			presenterAssetUrl: presenterAssetUrl ? "(provided)" : "(none)",
 			hasVoiceoverUrl: Boolean(voiceoverUrlLocked),
-			voiceoverLocked: FORCE_NEUTRAL_VOICEOVER && hasProvidedVoiceoverUrl,
+			voiceoverLocked: Boolean(voiceoverUrlLocked),
 			hasMusicUrl: Boolean(musicUrl),
 			hasCseKeys: Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY),
 			hasRunway: Boolean(RUNWAY_API_KEY),
@@ -12331,8 +12562,10 @@ async function runLongVideoJob(
 			voiceIdLocked: effectiveVoiceId,
 			hasYouTubeTokens,
 		});
-		if (hasProvidedVoiceoverUrl && FORCE_NEUTRAL_VOICEOVER) {
-			logJob(jobId, "external voiceover ignored (neutral ElevenLabs lock)");
+		if (hasProvidedVoiceoverUrl) {
+			logJob(jobId, "external narration locked", {
+				mode: "content_voiceover_url",
+			});
 		}
 
 		if (dryRun) {
@@ -13004,13 +13237,12 @@ async function runLongVideoJob(
 			},
 		});
 
-		const lockedVoiceSettings =
-			UNIFORM_TTS_VOICE_SETTINGS || FORCE_NEUTRAL_VOICEOVER
-				? buildVoiceSettingsForExpression("neutral", "neutral", "", {
-						uniform: true,
-						forceNeutral: FORCE_NEUTRAL_VOICEOVER,
-					})
-				: null;
+		const lockedVoiceSettings = UNIFORM_TTS_VOICE_SETTINGS
+			? buildVoiceSettingsForExpression("neutral", "neutral", "", {
+					uniform: true,
+					forceNeutral: FORCE_NEUTRAL_VOICEOVER,
+				})
+			: null;
 		const resolveVoiceSettings = (expression, text) =>
 			lockedVoiceSettings ||
 			buildVoiceSettingsForExpression(expression, voiceTonePlan?.mood, text, {
@@ -13240,8 +13472,8 @@ async function runLongVideoJob(
 			sumCleanDur = 0;
 
 			if (voiceoverUrlLocked) {
-				// If you provide a full voiceoverUrl, we will NOT time-stretch; we just slice precisely.
-				// (Best quality approach is to provide already-edited VO that matches the content script.)
+				// If you provide a full voiceoverUrl, we keep your narration as the source
+				// and split it proportionally to the actual script instead of forcing TTS.
 				const voicePath = path.join(tmpDir, `voice_${jobId}.wav`);
 				await downloadToFile(voiceoverUrlLocked, voicePath, 45000, 2);
 
@@ -13267,12 +13499,25 @@ async function runLongVideoJob(
 				);
 				safeUnlink(voicePath);
 
-				// naive equal split by expected segment durations
+				// Split narration proportionally to the actual script, not into equal chunks.
 				const totalVoiceDur = await probeDurationSeconds(voiceWav);
-				const per = totalVoiceDur / segments.length;
+				const sliceDurations = buildVoiceoverSliceDurations(
+					segments,
+					totalVoiceDur,
+				);
+				let cursor = 0;
+				logJob(jobId, "external narration slicing", {
+					totalVoiceDur: Number((totalVoiceDur || 0).toFixed(3)),
+					sliceDurations: sliceDurations.map((dur) =>
+						Number((dur || 0).toFixed(3)),
+					),
+				});
 				for (let i = 0; i < segments.length; i++) {
-					const start = i * per;
-					const dur = i === segments.length - 1 ? totalVoiceDur - start : per;
+					const start = cursor;
+					const dur =
+						i === segments.length - 1
+							? Math.max(0.15, totalVoiceDur - cursor)
+							: Math.max(0.15, Number(sliceDurations[i] || 0.15));
 					const out = path.join(tmpDir, `vo_clean_${jobId}_${i}.wav`);
 					await spawnBin(
 						ffmpegPath,
@@ -13299,6 +13544,7 @@ async function runLongVideoJob(
 					const d = await probeDurationSeconds(out);
 					cleanedWavs.push({ index: i, wav: out, cleanDur: d });
 					sumCleanDur += d;
+					cursor += dur;
 				}
 				safeUnlink(voiceWav);
 			} else {

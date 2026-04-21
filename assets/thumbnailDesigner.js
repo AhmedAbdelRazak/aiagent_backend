@@ -5,11 +5,7 @@ const path = require("path");
 const child_process = require("child_process");
 const axios = require("axios");
 const cloudinary = require("cloudinary").v2;
-const {
-	assertOpenAIImageReady,
-	editImageToPath,
-	pickOpenAIImageSize,
-} = require("./openaiImageTools");
+const { editImageToPath, pickOpenAIImageSize } = require("./openaiImageTools");
 
 let ffmpegPath = "";
 try {
@@ -26,12 +22,38 @@ const THUMBNAIL_CLOUDINARY_FOLDER = "aivideomatic/long_thumbnails";
 const THUMBNAIL_CLOUDINARY_PUBLIC_PREFIX = "long_thumb";
 const MAX_TOPIC_REFERENCE_IMAGES = 2;
 const DEFAULT_LEFT_TEXT_PCT = 0.54;
+const THUMBNAIL_TOPIC_PANEL_W = 740;
+const THUMBNAIL_PRESENTER_PANEL_W = THUMBNAIL_WIDTH - THUMBNAIL_TOPIC_PANEL_W;
 
 const ACCENT_PALETTE = {
 	default: "0xFFC700",
 	tech: "0x00C2FF",
 	business: "0x48C67A",
 };
+
+const PERSON_NAME_STOPWORDS = new Set([
+	"update",
+	"details",
+	"news",
+	"story",
+	"case",
+	"trial",
+	"court",
+	"movie",
+	"film",
+	"show",
+	"season",
+	"series",
+	"episode",
+	"album",
+	"song",
+	"interview",
+	"recap",
+	"breakdown",
+	"explained",
+	"latest",
+	"official",
+]);
 
 function normalizeWhitespace(value = "") {
 	return String(value || "")
@@ -90,6 +112,113 @@ function runFfmpeg(args, label = "ffmpeg") {
 		const stderr = String(error?.stderr || error?.message || "").trim();
 		throw new Error(`${label}_failed${stderr ? `:${stderr}` : ""}`);
 	}
+}
+
+function resolveThumbnailFontFile() {
+	const candidates = [
+		String(process.env.FFMPEG_FONT_PATH || "").trim(),
+		"C:/Windows/Fonts/impact.ttf",
+		"C:/Windows/Fonts/arialbd.ttf",
+		"C:/Windows/Fonts/arial.ttf",
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+		"/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+		"/Library/Fonts/Arial Bold.ttf",
+		"/Library/Fonts/Arial.ttf",
+	].filter(Boolean);
+	for (const candidate of candidates) {
+		try {
+			if (candidate && fs.existsSync(candidate)) return candidate;
+		} catch {}
+	}
+	return null;
+}
+
+function escapeDrawtext(value = "") {
+	const placeholder = "__NL__";
+	return String(value || "")
+		.replace(/\r\n|\r|\n/g, placeholder)
+		.replace(/\\/g, "\\\\")
+		.replace(/,/g, "\\,")
+		.replace(/:/g, "\\:")
+		.replace(/'/g, "\\'")
+		.replace(/%/g, "\\%")
+		.replace(/\[/g, "\\[")
+		.replace(/\]/g, "\\]")
+		.replace(new RegExp(placeholder, "g"), "\\n")
+		.trim();
+}
+
+function normalizeAccentColor(value = "") {
+	const raw = String(value || "")
+		.trim()
+		.replace(/^0x/i, "")
+		.replace(/^#/, "");
+	if (/^[0-9a-f]{6}$/i.test(raw)) return `0x${raw.toUpperCase()}`;
+	return "0xFFC700";
+}
+
+function wrapTextToLines(text = "", maxCharsPerLine = 14, maxLines = 2) {
+	const words = normalizeWhitespace(text).split(/\s+/).filter(Boolean);
+	if (!words.length) return { text: "", lines: 0, overflow: false };
+
+	const lines = [];
+	let line = "";
+	for (const word of words) {
+		const next = line ? `${line} ${word}` : word;
+		if (next.length <= maxCharsPerLine) {
+			line = next;
+			continue;
+		}
+		if (line) lines.push(line);
+		line = word;
+	}
+	if (line) lines.push(line);
+
+	if (lines.length <= maxLines) {
+		return { text: lines.join("\n"), lines: lines.length, overflow: false };
+	}
+
+	const kept = lines.slice(0, maxLines);
+	kept[maxLines - 1] = normalizeWhitespace(
+		`${kept[maxLines - 1]} ${lines.slice(maxLines).join(" ")}`,
+	);
+	return {
+		text: kept.join("\n"),
+		lines: kept.length,
+		overflow: true,
+	};
+}
+
+function fitThumbnailText(
+	text = "",
+	{ baseMaxChars = 14, maxLines = 2, maxChars = 30 } = {},
+) {
+	const clean = normalizeWhitespace(text).slice(0, maxChars);
+	if (!clean) return { text: "", fontScale: 1, truncated: false };
+
+	const scales = [1, 0.94, 0.88, 0.82, 0.76];
+	for (const scale of scales) {
+		const wrapped = wrapTextToLines(
+			clean,
+			Math.max(baseMaxChars, Math.round(baseMaxChars / scale)),
+			maxLines,
+		);
+		if (!wrapped.overflow) {
+			return {
+				text: wrapped.text,
+				fontScale: scale,
+				truncated: false,
+			};
+		}
+	}
+
+	const wrapped = wrapTextToLines(clean, baseMaxChars + 3, maxLines);
+	return {
+		text: wrapped.text,
+		fontScale: 0.76,
+		truncated: wrapped.overflow,
+	};
 }
 
 function detectBufferType(buffer) {
@@ -525,7 +654,7 @@ function buildThumbnailPrompt({
 Create one complete 16:9 YouTube thumbnail for a long-form video.
 Use the first input image as the seed composition.
 Respect the existing composition of the seed image instead of inventing a new crop.
-Use the presenter reference image to preserve the exact presenter identity, beard, glasses, hair, skin tone, nose, jawline, neck, shoulders, and the current dark outfit.
+Use the presenter reference image to preserve the same presenter identity, glasses, beard, hair, overall facial appearance, shoulders, and current dark outfit.
 The presenter must stay on the right side in the same position, same scale, and same framing established by the seed image, with the upper torso visible, camera-facing, photorealistic, crisp, and premium.
 Do not zoom in on the presenter face, do not crop tighter, do not reframe the presenter, and do not change the presenter scale relative to the frame.
 Allow only a tiny facial reaction: ${buildExpressionPrompt(pose)}.
@@ -571,6 +700,171 @@ ${sublineText ? `Subline concept: ${sublineText}.` : ""}
 Keep the scene bright, premium, high-contrast, editorial, and YouTube-friendly.
 Intent: ${intent}.
 	`);
+}
+
+function looksLikeLikelyPersonName(text = "") {
+	const tokens = normalizeWhitespace(text)
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((token) => token.replace(/[^A-Za-z'.-]/g, ""))
+		.filter(Boolean);
+	if (tokens.length < 2 || tokens.length > 4) return false;
+	return tokens.every(
+		(token) =>
+			token.length >= 2 &&
+			/^[A-Za-z][A-Za-z'.-]+$/.test(token) &&
+			!PERSON_NAME_STOPWORDS.has(token.toLowerCase()),
+	);
+}
+
+function shouldPreferTopicLeadThumbnail({
+	topics = [],
+	intent = "general",
+	contextText = "",
+	topicReferencePaths = [],
+}) {
+	if (!Array.isArray(topicReferencePaths) || !topicReferencePaths.length)
+		return false;
+	const primaryTopic = primaryTopicLabel(topics);
+	const text = String(contextText || "").toLowerCase();
+	return (
+		looksLikeLikelyPersonName(primaryTopic) ||
+		/\b(actor|actress|singer|rapper|artist|celebrity|star|host|comedian|influencer|player|coach|fighter|quarterback|president|senator|governor)\b/.test(
+			text,
+		) ||
+		intent === "entertainment"
+	);
+}
+
+function isOpenAiSafetyRejection(error) {
+	return /rejected by the safety system/i.test(
+		String(error?.message || error || ""),
+	);
+}
+
+function renderTopicLeadThumbnailPlate({
+	jobId,
+	tmpDir,
+	presenterLocalPath,
+	topicReferencePaths = [],
+	headline,
+	badgeText,
+	sublineText,
+	accent = ACCENT_PALETTE.default,
+	log,
+}) {
+	const heroSource = topicReferencePaths[0] || presenterLocalPath;
+	ensureImageFile(heroSource, 5000);
+	ensureImageFile(presenterLocalPath, 5000);
+
+	const outputPath = path.join(tmpDir, `thumb_plate_${jobId}.jpg`);
+	const fontFile = resolveThumbnailFontFile();
+	const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
+	const accentColor = normalizeAccentColor(accent);
+	const headlineFit = fitThumbnailText(headline || "BIG UPDATE", {
+		baseMaxChars: 12,
+		maxLines: 2,
+		maxChars: 30,
+	});
+	const sublineFit = fitThumbnailText(sublineText || "", {
+		baseMaxChars: 18,
+		maxLines: 1,
+		maxChars: 26,
+	});
+	const safeHeadline = escapeDrawtext(headlineFit.text);
+	const safeBadge = escapeDrawtext(
+		normalizeWhitespace(badgeText || "TOP STORY"),
+	);
+	const safeSubline = escapeDrawtext(sublineFit.text);
+	const headlineFontSize = Math.max(54, Math.round(96 * headlineFit.fontScale));
+	const sublineFontSize = Math.max(24, Math.round(34 * sublineFit.fontScale));
+	const filters = [
+		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=0.92:brightness=-0.015,gblur=sigma=18,setsar=1[bg]`,
+		`[1:v]scale=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.08:saturation=1.06:brightness=0.015,unsharp=5:5:0.60:5:5:0.0,setsar=1[topic]`,
+		`[2:v]scale=${THUMBNAIL_PRESENTER_PANEL_W + 32}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_PRESENTER_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=1.02,setsar=1[presenter]`,
+		`[bg][topic]overlay=0:0[tmp0]`,
+		`[tmp0]drawbox=x=0:y=0:w=${THUMBNAIL_TOPIC_PANEL_W}:h=${THUMBNAIL_HEIGHT}:color=black@0.14:t=fill[tmp1]`,
+		`[tmp1][presenter]overlay=${THUMBNAIL_TOPIC_PANEL_W}:0[tmp2]`,
+		`[tmp2]drawbox=x=${THUMBNAIL_TOPIC_PANEL_W - 8}:y=0:w=8:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.96:t=fill[tmp3]`,
+	];
+	const textFilters = [
+		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=38:fontcolor=black:x=58:y=72:box=1:boxcolor=${accentColor}@0.98:boxborderw=14:borderw=0:shadowx=0:shadowy=0`,
+		`drawtext=text='${safeHeadline}'${fontOpt}:fontsize=${headlineFontSize}:fontcolor=white:x=54:y=418:line_spacing=10:borderw=5:bordercolor=black@0.75:shadowcolor=black@0.55:shadowx=3:shadowy=3:box=1:boxcolor=black@0.26:boxborderw=20`,
+	];
+	if (safeSubline) {
+		textFilters.push(
+			`drawtext=text='${safeSubline}'${fontOpt}:fontsize=${sublineFontSize}:fontcolor=white@0.96:x=58:y=642:borderw=2:bordercolor=black@0.55:shadowcolor=black@0.4:shadowx=2:shadowy=2:box=1:boxcolor=black@0.24:boxborderw=10`,
+		);
+	}
+	filters.push(`[tmp3]${textFilters.join(",")}[outv]`);
+
+	runFfmpeg(
+		[
+			"-i",
+			heroSource,
+			"-i",
+			heroSource,
+			"-i",
+			presenterLocalPath,
+			"-filter_complex",
+			filters.join(";"),
+			"-map",
+			"[outv]",
+			"-frames:v",
+			"1",
+			"-q:v",
+			"1",
+			"-y",
+			outputPath,
+		],
+		"thumbnail_topic_lead_compose",
+	);
+	ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+	if (typeof log === "function") {
+		log("thumbnail topic-lead plate ready", {
+			path: path.basename(outputPath),
+			usesTopicHero: Boolean(topicReferencePaths.length),
+			font: fontFile ? path.basename(fontFile) : "default",
+		});
+	}
+	return {
+		path: outputPath,
+		method: "local_topic_lead",
+	};
+}
+
+function renderSeedCompositeFallback({
+	jobId,
+	tmpDir,
+	presenterLocalPath,
+	topicReferencePaths = [],
+	log,
+}) {
+	const seedBasePath = composeThumbnailSeedBase({
+		jobId,
+		tmpDir,
+		presenterLocalPath,
+		topicReferencePaths,
+	});
+	const outputPath = path.join(tmpDir, `thumb_seed_fallback_${jobId}.jpg`);
+	try {
+		normalizeThumbnailOutput({
+			candidatePath: seedBasePath,
+			outPath: outputPath,
+		});
+		ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+		if (typeof log === "function") {
+			log("thumbnail seed fallback ready", {
+				path: path.basename(outputPath),
+			});
+		}
+		return {
+			path: outputPath,
+			method: "seed_composite_fallback",
+		};
+	} finally {
+		safeUnlink(seedBasePath);
+	}
 }
 
 function composeThumbnailSeedBase({
@@ -711,11 +1005,7 @@ async function generateOpenAiThumbnailPlate({
 		});
 	}
 	try {
-		const imagePaths = [
-			seedBasePath,
-			presenterLocalPath,
-			...topicReferencePaths.slice(0, MAX_TOPIC_REFERENCE_IMAGES),
-		];
+		const imagePaths = [seedBasePath, presenterLocalPath];
 		await editImageToPath({
 			prompt,
 			imagePaths,
@@ -790,7 +1080,6 @@ async function generateThumbnailPackage({
 	}
 	ensureDir(tmpDir);
 	ensureImageFile(presenterLocalPath, 5000);
-	assertOpenAIImageReady();
 	assertCloudinaryReady();
 
 	const contextText = buildContextText({ title, shortTitle, seoTitle, topics });
@@ -829,8 +1118,22 @@ async function generateThumbnailPackage({
 		jobId,
 		log,
 	});
+	const preferTopicLead = shouldPreferTopicLeadThumbnail({
+		topics,
+		intent,
+		contextText,
+		topicReferencePaths,
+	});
+	if (typeof log === "function") {
+		log("thumbnail route selected", {
+			preferTopicLead,
+			intent,
+			topicReferenceCount: topicReferencePaths.length,
+			primaryTopic: primaryTopicLabel(topics),
+		});
+	}
 
-	const plate = await generateOpenAiThumbnailPlate({
+	const sharedThumbArgs = {
 		jobId,
 		tmpDir,
 		presenterLocalPath,
@@ -845,18 +1148,87 @@ async function generateThumbnailPackage({
 		pose,
 		intent,
 		log,
-	});
+	};
+
+	let plate = null;
+	let firstError = null;
+
+	const tryTopicLead = () =>
+		renderTopicLeadThumbnailPlate({
+			jobId,
+			tmpDir,
+			presenterLocalPath,
+			topicReferencePaths,
+			headline: textPlan.primaryHeadline,
+			badgeText: textPlan.badgeText,
+			sublineText: textPlan.sublineText,
+			accent,
+			log,
+		});
+
+	const tryOpenAi = () => generateOpenAiThumbnailPlate(sharedThumbArgs);
+
+	const trySeedFallback = () =>
+		renderSeedCompositeFallback({
+			jobId,
+			tmpDir,
+			presenterLocalPath,
+			topicReferencePaths,
+			log,
+		});
+
+	const route = preferTopicLead
+		? [
+				{ name: "topic_lead_local", run: tryTopicLead },
+				{ name: "openai_edit", run: tryOpenAi },
+				{ name: "seed_fallback", run: trySeedFallback },
+			]
+		: [
+				{ name: "openai_edit", run: tryOpenAi },
+				{ name: "topic_lead_local", run: tryTopicLead },
+				{ name: "seed_fallback", run: trySeedFallback },
+			];
+
+	for (const step of route) {
+		try {
+			plate = await step.run();
+			if (plate) {
+				if (typeof log === "function") {
+					log("thumbnail route succeeded", {
+						strategy: step.name,
+						method: plate.method || step.name,
+						path: path.basename(plate.path || ""),
+					});
+				}
+				break;
+			}
+		} catch (error) {
+			if (!firstError) firstError = error;
+			if (typeof log === "function") {
+				log("thumbnail route failed", {
+					strategy: step.name,
+					error: error?.message || String(error),
+					safetyRejected: isOpenAiSafetyRejection(error),
+				});
+			}
+		}
+	}
+
+	if (!plate?.path) {
+		throw firstError || new Error("thumbnail_generation_failed");
+	}
 
 	const uploaded = await uploadThumbnailToCloudinary(plate.path, jobId);
 
 	const variant = {
-		variant: "a",
+		variant: plate.method === "local_topic_lead" ? "topic_lead" : "a",
 		localPath: plate.path,
 		url: uploaded.url || "",
 		publicId: uploaded.public_id || "",
 		width: uploaded.width || THUMBNAIL_WIDTH,
 		height: uploaded.height || THUMBNAIL_HEIGHT,
 		title: textPlan.primaryHeadline,
+		method: plate.method || "unknown",
 	};
 
 	return {
@@ -868,6 +1240,7 @@ async function generateThumbnailPackage({
 		title: textPlan.primaryHeadline,
 		pose,
 		accent,
+		method: plate.method || "unknown",
 		variants: [variant],
 	};
 }
