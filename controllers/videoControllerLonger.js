@@ -58,6 +58,10 @@ const { generateThumbnailPackage } = require("../assets/thumbnailDesigner");
 const {
 	generatePresenterAdjustedImage,
 } = require("../assets/presenterAdjustments");
+const {
+	assertOpenAIImageReady,
+	editImageToPath,
+} = require("../assets/openaiImageTools");
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
 const {
@@ -102,9 +106,9 @@ function isOwnerOnlyUser(req) {
 
 const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVEN_FIXED_VOICE_ID = "uKepyVD0sANZxUFnIoI2";
-const ELEVEN_TTS_MODEL = "eleven_turbo_v2_5";
+const ELEVEN_TTS_MODEL = "eleven_multilingual_v2";
 const ELEVEN_TTS_MODEL_FALLBACKS = String(
-	"eleven_multilingual_v2,eleven_monolingual_v1",
+	"eleven_flash_v2_5,eleven_turbo_v2_5,eleven_monolingual_v1",
 )
 	.split(",")
 	.map((s) => s.trim())
@@ -119,13 +123,13 @@ const UNIFORM_TTS_VOICE_SETTINGS = true;
 const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
 
 const RUNWAY_VERSION = "2024-11-06";
-const RUNWAY_VIDEO_MODEL = "gen4_turbo";
+const RUNWAY_VIDEO_MODEL = "gen4.5";
 const RUNWAY_VIDEO_MODEL_FALLBACK = "gen4_turbo";
 
 const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
 const SYNC_SO_BASE = "https://api.sync.so";
 // const SYNC_SO_MODEL = "lipsync-2";
-const SYNC_SO_MODEL = "lipsync-2-pro";
+const SYNC_SO_MODEL = "sync-3";
 const SYNC_SO_GENERATE_PATH = "/v2/generate";
 
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
@@ -244,12 +248,16 @@ const SHOULD_PERSIST_LONG_VIDEO =
 // Your classy suit reference (also default presenter)
 const DEFAULT_PRESENTER_ASSET_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767062842/aivideomatic/long_thumbnails/MyPhotoWithASuit_s1xay4.png";
+const DEFAULT_PRESENTER_MOTION_VIDEO_PATHS = [
+	path.join(__dirname, "../uploads/presenter_cache/motion_reference.mp4"),
+	path.join(__dirname, "../uploads/presenter_cache/DemoVideo.mp4"),
+];
 const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 	"https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"ultra-calm, restrained talking-head motion; head centered and almost still with only tiny, slow neck-driven micro-adjustments; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, no chin lifts, no pronounced nods, no rhythmic bobbing, and no fast turns or jerky motion; shoulders and torso locked and steady; hands resting or fully out of frame with near-zero movement; human blink rate with slight variation, subtle breathing, soft micro-expressions, and natural economical mouth movement; a very light smile only when appropriate; avoid robotic motion, visible loops, or any exaggerated expression";
+	"human, credible seated presenter motion; direct lens contact; head upright and centered with only tiny neck-driven micro-adjustments and occasional soft chin dips; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, no pronounced nods, no rhythmic bobbing, and no fast turns or jerky motion; shoulders and torso grounded and still; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural unhurried blink cadence, subtle breathing, brows mostly settled with only tiny occasional changes, and economical conversational mouth preparation; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -358,7 +366,7 @@ const ALIGN_INTRO_OUTRO_ATEMPO = true;
 const ALLOW_NARRATION_OVERRUN = true;
 const MAX_NARRATION_OVERAGE_RATIO = clampNumber(1.5, 1.0, 1.8);
 const MAX_NARRATION_OVERAGE_SEC = clampNumber(30, 5, 60);
-const MAX_SUBTLE_VISUAL_EXPRESSIONS = clampNumber(2, 0, 2);
+const MAX_SUBTLE_VISUAL_EXPRESSIONS = clampNumber(1, 0, 2);
 const SUBTLE_VISUAL_EDGE_BUFFER = clampNumber(1, 0, 3);
 // Audio QA (quality-first voiceover)
 const AUDIO_QA_ENABLED = true;
@@ -376,13 +384,13 @@ const AUDIO_QA_STRICT_STYLE_MAX = clampNumber(0.06, 0, 0.2);
 
 // Sync input prep
 const SYNC_SO_INPUT_FPS = 30;
-const SYNC_SO_INPUT_CRF = 22;
+const SYNC_SO_INPUT_CRF = 18;
 const SYNC_SO_MAX_BYTES = 19_900_000;
-const SYNC_SO_PRE_MAX_EDGE = clampNumber(960, 640, 1280);
+const SYNC_SO_PRE_MAX_EDGE = clampNumber(1280, 640, 1280);
 const SYNC_SO_PRESCALE_ALWAYS = false;
 const SYNC_SO_PRESCALE_SIZE_PCT = clampNumber(0.85, 0.5, 0.98);
 const SYNC_SO_PRESCALE_MIN_SEC = clampNumber(9, 4, 15);
-const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(960, 640, 1280);
+const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(1280, 640, 1280);
 const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(2, 0, 5);
 const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
 const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
@@ -391,8 +399,8 @@ const REQUIRE_LIPSYNC = true;
 // Presenter stability
 const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
-const USE_MOTION_REF_BASELINE = false;
-const BASELINE_DUR_SEC = clampNumber(12, 6, 15);
+const USE_MOTION_REF_BASELINE = true;
+const BASELINE_DUR_SEC = clampNumber(10, 6, 10);
 const BASELINE_VARIANTS = clampNumber(1, 1, 3);
 const CAMERA_ZOOM_OUT = clampNumber(0.9, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
@@ -823,6 +831,16 @@ async function probeDurationSeconds(filePath) {
 	return info.duration || 0;
 }
 
+const durationCache = new Map();
+async function probeDurationSecondsCached(filePath) {
+	const key = String(filePath || "").trim();
+	if (!key) return 0;
+	if (durationCache.has(key)) return durationCache.get(key);
+	const duration = await probeDurationSeconds(key);
+	durationCache.set(key, duration || 0);
+	return duration || 0;
+}
+
 /* ---------------------------------------------------------------
  * Retry + HTTP helpers
  * ------------------------------------------------------------- */
@@ -1025,7 +1043,8 @@ function parseRatio(ratio, fallback = DEFAULT_OUTPUT_RATIO) {
 	};
 }
 
-function validateCreateBody(body = {}) {
+function validateCreateBody(body = {}, controllerConfig = {}) {
+	const cfg = normalizeLongVideoControllerConfig(controllerConfig);
 	const errors = [];
 
 	const targetDurationSec = Number(body.targetDurationSec || 60);
@@ -1043,10 +1062,10 @@ function validateCreateBody(body = {}) {
 	const introSec = clampNumber(DEFAULT_INTRO_SEC, INTRO_MIN_SEC, INTRO_MAX_SEC);
 	const outroSec = clampNumber(DEFAULT_OUTRO_SEC, OUTRO_MIN_SEC, OUTRO_MAX_SEC);
 
-	const presenterAssetUrl = DEFAULT_PRESENTER_ASSET_URL;
+	const presenterAssetUrl = resolveRequestedPresenterAsset(body, cfg);
 	const voiceId = "";
-	const enableRunwayPresenterMotion = true;
-	const enableWardrobeEdit = ENABLE_WARDROBE_EDIT;
+	const enableRunwayPresenterMotion = cfg.enableRunwayPresenterMotion;
+	const enableWardrobeEdit = cfg.enableWardrobeEdit;
 	const disableMusic = false;
 
 	return {
@@ -1808,19 +1827,58 @@ async function loadRecentPresenterOutfits({ userId, limit = 10 }) {
 		const recent = await Video.find({
 			user: userId,
 			isLongVideo: true,
-			presenterOutfit: { $exists: true, $ne: "" },
+			$or: [
+				{ presenterOutfit: { $exists: true, $ne: "" } },
+				{ presenterOutfitStyle: { $exists: true, $ne: "" } },
+			],
 		})
 			.sort({ createdAt: -1 })
 			.limit(Math.max(0, Number(limit) || 0))
-			.select({ presenterOutfit: 1 })
+			.select({ presenterOutfit: 1, presenterOutfitStyle: 1 })
 			.lean();
 		return (recent || [])
-			.map((v) => String(v.presenterOutfit || "").trim())
-			.filter(Boolean);
+			.map((v) => ({
+				presenterOutfit: String(v.presenterOutfit || "").trim(),
+				presenterOutfitStyle: String(v.presenterOutfitStyle || "").trim(),
+			}))
+			.filter((v) => v.presenterOutfit || v.presenterOutfitStyle);
 	} catch (e) {
 		logJob(null, "recent outfits lookup failed", { error: e.message });
 		return [];
 	}
+}
+
+const DEFAULT_LONG_VIDEO_CONTROLLER_CONFIG = Object.freeze({
+	controllerLabel: "long-video",
+	statusPathBase: "/api/long-video",
+	presenterAssetUrl: DEFAULT_PRESENTER_ASSET_URL,
+	allowPresenterAssetOverride: false,
+	enableRunwayPresenterMotion: true,
+	enableWardrobeEdit: ENABLE_WARDROBE_EDIT,
+	disableYouTubeUpload: false,
+});
+
+function normalizeLongVideoControllerConfig(config = {}) {
+	return {
+		...DEFAULT_LONG_VIDEO_CONTROLLER_CONFIG,
+		...(config && typeof config === "object" ? config : {}),
+	};
+}
+
+function resolveRequestedPresenterAsset(body = {}, controllerConfig = {}) {
+	const cfg = normalizeLongVideoControllerConfig(controllerConfig);
+	const defaultAssetUrl = String(
+		cfg.presenterAssetUrl || DEFAULT_PRESENTER_ASSET_URL,
+	).trim();
+	if (!cfg.allowPresenterAssetOverride) return defaultAssetUrl;
+
+	const requested = String(
+		body.presenterAssetUrl ||
+			body.presenterImageUrl ||
+			body.presenterVideoUrl ||
+			"",
+	).trim();
+	return requested || defaultAssetUrl;
 }
 
 function isDuplicateTopic(topic, existing = [], usedTopics = null) {
@@ -4423,11 +4481,27 @@ async function evaluateImageSegmentDiversity({
  * Presenter handling
  * ------------------------------------------------------------- */
 
-async function ensureLocalPresenterAsset(assetUrl, tmpDir, jobId) {
+async function ensureLocalPresenterAsset(
+	assetUrl,
+	tmpDir,
+	jobId,
+	options = {},
+) {
+	const {
+		defaultAssetUrl = DEFAULT_PRESENTER_ASSET_URL,
+		allowOverride = false,
+	} = options || {};
 	const requested = String(assetUrl || "").trim();
-	let url = DEFAULT_PRESENTER_ASSET_URL;
-	if (requested && requested !== DEFAULT_PRESENTER_ASSET_URL) {
-		logJob(jobId, "presenter asset override ignored (forced default)");
+	const fallbackUrl = String(
+		defaultAssetUrl || DEFAULT_PRESENTER_ASSET_URL,
+	).trim();
+	let url = fallbackUrl;
+	if (requested && allowOverride) {
+		url = requested;
+	} else if (requested && requested !== fallbackUrl) {
+		logJob(jobId, "presenter asset override ignored (forced default)", {
+			requested,
+		});
 	}
 
 	const downloadAndValidate = async (u) => {
@@ -4451,12 +4525,12 @@ async function ensureLocalPresenterAsset(assetUrl, tmpDir, jobId) {
 				url,
 				ct,
 			});
-			url = DEFAULT_PRESENTER_ASSET_URL;
+			url = fallbackUrl;
 		}
 		const p = await downloadAndValidate(url);
 		if (p) return p;
-		if (url !== DEFAULT_PRESENTER_ASSET_URL) {
-			const p2 = await downloadAndValidate(DEFAULT_PRESENTER_ASSET_URL);
+		if (fallbackUrl && url !== fallbackUrl) {
+			const p2 = await downloadAndValidate(fallbackUrl);
 			if (p2) return p2;
 		}
 		throw new Error("Presenter asset could not be downloaded/validated");
@@ -4464,16 +4538,20 @@ async function ensureLocalPresenterAsset(assetUrl, tmpDir, jobId) {
 
 	if (!fs.existsSync(url)) {
 		logJob(jobId, "presenter local path missing; fallback to default", { url });
-		const p2 = await downloadAndValidate(DEFAULT_PRESENTER_ASSET_URL);
-		if (p2) return p2;
+		if (fallbackUrl && url !== fallbackUrl) {
+			const p2 = await downloadAndValidate(fallbackUrl);
+			if (p2) return p2;
+		}
 		throw new Error("Presenter asset not found");
 	}
 
 	const detected = detectFileType(url);
 	if (!detected || detected.kind === "text") {
 		logJob(jobId, "presenter local invalid; fallback to default", { url });
-		const p2 = await downloadAndValidate(DEFAULT_PRESENTER_ASSET_URL);
-		if (p2) return p2;
+		if (fallbackUrl && url !== fallbackUrl) {
+			const p2 = await downloadAndValidate(fallbackUrl);
+			if (p2) return p2;
+		}
 		throw new Error("Presenter asset invalid");
 	}
 
@@ -4482,6 +4560,20 @@ async function ensureLocalPresenterAsset(assetUrl, tmpDir, jobId) {
 
 async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
 	if (!USE_MOTION_REF_BASELINE) return null;
+	for (const candidate of DEFAULT_PRESENTER_MOTION_VIDEO_PATHS) {
+		try {
+			if (candidate && fs.existsSync(candidate)) {
+				const detected = detectFileType(candidate);
+				if (detected?.kind === "video") return candidate;
+			}
+		} catch (e) {
+			logJob(jobId, "local motion reference check failed (ignored)", {
+				error: e.message,
+				candidate,
+			});
+		}
+	}
+
 	const url = DEFAULT_PRESENTER_MOTION_VIDEO_URL;
 	if (!url) return null;
 
@@ -4510,6 +4602,19 @@ async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
 		});
 	}
 	return null;
+}
+
+function buildPresenterReferenceMotionHint({ intro = false } = {}) {
+	const handLine = intro
+		? "Hands stay low on the desk or just below frame, with at most one brief small emphasis gesture before settling again."
+		: "Hands stay low near the torso, usually lightly clasped or relaxed, with only brief small open-palm emphasis gestures before settling again.";
+	return [
+		"Match the presenter's real reference behavior from motion_reference.mp4 and DemoVideo.mp4.",
+		"Face behavior: direct eye contact, friendly-neutral expression, natural unhurried blinks, brows mostly settled with only tiny occasional changes, and economical conversational mouth shapes with no over-open vowels or reaction-face peaks.",
+		"Head behavior: mostly upright and centered with only tiny neck-driven corrections, slight chin dips on emphasis, no swaying, no forward lunges, no head tilts, and no looped nodding.",
+		`Body behavior: shoulders square and steady, torso grounded in the seat, ${handLine}`,
+		"Reduce amplitude slightly further for polish, and keep the emotional read composed and consistent from start to finish.",
+	].join(" ");
 }
 
 function runwayHeadersJson() {
@@ -4644,7 +4749,7 @@ function seedFromJobId(jobId) {
 
 function pickIntroExpression(jobId) {
 	void jobId;
-	return "calm, neutral expression with relaxed eyes";
+	return "calm, neutral expression with settled brows and relaxed eyes";
 }
 
 async function runwayImageToVideo({
@@ -4751,26 +4856,6 @@ async function runwayVideoToVideo({
 	return await pollRunwayTask(res.data.id, "runway_video_to_video");
 }
 
-function buildRestylePrompt({ mood = "neutral" } = {}) {
-	const expr = normalizeExpression(mood);
-	const smileLine =
-		expr === "warm"
-			? "Allow a natural friendly smile toward the end of the clip (not constant)."
-			: "";
-
-	return `
-Restyle the provided performance video into a classy modern studio.
-Keep the SAME identity (Ahmed): same face structure, beard, glasses, and age.
-Location: clean desk, tasteful background, soft practical lighting, studio quality. ${STUDIO_EMPTY_PROMPT}
-Outfit: classy tailored suit or blazer with a neat shirt.
-Lighting: slightly darker cinematic look with a warm key light and gentle shadows (not too dark).
-Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
-Preserve the original performance timing and micro-expressions (eyebrows, blinks, subtle reactions).
-No text overlays, no extra people, no background figures or reflections, no weird hands, no face warping, no mouth distortion.
-${smileLine}
-`.trim();
-}
-
 function buildBaselinePrompt(
 	expression = "neutral",
 	motionRefVideo,
@@ -4778,19 +4863,19 @@ function buildBaselinePrompt(
 ) {
 	const expr = normalizeExpression(expression);
 	let expressionLine =
-		"Expression: calm and professional; neutral mouth, no smile.";
+		"Expression: calm and professional; neutral mouth, brows settled, no smile.";
 	if (expr === "warm")
 		expressionLine =
-			"Expression: friendly and approachable with a tiny micro-smile (closed mouth, no teeth).";
+			"Expression: friendly and approachable with only a trace micro-smile (closed mouth, no teeth), brows settled, and no reaction-face peaks.";
 	if (expr === "excited")
 		expressionLine =
-			"Expression: upbeat and engaged with a brief, very slight smile; minimal teeth only for a moment, no wide grin.";
+			"Expression: engaged and attentive but restrained; neutral mouth or trace smile only, no grin, no raised-brow surprise, and no wide eyes.";
 	if (expr === "serious")
 		expressionLine =
-			"Expression: neutral and steady, no frown, no exaggerated concern, soft eye contact.";
+			"Expression: neutral and steady, brows settled, no frown, no exaggerated concern, soft eye contact.";
 	if (expr === "thoughtful")
 		expressionLine =
-			"Expression: thoughtful and composed, neutral mouth, gentle eye focus, no smile.";
+			"Expression: thoughtful and composed, neutral mouth, gentle eye focus, settled brows, no smile.";
 
 	const variantHint =
 		variant === 1
@@ -4799,7 +4884,7 @@ function buildBaselinePrompt(
 				? "Allow only a tiny, slow neck micro-shift with no tilt and no body movement; movement must remain extremely minimal."
 				: "";
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance but reduce the amplitude by at least 70%: keep the head almost fixed, preserve only tiny neck-driven micro-adjustments, no forward/back translation, no noticeable tilts, no chin lifts, rare micro-nods only, slow and controlled, no fast turns or jerky motion, shoulders still, hands resting with near-zero movement, and avoid robotic or looped motion."
+		? buildPresenterReferenceMotionHint()
 		: PRESENTER_MOTION_STYLE;
 
 	return `
@@ -4810,11 +4895,13 @@ Props: keep all existing props exactly as in the reference, except remove any ca
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 ${expressionLine}
 Motion: ${motionHint} ${variantHint}
-Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
+Mouth and jaw: natural, economical speech preparation with measured openings and soft lip compression between phrases; avoid robotic, stiff, puppet-like, or over-open mouth shapes.
 Smiles/laughter: tiny, brief smiles only; no laughs or exaggerated emotion.
+Facial consistency: keep the emotional read restrained and stable from shot start to finish; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
-Eyes: relaxed, comfortable, natural reflections and blink cadence; avoid glassy or robotic eyes.
+Eyes: relaxed, comfortable, natural reflections and blink cadence; maintain steady camera contact; no staring, no glassy eyes, no frequent side glances, and no exaggerated widening.
 Avoid exaggerated eye expressions or wide-eyed looks.
+Wardrobe: keep clothing edges clean and believable with symmetrical shoulders, collar, lapels, and sleeves; no straps, scarves, shoulder drapes, floating fabric, or wardrobe glitches.
 Hands: resting on the desk or out of frame; minimal movement; do NOT cover the face.
 No extra people, no reflections or background figures, no text overlays, no screens, no charts, no logos except those already present in the reference, no camera shake, no mouth warping.
 Do NOT try to lip-sync.
@@ -5563,7 +5650,7 @@ function coerceExpressionForNaturalness(
 	const explicit = inferExplicitExpression(text);
 	if (explicit) {
 		if (explicit === "serious") return "neutral";
-		if (explicit === "excited") return "excited";
+		if (explicit === "excited") return "warm";
 		return explicit;
 	}
 	const entertainment = isEntertainmentTopicText(`${text} ${topicLabel}`);
@@ -7231,7 +7318,7 @@ function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
 				"what the strongest reporting actually supports",
 				"the detail that could change where this goes next",
 			],
-			cardSubtitle: "Timeline, Fallout, and What Happens Next",
+			cardSubtitle: "Timeline, Fallout, What's Next",
 		};
 	}
 	if (
@@ -7246,7 +7333,7 @@ function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
 				"what the strongest reporting actually supports",
 				"the detail that could change where this goes next",
 			],
-			cardSubtitle: "What Set It Off, Why People Are Split, and What's Next",
+			cardSubtitle: "What Set It Off and What's Next",
 		};
 	}
 	if (
@@ -7261,7 +7348,7 @@ function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
 				"what the latest reporting actually supports",
 				"what to watch next",
 			],
-			cardSubtitle: "What Changed, Why People Are Split, and What to Watch",
+			cardSubtitle: "What Changed and What's Next",
 		};
 	}
 	return {
@@ -7271,7 +7358,7 @@ function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
 			"what the key reporting actually supports",
 			"what could happen next",
 		],
-		cardSubtitle: "What Happened, Why It Matters, and What's Next",
+		cardSubtitle: "Why It Matters and What's Next",
 	};
 }
 
@@ -10612,8 +10699,11 @@ async function renderLipsyncedSegment({
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	const dur = Math.max(0.2, Number(segDur) || 0.2);
-	const offset =
-		(Number(offsetSeed) * 1.37) % Math.max(2, BASELINE_DUR_SEC - 0.5);
+	const baselineDur = Math.max(
+		2,
+		(await probeDurationSecondsCached(baselineSource)) || BASELINE_DUR_SEC,
+	);
+	const offset = (Number(offsetSeed) * 1.37) % Math.max(2, baselineDur - 0.5);
 	const baseSeg = path.join(tmpDir, `base_${safeLabel}_${jobId}.mp4`);
 	await spawnBin(
 		ffmpegPath,
@@ -11201,7 +11291,7 @@ async function createPresenterIntroMotion({
 	);
 
 	const motionHint = motionRefVideo
-		? "Match the natural motion style from the reference performance but reduce the amplitude by at least 70%: head nearly still, only tiny neck-driven micro-adjustments, no forward/back translation, no noticeable tilts, no chin lifts, rare micro-nods only, natural blink rate with slight variation, hands resting with near-zero movement, and avoid robotic or looped motion."
+		? buildPresenterReferenceMotionHint({ intro: true })
 		: "Ultra-calm minimal motion: head nearly still, only tiny neck-driven micro-adjustments, no forward/back translation, no noticeable tilts, natural blink rate with slight variation, subtle breathing, and hands resting with near-zero movement.";
 	const introFace = pickIntroExpression(jobId);
 	const titleTarget = `${Math.round(
@@ -11215,9 +11305,11 @@ Framing: medium shot (not too close, not too far), upper torso to mid torso, mod
 Action: calm intro delivery with hands resting on the desk; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Expression: ${introFace}. Calm and neutral, composed and professional with a very subtle, light smile (barely noticeable, not constant).
-Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
-Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes. Briefly glance toward the open title area, then back to the camera.
+Mouth and jaw: natural, economical speech preparation with measured openings and soft lip compression between phrases; avoid robotic, stiff, or puppet-like mouth shapes.
+Facial consistency: keep the emotional read restrained and stable; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
+Eyes: comfortable, natural, relaxed with realistic blink cadence; keep direct camera contact; no glassy or robotic eyes, no frequent side glances, and no exaggerated widening.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
+Wardrobe: keep clothing edges clean and believable with symmetrical shoulders, collar, lapels, and sleeves; no straps, scarves, shoulder drapes, floating fabric, or wardrobe glitches.
 ${motionHint}
 Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except those already present in the reference.
 `.trim();
@@ -11229,18 +11321,22 @@ Framing: medium shot (not too close, not too far), upper torso to mid torso, mod
 Action: small, natural intro posture with hands resting; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Expression: ${introFace}. Calm and neutral; very subtle, light smile only (barely noticeable), not constant.
-Mouth and jaw: natural, human movement; avoid robotic or stiff mouth shapes.
-Eyes: comfortable, natural, relaxed with realistic blink cadence; no glassy or robotic eyes.
+Mouth and jaw: natural, economical speech preparation with measured openings and soft lip compression between phrases; avoid robotic, stiff, or puppet-like mouth shapes.
+Facial consistency: keep the emotional read restrained and stable; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
+Eyes: comfortable, natural, relaxed with realistic blink cadence; keep direct camera contact; no glassy or robotic eyes, no frequent side glances, and no exaggerated widening.
 Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
+Wardrobe: keep clothing edges clean and believable with symmetrical shoulders, collar, lapels, and sleeves; no straps, scarves, shoulder drapes, floating fabric, or wardrobe glitches.
 ${motionHint}
 Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except those already present in the reference.
 `.trim();
 
 	const introModelOrder = [];
-	if (RUNWAY_VIDEO_MODEL_FALLBACK)
+	if (RUNWAY_VIDEO_MODEL) introModelOrder.push(RUNWAY_VIDEO_MODEL);
+	if (
+		RUNWAY_VIDEO_MODEL_FALLBACK &&
+		!introModelOrder.includes(RUNWAY_VIDEO_MODEL_FALLBACK)
+	)
 		introModelOrder.push(RUNWAY_VIDEO_MODEL_FALLBACK);
-	if (RUNWAY_VIDEO_MODEL && !introModelOrder.includes(RUNWAY_VIDEO_MODEL))
-		introModelOrder.push(RUNWAY_VIDEO_MODEL);
 
 	const runIntroPrompt = async (promptText, label) => {
 		logJob(jobId, "intro motion prompt", {
@@ -11531,7 +11627,7 @@ async function createIntroClip({
 	const subFit = fitIntroText(subtitle || "", {
 		baseMaxChars: subMaxChars,
 		preferLines: 1,
-		maxLines: 2,
+		maxLines: 1,
 	});
 	const safeTitle = escapeDrawtext(titleFit.text);
 	const safeSub = escapeDrawtext(subFit.text);
@@ -12144,7 +12240,15 @@ function computeNextRun({ scheduleType, timeOfDay, startDate }) {
  * Job runner
  * ------------------------------------------------------------- */
 
-async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
+async function runLongVideoJob(
+	jobId,
+	payload,
+	baseUrl,
+	user = null,
+	controllerConfig = {},
+) {
+	const controllerOptions =
+		normalizeLongVideoControllerConfig(controllerConfig);
 	const tmpDir = path.join(TMP_ROOT, `job_${jobId}`);
 	ensureDir(tmpDir);
 
@@ -12171,8 +12275,13 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		} = payload;
 		const hasProvidedVoiceoverUrl = Boolean(voiceoverUrl);
 		const voiceoverUrlLocked = FORCE_NEUTRAL_VOICEOVER ? "" : voiceoverUrl;
-		const enableRunwayPresenterMotion = true;
-		const enableWardrobeEdit = true;
+		const enableRunwayPresenterMotion = Boolean(
+			payload.enableRunwayPresenterMotion ??
+			controllerOptions.enableRunwayPresenterMotion,
+		);
+		const enableWardrobeEdit = Boolean(
+			payload.enableWardrobeEdit ?? controllerOptions.enableWardrobeEdit,
+		);
 		const effectiveVoiceId = String(voiceId || ELEVEN_FIXED_VOICE_ID).trim();
 		const contentTargetSec = Number(targetDurationSec || 0);
 		const categoryLabel =
@@ -12189,15 +12298,19 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 		);
 		const totalTargetSec =
 			introDurationSec + contentTargetSec + outroDurationSec;
-		const hasYouTubeTokens = Boolean(
-			youtubeRefreshToken || youtubeAccessToken || user?.youtubeRefreshToken,
-		);
+		const youtubeUploadEnabled = !controllerOptions.disableYouTubeUpload;
+		const hasYouTubeTokens =
+			youtubeUploadEnabled &&
+			Boolean(
+				youtubeRefreshToken || youtubeAccessToken || user?.youtubeRefreshToken,
+			);
 		let thumbnailPath = "";
 		let thumbnailUrl = "";
 		let thumbnailPublicId = "";
 		let topicSourceSummary = [];
 
 		logJob(jobId, "job started", {
+			controller: controllerOptions.controllerLabel,
 			dryRun,
 			requestedTargetSec: Number(targetDurationSec || 0),
 			contentTargetSec,
@@ -12214,6 +12327,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			hasRunway: Boolean(RUNWAY_API_KEY),
 			enableRunwayPresenterMotion: Boolean(enableRunwayPresenterMotion),
 			enableWardrobeEdit: Boolean(enableWardrobeEdit),
+			disableYouTubeUpload: Boolean(controllerOptions.disableYouTubeUpload),
 			voiceIdLocked: effectiveVoiceId,
 			hasYouTubeTokens,
 		});
@@ -12343,19 +12457,29 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			presenterAssetUrl,
 			tmpDir,
 			jobId,
+			{
+				defaultAssetUrl: controllerOptions.presenterAssetUrl,
+				allowOverride: controllerOptions.allowPresenterAssetOverride,
+			},
 		);
+		let presenterThumbnailLocal = presenterLocal;
+		let presenterOutfit = "";
+		let presenterOutfitStyle = "";
 		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
 		const detected = detectFileType(presenterLocal);
 		let presenterIsVideo = detected?.kind === "video";
 		let presenterIsImage = detected?.kind === "image";
-		let presenterOutfit = "";
-		if (!presenterIsImage)
+		if (!presenterIsImage) {
 			throw new Error("Presenter asset must be a valid image");
+		}
 
 		logJob(jobId, "presenter asset ready", {
 			path: path.basename(presenterLocal),
 			detected: detected?.kind || "unknown",
 			hasMotionRef: Boolean(motionRefVideo),
+			thumbnailSource: presenterThumbnailLocal
+				? path.basename(presenterThumbnailLocal)
+				: null,
 		});
 
 		updateJob(jobId, { progressPct: 12 });
@@ -12692,18 +12816,24 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 						presenterOutfit = String(
 							presenterResult.presenterOutfit || "",
 						).trim();
+						presenterOutfitStyle = String(
+							presenterResult.presenterOutfitStyle || "",
+						).trim();
 						logJob(jobId, "presenter adjustments ready", {
 							path: path.basename(presenterLocal),
 							method: presenterResult.method || "runway",
 							cloudinary: Boolean(presenterResult.url),
+							style: presenterOutfitStyle || "",
 						});
 						updateJob(jobId, {
 							meta: {
 								...JOBS.get(jobId)?.meta,
 								presenterImageUrl: presenterResult.url || "",
 								presenterOutfit,
+								presenterOutfitStyle,
 							},
 						});
+						presenterThumbnailLocal = presenterLocal;
 					} else {
 						logJob(jobId, "presenter adjustments invalid; using original", {
 							detected: adjustedDetected?.kind || "unknown",
@@ -12748,7 +12878,7 @@ async function runLongVideoJob(jobId, payload, baseUrl, user = null) {
 			const thumbResult = await generateThumbnailPackage({
 				jobId,
 				tmpDir,
-				presenterLocalPath: presenterLocal,
+				presenterLocalPath: presenterThumbnailLocal,
 				title: thumbTitle,
 				shortTitle: resolvedShortTitle,
 				seoTitle: "",
@@ -14203,7 +14333,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		updateJob(jobId, { progressPct: 92 });
 
 		// 16) Finalize (with fade-out)
-		const outputName = `long_${jobId}.mp4`;
+		const outputSlug =
+			safeSlug(
+				seoMeta?.seoTitle || script.title || topicSummary || "long_video",
+				56,
+			) || "long_video";
+		const outputName = `long_${outputSlug}_${jobId}.mp4`;
 		const outputPath = SHOULD_PERSIST_LONG_VIDEO
 			? path.join(OUTPUT_DIR, outputName)
 			: path.join(tmpDir, outputName);
@@ -14219,7 +14354,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		let youtubeLink = "";
 		let youtubeTokens = null;
 		try {
-			if (!hasYouTubeTokens) {
+			if (!youtubeUploadEnabled) {
+				logJob(jobId, "youtube upload skipped (disabled for controller)");
+			} else if (!hasYouTubeTokens) {
 				logJob(jobId, "youtube upload skipped (no tokens)");
 			} else {
 				const youtubePayload = {
@@ -14320,6 +14457,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							? new Date(youtubeTokenExpiresAt)
 							: undefined,
 					presenterOutfit: presenterOutfit || "",
+					presenterOutfitStyle: presenterOutfitStyle || "",
 				});
 				videoDocId = doc?._id ? String(doc._id) : null;
 			}
@@ -14357,87 +14495,97 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
  * CONTROLLER: createLongVideo
  * ------------------------------------------------------------- */
 
-exports.createLongVideo = async (req, res) => {
-	const { errors, clean } = validateCreateBody(req.body || {});
-	if (errors.length) return res.status(400).json({ error: errors.join(", ") });
-	if (!isOwnerOnlyUser(req)) {
-		return res.status(403).json({
-			error: "Long video creation is temporarily restricted to the owner.",
-		});
-	}
-
-	const jobId = crypto.randomUUID();
-	const baseUrl = buildBaseUrl(req);
-
-	const job = {
-		jobId,
-		status: "queued",
-		progressPct: 0,
-		topic: null,
-		finalVideoUrl: null,
-		error: null,
-		createdAt: nowIso(),
-		updatedAt: nowIso(),
-		meta: {},
-	};
-	JOBS.set(jobId, job);
-
-	res.status(202).json({
-		jobId,
-		status: "queued",
-		statusUrl: `/api/long-video/${jobId}`,
-	});
-
-	logJob(jobId, "job queued", {
-		statusUrl: `/api/long-video/${jobId}`,
-		baseUrl,
-	});
-
-	// Optional scheduling (unchanged)
-	const schedule = req.body?.schedule || null;
-	const scheduleJobMeta =
-		req.scheduleJobMeta || req.body?.scheduleJobMeta || null;
-	const isScheduledJob = Boolean(scheduleJobMeta);
-
-	if (schedule && !isScheduledJob && req.user?._id) {
-		const { type, timeOfDay, startDate, endDate } = schedule;
-		if (!["daily", "weekly", "monthly"].includes(String(type || ""))) {
-			console.warn(
-				"[LongVideo] Invalid schedule type; skipping schedule save.",
-			);
-		} else if (!parseTimeOfDay(timeOfDay) || !startDate) {
-			console.warn(
-				"[LongVideo] Invalid schedule timing; skipping schedule save.",
-			);
-		} else {
-			const nextRun = computeNextRun({
-				scheduleType: type,
-				timeOfDay,
-				startDate,
+function createLongVideoController(controllerConfig = {}) {
+	const cfg = normalizeLongVideoControllerConfig(controllerConfig);
+	return async (req, res) => {
+		const { errors, clean } = validateCreateBody(req.body || {}, cfg);
+		if (errors.length)
+			return res.status(400).json({ error: errors.join(", ") });
+		if (!isOwnerOnlyUser(req)) {
+			return res.status(403).json({
+				error: "Long video creation is temporarily restricted to the owner.",
 			});
-			if (nextRun) {
-				try {
-					await Schedule.create({
-						user: req.user._id,
-						category: "LongVideo",
-						scheduleType: type,
-						timeOfDay,
-						startDate: dayjs(startDate).toDate(),
-						endDate: endDate ? dayjs(endDate).toDate() : undefined,
-						nextRun,
-						active: true,
-						videoType: "long",
-						longVideoConfig: { ...clean },
-					});
-				} catch (e) {
-					console.warn("[LongVideo] Schedule creation failed", e.message);
+		}
+
+		const jobId = crypto.randomUUID();
+		const baseUrl = buildBaseUrl(req);
+
+		const job = {
+			jobId,
+			status: "queued",
+			progressPct: 0,
+			topic: null,
+			finalVideoUrl: null,
+			error: null,
+			createdAt: nowIso(),
+			updatedAt: nowIso(),
+			meta: {},
+		};
+		JOBS.set(jobId, job);
+
+		const statusUrl = `${cfg.statusPathBase}/${jobId}`;
+		res.status(202).json({
+			jobId,
+			status: "queued",
+			statusUrl,
+		});
+
+		logJob(jobId, "job queued", {
+			controller: cfg.controllerLabel,
+			statusUrl,
+			baseUrl,
+		});
+
+		const schedule = req.body?.schedule || null;
+		const scheduleJobMeta =
+			req.scheduleJobMeta || req.body?.scheduleJobMeta || null;
+		const isScheduledJob = Boolean(scheduleJobMeta);
+
+		if (schedule && !isScheduledJob && req.user?._id) {
+			const { type, timeOfDay, startDate, endDate } = schedule;
+			if (!["daily", "weekly", "monthly"].includes(String(type || ""))) {
+				console.warn(
+					"[LongVideo] Invalid schedule type; skipping schedule save.",
+				);
+			} else if (!parseTimeOfDay(timeOfDay) || !startDate) {
+				console.warn(
+					"[LongVideo] Invalid schedule timing; skipping schedule save.",
+				);
+			} else {
+				const nextRun = computeNextRun({
+					scheduleType: type,
+					timeOfDay,
+					startDate,
+				});
+				if (nextRun) {
+					try {
+						await Schedule.create({
+							user: req.user._id,
+							category: "LongVideo",
+							scheduleType: type,
+							timeOfDay,
+							startDate: dayjs(startDate).toDate(),
+							endDate: endDate ? dayjs(endDate).toDate() : undefined,
+							nextRun,
+							active: true,
+							videoType: "long",
+							longVideoConfig: { ...clean },
+						});
+					} catch (e) {
+						console.warn("[LongVideo] Schedule creation failed", e.message);
+					}
 				}
 			}
 		}
-	}
 
-	setImmediate(() => runLongVideoJob(jobId, clean, baseUrl, req.user || null));
-};
+		setImmediate(() =>
+			runLongVideoJob(jobId, clean, baseUrl, req.user || null, cfg),
+		);
+	};
+}
+
+exports.createLongVideoController = createLongVideoController;
+exports.createLongVideo = createLongVideoController();
 
 /* ---------------------------------------------------------------
  * CONTROLLER: getLongVideoStatus

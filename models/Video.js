@@ -209,6 +209,11 @@ const videoSchema = new mongoose.Schema(
 			trim: true,
 			default: "",
 		},
+		presenterOutfitStyle: {
+			type: String,
+			trim: true,
+			default: "",
+		},
 	},
 	{ timestamps: true }
 );

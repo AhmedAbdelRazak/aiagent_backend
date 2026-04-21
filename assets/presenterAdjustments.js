@@ -23,6 +23,9 @@ const PRESENTER_MIN_BYTES = 12000;
 const PRESENTER_CLOUDINARY_FOLDER = "aivideomatic/long_presenters";
 const PRESENTER_CLOUDINARY_PUBLIC_PREFIX = "presenter_master";
 const PRESENTER_METHOD = "openai_image_edit_prompt_only";
+const RECENT_OUTFIT_HARD_BLOCK_COUNT = 1;
+const RECENT_OUTFIT_SOFT_BLOCK_COUNT = 6;
+const MAX_OUTFIT_EDIT_ATTEMPTS = 3;
 
 function createLogger(log, jobId) {
 	const prefix = `[presenter_adjustments${jobId ? `:${jobId}` : ""}]`;
@@ -244,40 +247,247 @@ function inferPresentationMode({ title, topics, categoryLabel }) {
 	return "entertainment";
 }
 
-function chooseOutfitDirection({ title, topics, categoryLabel, jobId = "" }) {
-	const mode = inferPresentationMode({ title, topics, categoryLabel });
-	const optionsByMode = {
-		formal: [
-			"a classy dark formal-news outfit that feels authoritative and premium, choosing either a tailored blazer over a coordinated dark open-collar shirt or a refined dark jacket over a matching dark shirt, whichever looks most natural in this exact image",
-			"a polished dark newsroom look with a premium layered outfit in dark tones, choosing the exact dark blazer-or-jacket combination yourself so it feels elegant, serious, and camera-ready",
-			"a sharp dark professional outfit for a serious story, with one coherent layered look in dark tones that feels expensive, restrained, and naturally integrated into the shot",
-		],
-		modern: [
-			"a modern clean dark studio outfit, choosing either a premium dark shirt-only look or a streamlined dark jacket over a dark shirt, whichever looks most natural in this exact image",
-			"a sleek dark presenter outfit with a contemporary studio feel, choosing the exact dark shirt or lightweight jacket styling yourself so it feels polished and natural",
-			"a crisp modern dark on-camera look that feels smart and premium, with one coherent dark outfit designed to look natural in the existing shot",
-		],
-		entertainment: [
-			"a polished dark entertainment-host outfit, choosing either a refined dark shirt-only look or a subtle dark jacket look, whichever looks most natural in this exact image",
-			"a classy dark presenter outfit for entertainment coverage, choosing the exact dark styling yourself so it feels expressive, premium, and believable on camera",
-			"a tasteful dark studio-host look with premium fabric and clean styling, choosing one natural-looking dark outfit that flatters the presenter without changing the shot",
-		],
-	};
-	const options = optionsByMode[mode] || optionsByMode.entertainment;
-	const hashSource = `${jobId}|${title || ""}|${mode}`;
+function normalizeOutfitKey(value = "") {
+	return String(value || "")
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "_")
+		.replace(/^_+|_+$/g, "");
+}
+
+function inferOutfitModeFromValue(value = "") {
+	const key = normalizeOutfitKey(value);
+	if (!key) return "";
+	if (key.startsWith("formal_") || /\bformal\b/.test(key)) return "formal";
+	if (key.startsWith("modern_") || /\bmodern\b/.test(key)) return "modern";
+	if (
+		key.startsWith("entertainment_") ||
+		/\bentertainment\b/.test(key) ||
+		/\bhost\b/.test(key)
+	) {
+		return "entertainment";
+	}
+	return "";
+}
+
+function normalizeRecentOutfitHistory(recentOutfits = []) {
+	return (Array.isArray(recentOutfits) ? recentOutfits : [])
+		.map((entry) => {
+			if (!entry) return null;
+			if (typeof entry === "string") {
+				const presenterOutfit = String(entry || "").trim();
+				const presenterOutfitStyle = "";
+				const key = normalizeOutfitKey(presenterOutfit);
+				if (!key) return null;
+				return {
+					presenterOutfit,
+					presenterOutfitStyle,
+					key,
+					mode: inferOutfitModeFromValue(presenterOutfit),
+				};
+			}
+			const presenterOutfit = String(
+				entry.presenterOutfit || entry.styleLabel || entry.outfit || "",
+			).trim();
+			const presenterOutfitStyle = String(
+				entry.presenterOutfitStyle || entry.styleId || entry.style || "",
+			).trim();
+			const key = normalizeOutfitKey(presenterOutfitStyle || presenterOutfit);
+			if (!key) return null;
+			return {
+				presenterOutfit,
+				presenterOutfitStyle,
+				key,
+				mode: inferOutfitModeFromValue(presenterOutfitStyle || presenterOutfit),
+			};
+		})
+		.filter(Boolean);
+}
+
+const OUTFIT_VARIANTS_BY_MODE = {
+	formal: [
+		{
+			id: "formal_charcoal_peak_lapel_black_open_collar",
+			label: "charcoal peak-lapel blazer with black open-collar shirt",
+			promptLine:
+				"a tailored charcoal peak-lapel blazer over a black open-collar shirt with premium wool texture, crisp structure, and an elegant newsroom silhouette",
+		},
+		{
+			id: "formal_midnight_double_breasted_graphite_shirt",
+			label: "midnight double-breasted blazer with graphite shirt",
+			promptLine:
+				"a midnight double-breasted blazer over a graphite dress shirt with a refined structured fit, premium fabric, and a polished serious tone",
+		},
+		{
+			id: "formal_black_textured_jacket_dark_stand_collar",
+			label: "black textured jacket with dark stand-collar shirt",
+			promptLine:
+				"a black subtly textured formal jacket over a dark stand-collar shirt with a sleek premium finish and a restrained high-end broadcast feel",
+		},
+		{
+			id: "formal_graphite_single_breasted_satin_trim",
+			label: "graphite single-breasted blazer with satin-trim shirt look",
+			promptLine:
+				"a graphite single-breasted blazer with a dark satin-trim shirt styling, clean lines, premium tailoring, and a composed professional presence",
+		},
+		{
+			id: "formal_deep_navy_soft_shoulder_black_shirt",
+			label: "deep navy soft-shoulder blazer with black shirt",
+			promptLine:
+				"a deep navy soft-shoulder blazer over a black dress shirt with understated luxury, refined drape, and a calm formal-news look",
+		},
+		{
+			id: "formal_black_three_piece_visible_vest",
+			label: "black three-piece look with visible vest",
+			promptLine:
+				"a premium black three-piece formal look with a visible vest layer, sharp tailoring, and an expensive restrained newsroom finish",
+		},
+	],
+	modern: [
+		{
+			id: "modern_black_mockneck_soft_jacket",
+			label: "black mock-neck with soft dark jacket",
+			promptLine:
+				"a premium black mock-neck layered under a soft dark tailored jacket with clean minimal lines and a polished modern studio feel",
+		},
+		{
+			id: "modern_graphite_overshirt_black_crew",
+			label: "graphite overshirt with black crew shirt",
+			promptLine:
+				"a structured graphite overshirt layered over a clean black crew shirt with premium fabric, modern restraint, and a sharp on-camera silhouette",
+		},
+		{
+			id: "modern_collarless_jacket_jet_black_shirt",
+			label: "collarless dark jacket with jet black shirt",
+			promptLine:
+				"a collarless dark modern jacket over a jet black shirt with sleek architectural lines, refined texture, and an elevated contemporary studio look",
+		},
+		{
+			id: "modern_dark_bomber_minimal_black_shirt",
+			label: "minimal dark bomber with black shirt",
+			promptLine:
+				"a minimal premium dark bomber layered over a fitted black shirt with clean structure, subtle luxury, and a smart modern presenter style",
+		},
+		{
+			id: "modern_slate_shirt_jacket_tonal_layer",
+			label: "slate shirt-jacket with tonal dark layer",
+			promptLine:
+				"a slate shirt-jacket over a tonal dark inner layer with crisp seams, premium texture, and a polished contemporary studio profile",
+		},
+		{
+			id: "modern_black_zip_front_jacket_graphite_layer",
+			label: "black zip-front jacket with graphite layer",
+			promptLine:
+				"a premium black zip-front jacket over a graphite base layer with sleek modern styling, clean tailoring, and a believable high-end studio finish",
+		},
+	],
+	entertainment: [
+		{
+			id: "entertainment_midnight_satin_bomber_black_shirt",
+			label: "midnight satin bomber with black shirt",
+			promptLine:
+				"a midnight satin-finish bomber over a black shirt with a premium entertainment-host feel, tasteful shine, and a polished believable on-camera look",
+		},
+		{
+			id: "entertainment_open_collar_silk_blend_black_shirt",
+			label: "open-collar silk-blend black shirt look",
+			promptLine:
+				"a refined black silk-blend open-collar shirt look with premium drape, subtle texture, and a classy expressive host energy",
+		},
+		{
+			id: "entertainment_deep_navy_soft_blazer_tonal_shirt",
+			label: "deep navy soft blazer with tonal shirt",
+			promptLine:
+				"a deep navy soft blazer over a tonal dark shirt with entertainment-host polish, premium fabric, and a stylish but believable studio presence",
+		},
+		{
+			id: "entertainment_black_tonal_layered_shirt_jacket",
+			label: "black tonal layered shirt-jacket look",
+			promptLine:
+				"a black tonal layered shirt-jacket look with premium fabric contrast, subtle fashion-forward styling, and a polished host silhouette",
+		},
+		{
+			id: "entertainment_graphite_textured_blazer_open_neck",
+			label: "graphite textured blazer with open-neck dark shirt",
+			promptLine:
+				"a graphite textured blazer over an open-neck dark shirt with classy entertainment coverage energy, premium texture, and a believable studio-host finish",
+		},
+		{
+			id: "entertainment_dark_suede_jacket_black_crew",
+			label: "dark suede-style jacket with black crew layer",
+			promptLine:
+				"a dark suede-style jacket over a black crew layer with rich premium texture, tasteful host styling, and a clean flattering on-camera fit",
+		},
+	],
+};
+
+function outfitVariantScore({
+	option,
+	recentHistory,
+	mode,
+	jobId = "",
+	title = "",
+}) {
+	const optionKey = normalizeOutfitKey(option.id || option.label);
+	const hardBlocked = recentHistory
+		.slice(0, RECENT_OUTFIT_HARD_BLOCK_COUNT)
+		.some((item) => item.key === optionKey);
+	const softBlocked = recentHistory
+		.slice(0, RECENT_OUTFIT_SOFT_BLOCK_COUNT)
+		.some((item) => item.key === optionKey);
+	const modePenalty =
+		recentHistory.length &&
+		recentHistory[0]?.mode &&
+		recentHistory[0].mode === mode &&
+		hardBlocked
+			? 1000
+			: 0;
+	const score = modePenalty + (hardBlocked ? 100 : 0) + (softBlocked ? 10 : 0);
+	const hashSource = `${jobId}|${title || ""}|${mode}|${option.id}|${option.label}`;
 	let hash = 0;
 	for (const char of hashSource) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-	const promptLine = options[hash % options.length];
+	return { score, hash };
+}
+
+function chooseOutfitDirection({
+	title,
+	topics,
+	categoryLabel,
+	jobId = "",
+	recentOutfits = [],
+}) {
+	const mode = inferPresentationMode({ title, topics, categoryLabel });
+	const options =
+		OUTFIT_VARIANTS_BY_MODE[mode] || OUTFIT_VARIANTS_BY_MODE.entertainment;
+	const recentHistory = normalizeRecentOutfitHistory(recentOutfits);
+	const ordered = [...options]
+		.map((option) => ({
+			option,
+			...outfitVariantScore({
+				option,
+				recentHistory,
+				mode,
+				jobId,
+				title,
+			}),
+		}))
+		.sort((a, b) => a.score - b.score || a.hash - b.hash)
+		.map((item) => item.option);
+	const selected = ordered[0] || options[0];
 	return {
 		mode,
-		styleId: mode,
-		styleLabel:
-			mode === "formal"
-				? "dark formal look"
-				: mode === "modern"
-					? "dark modern studio look"
-					: "dark entertainment-host look",
-		promptLine,
+		styleFamily: mode,
+		styleId: selected.id,
+		styleLabel: selected.label,
+		promptLine: selected.promptLine,
+		candidateStyles: ordered.map((option) => ({
+			mode,
+			styleFamily: mode,
+			styleId: option.id,
+			styleLabel: option.label,
+			promptLine: option.promptLine,
+		})),
+		recentHistory: recentHistory.slice(0, RECENT_OUTFIT_SOFT_BLOCK_COUNT),
 	};
 }
 
@@ -286,6 +496,7 @@ function buildWardrobePrompt({
 	title,
 	topics = [],
 	categoryLabel,
+	recentOutfits = [],
 }) {
 	const topicLine =
 		(Array.isArray(topics)
@@ -297,6 +508,14 @@ function buildWardrobePrompt({
 		title ||
 		categoryLabel ||
 		"the video topic";
+	const recentHistory = normalizeRecentOutfitHistory(recentOutfits);
+	const recentLabels = recentHistory
+		.slice(0, RECENT_OUTFIT_SOFT_BLOCK_COUNT)
+		.map((item) => item.presenterOutfit || item.presenterOutfitStyle || "")
+		.filter(Boolean);
+	const recentLine = recentLabels.length
+		? `This new outfit must be clearly different from these recently used presenter outfits: ${recentLabels.join("; ")}.`
+		: "This new outfit must feel like a clearly fresh wardrobe change for a new video.";
 	return [
 		"Edit this exact presenter photo.",
 		"Keep the exact same presenter in the exact same shot.",
@@ -307,7 +526,11 @@ function buildWardrobePrompt({
 		"Change only the presenter outfit.",
 		`Replace the full visible outfit with ${outfitDirection.promptLine}.`,
 		`The outfit must feel classy, dark, polished, photorealistic, and appropriate for ${topicLine}.`,
+		recentLine,
+		"Do not reuse the same jacket shape, neckline, shirt styling, layering, lapel treatment, or silhouette from the recent outfits.",
 		"Make the outfit fully coherent and continuous from the collar to the bottom of the visible torso.",
+		"Both shoulders, lapels, collar lines, sleeves, and seams must look clean, symmetrical, and believable.",
+		"No straps, harness details, scarves, shoulder drapes, floating fabric pieces, broken lapels, mismatched collars, or unexplained accessories.",
 		"Do not leave any part of the original clothing visible.",
 		"Do not change the dimensions of the image.",
 		"Do not add text, captions, logos, graphics, jewelry, props, extra people, or background changes.",
@@ -392,6 +615,7 @@ async function generatePresenterAdjustedImage({
 	title,
 	topics = [],
 	categoryLabel,
+	recentOutfits = [],
 	log,
 }) {
 	const logger = createLogger(log, jobId);
@@ -426,88 +650,114 @@ async function generatePresenterAdjustedImage({
 		workingDir,
 		`presenter_outfit_${jobId || "job"}_normalized.png`,
 	);
-	const outfitDirection = chooseOutfitDirection({
+	const outfitPlan = chooseOutfitDirection({
 		title,
 		topics,
 		categoryLabel,
 		jobId,
-	});
-	const prompt = buildWardrobePrompt({
-		outfitDirection,
-		title,
-		topics,
-		categoryLabel,
+		recentOutfits,
 	});
 
 	logger("presenter source wardrobe analysis", {
-		topicMode: outfitDirection.mode,
-		styleFamily: outfitDirection.styleId,
+		topicMode: outfitPlan.mode,
+		styleFamily: outfitPlan.styleFamily,
+		selectedStyle: outfitPlan.styleId,
+		recentOutfits: outfitPlan.recentHistory.map(
+			(item) => item.presenterOutfitStyle || item.presenterOutfit,
+		),
 	});
 
-	try {
+	let lastError = null;
+	const attemptStyles = Array.isArray(outfitPlan.candidateStyles)
+		? outfitPlan.candidateStyles.slice(0, MAX_OUTFIT_EDIT_ATTEMPTS)
+		: [
+				{
+					mode: outfitPlan.mode,
+					styleFamily: outfitPlan.styleFamily,
+					styleId: outfitPlan.styleId,
+					styleLabel: outfitPlan.styleLabel,
+					promptLine: outfitPlan.promptLine,
+				},
+			];
+	for (
+		let attemptIndex = 0;
+		attemptIndex < attemptStyles.length;
+		attemptIndex++
+	) {
+		const outfitDirection = attemptStyles[attemptIndex];
+		const prompt = buildWardrobePrompt({
+			outfitDirection,
+			title,
+			topics,
+			categoryLabel,
+			recentOutfits,
+		});
 		logger("presenter edit attempt", {
-			attempt: 1,
+			attempt: attemptIndex + 1,
 			outfit: outfitDirection.styleLabel,
 			style: outfitDirection.styleId,
 		});
+		try {
+			await editImageToPath({
+				prompt,
+				imagePaths: [presenterLocalPath],
+				outPath: rawOutputPath,
+				size: pickOpenAIImageSize({
+					width: sourceDims.width,
+					height: sourceDims.height,
+					preferLandscape: true,
+				}),
+				quality: "high",
+				background: "opaque",
+				inputFidelity: "high",
+				user: String(jobId || "presenter_adjustment"),
+			});
 
-		await editImageToPath({
-			prompt,
-			imagePaths: [presenterLocalPath],
-			outPath: rawOutputPath,
-			size: pickOpenAIImageSize({
-				width: sourceDims.width,
-				height: sourceDims.height,
-				preferLandscape: true,
-			}),
-			quality: "high",
-			background: "opaque",
-			inputFidelity: "high",
-			user: String(jobId || "presenter_adjustment"),
-		});
+			const finalPath = normalizeEditedPresenter({
+				sourcePath: presenterLocalPath,
+				candidatePath: rawOutputPath,
+				outPath: normalizedOutputPath,
+			});
+			ensurePresenterFile(finalPath);
 
-		const finalPath = normalizeEditedPresenter({
-			sourcePath: presenterLocalPath,
-			candidatePath: rawOutputPath,
-			outPath: normalizedOutputPath,
-		});
-		ensurePresenterFile(finalPath);
+			const uploaded = await uploadPresenterToCloudinary(
+				finalPath,
+				jobId || "job",
+			);
 
-		const uploaded = await uploadPresenterToCloudinary(
-			finalPath,
-			jobId || "job",
-		);
+			logger("presenter edit ready", {
+				outfit: outfitDirection.styleLabel,
+				style: outfitDirection.styleId,
+				url: uploaded.url || "",
+			});
 
-		logger("presenter edit ready", {
-			outfit: outfitDirection.styleLabel,
-			style: outfitDirection.styleId,
-			url: uploaded.url || "",
-		});
-
-		return {
-			localPath: finalPath,
-			url: uploaded.url || "",
-			publicId: uploaded.public_id || "",
-			width: uploaded.width || sourceDims.width || 0,
-			height: uploaded.height || sourceDims.height || 0,
-			method: PRESENTER_METHOD,
-			presenterOutfit: outfitDirection.styleLabel,
-			presenterOutfitStyle: outfitDirection.styleId,
-		};
-	} catch (error) {
-		logger("presenter edit attempt failed", {
-			attempt: 1,
-			outfit: outfitDirection.styleLabel,
-			style: outfitDirection.styleId,
-			error: error?.message || String(error),
-		});
-		logger("presenter strict fallback to original", {
-			error: error?.message || String(error),
-		});
-		return buildOriginalFallback(presenterLocalPath);
-	} finally {
-		safeUnlink(rawOutputPath);
+			return {
+				localPath: finalPath,
+				url: uploaded.url || "",
+				publicId: uploaded.public_id || "",
+				width: uploaded.width || sourceDims.width || 0,
+				height: uploaded.height || sourceDims.height || 0,
+				method: PRESENTER_METHOD,
+				presenterOutfit: outfitDirection.styleLabel,
+				presenterOutfitStyle: outfitDirection.styleId,
+			};
+		} catch (error) {
+			lastError = error;
+			logger("presenter edit attempt failed", {
+				attempt: attemptIndex + 1,
+				outfit: outfitDirection.styleLabel,
+				style: outfitDirection.styleId,
+				error: error?.message || String(error),
+			});
+		} finally {
+			safeUnlink(rawOutputPath);
+		}
 	}
+
+	logger("presenter strict fallback to original", {
+		error: lastError?.message || "presenter_edit_failed",
+	});
+	return buildOriginalFallback(presenterLocalPath);
 }
 
 module.exports = {
