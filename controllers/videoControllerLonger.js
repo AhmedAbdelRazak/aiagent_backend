@@ -56,38 +56,38 @@ const { OpenAI } = require("openai");
 const cloudinary = require("cloudinary").v2;
 const { generateThumbnailPackage } = require("../assets/thumbnailDesigner");
 const {
-	generatePresenterAdjustedImage,
+  generatePresenterAdjustedImage,
 } = require("../assets/presenterAdjustments");
 const {
-	assertOpenAIImageReady,
-	editImageToPath,
+  assertOpenAIImageReady,
+  editImageToPath,
 } = require("../assets/openaiImageTools");
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
 const {
-	googleTrendingCategoriesId,
-	EXPLICIT_EXCITED_CUES,
-	EXPLICIT_SERIOUS_CUES,
-	EXPLICIT_WARM_CUES,
-	EXPLICIT_THOUGHTFUL_CUES,
-	SERIOUS_TONE_TOKENS,
-	EXCITED_TONE_TOKENS,
-	ENTERTAINMENT_KEYWORDS,
-	TREND_SIGNAL_TOKENS,
-	CSE_ENTERTAINMENT_QUERIES,
-	TOPIC_STOP_WORDS,
-	GENERIC_TOPIC_TOKENS,
-	YT_CATEGORY_MAP,
+  googleTrendingCategoriesId,
+  EXPLICIT_EXCITED_CUES,
+  EXPLICIT_SERIOUS_CUES,
+  EXPLICIT_WARM_CUES,
+  EXPLICIT_THOUGHTFUL_CUES,
+  SERIOUS_TONE_TOKENS,
+  EXCITED_TONE_TOKENS,
+  ENTERTAINMENT_KEYWORDS,
+  TREND_SIGNAL_TOKENS,
+  CSE_ENTERTAINMENT_QUERIES,
+  TOPIC_STOP_WORDS,
+  GENERIC_TOPIC_TOKENS,
+  YT_CATEGORY_MAP,
 } = require("../assets/utils");
 
 const ffmpegStatic = require("ffmpeg-static");
 
 let FormDataNode = null;
 try {
-	// eslint-disable-next-line import/no-extraneous-dependencies
-	FormDataNode = require("form-data");
+  // eslint-disable-next-line import/no-extraneous-dependencies
+  FormDataNode = require("form-data");
 } catch {
-	FormDataNode = null;
+  FormDataNode = null;
 }
 
 /* ---------------------------------------------------------------
@@ -100,19 +100,19 @@ const CHAT_MODEL = "gpt-5.2";
 const OWNER_ONLY_USER_ID = "683e3a0329b0515ff5f7a1e1";
 
 function isOwnerOnlyUser(req) {
-	const userId = req?.user?._id || req?.user?.id || req?.userId;
-	return String(userId || "") === OWNER_ONLY_USER_ID;
+  const userId = req?.user?._id || req?.user?.id || req?.userId;
+  return String(userId || "") === OWNER_ONLY_USER_ID;
 }
 
 const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVEN_FIXED_VOICE_ID = "uKepyVD0sANZxUFnIoI2";
 const ELEVEN_TTS_MODEL = "eleven_multilingual_v2";
 const ELEVEN_TTS_MODEL_FALLBACKS = String(
-	"eleven_flash_v2_5,eleven_turbo_v2_5,eleven_monolingual_v1",
+  "eleven_flash_v2_5,eleven_turbo_v2_5,eleven_monolingual_v1",
 )
-	.split(",")
-	.map((s) => s.trim())
-	.filter(Boolean);
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 // TTS realism tuning: less locked, more human pacing and phrasing.
 const ELEVEN_TTS_STABILITY = clampNumber(0.62, 0.1, 1);
 const ELEVEN_TTS_SIMILARITY = clampNumber(0.88, 0.1, 1);
@@ -142,16 +142,16 @@ const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
 const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY || null;
 
 const CLOUDINARY_ENABLED = Boolean(
-	process.env.CLOUDINARY_CLOUD_NAME &&
-	process.env.CLOUDINARY_API_KEY &&
-	process.env.CLOUDINARY_API_SECRET,
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET,
 );
 if (CLOUDINARY_ENABLED) {
-	cloudinary.config({
-		cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-		api_key: process.env.CLOUDINARY_API_KEY,
-		api_secret: process.env.CLOUDINARY_API_SECRET,
-	});
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
 }
 
 const GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1";
@@ -159,7 +159,7 @@ const WIKIPEDIA_API_BASE = "https://en.wikipedia.org/w/api.php";
 const WIKIMEDIA_API_BASE = "https://commons.wikimedia.org/w/api.php";
 
 const TRENDS_API_URL =
-	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
+  process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
 const TRENDS_HTTP_TIMEOUT_MS = 180000;
 const TRENDS_HTTP_MAX_ATTEMPTS = 2;
 const TRENDS_HTTP_RETRY_DELAY_MS = 5000;
@@ -168,60 +168,60 @@ const LONG_VIDEO_TRENDS_GEO = "US";
 const LONG_VIDEO_TRENDS_CATEGORY = "Entertainment";
 
 function normalizeTrendsApiUrl(raw) {
-	return String(raw || "")
-		.trim()
-		.replace(/\/+$/, "");
+  return String(raw || "")
+    .trim()
+    .replace(/\/+$/, "");
 }
 
 function buildTrendsApiCandidates(baseUrl) {
-	const list = [];
-	const add = (u) => {
-		const cleaned = normalizeTrendsApiUrl(u);
-		if (!cleaned) return;
-		list.push(cleaned);
-		if (/localhost/i.test(cleaned)) {
-			list.push(cleaned.replace(/localhost/gi, "127.0.0.1"));
-		}
-		if (/\[::1\]/.test(cleaned)) {
-			list.push(cleaned.replace(/\[::1\]/g, "127.0.0.1"));
-		}
-	};
-	add(TRENDS_API_URL);
-	if (baseUrl) add(`${String(baseUrl).replace(/\/+$/, "")}/api/google-trends`);
-	return Array.from(new Set(list));
+  const list = [];
+  const add = (u) => {
+    const cleaned = normalizeTrendsApiUrl(u);
+    if (!cleaned) return;
+    list.push(cleaned);
+    if (/localhost/i.test(cleaned)) {
+      list.push(cleaned.replace(/localhost/gi, "127.0.0.1"));
+    }
+    if (/\[::1\]/.test(cleaned)) {
+      list.push(cleaned.replace(/\[::1\]/g, "127.0.0.1"));
+    }
+  };
+  add(TRENDS_API_URL);
+  if (baseUrl) add(`${String(baseUrl).replace(/\/+$/, "")}/api/google-trends`);
+  return Array.from(new Set(list));
 }
 
 function delay(ms) {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function deriveTrendsServiceBase(raw) {
-	const cleaned = normalizeTrendsApiUrl(raw);
-	if (!cleaned) return "";
-	return cleaned.replace(/\/api\/google-trends$/i, "");
+  const cleaned = normalizeTrendsApiUrl(raw);
+  if (!cleaned) return "";
+  return cleaned.replace(/\/api\/google-trends$/i, "");
 }
 
 function buildGoogleImagesApiCandidates(baseUrl) {
-	const list = [];
-	const bases = [
-		deriveTrendsServiceBase(TRENDS_API_URL),
-		String(baseUrl || "").trim(),
-	].filter(Boolean);
-	for (const base of bases) {
-		const trimmed = base.replace(/\/+$/, "");
-		list.push(`${trimmed}/api/google-images`);
-		if (/localhost/i.test(trimmed)) {
-			list.push(
-				`${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`,
-			);
-		}
-		if (/\[::1\]/.test(trimmed)) {
-			list.push(
-				`${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`,
-			);
-		}
-	}
-	return Array.from(new Set(list));
+  const list = [];
+  const bases = [
+    deriveTrendsServiceBase(TRENDS_API_URL),
+    String(baseUrl || "").trim(),
+  ].filter(Boolean);
+  for (const base of bases) {
+    const trimmed = base.replace(/\/+$/, "");
+    list.push(`${trimmed}/api/google-images`);
+    if (/localhost/i.test(trimmed)) {
+      list.push(
+        `${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`,
+      );
+    }
+    if (/\[::1\]/.test(trimmed)) {
+      list.push(
+        `${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`,
+      );
+    }
+  }
+  return Array.from(new Set(list));
 }
 
 const LONG_VIDEO_YT_CATEGORY = "Entertainment";
@@ -231,10 +231,10 @@ const BRAND_CREDIT = "Powered by Serene Jannat";
 const CHANNEL_NAME = "Prime Time Brief";
 const INTRO_HOST_NAME = "Amad";
 const MERCH_INTRO =
-	"Support the channel & customize your own merch:\n" +
-	"https://serenejannat.com/our-products?category=candles/\n" +
-	"https://www.serenejannat.com/custom-gifts\n" +
-	"https://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n\n";
+  "Support the channel & customize your own merch:\n" +
+  "https://serenejannat.com/our-products?category=candles/\n" +
+  "https://www.serenejannat.com/custom-gifts\n" +
+  "https://www.serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n\n";
 
 const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID || "";
 const JAMENDO_BASE = "https://api.jamendo.com/v3.0";
@@ -243,26 +243,26 @@ const TMP_ROOT = path.join(os.tmpdir(), "agentai_long_video");
 const OUTPUT_DIR = path.join(__dirname, "../uploads/videos");
 const THUMBNAIL_DIR = path.join(__dirname, "../uploads/thumbnails");
 const LONG_VIDEO_PERSIST_OUTPUT =
-	String(process.env.LONG_VIDEO_PERSIST_OUTPUT || "").toLowerCase() === "true";
+  String(process.env.LONG_VIDEO_PERSIST_OUTPUT || "").toLowerCase() === "true";
 const LONG_VIDEO_PERSIST_FOR_SHORTS =
-	String(process.env.LONG_VIDEO_PERSIST_FOR_SHORTS || "true").toLowerCase() ===
-	"true";
+  String(process.env.LONG_VIDEO_PERSIST_FOR_SHORTS || "true").toLowerCase() ===
+  "true";
 const SHOULD_PERSIST_LONG_VIDEO =
-	LONG_VIDEO_PERSIST_OUTPUT || LONG_VIDEO_PERSIST_FOR_SHORTS;
+  LONG_VIDEO_PERSIST_OUTPUT || LONG_VIDEO_PERSIST_FOR_SHORTS;
 
 // Your classy suit reference (also default presenter)
 const DEFAULT_PRESENTER_ASSET_URL =
-	"https://res.cloudinary.com/infiniteapps/image/upload/v1767062842/aivideomatic/long_thumbnails/MyPhotoWithASuit_s1xay4.png";
+  "https://res.cloudinary.com/infiniteapps/image/upload/v1767062842/aivideomatic/long_thumbnails/MyPhotoWithASuit_s1xay4.png";
 const DEFAULT_PRESENTER_MOTION_VIDEO_PATHS = [
-	path.join(__dirname, "../uploads/presenter_cache/motion_reference.mp4"),
-	path.join(__dirname, "../uploads/presenter_cache/DemoVideo.mp4"),
+  path.join(__dirname, "../uploads/presenter_cache/motion_reference.mp4"),
+  path.join(__dirname, "../uploads/presenter_cache/DemoVideo.mp4"),
 ];
 const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
-	"https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
+  "https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
 const STUDIO_EMPTY_PROMPT =
-	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
+  "Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"human, credible seated presenter motion; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
+  "human, credible seated presenter motion; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -279,9 +279,9 @@ const FINAL_MASTER_MAX_HEIGHT = 2160;
 const FINAL_MASTER_MIN_HEIGHT = 1080;
 // 0 disables the timeout so long 4K encodes can finish without being killed.
 const FINAL_MASTER_TIMEOUT_MS = clampNumber(
-	process.env.FINAL_MASTER_TIMEOUT_MS ?? 0,
-	0,
-	7 * 24 * 60 * 60 * 1000,
+  process.env.FINAL_MASTER_TIMEOUT_MS ?? 0,
+  0,
+  7 * 24 * 60 * 60 * 1000,
 );
 const FINAL_GOP_SECONDS = 2;
 const FINAL_COLOR_SPACE = "bt709";
@@ -423,34 +423,34 @@ const SEGMENT_TRANSITION_MIN_CLIP_SEC = clampNumber(1.6, 0.5, 5);
 
 // Music
 const MUSIC_VOLUME = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_VOLUME ?? 0.09,
-	0.03,
-	0.5,
+  process.env.LONG_VIDEO_MUSIC_VOLUME ?? 0.09,
+  0.03,
+  0.5,
 );
 const MUSIC_DUCK_THRESHOLD = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_DUCK_THRESHOLD ?? 0.06,
-	0.02,
-	0.3,
+  process.env.LONG_VIDEO_MUSIC_DUCK_THRESHOLD ?? 0.06,
+  0.02,
+  0.3,
 );
 const MUSIC_DUCK_RATIO = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_DUCK_RATIO ?? 8,
-	2,
-	16,
+  process.env.LONG_VIDEO_MUSIC_DUCK_RATIO ?? 8,
+  2,
+  16,
 );
 const MUSIC_DUCK_ATTACK = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_DUCK_ATTACK ?? 12,
-	5,
-	200,
+  process.env.LONG_VIDEO_MUSIC_DUCK_ATTACK ?? 12,
+  5,
+  200,
 );
 const MUSIC_DUCK_RELEASE = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_DUCK_RELEASE ?? 420,
-	40,
-	1600,
+  process.env.LONG_VIDEO_MUSIC_DUCK_RELEASE ?? 420,
+  40,
+  1600,
 );
 const MUSIC_DUCK_MAKEUP = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_DUCK_MAKEUP ?? 1.0,
-	1,
-	3,
+  process.env.LONG_VIDEO_MUSIC_DUCK_MAKEUP ?? 1.0,
+  1,
+  3,
 );
 
 const DEFAULT_MUSIC_URL = "";
@@ -472,6 +472,9 @@ const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
 const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(6, 2, 10);
 const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(4.8, 3, 12);
 const IMAGE_SEGMENT_MIN_UNIQUE_RATIO = clampNumber(0.5, 0.4, 1);
+const ENABLE_PRESENTER_RUN_MERGE = true;
+const PRESENTER_RUN_MERGE_MAX_SEC = clampNumber(22, 8, 30);
+const PRESENTER_RUN_MERGE_MAX_SEGMENTS = clampNumber(3, 2, 4);
 const IMAGE_SEARCH_MAX_QUERY_VARIANTS = clampNumber(10, 4, 12);
 const IMAGE_SEARCH_CANDIDATE_MULTIPLIER = clampNumber(7, 2, 8);
 const GOOGLE_IMAGES_SEARCH_ENABLED = true;
@@ -492,203 +495,203 @@ const MAX_JOBS_TO_KEEP = 250;
 const JOB_TTL_MS = 1000 * 60 * 60 * 6;
 
 setInterval(() => {
-	const now = Date.now();
-	for (const [id, job] of JOBS.entries()) {
-		const t = new Date(job.updatedAt || job.createdAt || now).getTime();
-		if (now - t > JOB_TTL_MS) JOBS.delete(id);
-	}
-	if (JOBS.size > MAX_JOBS_TO_KEEP) {
-		const entries = Array.from(JOBS.entries()).sort(
-			(a, b) =>
-				new Date(a[1].updatedAt || a[1].createdAt).getTime() -
-				new Date(b[1].updatedAt || b[1].createdAt).getTime(),
-		);
-		for (let i = 0; i < entries.length - MAX_JOBS_TO_KEEP; i++) {
-			JOBS.delete(entries[i][0]);
-		}
-	}
+  const now = Date.now();
+  for (const [id, job] of JOBS.entries()) {
+    const t = new Date(job.updatedAt || job.createdAt || now).getTime();
+    if (now - t > JOB_TTL_MS) JOBS.delete(id);
+  }
+  if (JOBS.size > MAX_JOBS_TO_KEEP) {
+    const entries = Array.from(JOBS.entries()).sort(
+      (a, b) =>
+        new Date(a[1].updatedAt || a[1].createdAt).getTime() -
+        new Date(b[1].updatedAt || b[1].createdAt).getTime(),
+    );
+    for (let i = 0; i < entries.length - MAX_JOBS_TO_KEEP; i++) {
+      JOBS.delete(entries[i][0]);
+    }
+  }
 }, 60_000).unref?.();
 
 function nowIso() {
-	return new Date().toISOString();
+  return new Date().toISOString();
 }
 
 function logJob(jobId, msg, extra) {
-	const prefix = jobId ? `[LongVideo][${jobId}]` : "[LongVideo]";
-	if (extra !== undefined) {
-		try {
-			console.log(prefix, msg, JSON.stringify(extra));
-		} catch {
-			console.log(prefix, msg, extra);
-		}
-		return;
-	}
-	console.log(prefix, msg);
+  const prefix = jobId ? `[LongVideo][${jobId}]` : "[LongVideo]";
+  if (extra !== undefined) {
+    try {
+      console.log(prefix, msg, JSON.stringify(extra));
+    } catch {
+      console.log(prefix, msg, extra);
+    }
+    return;
+  }
+  console.log(prefix, msg);
 }
 
 function updateJob(jobId, patch = {}) {
-	const job = JOBS.get(jobId);
-	if (!job) return;
-	JOBS.set(jobId, { ...job, ...patch, updatedAt: nowIso() });
+  const job = JOBS.get(jobId);
+  if (!job) return;
+  JOBS.set(jobId, { ...job, ...patch, updatedAt: nowIso() });
 }
 
 function ensureDir(dir) {
-	if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 ensureDir(TMP_ROOT);
 if (SHOULD_PERSIST_LONG_VIDEO) ensureDir(OUTPUT_DIR);
 if (SHOULD_PERSIST_LONG_VIDEO) ensureDir(THUMBNAIL_DIR);
 
 function sleep(ms) {
-	return new Promise((r) => setTimeout(r, ms));
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function clampNumber(n, min, max) {
-	const x = Number(n);
-	if (!Number.isFinite(x)) return min;
-	return Math.max(min, Math.min(max, x));
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.max(min, Math.min(max, x));
 }
 
 function makeEven(n) {
-	const x = Math.round(Number(n) || 0);
-	return x % 2 === 0 ? x : x + 1;
+  const x = Math.round(Number(n) || 0);
+  return x % 2 === 0 ? x : x + 1;
 }
 
 function isHttpUrl(u) {
-	return typeof u === "string" && /^https?:\/\//i.test(u);
+  return typeof u === "string" && /^https?:\/\//i.test(u);
 }
 
 function safeUnlink(file) {
-	try {
-		if (file && fs.existsSync(file)) fs.unlinkSync(file);
-	} catch {}
+  try {
+    if (file && fs.existsSync(file)) fs.unlinkSync(file);
+  } catch {}
 }
 
 function safeRmRecursive(dir) {
-	try {
-		if (dir && fs.existsSync(dir))
-			fs.rmSync(dir, { recursive: true, force: true });
-	} catch {}
+  try {
+    if (dir && fs.existsSync(dir))
+      fs.rmSync(dir, { recursive: true, force: true });
+  } catch {}
 }
 
 function stripCodeFence(s = "") {
-	const t = String(s || "").trim();
-	if (!t.includes("```")) return t;
-	const first = t.indexOf("```");
-	const last = t.lastIndexOf("```");
-	if (first === -1 || last === -1 || last <= first) return t;
-	let inner = t.slice(first + 3, last).trim();
-	inner = inner.replace(/^json/i, "").trim();
-	return inner || t;
+  const t = String(s || "").trim();
+  if (!t.includes("```")) return t;
+  const first = t.indexOf("```");
+  const last = t.lastIndexOf("```");
+  if (first === -1 || last === -1 || last <= first) return t;
+  let inner = t.slice(first + 3, last).trim();
+  inner = inner.replace(/^json/i, "").trim();
+  return inner || t;
 }
 
 function parseJsonFlexible(raw = "") {
-	const cleaned = stripCodeFence(String(raw || "").trim());
-	if (!cleaned) return null;
-	try {
-		return JSON.parse(cleaned);
-	} catch {
-		const m = cleaned.match(/\{[\s\S]*\}/);
-		if (!m) return null;
-		try {
-			return JSON.parse(m[0]);
-		} catch {
-			return null;
-		}
-	}
+  const cleaned = stripCodeFence(String(raw || "").trim());
+  if (!cleaned) return null;
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const m = cleaned.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    try {
+      return JSON.parse(m[0]);
+    } catch {
+      return null;
+    }
+  }
 }
 
 function ensureClickableLinks(text) {
-	if (!text || typeof text !== "string") return "";
-	const fixed = text
-		.split(/\r?\n/)
-		.map((line) => {
-			let s = line.trim();
-			s = s.replace(/\s*\([^)]*\)\s*$/, "");
-			s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
-			s = s.replace(
-				/(https?:\/\/)?(www\.)?(serenejannat\.com[^\s)]*)/gi,
-				(_m, _scheme, _www, domain) => `https://${domain}`,
-			);
-			s = s.replace(
-				/(^|\s)([a-z0-9.-]+\.[a-z]{2,}[^\s)]*)/gi,
-				(_m, prefix, url) =>
-					`${prefix}https://${url.replace(/^https?:\/\//i, "")}`,
-			);
-			s = s.replace(/(https?:\/\/[^\s)]+)[).,;:]+$/g, "$1");
-			s = s.replace(/([^ \t\r\n])(https?:\/\/[^\s)]+)/g, "$1 $2");
-			return s;
-		})
-		.join("\n")
-		.replace(/\n{3,}/g, "\n\n");
-	return fixed;
+  if (!text || typeof text !== "string") return "";
+  const fixed = text
+    .split(/\r?\n/)
+    .map((line) => {
+      let s = line.trim();
+      s = s.replace(/\s*\([^)]*\)\s*$/, "");
+      s = s.replace(/(^|\s)(www\.[^\s)]+)/gi, "$1https://$2");
+      s = s.replace(
+        /(https?:\/\/)?(www\.)?(serenejannat\.com[^\s)]*)/gi,
+        (_m, _scheme, _www, domain) => `https://${domain}`,
+      );
+      s = s.replace(
+        /(^|\s)([a-z0-9.-]+\.[a-z]{2,}[^\s)]*)/gi,
+        (_m, prefix, url) =>
+          `${prefix}https://${url.replace(/^https?:\/\//i, "")}`,
+      );
+      s = s.replace(/(https?:\/\/[^\s)]+)[).,;:]+$/g, "$1");
+      s = s.replace(/([^ \t\r\n])(https?:\/\/[^\s)]+)/g, "$1 $2");
+      return s;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
+  return fixed;
 }
 
 function countWords(text = "") {
-	return String(text || "")
-		.trim()
-		.split(/\s+/)
-		.filter(Boolean).length;
+  return String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
 }
 
 function normalizeQaText(text = "") {
-	return String(text || "")
-		.toLowerCase()
-		.replace(/[^a-z0-9\s]/g, " ")
-		.replace(/\s+/g, " ")
-		.trim();
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function tokenizeQaText(text = "") {
-	const tokens = normalizeQaText(text)
-		.split(" ")
-		.filter(Boolean)
-		.filter((t) => t.length >= 3);
-	return tokens.filter(
-		(t) => !TOPIC_STOP_WORDS.has(t) && !GENERIC_TOPIC_TOKENS.has(t),
-	);
+  const tokens = normalizeQaText(text)
+    .split(" ")
+    .filter(Boolean)
+    .filter((t) => t.length >= 3);
+  return tokens.filter(
+    (t) => !TOPIC_STOP_WORDS.has(t) && !GENERIC_TOPIC_TOKENS.has(t),
+  );
 }
 
 function overlapRatio(aTokens = [], bTokens = []) {
-	if (!aTokens.length || !bTokens.length) return 0;
-	const a = new Set(aTokens);
-	const b = new Set(bTokens);
-	let hit = 0;
-	for (const tok of a) {
-		if (b.has(tok)) hit += 1;
-	}
-	return hit / Math.max(1, Math.min(a.size, b.size));
+  if (!aTokens.length || !bTokens.length) return 0;
+  const a = new Set(aTokens);
+  const b = new Set(bTokens);
+  let hit = 0;
+  for (const tok of a) {
+    if (b.has(tok)) hit += 1;
+  }
+  return hit / Math.max(1, Math.min(a.size, b.size));
 }
 
 const ATTRIBUTION_CUE_RE =
-	/\b(according to|reported by|as reported by|per|via|sources? say|reports?|says|said|told)\b/i;
+  /\b(according to|reported by|as reported by|per|via|sources? say|reports?|says|said|told)\b/i;
 
 function extractSourceTokensFromContext(contextItems = []) {
-	const tokens = new Set();
-	for (const item of Array.isArray(contextItems) ? contextItems : []) {
-		const host = getUrlHost(item?.link || "");
-		if (!host) continue;
-		const lowered = host.toLowerCase();
-		const base = lowered.replace(
-			/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
-			"",
-		);
-		const cleaned = base.replace(/[^a-z0-9]+/g, " ").trim();
-		if (cleaned) tokens.add(cleaned);
-		if (lowered) tokens.add(lowered);
-	}
-	return Array.from(tokens);
+  const tokens = new Set();
+  for (const item of Array.isArray(contextItems) ? contextItems : []) {
+    const host = getUrlHost(item?.link || "");
+    if (!host) continue;
+    const lowered = host.toLowerCase();
+    const base = lowered.replace(
+      /\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
+      "",
+    );
+    const cleaned = base.replace(/[^a-z0-9]+/g, " ").trim();
+    if (cleaned) tokens.add(cleaned);
+    if (lowered) tokens.add(lowered);
+  }
+  return Array.from(tokens);
 }
 
 function segmentHasAttribution(text = "", sourceTokens = []) {
-	const lower = String(text || "").toLowerCase();
-	const hasCue = ATTRIBUTION_CUE_RE.test(lower);
-	if (!sourceTokens.length) return hasCue;
-	const hasSource = sourceTokens.some((tok) => tok && lower.includes(tok));
-	if (hasCue && hasSource) return true;
-	if (hasSource && /\b(reports?|according|per|via|says|said)\b/i.test(lower))
-		return true;
-	return false;
+  const lower = String(text || "").toLowerCase();
+  const hasCue = ATTRIBUTION_CUE_RE.test(lower);
+  if (!sourceTokens.length) return hasCue;
+  const hasSource = sourceTokens.some((tok) => tok && lower.includes(tok));
+  if (hasCue && hasSource) return true;
+  if (hasSource && /\b(reports?|according|per|via|says|said)\b/i.test(lower))
+    return true;
+  return false;
 }
 
 /* ---------------------------------------------------------------
@@ -696,165 +699,165 @@ function segmentHasAttribution(text = "", sourceTokens = []) {
  * ------------------------------------------------------------- */
 
 function canExecBin(bin, args = ["-version"]) {
-	try {
-		const r = child_process.spawnSync(bin, args, {
-			stdio: "ignore",
-			windowsHide: true,
-		});
-		return r && r.status === 0;
-	} catch {
-		return false;
-	}
+  try {
+    const r = child_process.spawnSync(bin, args, {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return r && r.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 const FFMPEG_CANDIDATES = [
-	(typeof ffmpegStatic === "string" && ffmpegStatic.trim()) || null,
-	"ffmpeg",
-	os.platform() === "win32" ? "ffmpeg.exe" : "/usr/bin/ffmpeg",
+  (typeof ffmpegStatic === "string" && ffmpegStatic.trim()) || null,
+  "ffmpeg",
+  os.platform() === "win32" ? "ffmpeg.exe" : "/usr/bin/ffmpeg",
 ].filter(Boolean);
 
 function resolveFfmpegPath() {
-	for (const candidate of FFMPEG_CANDIDATES) {
-		if (!candidate) continue;
-		if (canExecBin(candidate, ["-version"])) return candidate;
-	}
-	return null;
+  for (const candidate of FFMPEG_CANDIDATES) {
+    if (!candidate) continue;
+    if (canExecBin(candidate, ["-version"])) return candidate;
+  }
+  return null;
 }
 
 const ffmpegPath = resolveFfmpegPath();
 if (ffmpegPath) console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
 else
-	console.warn(
-		"[LongVideo] WARN - No valid FFmpeg binary found. Set FFMPEG_PATH or ensure ffmpeg is on PATH.",
-	);
+  console.warn(
+    "[LongVideo] WARN - No valid FFmpeg binary found. Set FFMPEG_PATH or ensure ffmpeg is on PATH.",
+  );
 
 function resolveFfprobePath() {
-	if (ffmpegPath) {
-		const dir = path.dirname(ffmpegPath);
-		const probeName = os.platform() === "win32" ? "ffprobe.exe" : "ffprobe";
-		const candidate = path.join(dir, probeName);
-		if (fs.existsSync(candidate) && canExecBin(candidate, ["-version"]))
-			return candidate;
-	}
+  if (ffmpegPath) {
+    const dir = path.dirname(ffmpegPath);
+    const probeName = os.platform() === "win32" ? "ffprobe.exe" : "ffprobe";
+    const candidate = path.join(dir, probeName);
+    if (fs.existsSync(candidate) && canExecBin(candidate, ["-version"]))
+      return candidate;
+  }
 
-	if (canExecBin("ffprobe", ["-version"])) return "ffprobe";
-	if (os.platform() === "win32" && canExecBin("ffprobe.exe", ["-version"]))
-		return "ffprobe.exe";
+  if (canExecBin("ffprobe", ["-version"])) return "ffprobe";
+  if (os.platform() === "win32" && canExecBin("ffprobe.exe", ["-version"]))
+    return "ffprobe.exe";
 
-	return os.platform() === "win32" ? "ffprobe.exe" : "ffprobe";
+  return os.platform() === "win32" ? "ffprobe.exe" : "ffprobe";
 }
 
 const ffprobePath = resolveFfprobePath();
 console.log(`[FFprobe] binary : ${ffprobePath}`);
 
 function spawnBin(binPath, args, label, { timeoutMs } = {}) {
-	return new Promise((resolve, reject) => {
-		if (!binPath) {
-			reject(new Error(`${label}: binary not found`));
-			return;
-		}
+  return new Promise((resolve, reject) => {
+    if (!binPath) {
+      reject(new Error(`${label}: binary not found`));
+      return;
+    }
 
-		const proc = child_process.spawn(binPath, args, {
-			stdio: ["ignore", "pipe", "pipe"],
-			windowsHide: true,
-		});
+    const proc = child_process.spawn(binPath, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
 
-		let stderr = "";
-		let stdout = "";
-		let killedByTimeout = false;
+    let stderr = "";
+    let stdout = "";
+    let killedByTimeout = false;
 
-		const killTimer =
-			timeoutMs && Number(timeoutMs) > 0
-				? setTimeout(() => {
-						killedByTimeout = true;
-						try {
-							proc.kill("SIGKILL");
-						} catch {}
-					}, Number(timeoutMs))
-				: null;
+    const killTimer =
+      timeoutMs && Number(timeoutMs) > 0
+        ? setTimeout(() => {
+            killedByTimeout = true;
+            try {
+              proc.kill("SIGKILL");
+            } catch {}
+          }, Number(timeoutMs))
+        : null;
 
-		proc.stdout.on("data", (d) => (stdout += d.toString()));
-		proc.stderr.on("data", (d) => (stderr += d.toString()));
+    proc.stdout.on("data", (d) => (stdout += d.toString()));
+    proc.stderr.on("data", (d) => (stderr += d.toString()));
 
-		proc.on("error", (err) => {
-			if (killTimer) clearTimeout(killTimer);
-			reject(err);
-		});
+    proc.on("error", (err) => {
+      if (killTimer) clearTimeout(killTimer);
+      reject(err);
+    });
 
-		proc.on("close", (code) => {
-			if (killTimer) clearTimeout(killTimer);
-			if (code === 0) return resolve({ stdout, stderr });
-			const head = (stderr || stdout || "").slice(0, 4000);
-			const tailHint = killedByTimeout ? " (killed by timeout)" : "";
-			reject(new Error(`${label} failed (code ${code})${tailHint}: ${head}`));
-		});
-	});
+    proc.on("close", (code) => {
+      if (killTimer) clearTimeout(killTimer);
+      if (code === 0) return resolve({ stdout, stderr });
+      const head = (stderr || stdout || "").slice(0, 4000);
+      const tailHint = killedByTimeout ? " (killed by timeout)" : "";
+      reject(new Error(`${label} failed (code ${code})${tailHint}: ${head}`));
+    });
+  });
 }
 
 async function probeMedia(filePath) {
-	if (!filePath || !fs.existsSync(filePath))
-		return { duration: 0, hasVideo: false, hasAudio: false, streams: [] };
+  if (!filePath || !fs.existsSync(filePath))
+    return { duration: 0, hasVideo: false, hasAudio: false, streams: [] };
 
-	return await new Promise((resolve) => {
-		const args = [
-			"-v",
-			"error",
-			"-print_format",
-			"json",
-			"-show_format",
-			"-show_streams",
-			filePath,
-		];
-		child_process.execFile(
-			ffprobePath,
-			args,
-			{ timeout: 15000 },
-			(err, stdout) => {
-				if (err)
-					return resolve({
-						duration: 0,
-						hasVideo: false,
-						hasAudio: false,
-						streams: [],
-					});
-				try {
-					const data = JSON.parse(stdout || "{}");
-					const dur = Number(data?.format?.duration || 0);
-					const streams = Array.isArray(data?.streams) ? data.streams : [];
-					const hasVideo = streams.some((s) => s.codec_type === "video");
-					const hasAudio = streams.some((s) => s.codec_type === "audio");
-					return resolve({
-						duration: Number.isFinite(dur) ? dur : 0,
-						hasVideo,
-						hasAudio,
-						streams,
-					});
-				} catch {
-					return resolve({
-						duration: 0,
-						hasVideo: false,
-						hasAudio: false,
-						streams: [],
-					});
-				}
-			},
-		);
-	});
+  return await new Promise((resolve) => {
+    const args = [
+      "-v",
+      "error",
+      "-print_format",
+      "json",
+      "-show_format",
+      "-show_streams",
+      filePath,
+    ];
+    child_process.execFile(
+      ffprobePath,
+      args,
+      { timeout: 15000 },
+      (err, stdout) => {
+        if (err)
+          return resolve({
+            duration: 0,
+            hasVideo: false,
+            hasAudio: false,
+            streams: [],
+          });
+        try {
+          const data = JSON.parse(stdout || "{}");
+          const dur = Number(data?.format?.duration || 0);
+          const streams = Array.isArray(data?.streams) ? data.streams : [];
+          const hasVideo = streams.some((s) => s.codec_type === "video");
+          const hasAudio = streams.some((s) => s.codec_type === "audio");
+          return resolve({
+            duration: Number.isFinite(dur) ? dur : 0,
+            hasVideo,
+            hasAudio,
+            streams,
+          });
+        } catch {
+          return resolve({
+            duration: 0,
+            hasVideo: false,
+            hasAudio: false,
+            streams: [],
+          });
+        }
+      },
+    );
+  });
 }
 
 async function probeDurationSeconds(filePath) {
-	const info = await probeMedia(filePath);
-	return info.duration || 0;
+  const info = await probeMedia(filePath);
+  return info.duration || 0;
 }
 
 const durationCache = new Map();
 async function probeDurationSecondsCached(filePath) {
-	const key = String(filePath || "").trim();
-	if (!key) return 0;
-	if (durationCache.has(key)) return durationCache.get(key);
-	const duration = await probeDurationSeconds(key);
-	durationCache.set(key, duration || 0);
-	return duration || 0;
+  const key = String(filePath || "").trim();
+  if (!key) return 0;
+  if (durationCache.has(key)) return durationCache.get(key);
+  const duration = await probeDurationSeconds(key);
+  durationCache.set(key, duration || 0);
+  return duration || 0;
 }
 
 /* ---------------------------------------------------------------
@@ -862,94 +865,94 @@ async function probeDurationSecondsCached(filePath) {
  * ------------------------------------------------------------- */
 
 function isRetriableAxiosError(err) {
-	const status = err?.response?.status;
-	if (!status) return true;
-	if (status === 429) return true;
-	if (status >= 500 && status <= 599) return true;
-	return false;
+  const status = err?.response?.status;
+  if (!status) return true;
+  if (status === 429) return true;
+  if (status >= 500 && status <= 599) return true;
+  return false;
 }
 
 async function withRetries(
-	fn,
-	{ retries = 2, baseDelayMs = 600, label = "" } = {},
+  fn,
+  { retries = 2, baseDelayMs = 600, label = "" } = {},
 ) {
-	let lastErr = null;
-	for (let attempt = 0; attempt <= retries; attempt++) {
-		try {
-			return await fn(attempt);
-		} catch (e) {
-			lastErr = e;
-			const retriable =
-				isRetriableAxiosError(e) ||
-				/ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(
-					String(e?.message || ""),
-				);
-			if (attempt >= retries || !retriable) throw e;
-			const delay = Math.round(
-				baseDelayMs * Math.pow(2, attempt) + Math.random() * 150,
-			);
-			if (label)
-				console.warn(
-					`[Retry] ${label} attempt ${attempt + 1}/${retries + 1} failed: ${
-						e.message
-					}. waiting ${delay}ms`,
-				);
-			await sleep(delay);
-		}
-	}
-	throw lastErr || new Error("retry failed");
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (e) {
+      lastErr = e;
+      const retriable =
+        isRetriableAxiosError(e) ||
+        /ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(
+          String(e?.message || ""),
+        );
+      if (attempt >= retries || !retriable) throw e;
+      const delay = Math.round(
+        baseDelayMs * Math.pow(2, attempt) + Math.random() * 150,
+      );
+      if (label)
+        console.warn(
+          `[Retry] ${label} attempt ${attempt + 1}/${retries + 1} failed: ${
+            e.message
+          }. waiting ${delay}ms`,
+        );
+      await sleep(delay);
+    }
+  }
+  throw lastErr || new Error("retry failed");
 }
 
 async function downloadToFile(url, outPath, timeoutMs = 30000, retries = 2) {
-	ensureDir(path.dirname(outPath));
-	let lastErr = null;
+  ensureDir(path.dirname(outPath));
+  let lastErr = null;
 
-	for (let attempt = 0; attempt <= retries; attempt++) {
-		try {
-			const res = await axios.get(url, {
-				responseType: "stream",
-				timeout: timeoutMs,
-				headers: {
-					"User-Agent": "agentai-long-video/2.0",
-					Accept: "*/*",
-				},
-				validateStatus: (s) => s >= 200 && s < 400,
-			});
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await axios.get(url, {
+        responseType: "stream",
+        timeout: timeoutMs,
+        headers: {
+          "User-Agent": "agentai-long-video/2.0",
+          Accept: "*/*",
+        },
+        validateStatus: (s) => s >= 200 && s < 400,
+      });
 
-			await new Promise((resolve, reject) => {
-				const ws = fs.createWriteStream(outPath);
-				res.data.pipe(ws);
-				ws.on("finish", resolve);
-				ws.on("error", reject);
-			});
+      await new Promise((resolve, reject) => {
+        const ws = fs.createWriteStream(outPath);
+        res.data.pipe(ws);
+        ws.on("finish", resolve);
+        ws.on("error", reject);
+      });
 
-			const st = fs.statSync(outPath);
-			if (!st || st.size < 256) throw new Error("downloaded file too small");
-			return outPath;
-		} catch (e) {
-			lastErr = e;
-			safeUnlink(outPath);
-			if (attempt < retries) {
-				await sleep(250 * Math.pow(2, attempt));
-				continue;
-			}
-		}
-	}
-	throw lastErr || new Error("download failed");
+      const st = fs.statSync(outPath);
+      if (!st || st.size < 256) throw new Error("downloaded file too small");
+      return outPath;
+    } catch (e) {
+      lastErr = e;
+      safeUnlink(outPath);
+      if (attempt < retries) {
+        await sleep(250 * Math.pow(2, attempt));
+        continue;
+      }
+    }
+  }
+  throw lastErr || new Error("download failed");
 }
 
 async function headContentType(url, timeoutMs = 8000) {
-	try {
-		const res = await axios.head(url, {
-			timeout: timeoutMs,
-			validateStatus: (s) => s >= 200 && s < 400,
-			headers: { "User-Agent": "agentai-long-video/2.0" },
-		});
-		const ct = String(res.headers?.["content-type"] || "").toLowerCase();
-		return ct || null;
-	} catch {
-		return null;
-	}
+  try {
+    const res = await axios.head(url, {
+      timeout: timeoutMs,
+      validateStatus: (s) => s >= 200 && s < 400,
+      headers: { "User-Agent": "agentai-long-video/2.0" },
+    });
+    const ct = String(res.headers?.["content-type"] || "").toLowerCase();
+    return ct || null;
+  } catch {
+    return null;
+  }
 }
 
 /* ---------------------------------------------------------------
@@ -957,70 +960,70 @@ async function headContentType(url, timeoutMs = 8000) {
  * ------------------------------------------------------------- */
 
 function readFileHeader(filePath, bytes = 64) {
-	try {
-		const fd = fs.openSync(filePath, "r");
-		const buf = Buffer.alloc(bytes);
-		const read = fs.readSync(fd, buf, 0, bytes, 0);
-		fs.closeSync(fd);
-		return buf.slice(0, read);
-	} catch {
-		return null;
-	}
+  try {
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(bytes);
+    const read = fs.readSync(fd, buf, 0, bytes, 0);
+    fs.closeSync(fd);
+    return buf.slice(0, read);
+  } catch {
+    return null;
+  }
 }
 
 function detectFileType(filePath) {
-	const head = readFileHeader(filePath, 64);
-	if (!head || head.length < 4) return null;
+  const head = readFileHeader(filePath, 64);
+  if (!head || head.length < 4) return null;
 
-	const ascii4 = head.slice(0, 4).toString("ascii");
-	const ascii12 = head.slice(0, 12).toString("ascii");
-	const lowerText = head.toString("utf8", 0, 32).trim().toLowerCase();
+  const ascii4 = head.slice(0, 4).toString("ascii");
+  const ascii12 = head.slice(0, 12).toString("ascii");
+  const lowerText = head.toString("utf8", 0, 32).trim().toLowerCase();
 
-	if (
-		lowerText.startsWith("<!doctype") ||
-		lowerText.startsWith("<html") ||
-		lowerText.startsWith("<?xml") ||
-		lowerText.startsWith("<svg")
-	) {
-		return { kind: "text", ext: "html" };
-	}
+  if (
+    lowerText.startsWith("<!doctype") ||
+    lowerText.startsWith("<html") ||
+    lowerText.startsWith("<?xml") ||
+    lowerText.startsWith("<svg")
+  ) {
+    return { kind: "text", ext: "html" };
+  }
 
-	// PNG
-	if (
-		head[0] === 0x89 &&
-		head[1] === 0x50 &&
-		head[2] === 0x4e &&
-		head[3] === 0x47
-	)
-		return { kind: "image", ext: "png" };
+  // PNG
+  if (
+    head[0] === 0x89 &&
+    head[1] === 0x50 &&
+    head[2] === 0x4e &&
+    head[3] === 0x47
+  )
+    return { kind: "image", ext: "png" };
 
-	// JPEG
-	if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)
-		return { kind: "image", ext: "jpg" };
+  // JPEG
+  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)
+    return { kind: "image", ext: "jpg" };
 
-	// GIF
-	if (ascii4 === "GIF8") return { kind: "image", ext: "gif" };
+  // GIF
+  if (ascii4 === "GIF8") return { kind: "image", ext: "gif" };
 
-	// WEBP
-	if (ascii4 === "RIFF" && ascii12.slice(8, 12) === "WEBP")
-		return { kind: "image", ext: "webp" };
+  // WEBP
+  if (ascii4 === "RIFF" && ascii12.slice(8, 12) === "WEBP")
+    return { kind: "image", ext: "webp" };
 
-	// MP4/MOV-ish
-	if (ascii12.slice(4, 8) === "ftyp") return { kind: "video", ext: "mp4" };
+  // MP4/MOV-ish
+  if (ascii12.slice(4, 8) === "ftyp") return { kind: "video", ext: "mp4" };
 
-	return null;
+  return null;
 }
 
 async function hashFileSha1(filePath) {
-	if (!filePath || !fs.existsSync(filePath))
-		throw new Error("hash input missing");
-	return new Promise((resolve, reject) => {
-		const hash = crypto.createHash("sha1");
-		const stream = fs.createReadStream(filePath);
-		stream.on("error", reject);
-		stream.on("data", (chunk) => hash.update(chunk));
-		stream.on("end", () => resolve(hash.digest("hex")));
-	});
+  if (!filePath || !fs.existsSync(filePath))
+    throw new Error("hash input missing");
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha1");
+    const stream = fs.createReadStream(filePath);
+    stream.on("error", reject);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
 }
 
 /* ---------------------------------------------------------------
@@ -1028,99 +1031,99 @@ async function hashFileSha1(filePath) {
  * ------------------------------------------------------------- */
 
 function parseRatio(ratio, fallback = DEFAULT_OUTPUT_RATIO) {
-	const raw = String(ratio || "").trim() || fallback;
-	const m2 = String(fallback).match(/^(\d{2,5})\s*:\s*(\d{2,5})$/);
-	const fallbackW = makeEven(Number(m2?.[1] || 1280));
-	const fallbackH = makeEven(Number(m2?.[2] || 720));
-	const fallbackLandscape = fallbackW >= fallbackH;
-	// Accept common aspect-ratio shorthands
-	if (raw === "16:9") {
-		const w = fallbackLandscape ? fallbackW : fallbackH;
-		const h = fallbackLandscape ? fallbackH : fallbackW;
-		return { ratio: `${w}:${h}`, w, h };
-	}
-	if (raw === "9:16") {
-		const w = fallbackLandscape ? fallbackH : fallbackW;
-		const h = fallbackLandscape ? fallbackW : fallbackH;
-		return { ratio: `${w}:${h}`, w, h };
-	}
-	const m = raw.match(/^(\d{2,5})\s*:\s*(\d{2,5})$/);
-	if (!m) {
-		return {
-			ratio: fallback,
-			w: fallbackW,
-			h: fallbackH,
-		};
-	}
-	return {
-		ratio: `${Number(m[1])}:${Number(m[2])}`,
-		w: makeEven(Number(m[1])),
-		h: makeEven(Number(m[2])),
-	};
+  const raw = String(ratio || "").trim() || fallback;
+  const m2 = String(fallback).match(/^(\d{2,5})\s*:\s*(\d{2,5})$/);
+  const fallbackW = makeEven(Number(m2?.[1] || 1280));
+  const fallbackH = makeEven(Number(m2?.[2] || 720));
+  const fallbackLandscape = fallbackW >= fallbackH;
+  // Accept common aspect-ratio shorthands
+  if (raw === "16:9") {
+    const w = fallbackLandscape ? fallbackW : fallbackH;
+    const h = fallbackLandscape ? fallbackH : fallbackW;
+    return { ratio: `${w}:${h}`, w, h };
+  }
+  if (raw === "9:16") {
+    const w = fallbackLandscape ? fallbackH : fallbackW;
+    const h = fallbackLandscape ? fallbackW : fallbackH;
+    return { ratio: `${w}:${h}`, w, h };
+  }
+  const m = raw.match(/^(\d{2,5})\s*:\s*(\d{2,5})$/);
+  if (!m) {
+    return {
+      ratio: fallback,
+      w: fallbackW,
+      h: fallbackH,
+    };
+  }
+  return {
+    ratio: `${Number(m[1])}:${Number(m[2])}`,
+    w: makeEven(Number(m[1])),
+    h: makeEven(Number(m[2])),
+  };
 }
 
 function validateCreateBody(body = {}, controllerConfig = {}) {
-	const cfg = normalizeLongVideoControllerConfig(controllerConfig);
-	const errors = [];
+  const cfg = normalizeLongVideoControllerConfig(controllerConfig);
+  const errors = [];
 
-	const targetDurationSec = Number(body.targetDurationSec || 60);
-	const duration = Number.isFinite(targetDurationSec)
-		? clampNumber(targetDurationSec, 20, 420)
-		: 60;
-	if (!Number.isFinite(duration))
-		errors.push("targetDurationSec must be number");
+  const targetDurationSec = Number(body.targetDurationSec || 60);
+  const duration = Number.isFinite(targetDurationSec)
+    ? clampNumber(targetDurationSec, 20, 420)
+    : 60;
+  if (!Number.isFinite(duration))
+    errors.push("targetDurationSec must be number");
 
-	const outRatio = parseRatio(DEFAULT_OUTPUT_RATIO);
-	const fps = clampNumber(Number(DEFAULT_OUTPUT_FPS), 15, 60);
-	const scaleMode = DEFAULT_SCALE_MODE;
-	const imageScaleMode = DEFAULT_IMAGE_SCALE_MODE;
+  const outRatio = parseRatio(DEFAULT_OUTPUT_RATIO);
+  const fps = clampNumber(Number(DEFAULT_OUTPUT_FPS), 15, 60);
+  const scaleMode = DEFAULT_SCALE_MODE;
+  const imageScaleMode = DEFAULT_IMAGE_SCALE_MODE;
 
-	const introSec = clampNumber(DEFAULT_INTRO_SEC, INTRO_MIN_SEC, INTRO_MAX_SEC);
-	const outroSec = clampNumber(DEFAULT_OUTRO_SEC, OUTRO_MIN_SEC, OUTRO_MAX_SEC);
+  const introSec = clampNumber(DEFAULT_INTRO_SEC, INTRO_MIN_SEC, INTRO_MAX_SEC);
+  const outroSec = clampNumber(DEFAULT_OUTRO_SEC, OUTRO_MIN_SEC, OUTRO_MAX_SEC);
 
-	const presenterAssetUrl = resolveRequestedPresenterAsset(body, cfg);
-	const voiceoverUrl = String(
-		body.voiceoverUrl || body.narrationUrl || body.audioUrl || "",
-	).trim();
-	const enableRunwayPresenterMotion = cfg.enableRunwayPresenterMotion;
-	const enableWardrobeEdit = cfg.enableWardrobeEdit;
-	const disableMusic = false;
+  const presenterAssetUrl = resolveRequestedPresenterAsset(body, cfg);
+  const voiceoverUrl = String(
+    body.voiceoverUrl || body.narrationUrl || body.audioUrl || "",
+  ).trim();
+  const enableRunwayPresenterMotion = cfg.enableRunwayPresenterMotion;
+  const enableWardrobeEdit = cfg.enableWardrobeEdit;
+  const disableMusic = false;
 
-	return {
-		errors,
-		clean: {
-			preferredTopicHint: String(body.preferredTopicHint || "").trim(),
-			category: normalizeCategoryLabel(
-				String(body.category || LONG_VIDEO_TRENDS_CATEGORY || "Entertainment"),
-			).trim(),
-			language: normalizeLanguageLabel(body.language || "English"),
-			targetDurationSec: duration,
-			introSec,
-			outroSec,
-			output: { ...outRatio, fps, scaleMode, imageScaleMode },
-			presenterAssetUrl,
-			voiceoverUrl,
-			musicUrl: "",
-			disableMusic,
-			dryRun: Boolean(body.dryRun),
-			enableRunwayPresenterMotion,
-			enableWardrobeEdit,
-			youtubeAccessToken: String(body.youtubeAccessToken || "").trim(),
-			youtubeRefreshToken: String(body.youtubeRefreshToken || "").trim(),
-			youtubeTokenExpiresAt: body.youtubeTokenExpiresAt || "",
-			youtubeCategory: String(
-				body.youtubeCategory || LONG_VIDEO_YT_CATEGORY || "Entertainment",
-			).trim(),
-			// overlays are optional; pass through as-is
-			overlayAssets: Array.isArray(body.overlayAssets)
-				? body.overlayAssets
-				: [],
-		},
-	};
+  return {
+    errors,
+    clean: {
+      preferredTopicHint: String(body.preferredTopicHint || "").trim(),
+      category: normalizeCategoryLabel(
+        String(body.category || LONG_VIDEO_TRENDS_CATEGORY || "Entertainment"),
+      ).trim(),
+      language: normalizeLanguageLabel(body.language || "English"),
+      targetDurationSec: duration,
+      introSec,
+      outroSec,
+      output: { ...outRatio, fps, scaleMode, imageScaleMode },
+      presenterAssetUrl,
+      voiceoverUrl,
+      musicUrl: "",
+      disableMusic,
+      dryRun: Boolean(body.dryRun),
+      enableRunwayPresenterMotion,
+      enableWardrobeEdit,
+      youtubeAccessToken: String(body.youtubeAccessToken || "").trim(),
+      youtubeRefreshToken: String(body.youtubeRefreshToken || "").trim(),
+      youtubeTokenExpiresAt: body.youtubeTokenExpiresAt || "",
+      youtubeCategory: String(
+        body.youtubeCategory || LONG_VIDEO_YT_CATEGORY || "Entertainment",
+      ).trim(),
+      // overlays are optional; pass through as-is
+      overlayAssets: Array.isArray(body.overlayAssets)
+        ? body.overlayAssets
+        : [],
+    },
+  };
 }
 
 function buildBaseUrl(req) {
-	return `${req.protocol || "http"}://${req.get("host")}`;
+  return `${req.protocol || "http"}://${req.get("host")}`;
 }
 
 /* ---------------------------------------------------------------
@@ -1128,557 +1131,557 @@ function buildBaseUrl(req) {
  * ------------------------------------------------------------- */
 
 const TOPIC_TOKEN_ALIASES = Object.freeze({
-	oscar: ["oscars", "academy awards", "academy award"],
-	oscars: ["oscar", "academy awards", "academy award"],
-	grammy: ["grammys", "grammy awards"],
-	grammys: ["grammy", "grammy awards"],
-	emmy: ["emmys", "emmy awards"],
-	emmys: ["emmy", "emmy awards"],
-	"golden globe": ["golden globes"],
-	"golden globes": ["golden globe"],
+  oscar: ["oscars", "academy awards", "academy award"],
+  oscars: ["oscar", "academy awards", "academy award"],
+  grammy: ["grammys", "grammy awards"],
+  grammys: ["grammy", "grammy awards"],
+  emmy: ["emmys", "emmy awards"],
+  emmys: ["emmy", "emmy awards"],
+  "golden globe": ["golden globes"],
+  "golden globes": ["golden globe"],
 });
 
 function tokenizeLabel(text = "") {
-	return String(text || "")
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, " ")
-		.split(/\s+/)
-		.filter(Boolean)
-		.filter((t) => t.length >= 2 && !/^\d+$/.test(t));
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((t) => t.length >= 2 && !/^\d+$/.test(t));
 }
 
 function topicTokensFromTitle(title = "") {
-	return tokenizeLabel(title || "").filter((t) => !TOPIC_STOP_WORDS.has(t));
+  return tokenizeLabel(title || "").filter((t) => !TOPIC_STOP_WORDS.has(t));
 }
 
 function normalizeTopicTokens(tokens = []) {
-	return Array.from(
-		new Set(
-			(tokens || [])
-				.map((t) =>
-					String(t || "")
-						.toLowerCase()
-						.trim(),
-				)
-				.filter(Boolean),
-		),
-	);
+  return Array.from(
+    new Set(
+      (tokens || [])
+        .map((t) =>
+          String(t || "")
+            .toLowerCase()
+            .trim(),
+        )
+        .filter(Boolean),
+    ),
+  );
 }
 
 function filterSpecificTopicTokens(tokens = []) {
-	const norm = normalizeTopicTokens(tokens);
-	const filtered = norm.filter(
-		(t) => t.length >= 3 && !GENERIC_TOPIC_TOKENS.has(t),
-	);
-	return filtered.length ? filtered : norm;
+  const norm = normalizeTopicTokens(tokens);
+  const filtered = norm.filter(
+    (t) => t.length >= 3 && !GENERIC_TOPIC_TOKENS.has(t),
+  );
+  return filtered.length ? filtered : norm;
 }
 
 function expandTopicTokens(tokens = []) {
-	const base = normalizeTopicTokens(tokens);
-	const out = new Set(base);
-	for (const tok of base) {
-		if (TOPIC_TOKEN_ALIASES[tok]) {
-			for (const alias of TOPIC_TOKEN_ALIASES[tok]) out.add(alias);
-		}
-	}
-	return Array.from(out);
+  const base = normalizeTopicTokens(tokens);
+  const out = new Set(base);
+  for (const tok of base) {
+    if (TOPIC_TOKEN_ALIASES[tok]) {
+      for (const alias of TOPIC_TOKEN_ALIASES[tok]) out.add(alias);
+    }
+  }
+  return Array.from(out);
 }
 
 function minTopicTokenMatches(tokens = []) {
-	const norm = normalizeTopicTokens(tokens);
-	if (!norm.length) return 0;
-	if (norm.length >= 3) return 2;
-	return 1;
+  const norm = normalizeTopicTokens(tokens);
+  if (!norm.length) return 0;
+  if (norm.length >= 3) return 2;
+  return 1;
 }
 
 function minImageTopicTokenMatches(tokens = []) {
-	const norm = normalizeTopicTokens(tokens);
-	if (!norm.length) return 0;
-	if (norm.length >= 2) return 2;
-	return 1;
+  const norm = normalizeTopicTokens(tokens);
+  if (!norm.length) return 0;
+  if (norm.length >= 2) return 2;
+  return 1;
 }
 
 function hasRequiredTopicMatch(tokens = [], fields = []) {
-	const required = minImageTopicTokenMatches(tokens);
-	if (!required) return true;
-	return topicMatchInfo(tokens, fields).count >= required;
+  const required = minImageTopicTokenMatches(tokens);
+  if (!required) return true;
+  return topicMatchInfo(tokens, fields).count >= required;
 }
 
 function topicMatchInfo(tokens = [], fields = []) {
-	const norm = expandTopicTokens(tokens);
-	if (!norm.length) return { count: 0, matchedTokens: [], normTokens: [] };
-	const hay = (fields || [])
-		.flatMap((f) => {
-			const str = String(f || "");
-			const lowers = [str.toLowerCase()];
-			try {
-				lowers.push(decodeURIComponent(str).toLowerCase());
-			} catch {}
-			return lowers;
-		})
-		.join(" ");
-	const matchedTokens = norm.filter((tok) => hay.includes(tok));
-	return { count: matchedTokens.length, matchedTokens, normTokens: norm };
+  const norm = expandTopicTokens(tokens);
+  if (!norm.length) return { count: 0, matchedTokens: [], normTokens: [] };
+  const hay = (fields || [])
+    .flatMap((f) => {
+      const str = String(f || "");
+      const lowers = [str.toLowerCase()];
+      try {
+        lowers.push(decodeURIComponent(str).toLowerCase());
+      } catch {}
+      return lowers;
+    })
+    .join(" ");
+  const matchedTokens = norm.filter((tok) => hay.includes(tok));
+  return { count: matchedTokens.length, matchedTokens, normTokens: norm };
 }
 
 function cleanTopicCandidate(title = "") {
-	let t = String(title || "")
-		.replace(/\s*[-|]\s*[^-|]{2,}$/g, "")
-		.replace(/^breaking:\s*/i, "")
-		.trim();
-	t = t.replace(/\s+/g, " ").trim();
-	return t.slice(0, 120);
+  let t = String(title || "")
+    .replace(/\s*[-|]\s*[^-|]{2,}$/g, "")
+    .replace(/^breaking:\s*/i, "")
+    .trim();
+  t = t.replace(/\s+/g, " ").trim();
+  return t.slice(0, 120);
 }
 
 function isEntertainmentCandidate(title = "", snippet = "") {
-	const hay = `${title} ${snippet}`.toLowerCase();
-	return ENTERTAINMENT_KEYWORDS.some((k) => hay.includes(k));
+  const hay = `${title} ${snippet}`.toLowerCase();
+  return ENTERTAINMENT_KEYWORDS.some((k) => hay.includes(k));
 }
 
 function scoreTrendingCandidate(item) {
-	const text = `${item.title || ""} ${item.snippet || ""}`.toLowerCase();
-	let score = 0;
-	for (const tok of TREND_SIGNAL_TOKENS) {
-		if (text.includes(tok)) score += 2;
-	}
-	if (/top\s+\d+|most anticipated|best of/i.test(text)) score -= 2;
-	if (isEntertainmentCandidate(item.title, item.snippet)) score += 3;
-	return score;
+  const text = `${item.title || ""} ${item.snippet || ""}`.toLowerCase();
+  let score = 0;
+  for (const tok of TREND_SIGNAL_TOKENS) {
+    if (text.includes(tok)) score += 2;
+  }
+  if (/top\s+\d+|most anticipated|best of/i.test(text)) score -= 2;
+  if (isEntertainmentCandidate(item.title, item.snippet)) score += 3;
+  return score;
 }
 
 function normalizeRelatedQueries(raw = null) {
-	const obj = raw && typeof raw === "object" ? raw : {};
-	const top = uniqueStrings(Array.isArray(obj.top) ? obj.top : [], {
-		limit: 10,
-	});
-	const rising = uniqueStrings(Array.isArray(obj.rising) ? obj.rising : [], {
-		limit: 10,
-	});
-	return { top, rising };
+  const obj = raw && typeof raw === "object" ? raw : {};
+  const top = uniqueStrings(Array.isArray(obj.top) ? obj.top : [], {
+    limit: 10,
+  });
+  const rising = uniqueStrings(Array.isArray(obj.rising) ? obj.rising : [], {
+    limit: 10,
+  });
+  return { top, rising };
 }
 
 function normalizeInterestOverTime(raw = null) {
-	const obj = raw && typeof raw === "object" ? raw : {};
-	const points = clampNumber(Number(obj.points) || 0, 0, 500);
-	const avg = clampNumber(Number(obj.avg) || 0, 0, 100);
-	const latest = clampNumber(Number(obj.latest) || 0, 0, 100);
-	const peak = clampNumber(Number(obj.peak) || 0, 0, 100);
-	const slope = clampNumber(Number(obj.slope) || 0, -100, 100);
-	return { points, avg, latest, peak, slope };
+  const obj = raw && typeof raw === "object" ? raw : {};
+  const points = clampNumber(Number(obj.points) || 0, 0, 500);
+  const avg = clampNumber(Number(obj.avg) || 0, 0, 100);
+  const latest = clampNumber(Number(obj.latest) || 0, 0, 100);
+  const peak = clampNumber(Number(obj.peak) || 0, 0, 100);
+  const slope = clampNumber(Number(obj.slope) || 0, -100, 100);
+  return { points, avg, latest, peak, slope };
 }
 
 function scoreTrendStoryForYouTube(story) {
-	if (!story) return 0;
-	const title = String(
-		story.topic || story.rawTitle || story.title || "",
-	).trim();
-	const snippet = (story.searchPhrases || []).join(" ");
-	let score = scoreTrendingCandidate({ title, snippet });
+  if (!story) return 0;
+  const title = String(
+    story.topic || story.rawTitle || story.title || "",
+  ).trim();
+  const snippet = (story.searchPhrases || []).join(" ");
+  let score = scoreTrendingCandidate({ title, snippet });
 
-	const articlesCount = Array.isArray(story.articles)
-		? story.articles.length
-		: 0;
-	score += Math.min(articlesCount, 6) * 1.2;
+  const articlesCount = Array.isArray(story.articles)
+    ? story.articles.length
+    : 0;
+  score += Math.min(articlesCount, 6) * 1.2;
 
-	const related = normalizeRelatedQueries(story.relatedQueries);
-	score += Math.min(related.top.length, 10) * 0.6;
-	score += Math.min(related.rising.length, 10) * 1.1;
+  const related = normalizeRelatedQueries(story.relatedQueries);
+  score += Math.min(related.top.length, 10) * 0.6;
+  score += Math.min(related.rising.length, 10) * 1.1;
 
-	const interest = normalizeInterestOverTime(story.interestOverTime);
-	score += interest.peak / 25; // 0-4
-	score += interest.latest / 33; // 0-3
-	if (interest.slope > 0) score += Math.min(interest.slope, 50) / 10;
+  const interest = normalizeInterestOverTime(story.interestOverTime);
+  score += interest.peak / 25; // 0-4
+  score += interest.latest / 33; // 0-3
+  if (interest.slope > 0) score += Math.min(interest.slope, 50) / 10;
 
-	if (story.image || (Array.isArray(story.images) && story.images.length))
-		score += 1;
+  if (story.image || (Array.isArray(story.images) && story.images.length))
+    score += 1;
 
-	return Number(score.toFixed(2));
+  return Number(score.toFixed(2));
 }
 
 function rankTrendStoriesForYouTube(stories = []) {
-	if (!Array.isArray(stories) || !stories.length) return stories;
-	const hasSignals = stories.some(
-		(s) =>
-			(s.relatedQueries &&
-				((Array.isArray(s.relatedQueries.top) &&
-					s.relatedQueries.top.length > 0) ||
-					(Array.isArray(s.relatedQueries.rising) &&
-						s.relatedQueries.rising.length > 0))) ||
-			(s.interestOverTime && Number(s.interestOverTime.points) > 0),
-	);
-	if (!hasSignals) return stories;
-	const scored = stories.map((s, idx) => ({
-		...s,
-		trendScore: scoreTrendStoryForYouTube(s),
-		_rankIdx: idx,
-	}));
-	scored.sort((a, b) => {
-		const diff = (b.trendScore || 0) - (a.trendScore || 0);
-		return diff !== 0 ? diff : a._rankIdx - b._rankIdx;
-	});
-	return scored.map(({ _rankIdx, ...rest }) => rest);
+  if (!Array.isArray(stories) || !stories.length) return stories;
+  const hasSignals = stories.some(
+    (s) =>
+      (s.relatedQueries &&
+        ((Array.isArray(s.relatedQueries.top) &&
+          s.relatedQueries.top.length > 0) ||
+          (Array.isArray(s.relatedQueries.rising) &&
+            s.relatedQueries.rising.length > 0))) ||
+      (s.interestOverTime && Number(s.interestOverTime.points) > 0),
+  );
+  if (!hasSignals) return stories;
+  const scored = stories.map((s, idx) => ({
+    ...s,
+    trendScore: scoreTrendStoryForYouTube(s),
+    _rankIdx: idx,
+  }));
+  scored.sort((a, b) => {
+    const diff = (b.trendScore || 0) - (a.trendScore || 0);
+    return diff !== 0 ? diff : a._rankIdx - b._rankIdx;
+  });
+  return scored.map(({ _rankIdx, ...rest }) => rest);
 }
 
 function inferEntertainmentCategory(tokens = []) {
-	const set = new Set(tokens.map((t) => t.toLowerCase()));
-	if (
-		["movie", "film", "trailer", "cast", "director", "box", "office"].some(
-			(t) => set.has(t),
-		)
-	)
-		return "film";
-	if (
-		["tv", "series", "season", "episode", "streaming"].some((t) => set.has(t))
-	)
-		return "tv";
-	if (
-		["song", "album", "music", "tour", "concert", "singer", "rapper"].some(
-			(t) => set.has(t),
-		)
-	)
-		return "music";
-	if (
-		["celebrity", "actor", "actress", "influencer", "tiktok"].some((t) =>
-			set.has(t),
-		)
-	)
-		return "celebrity";
-	return "general";
+  const set = new Set(tokens.map((t) => t.toLowerCase()));
+  if (
+    ["movie", "film", "trailer", "cast", "director", "box", "office"].some(
+      (t) => set.has(t),
+    )
+  )
+    return "film";
+  if (
+    ["tv", "series", "season", "episode", "streaming"].some((t) => set.has(t))
+  )
+    return "tv";
+  if (
+    ["song", "album", "music", "tour", "concert", "singer", "rapper"].some(
+      (t) => set.has(t),
+    )
+  )
+    return "music";
+  if (
+    ["celebrity", "actor", "actress", "influencer", "tiktok"].some((t) =>
+      set.has(t),
+    )
+  )
+    return "celebrity";
+  return "general";
 }
 
 const CATEGORY_LABEL_ALIASES = {
-	petsandanimals: "Pets and Animals",
+  petsandanimals: "Pets and Animals",
 };
 
 function normalizeCategoryLabel(label) {
-	const raw = String(label || "").trim();
-	if (!raw) return "";
-	const key = raw.toLowerCase().replace(/\s+/g, "");
-	return CATEGORY_LABEL_ALIASES[key] || raw;
+  const raw = String(label || "").trim();
+  if (!raw) return "";
+  const key = raw.toLowerCase().replace(/\s+/g, "");
+  return CATEGORY_LABEL_ALIASES[key] || raw;
 }
 
 const LANGUAGE_LABEL_MAP = {
-	en: "English",
-	es: "Spanish",
-	fr: "French",
-	de: "German",
-	ar: "Arabic",
+  en: "English",
+  es: "Spanish",
+  fr: "French",
+  de: "German",
+  ar: "Arabic",
 };
 
 function normalizeLanguageLabel(label) {
-	const raw = String(label || "").trim();
-	if (!raw) return "English";
-	const key = raw.toLowerCase();
-	return LANGUAGE_LABEL_MAP[key] || raw;
+  const raw = String(label || "").trim();
+  if (!raw) return "English";
+  const key = raw.toLowerCase();
+  return LANGUAGE_LABEL_MAP[key] || raw;
 }
 
 function resolveTrendsCategoryId(label) {
-	const target = normalizeCategoryLabel(label).toLowerCase();
-	const entry = googleTrendingCategoriesId.find(
-		(c) =>
-			String(c.category || "")
-				.trim()
-				.toLowerCase() === target,
-	);
-	return entry ? entry.ids[0] : 0;
+  const target = normalizeCategoryLabel(label).toLowerCase();
+  const entry = googleTrendingCategoriesId.find(
+    (c) =>
+      String(c.category || "")
+        .trim()
+        .toLowerCase() === target,
+  );
+  return entry ? entry.ids[0] : 0;
 }
 
 function uniqueStrings(list = [], { limit = 0 } = {}) {
-	const seen = new Set();
-	const out = [];
-	for (const raw of Array.isArray(list) ? list : []) {
-		const val = String(raw || "").trim();
-		if (!val) continue;
-		const key = val.toLowerCase();
-		if (seen.has(key)) continue;
-		seen.add(key);
-		out.push(val);
-		if (limit && out.length >= limit) break;
-	}
-	return out;
+  const seen = new Set();
+  const out = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const val = String(raw || "").trim();
+    if (!val) continue;
+    const key = val.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(val);
+    if (limit && out.length >= limit) break;
+  }
+  return out;
 }
 
 function safeSlug(text = "", max = 60) {
-	return String(text || "")
-		.toLowerCase()
-		.replace(/[^\w]+/g, "_")
-		.replace(/^_+|_+$/g, "")
-		.slice(0, max);
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^\w]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, max);
 }
 
 function normalizeTrendPotentialImages(list = []) {
-	if (!Array.isArray(list)) return [];
-	const out = [];
-	const seen = new Set();
-	for (const item of list) {
-		if (!item) continue;
-		const url = String(
-			item.imageurl ||
-				item.imageUrl ||
-				item.url ||
-				item.link ||
-				item.originalUrl ||
-				"",
-		).trim();
-		if (!isHttpUrl(url) || isLikelyThumbnailUrl(url)) continue;
-		const key = normalizeImageUrlKey(url);
-		if (seen.has(key)) continue;
-		seen.add(key);
-		out.push({
-			url,
-			source: String(
-				item.source || item.pageUrl || item.contextLink || "",
-			).trim(),
-			title: String(
-				item.description || item.title || item.caption || "",
-			).trim(),
-			width: item.width || null,
-			height: item.height || null,
-			origin: "trend",
-		});
-	}
-	return out;
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of list) {
+    if (!item) continue;
+    const url = String(
+      item.imageurl ||
+        item.imageUrl ||
+        item.url ||
+        item.link ||
+        item.originalUrl ||
+        "",
+    ).trim();
+    if (!isHttpUrl(url) || isLikelyThumbnailUrl(url)) continue;
+    const key = normalizeImageUrlKey(url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      url,
+      source: String(
+        item.source || item.pageUrl || item.contextLink || "",
+      ).trim(),
+      title: String(
+        item.description || item.title || item.caption || "",
+      ).trim(),
+      width: item.width || null,
+      height: item.height || null,
+      origin: "trend",
+    });
+  }
+  return out;
 }
 
 function normalizeTrendStory(raw = {}) {
-	const baseTitle = String(
-		raw.trendDialogTitle ||
-			raw.title ||
-			raw.rawTitle ||
-			raw.dialogTitle ||
-			raw.youtubeShortTitle ||
-			raw.seoTitle ||
-			"",
-	).trim();
-	const topic = cleanTopicCandidate(baseTitle);
-	const rawTitle = String(raw.rawTitle || raw.title || baseTitle || "").trim();
-	const relatedQueries = normalizeRelatedQueries(
-		raw.relatedQueries || raw.trendSignals?.relatedQueries || null,
-	);
-	const interestOverTime = normalizeInterestOverTime(
-		raw.interestOverTime || raw.trendSignals?.interestOverTime || null,
-	);
-	const relatedPhrases = uniqueStrings(
-		[...relatedQueries.rising, ...relatedQueries.top],
-		{ limit: 8 },
-	);
-	const searchPhrases = uniqueStrings(
-		[
-			topic,
-			rawTitle,
-			...relatedPhrases,
-			...(raw.searchPhrases || []),
-			...(raw.entityNames || []),
-		],
-		{ limit: 12 },
-	);
-	const articles = Array.isArray(raw.articles)
-		? raw.articles
-				.map((a) => ({
-					title: String(a.title || "").trim(),
-					url: a.url || null,
-					image: isHttpUrl(a.image) ? a.image : null,
-				}))
-				.filter((a) => a.title)
-		: [];
-	const image = isHttpUrl(raw.image) ? raw.image : null;
-	const images = uniqueStrings(
-		[
-			image,
-			...(Array.isArray(raw.images) ? raw.images : []),
-			...articles.map((a) => a.image).filter(Boolean),
-		],
-		{ limit: 10 },
-	).filter((u) => isHttpUrl(u));
-	const potentialImages = normalizeTrendPotentialImages(raw.potentialImages);
-	const keywords = uniqueStrings(
-		[
-			...searchPhrases,
-			...relatedPhrases,
-			...articles.slice(0, 4).map((a) => a.title),
-			topic,
-		],
-		{ limit: 12 },
-	);
-	return {
-		topic,
-		rawTitle,
-		fromGoogleTrends: true,
-		seoTitle: raw.seoTitle ? String(raw.seoTitle).trim() : null,
-		youtubeShortTitle: raw.youtubeShortTitle
-			? String(raw.youtubeShortTitle).trim()
-			: null,
-		searchPhrases,
-		entityNames: uniqueStrings(raw.entityNames || [], { limit: 8 }),
-		imageComment: String(raw.imageComment || raw.imageHook || "").trim(),
-		viralImageBriefs: Array.isArray(raw.viralImageBriefs)
-			? raw.viralImageBriefs
-			: [],
-		relatedQueries,
-		interestOverTime,
-		trendScore: Number(raw.trendScore) || 0,
-		image,
-		images,
-		potentialImages,
-		articles,
-		keywords,
-	};
+  const baseTitle = String(
+    raw.trendDialogTitle ||
+      raw.title ||
+      raw.rawTitle ||
+      raw.dialogTitle ||
+      raw.youtubeShortTitle ||
+      raw.seoTitle ||
+      "",
+  ).trim();
+  const topic = cleanTopicCandidate(baseTitle);
+  const rawTitle = String(raw.rawTitle || raw.title || baseTitle || "").trim();
+  const relatedQueries = normalizeRelatedQueries(
+    raw.relatedQueries || raw.trendSignals?.relatedQueries || null,
+  );
+  const interestOverTime = normalizeInterestOverTime(
+    raw.interestOverTime || raw.trendSignals?.interestOverTime || null,
+  );
+  const relatedPhrases = uniqueStrings(
+    [...relatedQueries.rising, ...relatedQueries.top],
+    { limit: 8 },
+  );
+  const searchPhrases = uniqueStrings(
+    [
+      topic,
+      rawTitle,
+      ...relatedPhrases,
+      ...(raw.searchPhrases || []),
+      ...(raw.entityNames || []),
+    ],
+    { limit: 12 },
+  );
+  const articles = Array.isArray(raw.articles)
+    ? raw.articles
+        .map((a) => ({
+          title: String(a.title || "").trim(),
+          url: a.url || null,
+          image: isHttpUrl(a.image) ? a.image : null,
+        }))
+        .filter((a) => a.title)
+    : [];
+  const image = isHttpUrl(raw.image) ? raw.image : null;
+  const images = uniqueStrings(
+    [
+      image,
+      ...(Array.isArray(raw.images) ? raw.images : []),
+      ...articles.map((a) => a.image).filter(Boolean),
+    ],
+    { limit: 10 },
+  ).filter((u) => isHttpUrl(u));
+  const potentialImages = normalizeTrendPotentialImages(raw.potentialImages);
+  const keywords = uniqueStrings(
+    [
+      ...searchPhrases,
+      ...relatedPhrases,
+      ...articles.slice(0, 4).map((a) => a.title),
+      topic,
+    ],
+    { limit: 12 },
+  );
+  return {
+    topic,
+    rawTitle,
+    fromGoogleTrends: true,
+    seoTitle: raw.seoTitle ? String(raw.seoTitle).trim() : null,
+    youtubeShortTitle: raw.youtubeShortTitle
+      ? String(raw.youtubeShortTitle).trim()
+      : null,
+    searchPhrases,
+    entityNames: uniqueStrings(raw.entityNames || [], { limit: 8 }),
+    imageComment: String(raw.imageComment || raw.imageHook || "").trim(),
+    viralImageBriefs: Array.isArray(raw.viralImageBriefs)
+      ? raw.viralImageBriefs
+      : [],
+    relatedQueries,
+    interestOverTime,
+    trendScore: Number(raw.trendScore) || 0,
+    image,
+    images,
+    potentialImages,
+    articles,
+    keywords,
+  };
 }
 
 async function fetchTrendsStories({
-	categoryLabel = LONG_VIDEO_TRENDS_CATEGORY,
-	geo = LONG_VIDEO_TRENDS_GEO,
-	language = "English",
-	baseUrl,
-	topicCount,
+  categoryLabel = LONG_VIDEO_TRENDS_CATEGORY,
+  geo = LONG_VIDEO_TRENDS_GEO,
+  language = "English",
+  baseUrl,
+  topicCount,
 } = {}) {
-	const categoryId = resolveTrendsCategoryId(categoryLabel);
-	const params = new URLSearchParams({
-		geo,
-		hours: "48",
-		language,
-		category: String(categoryId),
-		includeImages: "1",
-		includePotentialImages: "1",
-		long: "1",
-	});
-	if (Number.isFinite(Number(topicCount))) {
-		params.set("topics", String(Math.max(1, Math.min(3, Number(topicCount)))));
-	}
-	const candidates = buildTrendsApiCandidates(baseUrl);
-	for (let i = 0; i < candidates.length; i++) {
-		const url = `${candidates[i]}?${params.toString()}`;
-		for (let attempt = 1; attempt <= TRENDS_HTTP_MAX_ATTEMPTS; attempt++) {
-			try {
-				logJob(null, "trends fetch", { url, attempt });
-				const { data } = await axios.get(url, {
-					timeout: TRENDS_HTTP_TIMEOUT_MS,
-					validateStatus: (s) => s < 500,
-				});
-				const stories = Array.isArray(data?.stories) ? data.stories : [];
-				if (stories.length) {
-					return stories
-						.map((s) => normalizeTrendStory(s))
-						.filter((s) => s.topic);
-				}
-				logJob(null, "trends fetch empty", { url, attempt });
-			} catch (e) {
-				logJob(null, "trends fetch failed", { error: e.message, url, attempt });
-				if (attempt < TRENDS_HTTP_MAX_ATTEMPTS) {
-					await delay(TRENDS_HTTP_RETRY_DELAY_MS);
-				}
-			}
-		}
-	}
-	return [];
+  const categoryId = resolveTrendsCategoryId(categoryLabel);
+  const params = new URLSearchParams({
+    geo,
+    hours: "48",
+    language,
+    category: String(categoryId),
+    includeImages: "1",
+    includePotentialImages: "1",
+    long: "1",
+  });
+  if (Number.isFinite(Number(topicCount))) {
+    params.set("topics", String(Math.max(1, Math.min(3, Number(topicCount)))));
+  }
+  const candidates = buildTrendsApiCandidates(baseUrl);
+  for (let i = 0; i < candidates.length; i++) {
+    const url = `${candidates[i]}?${params.toString()}`;
+    for (let attempt = 1; attempt <= TRENDS_HTTP_MAX_ATTEMPTS; attempt++) {
+      try {
+        logJob(null, "trends fetch", { url, attempt });
+        const { data } = await axios.get(url, {
+          timeout: TRENDS_HTTP_TIMEOUT_MS,
+          validateStatus: (s) => s < 500,
+        });
+        const stories = Array.isArray(data?.stories) ? data.stories : [];
+        if (stories.length) {
+          return stories
+            .map((s) => normalizeTrendStory(s))
+            .filter((s) => s.topic);
+        }
+        logJob(null, "trends fetch empty", { url, attempt });
+      } catch (e) {
+        logJob(null, "trends fetch failed", { error: e.message, url, attempt });
+        if (attempt < TRENDS_HTTP_MAX_ATTEMPTS) {
+          await delay(TRENDS_HTTP_RETRY_DELAY_MS);
+        }
+      }
+    }
+  }
+  return [];
 }
 
 async function fetchCseItems(
-	queries,
-	{ num = 4, searchType = null, imgSize = null, start = 1, maxPages = 1 } = {},
+  queries,
+  { num = 4, searchType = null, imgSize = null, start = 1, maxPages = 1 } = {},
 ) {
-	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
-	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
-	if (!list.length) return [];
+  if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
+  const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
+  if (!list.length) return [];
 
-	const results = [];
-	const seen = new Set();
-	const totalTarget = Math.max(1, Math.floor(Number(num) || 1));
-	const pageSize = Math.min(CSE_MAX_PAGE_SIZE, totalTarget);
-	const pageCap = clampNumber(Number(maxPages) || 1, 1, 5);
-	const baseStart = Math.max(1, Math.floor(Number(start) || 1));
+  const results = [];
+  const seen = new Set();
+  const totalTarget = Math.max(1, Math.floor(Number(num) || 1));
+  const pageSize = Math.min(CSE_MAX_PAGE_SIZE, totalTarget);
+  const pageCap = clampNumber(Number(maxPages) || 1, 1, 5);
+  const baseStart = Math.max(1, Math.floor(Number(start) || 1));
 
-	for (const q of list) {
-		let pageStart = baseStart;
-		let pagesFetched = 0;
-		while (pagesFetched < pageCap) {
-			const remaining = totalTarget - pagesFetched * pageSize;
-			if (remaining <= 0) break;
-			const pageNum = Math.min(pageSize, remaining);
-			try {
-				const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
-					params: {
-						key: GOOGLE_CSE_KEY,
-						cx: GOOGLE_CSE_ID,
-						q,
-						num: pageNum,
-						start: pageStart,
-						safe: "active",
-						gl: "us",
-						hl: "en",
-						...(searchType ? { searchType } : {}),
-						...(searchType === "image"
-							? {
-									imgType: "photo",
-									imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
-								}
-							: {}),
-					},
-					timeout: 12000,
-					validateStatus: (s) => s < 500,
-				});
+  for (const q of list) {
+    let pageStart = baseStart;
+    let pagesFetched = 0;
+    while (pagesFetched < pageCap) {
+      const remaining = totalTarget - pagesFetched * pageSize;
+      if (remaining <= 0) break;
+      const pageNum = Math.min(pageSize, remaining);
+      try {
+        const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
+          params: {
+            key: GOOGLE_CSE_KEY,
+            cx: GOOGLE_CSE_ID,
+            q,
+            num: pageNum,
+            start: pageStart,
+            safe: "active",
+            gl: "us",
+            hl: "en",
+            ...(searchType ? { searchType } : {}),
+            ...(searchType === "image"
+              ? {
+                  imgType: "photo",
+                  imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
+                }
+              : {}),
+          },
+          timeout: 12000,
+          validateStatus: (s) => s < 500,
+        });
 
-				if (!data || data.error) break;
+        if (!data || data.error) break;
 
-				const items = Array.isArray(data?.items) ? data.items : [];
-				for (const it of items) {
-					const title = String(it.title || "").trim();
-					const link = it.link || it.formattedUrl || "";
-					if (!title || !link) continue;
-					const key = `${title}|${link}`.toLowerCase();
-					if (seen.has(key)) continue;
-					seen.add(key);
-					results.push({
-						title: title.slice(0, 180),
-						snippet: String(it.snippet || "")
-							.trim()
-							.slice(0, 260),
-						link,
-						image: it.image || null,
-					});
-				}
-			} catch {
-				break;
-			}
+        const items = Array.isArray(data?.items) ? data.items : [];
+        for (const it of items) {
+          const title = String(it.title || "").trim();
+          const link = it.link || it.formattedUrl || "";
+          if (!title || !link) continue;
+          const key = `${title}|${link}`.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          results.push({
+            title: title.slice(0, 180),
+            snippet: String(it.snippet || "")
+              .trim()
+              .slice(0, 260),
+            link,
+            image: it.image || null,
+          });
+        }
+      } catch {
+        break;
+      }
 
-			pageStart += pageNum;
-			pagesFetched += 1;
-			if (pagesFetched < pageCap) await sleep(150);
-		}
-	}
-	return results;
+      pageStart += pageNum;
+      pagesFetched += 1;
+      if (pagesFetched < pageCap) await sleep(150);
+    }
+  }
+  return results;
 }
 
 async function pickTrendingTopicFromCse() {
-	const items = await fetchCseItems(CSE_ENTERTAINMENT_QUERIES, { num: 5 });
-	if (!items.length) return null;
+  const items = await fetchCseItems(CSE_ENTERTAINMENT_QUERIES, { num: 5 });
+  if (!items.length) return null;
 
-	const filtered = items.filter((it) =>
-		isEntertainmentCandidate(it.title, it.snippet),
-	);
-	const pool = filtered.length ? filtered : items;
-	const ranked = pool
-		.map((it) => ({ ...it, score: scoreTrendingCandidate(it) }))
-		.sort((a, b) => b.score - a.score);
-	const shortlist = ranked.slice(0, 12);
-	const top = shortlist[0] || pool[0];
+  const filtered = items.filter((it) =>
+    isEntertainmentCandidate(it.title, it.snippet),
+  );
+  const pool = filtered.length ? filtered : items;
+  const ranked = pool
+    .map((it) => ({ ...it, score: scoreTrendingCandidate(it) }))
+    .sort((a, b) => b.score - a.score);
+  const shortlist = ranked.slice(0, 12);
+  const top = shortlist[0] || pool[0];
 
-	if (!process.env.CHATGPT_API_TOKEN || !top) {
-		return {
-			topic: cleanTopicCandidate(top?.title || ""),
-			angle: "",
-			reason: "CSE trending",
-		};
-	}
+  if (!process.env.CHATGPT_API_TOKEN || !top) {
+    return {
+      topic: cleanTopicCandidate(top?.title || ""),
+      angle: "",
+      reason: "CSE trending",
+    };
+  }
 
-	const context = shortlist
-		.map(
-			(it, idx) =>
-				`${idx + 1}) ${it.title}${it.snippet ? " | " + it.snippet : ""}`,
-		)
-		.join("\n");
+  const context = shortlist
+    .map(
+      (it, idx) =>
+        `${idx + 1}) ${it.title}${it.snippet ? " | " + it.snippet : ""}`,
+    )
+    .join("\n");
 
-	const ask = `
+  const ask = `
 Pick ONE specific, high-interest entertainment topic for a US audience.
 It must be something people are searching for now (celebrity, movie/TV title, trailer, scandal, tour, or awards).
 Avoid broad listicles like "Top 10..." unless nothing else fits.
@@ -1691,2807 +1694,2807 @@ Return JSON ONLY:
 { "topic": "...", "angle": "...", "reason": "...", "keywords": ["..."] }
 `.trim();
 
-	try {
-		const resp = await openai.chat.completions.create({
-			model: CHAT_MODEL,
-			messages: [{ role: "user", content: ask }],
-		});
+  try {
+    const resp = await openai.chat.completions.create({
+      model: CHAT_MODEL,
+      messages: [{ role: "user", content: ask }],
+    });
 
-		const parsed = parseJsonFlexible(
-			resp?.choices?.[0]?.message?.content || "",
-		);
-		if (parsed?.topic) {
-			const keywords = Array.isArray(parsed.keywords)
-				? parsed.keywords.map((k) => String(k || "").trim()).filter(Boolean)
-				: [];
-			return {
-				topic: String(parsed.topic).slice(0, 120),
-				angle: String(parsed.angle || "").slice(0, 180),
-				reason: String(parsed.reason || "CSE + OpenAI").slice(0, 220),
-				keywords: keywords.slice(0, 8),
-			};
-		}
-	} catch {
-		// ignore
-	}
+    const parsed = parseJsonFlexible(
+      resp?.choices?.[0]?.message?.content || "",
+    );
+    if (parsed?.topic) {
+      const keywords = Array.isArray(parsed.keywords)
+        ? parsed.keywords.map((k) => String(k || "").trim()).filter(Boolean)
+        : [];
+      return {
+        topic: String(parsed.topic).slice(0, 120),
+        angle: String(parsed.angle || "").slice(0, 180),
+        reason: String(parsed.reason || "CSE + OpenAI").slice(0, 220),
+        keywords: keywords.slice(0, 8),
+      };
+    }
+  } catch {
+    // ignore
+  }
 
-	return {
-		topic: cleanTopicCandidate(top?.title || ""),
-		angle: "",
-		reason: "CSE trending",
-	};
+  return {
+    topic: cleanTopicCandidate(top?.title || ""),
+    angle: "",
+    reason: "CSE trending",
+  };
 }
 
 function topicCountForDuration(contentTargetSec) {
-	const sec = Number(contentTargetSec || 0);
-	if (!Number.isFinite(sec) || sec <= 0) return 1;
-	if (sec <= 180) return 1;
-	if (sec <= 300) return 2;
-	return 3;
+  const sec = Number(contentTargetSec || 0);
+  if (!Number.isFinite(sec) || sec <= 0) return 1;
+  if (sec <= 180) return 1;
+  if (sec <= 300) return 2;
+  return 3;
 }
 
 function computeFlexibleNarrationTargetSec({
-	requestedSec,
-	topics = [],
-	topicContexts = [],
+  requestedSec,
+  topics = [],
+  topicContexts = [],
 }) {
-	const requested = Math.max(18, Number(requestedSec) || 0);
-	const topicCount = Math.max(1, topics.length || 1);
+  const requested = Math.max(18, Number(requestedSec) || 0);
+  const topicCount = Math.max(1, topics.length || 1);
 
-	const minSec = Math.max(18, Math.round(requested * 0.5));
-	const maxSec = Math.max(minSec, Math.round(requested * 2));
+  const minSec = Math.max(18, Math.round(requested * 0.5));
+  const maxSec = Math.max(minSec, Math.round(requested * 2));
 
-	let totalSignal = 0;
-	for (let i = 0; i < topicCount; i++) {
-		const t = topics[i] || {};
-		const ctx = Array.isArray(topicContexts?.[i]?.context)
-			? topicContexts[i].context
-			: [];
-		const story = t.trendStory || {};
-		const articles = Array.isArray(story.articles) ? story.articles : [];
-		const phrases = Array.isArray(story.searchPhrases)
-			? story.searchPhrases
-			: [];
-		const entities = Array.isArray(story.entityNames) ? story.entityNames : [];
+  let totalSignal = 0;
+  for (let i = 0; i < topicCount; i++) {
+    const t = topics[i] || {};
+    const ctx = Array.isArray(topicContexts?.[i]?.context)
+      ? topicContexts[i].context
+      : [];
+    const story = t.trendStory || {};
+    const articles = Array.isArray(story.articles) ? story.articles : [];
+    const phrases = Array.isArray(story.searchPhrases)
+      ? story.searchPhrases
+      : [];
+    const entities = Array.isArray(story.entityNames) ? story.entityNames : [];
 
-		const signal =
-			ctx.length * 1.0 +
-			articles.length * 1.4 +
-			phrases.length * 0.4 +
-			entities.length * 0.3;
-		totalSignal += signal;
-	}
+    const signal =
+      ctx.length * 1.0 +
+      articles.length * 1.4 +
+      phrases.length * 0.4 +
+      entities.length * 0.3;
+    totalSignal += signal;
+  }
 
-	const avgSignal = totalSignal / topicCount;
-	const normalized = clampNumber(avgSignal / 10, 0, 1);
+  const avgSignal = totalSignal / topicCount;
+  const normalized = clampNumber(avgSignal / 10, 0, 1);
 
-	let target = requested;
-	if (normalized >= 0.92) {
-		target = maxSec;
-	} else if (normalized >= 0.75) {
-		target = Math.min(maxSec, Math.round(requested * 1.7));
-	} else if (normalized >= 0.55) {
-		target = Math.min(maxSec, Math.round(requested * 1.35));
-	} else if (normalized >= 0.4) {
-		target = Math.min(maxSec, Math.round(requested * 1.1));
-	} else if (normalized <= 0.15) {
-		target = minSec;
-	} else if (normalized <= 0.3) {
-		target = Math.max(minSec, Math.round(requested * 0.67));
-	}
+  let target = requested;
+  if (normalized >= 0.92) {
+    target = maxSec;
+  } else if (normalized >= 0.75) {
+    target = Math.min(maxSec, Math.round(requested * 1.7));
+  } else if (normalized >= 0.55) {
+    target = Math.min(maxSec, Math.round(requested * 1.35));
+  } else if (normalized >= 0.4) {
+    target = Math.min(maxSec, Math.round(requested * 1.1));
+  } else if (normalized <= 0.15) {
+    target = minSec;
+  } else if (normalized <= 0.3) {
+    target = Math.max(minSec, Math.round(requested * 0.67));
+  }
 
-	target = clampNumber(target, minSec, maxSec);
+  target = clampNumber(target, minSec, maxSec);
 
-	return {
-		targetSec: target,
-		minSec,
-		maxSec,
-		mode: "flex",
-		signal: {
-			total: Number(totalSignal.toFixed(2)),
-			avg: Number(avgSignal.toFixed(2)),
-			normalized: Number(normalized.toFixed(3)),
-		},
-	};
+  return {
+    targetSec: target,
+    minSec,
+    maxSec,
+    mode: "flex",
+    signal: {
+      total: Number(totalSignal.toFixed(2)),
+      avg: Number(avgSignal.toFixed(2)),
+      normalized: Number(normalized.toFixed(3)),
+    },
+  };
 }
 
 function topicSignature(text = "") {
-	const cleaned = cleanTopicLabel(text);
-	return cleanTopicCandidate(cleaned).toLowerCase();
+  const cleaned = cleanTopicLabel(text);
+  return cleanTopicCandidate(cleaned).toLowerCase();
 }
 
 function addUsedTopicVariants(set, text = "") {
-	if (!set) return;
-	const norm = topicSignature(text);
-	if (!norm) return;
-	set.add(norm);
-	const parts = norm.split(/\s+/).filter(Boolean);
-	if (parts.length >= 2) set.add(parts.slice(0, 2).join(" "));
-	if (parts.length >= 3) set.add(parts.slice(0, 3).join(" "));
+  if (!set) return;
+  const norm = topicSignature(text);
+  if (!norm) return;
+  set.add(norm);
+  const parts = norm.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) set.add(parts.slice(0, 2).join(" "));
+  if (parts.length >= 3) set.add(parts.slice(0, 3).join(" "));
 }
 
 async function loadRecentLongVideoTopics({ userId, categoryLabel }) {
-	if (!userId) return new Set();
-	const threeDaysAgo = dayjs().subtract(3, "day").toDate();
-	const query = {
-		user: userId,
-		isLongVideo: true,
-		createdAt: { $gte: threeDaysAgo },
-	};
-	if (categoryLabel) query.category = categoryLabel;
-	try {
-		const recentVideos = await Video.find(query).select(
-			"topic topics seoTitle",
-		);
-		const used = new Set();
-		for (const v of recentVideos) {
-			const list = [];
-			if (Array.isArray(v.topics)) list.push(...v.topics);
-			if (v.topic) list.push(v.topic);
-			if (v.seoTitle) list.push(v.seoTitle);
-			for (const txt of list) addUsedTopicVariants(used, txt);
-		}
-		return used;
-	} catch (e) {
-		logJob(null, "recent topics lookup failed", { error: e.message });
-		return new Set();
-	}
+  if (!userId) return new Set();
+  const threeDaysAgo = dayjs().subtract(3, "day").toDate();
+  const query = {
+    user: userId,
+    isLongVideo: true,
+    createdAt: { $gte: threeDaysAgo },
+  };
+  if (categoryLabel) query.category = categoryLabel;
+  try {
+    const recentVideos = await Video.find(query).select(
+      "topic topics seoTitle",
+    );
+    const used = new Set();
+    for (const v of recentVideos) {
+      const list = [];
+      if (Array.isArray(v.topics)) list.push(...v.topics);
+      if (v.topic) list.push(v.topic);
+      if (v.seoTitle) list.push(v.seoTitle);
+      for (const txt of list) addUsedTopicVariants(used, txt);
+    }
+    return used;
+  } catch (e) {
+    logJob(null, "recent topics lookup failed", { error: e.message });
+    return new Set();
+  }
 }
 
 async function loadRecentPresenterOutfits({ userId, limit = 10 }) {
-	if (!userId) return [];
-	try {
-		const recent = await Video.find({
-			user: userId,
-			isLongVideo: true,
-			$or: [
-				{ presenterOutfit: { $exists: true, $ne: "" } },
-				{ presenterOutfitStyle: { $exists: true, $ne: "" } },
-			],
-		})
-			.sort({ createdAt: -1 })
-			.limit(Math.max(0, Number(limit) || 0))
-			.select({ presenterOutfit: 1, presenterOutfitStyle: 1 })
-			.lean();
-		return (recent || [])
-			.map((v) => ({
-				presenterOutfit: String(v.presenterOutfit || "").trim(),
-				presenterOutfitStyle: String(v.presenterOutfitStyle || "").trim(),
-			}))
-			.filter((v) => v.presenterOutfit || v.presenterOutfitStyle);
-	} catch (e) {
-		logJob(null, "recent outfits lookup failed", { error: e.message });
-		return [];
-	}
+  if (!userId) return [];
+  try {
+    const recent = await Video.find({
+      user: userId,
+      isLongVideo: true,
+      $or: [
+        { presenterOutfit: { $exists: true, $ne: "" } },
+        { presenterOutfitStyle: { $exists: true, $ne: "" } },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .limit(Math.max(0, Number(limit) || 0))
+      .select({ presenterOutfit: 1, presenterOutfitStyle: 1 })
+      .lean();
+    return (recent || [])
+      .map((v) => ({
+        presenterOutfit: String(v.presenterOutfit || "").trim(),
+        presenterOutfitStyle: String(v.presenterOutfitStyle || "").trim(),
+      }))
+      .filter((v) => v.presenterOutfit || v.presenterOutfitStyle);
+  } catch (e) {
+    logJob(null, "recent outfits lookup failed", { error: e.message });
+    return [];
+  }
 }
 
 const DEFAULT_LONG_VIDEO_CONTROLLER_CONFIG = Object.freeze({
-	controllerLabel: "long-video",
-	statusPathBase: "/api/long-video",
-	presenterAssetUrl: DEFAULT_PRESENTER_ASSET_URL,
-	allowPresenterAssetOverride: false,
-	enableRunwayPresenterMotion: true,
-	enableWardrobeEdit: ENABLE_WARDROBE_EDIT,
-	disableYouTubeUpload: false,
+  controllerLabel: "long-video",
+  statusPathBase: "/api/long-video",
+  presenterAssetUrl: DEFAULT_PRESENTER_ASSET_URL,
+  allowPresenterAssetOverride: false,
+  enableRunwayPresenterMotion: true,
+  enableWardrobeEdit: ENABLE_WARDROBE_EDIT,
+  disableYouTubeUpload: false,
 });
 
 function normalizeLongVideoControllerConfig(config = {}) {
-	return {
-		...DEFAULT_LONG_VIDEO_CONTROLLER_CONFIG,
-		...(config && typeof config === "object" ? config : {}),
-	};
+  return {
+    ...DEFAULT_LONG_VIDEO_CONTROLLER_CONFIG,
+    ...(config && typeof config === "object" ? config : {}),
+  };
 }
 
 function resolveRequestedPresenterAsset(body = {}, controllerConfig = {}) {
-	const cfg = normalizeLongVideoControllerConfig(controllerConfig);
-	const defaultAssetUrl = String(
-		cfg.presenterAssetUrl || DEFAULT_PRESENTER_ASSET_URL,
-	).trim();
-	if (!cfg.allowPresenterAssetOverride) return defaultAssetUrl;
+  const cfg = normalizeLongVideoControllerConfig(controllerConfig);
+  const defaultAssetUrl = String(
+    cfg.presenterAssetUrl || DEFAULT_PRESENTER_ASSET_URL,
+  ).trim();
+  if (!cfg.allowPresenterAssetOverride) return defaultAssetUrl;
 
-	const requested = String(
-		body.presenterAssetUrl ||
-			body.presenterImageUrl ||
-			body.presenterVideoUrl ||
-			"",
-	).trim();
-	return requested || defaultAssetUrl;
+  const requested = String(
+    body.presenterAssetUrl ||
+      body.presenterImageUrl ||
+      body.presenterVideoUrl ||
+      "",
+  ).trim();
+  return requested || defaultAssetUrl;
 }
 
 function isDuplicateTopic(topic, existing = [], usedTopics = null) {
-	const norm = topicSignature(topic);
-	if (!norm) return true;
-	const tokens = topicTokensFromTitle(norm);
+  const norm = topicSignature(topic);
+  if (!norm) return true;
+  const tokens = topicTokensFromTitle(norm);
 
-	const matches = (candidate) => {
-		const existingTitle = topicSignature(candidate);
-		if (!existingTitle) return false;
-		if (existingTitle === norm) return true;
-		if (existingTitle.includes(norm) || norm.includes(existingTitle))
-			return true;
-		const existingTokens = topicTokensFromTitle(existingTitle);
-		const overlap = tokens.filter((t) => existingTokens.includes(t));
-		return overlap.length >= Math.min(2, tokens.length, existingTokens.length);
-	};
+  const matches = (candidate) => {
+    const existingTitle = topicSignature(candidate);
+    if (!existingTitle) return false;
+    if (existingTitle === norm) return true;
+    if (existingTitle.includes(norm) || norm.includes(existingTitle))
+      return true;
+    const existingTokens = topicTokensFromTitle(existingTitle);
+    const overlap = tokens.filter((t) => existingTokens.includes(t));
+    return overlap.length >= Math.min(2, tokens.length, existingTokens.length);
+  };
 
-	if (usedTopics && usedTopics.size) {
-		for (const used of usedTopics) {
-			if (matches(used)) return true;
-		}
-	}
-	for (const item of existing) {
-		if (matches(item.topic || item.title || "")) return true;
-	}
-	return false;
+  if (usedTopics && usedTopics.size) {
+    for (const used of usedTopics) {
+      if (matches(used)) return true;
+    }
+  }
+  for (const item of existing) {
+    if (matches(item.topic || item.title || "")) return true;
+  }
+  return false;
 }
 
 const PROMPT_CONTROL_TOKENS = new Set([
-	"recommend",
-	"recommendation",
-	"suggest",
-	"suggestion",
-	"topic",
-	"topics",
-	"idea",
-	"ideas",
-	"video",
-	"videos",
-	"content",
-	"script",
-	"long",
-	"short",
-	"create",
-	"make",
-	"generate",
-	"write",
-	"produce",
-	"build",
-	"craft",
-	"give",
-	"show",
-	"tell",
-	"need",
-	"want",
-	"please",
-	"me",
-	"my",
-	"your",
-	"you",
-	"us",
-	"we",
-	"our",
-	"someone",
-	"anyone",
-	"can",
-	"could",
-	"would",
-	"should",
-	"pick",
-	"choose",
-	"surprise",
-	"anything",
-	"something",
-	"random",
-	"trending",
-	"latest",
-	"update",
-	"updates",
-	"news",
-	"now",
-	"today",
-	"recommendations",
-	"suggestions",
+  "recommend",
+  "recommendation",
+  "suggest",
+  "suggestion",
+  "topic",
+  "topics",
+  "idea",
+  "ideas",
+  "video",
+  "videos",
+  "content",
+  "script",
+  "long",
+  "short",
+  "create",
+  "make",
+  "generate",
+  "write",
+  "produce",
+  "build",
+  "craft",
+  "give",
+  "show",
+  "tell",
+  "need",
+  "want",
+  "please",
+  "me",
+  "my",
+  "your",
+  "you",
+  "us",
+  "we",
+  "our",
+  "someone",
+  "anyone",
+  "can",
+  "could",
+  "would",
+  "should",
+  "pick",
+  "choose",
+  "surprise",
+  "anything",
+  "something",
+  "random",
+  "trending",
+  "latest",
+  "update",
+  "updates",
+  "news",
+  "now",
+  "today",
+  "recommendations",
+  "suggestions",
 ]);
 
 const PROMPT_QUESTION_TOKENS = new Set([
-	"what",
-	"who",
-	"why",
-	"how",
-	"when",
-	"where",
-	"which",
+  "what",
+  "who",
+  "why",
+  "how",
+  "when",
+  "where",
+  "which",
 ]);
 
 const PROMPT_RECOMMENDATION_PATTERNS = [
-	/\b(recommend|suggest|pick|choose|surprise)\b/i,
-	/\b(anything|something)\b/i,
-	/\bwhat('s| is)\s+(trending|hot|popular|new)\b/i,
-	/\bwhat\s+topic\b/i,
-	/\btrending\s+topic\b/i,
-	/\btopic\s+idea\b/i,
+  /\b(recommend|suggest|pick|choose|surprise)\b/i,
+  /\b(anything|something)\b/i,
+  /\bwhat('s| is)\s+(trending|hot|popular|new)\b/i,
+  /\bwhat\s+topic\b/i,
+  /\btrending\s+topic\b/i,
+  /\btopic\s+idea\b/i,
 ];
 
 const PROMPT_SPLIT_RE = /[|;\n]+/;
 
 function normalizeUrlCandidate(raw = "") {
-	const trimmed = String(raw || "").trim();
-	if (!trimmed) return "";
-	return trimmed.replace(/[),.;]+$/g, "");
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  return trimmed.replace(/[),.;]+$/g, "");
 }
 
 function extractUrlsFromText(text = "") {
-	const raw = String(text || "");
-	const urls = [];
-	const httpRe = /\bhttps?:\/\/[^\s<>()]+/gi;
-	const wwwRe = /\bwww\.[^\s<>()]+/gi;
-	let match;
-	while ((match = httpRe.exec(raw))) {
-		const cleaned = normalizeUrlCandidate(match[0]);
-		if (cleaned) urls.push(cleaned);
-	}
-	while ((match = wwwRe.exec(raw))) {
-		const cleaned = normalizeUrlCandidate(`https://${match[0]}`);
-		if (cleaned) urls.push(cleaned);
-	}
-	return uniqueStrings(urls, { limit: 6 });
+  const raw = String(text || "");
+  const urls = [];
+  const httpRe = /\bhttps?:\/\/[^\s<>()]+/gi;
+  const wwwRe = /\bwww\.[^\s<>()]+/gi;
+  let match;
+  while ((match = httpRe.exec(raw))) {
+    const cleaned = normalizeUrlCandidate(match[0]);
+    if (cleaned) urls.push(cleaned);
+  }
+  while ((match = wwwRe.exec(raw))) {
+    const cleaned = normalizeUrlCandidate(`https://${match[0]}`);
+    if (cleaned) urls.push(cleaned);
+  }
+  return uniqueStrings(urls, { limit: 6 });
 }
 
 function stripUrlsFromText(text = "") {
-	return String(text || "")
-		.replace(/\bhttps?:\/\/[^\s<>()]+/gi, " ")
-		.replace(/\bwww\.[^\s<>()]+/gi, " ")
-		.replace(/\s+/g, " ")
-		.trim();
+  return String(text || "")
+    .replace(/\bhttps?:\/\/[^\s<>()]+/gi, " ")
+    .replace(/\bwww\.[^\s<>()]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 const PROMPT_PREAMBLE_PATTERNS = [
-	/^(please\s+)?(create|make|generate|write|produce|build|craft|plan)\b[^.?!]{0,80}?\b(video|script|story|content)\b\s*(?:about|on|for|regarding|re:)?\s*/i,
-	/^(please\s+)?(give|show|tell|explain|summarize|break\s*down)\b[^.?!]{0,80}?\b(about|on|for|regarding|re:)\b\s*/i,
-	/^(please\s+)?(i\s*(?:want|need|would\s+like|would\s+love|i'?d\s+like))\b[^.?!]{0,80}?\b(video|topic|content|script)\b\s*(?:about|on|for|regarding|re:)?\s*/i,
+  /^(please\s+)?(create|make|generate|write|produce|build|craft|plan)\b[^.?!]{0,80}?\b(video|script|story|content)\b\s*(?:about|on|for|regarding|re:)?\s*/i,
+  /^(please\s+)?(give|show|tell|explain|summarize|break\s*down)\b[^.?!]{0,80}?\b(about|on|for|regarding|re:)\b\s*/i,
+  /^(please\s+)?(i\s*(?:want|need|would\s+like|would\s+love|i'?d\s+like))\b[^.?!]{0,80}?\b(video|topic|content|script)\b\s*(?:about|on|for|regarding|re:)?\s*/i,
 ];
 
 function stripPromptPreamble(text = "") {
-	let cleaned = String(text || "").trim();
-	if (!cleaned) return cleaned;
-	for (const re of PROMPT_PREAMBLE_PATTERNS) {
-		const match = cleaned.match(re);
-		if (match) {
-			cleaned = cleaned.slice(match[0].length).trim();
-			break;
-		}
-	}
-	return cleaned.replace(/^[\s:;-]+/g, "").trim();
+  let cleaned = String(text || "").trim();
+  if (!cleaned) return cleaned;
+  for (const re of PROMPT_PREAMBLE_PATTERNS) {
+    const match = cleaned.match(re);
+    if (match) {
+      cleaned = cleaned.slice(match[0].length).trim();
+      break;
+    }
+  }
+  return cleaned.replace(/^[\s:;-]+/g, "").trim();
 }
 
 function looksLikeRecommendationPrompt(text = "") {
-	const raw = String(text || "").trim();
-	if (!raw) return false;
-	return PROMPT_RECOMMENDATION_PATTERNS.some((re) => re.test(raw));
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  return PROMPT_RECOMMENDATION_PATTERNS.some((re) => re.test(raw));
 }
 
 function extractPromptSubjectTokens(text = "") {
-	const tokens = tokenizeLabel(text);
-	return tokens.filter(
-		(t) =>
-			!TOPIC_STOP_WORDS.has(t) &&
-			!GENERIC_TOPIC_TOKENS.has(t) &&
-			!PROMPT_CONTROL_TOKENS.has(t),
-	);
+  const tokens = tokenizeLabel(text);
+  return tokens.filter(
+    (t) =>
+      !TOPIC_STOP_WORDS.has(t) &&
+      !GENERIC_TOPIC_TOKENS.has(t) &&
+      !PROMPT_CONTROL_TOKENS.has(t),
+  );
 }
 
 function normalizePromptTopic(text = "") {
-	const stripped = stripPromptPreamble(text);
-	const base = stripped || String(text || "").trim();
-	const cleaned = cleanTopicCandidate(base) || base.trim();
-	return cleaned.replace(/\s+/g, " ").trim();
+  const stripped = stripPromptPreamble(text);
+  const base = stripped || String(text || "").trim();
+  const cleaned = cleanTopicCandidate(base) || base.trim();
+  return cleaned.replace(/\s+/g, " ").trim();
 }
 
 function splitPromptTopics(text = "") {
-	const raw = String(text || "").trim();
-	if (!raw) return [];
-	const parts = raw
-		.split(PROMPT_SPLIT_RE)
-		.map((chunk) => normalizePromptTopic(chunk))
-		.filter(Boolean);
-	if (parts.length) return parts;
-	const fallback = normalizePromptTopic(raw);
-	return fallback ? [fallback] : [];
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  const parts = raw
+    .split(PROMPT_SPLIT_RE)
+    .map((chunk) => normalizePromptTopic(chunk))
+    .filter(Boolean);
+  if (parts.length) return parts;
+  const fallback = normalizePromptTopic(raw);
+  return fallback ? [fallback] : [];
 }
 
 function resolvePreferredTopicHint(raw = "") {
-	const original = String(raw || "").trim();
-	if (!original) {
-		return {
-			mode: "none",
-			promptText: "",
-			topicCandidates: [],
-			imageUrls: [],
-		};
-	}
-	const imageUrls = extractUrlsFromText(original).filter(isHttpUrl);
-	const cleanedPrompt = stripUrlsFromText(original);
-	const promptText = String(cleanedPrompt || "").trim();
-	if (!promptText) {
-		return {
-			mode: "none",
-			promptText: "",
-			topicCandidates: [],
-			imageUrls,
-		};
-	}
-	const subjectTokens = extractPromptSubjectTokens(promptText);
-	const wantsRecommendation = looksLikeRecommendationPrompt(promptText);
-	const effectiveTokens = wantsRecommendation
-		? subjectTokens.filter((t) => !PROMPT_QUESTION_TOKENS.has(t))
-		: subjectTokens;
-	const mode = effectiveTokens.length ? "prompt" : "trends";
-	const topicCandidates =
-		mode === "prompt" ? splitPromptTopics(promptText) : [];
-	return {
-		mode,
-		promptText,
-		topicCandidates,
-		imageUrls,
-	};
+  const original = String(raw || "").trim();
+  if (!original) {
+    return {
+      mode: "none",
+      promptText: "",
+      topicCandidates: [],
+      imageUrls: [],
+    };
+  }
+  const imageUrls = extractUrlsFromText(original).filter(isHttpUrl);
+  const cleanedPrompt = stripUrlsFromText(original);
+  const promptText = String(cleanedPrompt || "").trim();
+  if (!promptText) {
+    return {
+      mode: "none",
+      promptText: "",
+      topicCandidates: [],
+      imageUrls,
+    };
+  }
+  const subjectTokens = extractPromptSubjectTokens(promptText);
+  const wantsRecommendation = looksLikeRecommendationPrompt(promptText);
+  const effectiveTokens = wantsRecommendation
+    ? subjectTokens.filter((t) => !PROMPT_QUESTION_TOKENS.has(t))
+    : subjectTokens;
+  const mode = effectiveTokens.length ? "prompt" : "trends";
+  const topicCandidates =
+    mode === "prompt" ? splitPromptTopics(promptText) : [];
+  return {
+    mode,
+    promptText,
+    topicCandidates,
+    imageUrls,
+  };
 }
 
 async function selectTopics({
-	preferredTopicHint,
-	dryRun,
-	topicCount,
-	language = "English",
-	categoryLabel,
-	usedTopics,
-	baseUrl,
+  preferredTopicHint,
+  dryRun,
+  topicCount,
+  language = "English",
+  categoryLabel,
+  usedTopics,
+  baseUrl,
 } = {}) {
-	const desired = Math.max(1, Number(topicCount) || 1);
-	const usedSet = usedTopics instanceof Set ? new Set(usedTopics) : new Set();
+  const desired = Math.max(1, Number(topicCount) || 1);
+  const usedSet = usedTopics instanceof Set ? new Set(usedTopics) : new Set();
 
-	if (dryRun) {
-		const hint = String(preferredTopicHint || "").trim();
-		const topic = hint || "Dry run topic (provide preferredTopicHint)";
-		const displayTopic = cleanTopicLabel(topic) || topic;
-		return [
-			{
-				topic: topic.slice(0, 120),
-				displayTopic,
-				reason: dryRun ? "Dry run" : "preferredTopicHint",
-				angle: "",
-				keywords: topicTokensFromTitle(topic).slice(0, 8),
-			},
-		];
-	}
+  if (dryRun) {
+    const hint = String(preferredTopicHint || "").trim();
+    const topic = hint || "Dry run topic (provide preferredTopicHint)";
+    const displayTopic = cleanTopicLabel(topic) || topic;
+    return [
+      {
+        topic: topic.slice(0, 120),
+        displayTopic,
+        reason: dryRun ? "Dry run" : "preferredTopicHint",
+        angle: "",
+        keywords: topicTokensFromTitle(topic).slice(0, 8),
+      },
+    ];
+  }
 
-	const promptInfo = resolvePreferredTopicHint(preferredTopicHint);
-	if (promptInfo.mode === "prompt") {
-		const topics = [];
-		const seen = new Set();
-		const candidates = promptInfo.topicCandidates.length
-			? promptInfo.topicCandidates
-			: [promptInfo.promptText];
-		for (const candidate of candidates) {
-			if (topics.length >= desired) break;
-			const normalized = normalizePromptTopic(candidate);
-			if (!normalized) continue;
-			const signature = topicSignature(normalized);
-			if (signature && seen.has(signature)) continue;
-			if (signature) seen.add(signature);
-			const displayTopic = cleanTopicLabel(normalized) || normalized;
-			topics.push({
-				topic: normalized.slice(0, 120),
-				displayTopic,
-				reason: "preferredTopicHint",
-				angle: "",
-				keywords: topicTokensFromTitle(normalized).slice(0, 8),
-				images: topics.length === 0 ? promptInfo.imageUrls : [],
-				source: "user_prompt",
-			});
-		}
-		if (topics.length) {
-			logJob(null, "preferred topic hint used (prompt mode)", {
-				topics: topics.map((t) => t.displayTopic || t.topic),
-			});
-			if (promptInfo.topicCandidates.length > topics.length) {
-				logJob(null, "preferred topic hint truncated to fit duration", {
-					requested: promptInfo.topicCandidates.length,
-					used: topics.length,
-				});
-			}
-			return topics;
-		}
-	}
+  const promptInfo = resolvePreferredTopicHint(preferredTopicHint);
+  if (promptInfo.mode === "prompt") {
+    const topics = [];
+    const seen = new Set();
+    const candidates = promptInfo.topicCandidates.length
+      ? promptInfo.topicCandidates
+      : [promptInfo.promptText];
+    for (const candidate of candidates) {
+      if (topics.length >= desired) break;
+      const normalized = normalizePromptTopic(candidate);
+      if (!normalized) continue;
+      const signature = topicSignature(normalized);
+      if (signature && seen.has(signature)) continue;
+      if (signature) seen.add(signature);
+      const displayTopic = cleanTopicLabel(normalized) || normalized;
+      topics.push({
+        topic: normalized.slice(0, 120),
+        displayTopic,
+        reason: "preferredTopicHint",
+        angle: "",
+        keywords: topicTokensFromTitle(normalized).slice(0, 8),
+        images: topics.length === 0 ? promptInfo.imageUrls : [],
+        source: "user_prompt",
+      });
+    }
+    if (topics.length) {
+      logJob(null, "preferred topic hint used (prompt mode)", {
+        topics: topics.map((t) => t.displayTopic || t.topic),
+      });
+      if (promptInfo.topicCandidates.length > topics.length) {
+        logJob(null, "preferred topic hint truncated to fit duration", {
+          requested: promptInfo.topicCandidates.length,
+          used: topics.length,
+        });
+      }
+      return topics;
+    }
+  }
 
-	if (promptInfo.mode === "trends" && promptInfo.promptText) {
-		logJob(null, "preferred topic hint treated as recommendation", {
-			hint: promptInfo.promptText.slice(0, 140),
-		});
-	}
+  if (promptInfo.mode === "trends" && promptInfo.promptText) {
+    logJob(null, "preferred topic hint treated as recommendation", {
+      hint: promptInfo.promptText.slice(0, 140),
+    });
+  }
 
-	const topics = [];
+  const topics = [];
 
-	const trendStories = await fetchTrendsStories({
-		categoryLabel: categoryLabel || LONG_VIDEO_TRENDS_CATEGORY,
-		geo: LONG_VIDEO_TRENDS_GEO,
-		language,
-		baseUrl,
-		topicCount: desired,
-	});
-	if (!trendStories.length) {
-		if (LONG_VIDEO_REQUIRE_TRENDS) {
-			throw new Error("trends_unavailable");
-		}
-	}
-	const primaryTrendStory = Array.isArray(trendStories)
-		? trendStories[0]
-		: null;
-	if (
-		primaryTrendStory?.topic &&
-		!isDuplicateTopic(primaryTrendStory.topic, topics, usedSet)
-	) {
-		const displayTopic =
-			cleanTopicLabel(primaryTrendStory.topic) || primaryTrendStory.topic;
-		const relatedQueries = normalizeRelatedQueries(
-			primaryTrendStory.relatedQueries,
-		);
-		topics.push({
-			topic: primaryTrendStory.topic,
-			displayTopic,
-			angle: "",
-			reason: "Google Trends (first)",
-			keywords: topicTokensFromTitle(primaryTrendStory.topic)
-				.concat(topicTokensFromTitle(primaryTrendStory.rawTitle || ""))
-				.concat(relatedQueries.rising.flatMap((q) => topicTokensFromTitle(q)))
-				.concat(relatedQueries.top.flatMap((q) => topicTokensFromTitle(q)))
-				.slice(0, 10),
-			trendStory: primaryTrendStory,
-		});
-		addUsedTopicVariants(usedSet, primaryTrendStory.topic);
-	}
+  const trendStories = await fetchTrendsStories({
+    categoryLabel: categoryLabel || LONG_VIDEO_TRENDS_CATEGORY,
+    geo: LONG_VIDEO_TRENDS_GEO,
+    language,
+    baseUrl,
+    topicCount: desired,
+  });
+  if (!trendStories.length) {
+    if (LONG_VIDEO_REQUIRE_TRENDS) {
+      throw new Error("trends_unavailable");
+    }
+  }
+  const primaryTrendStory = Array.isArray(trendStories)
+    ? trendStories[0]
+    : null;
+  if (
+    primaryTrendStory?.topic &&
+    !isDuplicateTopic(primaryTrendStory.topic, topics, usedSet)
+  ) {
+    const displayTopic =
+      cleanTopicLabel(primaryTrendStory.topic) || primaryTrendStory.topic;
+    const relatedQueries = normalizeRelatedQueries(
+      primaryTrendStory.relatedQueries,
+    );
+    topics.push({
+      topic: primaryTrendStory.topic,
+      displayTopic,
+      angle: "",
+      reason: "Google Trends (first)",
+      keywords: topicTokensFromTitle(primaryTrendStory.topic)
+        .concat(topicTokensFromTitle(primaryTrendStory.rawTitle || ""))
+        .concat(relatedQueries.rising.flatMap((q) => topicTokensFromTitle(q)))
+        .concat(relatedQueries.top.flatMap((q) => topicTokensFromTitle(q)))
+        .slice(0, 10),
+      trendStory: primaryTrendStory,
+    });
+    addUsedTopicVariants(usedSet, primaryTrendStory.topic);
+  }
 
-	const rankedTrendStories = rankTrendStoriesForYouTube(trendStories);
+  const rankedTrendStories = rankTrendStoriesForYouTube(trendStories);
 
-	for (const story of rankedTrendStories) {
-		if (topics.length >= desired) break;
-		if (!story?.topic) continue;
-		if (isDuplicateTopic(story.topic, topics, usedSet)) continue;
-		const displayTopic = cleanTopicLabel(story.topic) || story.topic;
-		const relatedQueries = normalizeRelatedQueries(story.relatedQueries);
-		topics.push({
-			topic: story.topic,
-			displayTopic,
-			angle: "",
-			reason: "Google Trends",
-			keywords: topicTokensFromTitle(story.topic)
-				.concat(topicTokensFromTitle(story.rawTitle || ""))
-				.concat(relatedQueries.rising.flatMap((q) => topicTokensFromTitle(q)))
-				.concat(relatedQueries.top.flatMap((q) => topicTokensFromTitle(q)))
-				.slice(0, 10),
-			trendStory: story,
-		});
-		addUsedTopicVariants(usedSet, story.topic);
-	}
+  for (const story of rankedTrendStories) {
+    if (topics.length >= desired) break;
+    if (!story?.topic) continue;
+    if (isDuplicateTopic(story.topic, topics, usedSet)) continue;
+    const displayTopic = cleanTopicLabel(story.topic) || story.topic;
+    const relatedQueries = normalizeRelatedQueries(story.relatedQueries);
+    topics.push({
+      topic: story.topic,
+      displayTopic,
+      angle: "",
+      reason: "Google Trends",
+      keywords: topicTokensFromTitle(story.topic)
+        .concat(topicTokensFromTitle(story.rawTitle || ""))
+        .concat(relatedQueries.rising.flatMap((q) => topicTokensFromTitle(q)))
+        .concat(relatedQueries.top.flatMap((q) => topicTokensFromTitle(q)))
+        .slice(0, 10),
+      trendStory: story,
+    });
+    addUsedTopicVariants(usedSet, story.topic);
+  }
 
-	if (LONG_VIDEO_REQUIRE_TRENDS) {
-		if (!topics.length) {
-			throw new Error("Unable to pick topics from Google Trends.");
-		}
-		if (topics.length < desired) {
-			logJob(null, "trends-only topic count below desired", {
-				desired,
-				count: topics.length,
-			});
-		}
-		return topics.slice(0, desired);
-	}
+  if (LONG_VIDEO_REQUIRE_TRENDS) {
+    if (!topics.length) {
+      throw new Error("Unable to pick topics from Google Trends.");
+    }
+    if (topics.length < desired) {
+      logJob(null, "trends-only topic count below desired", {
+        desired,
+        count: topics.length,
+      });
+    }
+    return topics.slice(0, desired);
+  }
 
-	let guard = 0;
-	while (topics.length < desired && guard < 3) {
-		guard += 1;
-		const csePick = await pickTrendingTopicFromCse();
-		if (csePick?.topic && !isDuplicateTopic(csePick.topic, topics, usedSet)) {
-			const displayTopic = cleanTopicLabel(csePick.topic) || csePick.topic;
-			topics.push({ ...csePick, displayTopic });
-			addUsedTopicVariants(usedSet, csePick.topic);
-		} else break;
-	}
+  let guard = 0;
+  while (topics.length < desired && guard < 3) {
+    guard += 1;
+    const csePick = await pickTrendingTopicFromCse();
+    if (csePick?.topic && !isDuplicateTopic(csePick.topic, topics, usedSet)) {
+      const displayTopic = cleanTopicLabel(csePick.topic) || csePick.topic;
+      topics.push({ ...csePick, displayTopic });
+      addUsedTopicVariants(usedSet, csePick.topic);
+    } else break;
+  }
 
-	if (topics.length < desired && process.env.CHATGPT_API_TOKEN) {
-		try {
-			const ask = `
+  if (topics.length < desired && process.env.CHATGPT_API_TOKEN) {
+    try {
+      const ask = `
 Return JSON ONLY: { "topics": ["topic1", "topic2"] }
 Provide ${
-				desired - topics.length
-			} current entertainment topics for a US audience.
+        desired - topics.length
+      } current entertainment topics for a US audience.
 Each topic must be specific (celebrity, movie/TV title, trailer, scandal, tour, awards).
 Avoid broad listicles. Keep each short and searchable.
 `.trim();
-			const resp = await openai.chat.completions.create({
-				model: CHAT_MODEL,
-				messages: [{ role: "user", content: ask }],
-			});
-			const parsed = parseJsonFlexible(
-				resp?.choices?.[0]?.message?.content || "",
-			);
-			const list = Array.isArray(parsed?.topics) ? parsed.topics : null;
-			if (Array.isArray(list)) {
-				for (const t of list) {
-					if (topics.length >= desired) break;
-					const topic = String(t || "").trim();
-					if (!topic || isDuplicateTopic(topic, topics, usedSet)) continue;
-					const displayTopic = cleanTopicLabel(topic) || topic;
-					topics.push({
-						topic: topic.slice(0, 120),
-						displayTopic,
-						reason: "OpenAI fallback",
-						angle: "",
-						keywords: topicTokensFromTitle(topic).slice(0, 8),
-					});
-					addUsedTopicVariants(usedSet, topic);
-				}
-			}
-		} catch {
-			// ignore
-		}
-	}
+      const resp = await openai.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: [{ role: "user", content: ask }],
+      });
+      const parsed = parseJsonFlexible(
+        resp?.choices?.[0]?.message?.content || "",
+      );
+      const list = Array.isArray(parsed?.topics) ? parsed.topics : null;
+      if (Array.isArray(list)) {
+        for (const t of list) {
+          if (topics.length >= desired) break;
+          const topic = String(t || "").trim();
+          if (!topic || isDuplicateTopic(topic, topics, usedSet)) continue;
+          const displayTopic = cleanTopicLabel(topic) || topic;
+          topics.push({
+            topic: topic.slice(0, 120),
+            displayTopic,
+            reason: "OpenAI fallback",
+            angle: "",
+            keywords: topicTokensFromTitle(topic).slice(0, 8),
+          });
+          addUsedTopicVariants(usedSet, topic);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
 
-	if (!topics.length) {
-		throw new Error(
-			"Unable to pick topics. Provide preferredTopicHint or ensure Google Trends is available.",
-		);
-	}
+  if (!topics.length) {
+    throw new Error(
+      "Unable to pick topics. Provide preferredTopicHint or ensure Google Trends is available.",
+    );
+  }
 
-	return topics.slice(0, desired);
+  return topics.slice(0, desired);
 }
 
 function isProbablyDirectImageUrl(u) {
-	const url = String(u || "").trim();
-	if (!/^https?:\/\//i.test(url)) return false;
-	return /\.(png|jpe?g|webp)(\?|#|$)/i.test(url);
+  const url = String(u || "").trim();
+  if (!/^https?:\/\//i.test(url)) return false;
+  return /\.(png|jpe?g|webp)(\?|#|$)/i.test(url);
 }
 
 function isLikelyThumbnailUrl(u = "") {
-	const url = String(u || "").toLowerCase();
-	if (!url) return true;
-	if (url.startsWith("data:image/")) return true;
-	if (url.includes("encrypted-tbn0") || url.includes("tbn:")) return true;
-	if (url.includes("gstatic.com/images?q=tbn")) return true;
-	return false;
+  const url = String(u || "").toLowerCase();
+  if (!url) return true;
+  if (url.startsWith("data:image/")) return true;
+  if (url.includes("encrypted-tbn0") || url.includes("tbn:")) return true;
+  if (url.includes("gstatic.com/images?q=tbn")) return true;
+  return false;
 }
 
 async function fetchGoogleImagesFromService(
-	query,
-	{ limit = GOOGLE_IMAGES_RESULTS_PER_QUERY, baseUrl, jobId } = {},
+  query,
+  { limit = GOOGLE_IMAGES_RESULTS_PER_QUERY, baseUrl, jobId } = {},
 ) {
-	const q = sanitizeOverlayQuery(query);
-	if (!q) return [];
-	const candidates = buildGoogleImagesApiCandidates(baseUrl);
-	for (const endpoint of candidates) {
-		try {
-			const { data } = await axios.get(endpoint, {
-				params: { q, limit: Math.max(6, Number(limit) || 12) },
-				timeout: 45000,
-				validateStatus: (s) => s < 500,
-			});
-			const raw =
-				(Array.isArray(data?.images) && data.images) ||
-				(Array.isArray(data?.urls) && data.urls) ||
-				(Array.isArray(data?.results) && data.results) ||
-				[];
-			const urls = uniqueStrings(
-				raw.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
-				{ limit: Math.max(12, Number(limit) || 12) },
-			);
-			if (urls.length) {
-				if (jobId)
-					logJob(jobId, "google images fallback hit", {
-						query: q,
-						endpoint,
-						count: urls.length,
-					});
-				return urls;
-			}
-		} catch (e) {
-			if (jobId)
-				logJob(jobId, "google images fallback failed", {
-					query: q,
-					endpoint,
-					error: e.message,
-				});
-		}
-	}
-	return [];
+  const q = sanitizeOverlayQuery(query);
+  if (!q) return [];
+  const candidates = buildGoogleImagesApiCandidates(baseUrl);
+  for (const endpoint of candidates) {
+    try {
+      const { data } = await axios.get(endpoint, {
+        params: { q, limit: Math.max(6, Number(limit) || 12) },
+        timeout: 45000,
+        validateStatus: (s) => s < 500,
+      });
+      const raw =
+        (Array.isArray(data?.images) && data.images) ||
+        (Array.isArray(data?.urls) && data.urls) ||
+        (Array.isArray(data?.results) && data.results) ||
+        [];
+      const urls = uniqueStrings(
+        raw.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
+        { limit: Math.max(12, Number(limit) || 12) },
+      );
+      if (urls.length) {
+        if (jobId)
+          logJob(jobId, "google images fallback hit", {
+            query: q,
+            endpoint,
+            count: urls.length,
+          });
+        return urls;
+      }
+    } catch (e) {
+      if (jobId)
+        logJob(jobId, "google images fallback failed", {
+          query: q,
+          endpoint,
+          error: e.message,
+        });
+    }
+  }
+  return [];
 }
 
 async function fetchCseContext(topic, extraTokens = []) {
-	if (!topic) return [];
-	const extra = Array.isArray(extraTokens)
-		? extraTokens.flatMap((t) => tokenizeLabel(t))
-		: [];
-	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
-	const category = inferEntertainmentCategory(baseTokens);
-	const queries = [
-		`${topic} latest news`,
-		`${topic} trending`,
-		`${topic} explained`,
-		`${topic} timeline`,
-		`${topic} history`,
-		`${topic} report`,
-	];
-	if (category === "film") {
-		queries.push(`${topic} trailer`, `${topic} cast`, `${topic} box office`);
-	} else if (category === "tv") {
-		queries.push(
-			`${topic} episode`,
-			`${topic} season`,
-			`${topic} streaming`,
-			`${topic} finale`,
-			`${topic} ending`,
-		);
-	} else if (category === "music") {
-		queries.push(`${topic} chart`, `${topic} music video`, `${topic} tour`);
-	} else if (category === "celebrity") {
-		queries.push(
-			`${topic} interview`,
-			`${topic} controversy`,
-			`${topic} social media`,
-		);
-	}
-	if (category === "film" || category === "tv" || category === "celebrity") {
-		queries.push(`${topic} rumor`, `${topic} leak`);
-	}
+  if (!topic) return [];
+  const extra = Array.isArray(extraTokens)
+    ? extraTokens.flatMap((t) => tokenizeLabel(t))
+    : [];
+  const baseTokens = [...topicTokensFromTitle(topic), ...extra];
+  const category = inferEntertainmentCategory(baseTokens);
+  const queries = [
+    `${topic} latest news`,
+    `${topic} trending`,
+    `${topic} explained`,
+    `${topic} timeline`,
+    `${topic} history`,
+    `${topic} report`,
+  ];
+  if (category === "film") {
+    queries.push(`${topic} trailer`, `${topic} cast`, `${topic} box office`);
+  } else if (category === "tv") {
+    queries.push(
+      `${topic} episode`,
+      `${topic} season`,
+      `${topic} streaming`,
+      `${topic} finale`,
+      `${topic} ending`,
+    );
+  } else if (category === "music") {
+    queries.push(`${topic} chart`, `${topic} music video`, `${topic} tour`);
+  } else if (category === "celebrity") {
+    queries.push(
+      `${topic} interview`,
+      `${topic} controversy`,
+      `${topic} social media`,
+    );
+  }
+  if (category === "film" || category === "tv" || category === "celebrity") {
+    queries.push(`${topic} rumor`, `${topic} leak`);
+  }
 
-	const items = await fetchCseItems(queries, { num: 5, maxPages: 2 });
-	const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
-	const minMatches = minTopicTokenMatches(matchTokens);
-	return items
-		.filter(
-			(it) =>
-				topicMatchInfo(matchTokens, [it.title, it.snippet, it.link]).count >=
-				minMatches,
-		)
-		.slice(0, 6);
+  const items = await fetchCseItems(queries, { num: 5, maxPages: 2 });
+  const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
+  const minMatches = minTopicTokenMatches(matchTokens);
+  return items
+    .filter(
+      (it) =>
+        topicMatchInfo(matchTokens, [it.title, it.snippet, it.link]).count >=
+        minMatches,
+    )
+    .slice(0, 6);
 }
 
 async function fetchCseImages(
-	topic,
-	extraTokens = [],
-	jobId = null,
-	opts = {},
+  topic,
+  extraTokens = [],
+  jobId = null,
+  opts = {},
 ) {
-	if (!topic) return [];
-	const extra = Array.isArray(extraTokens)
-		? extraTokens.flatMap((t) => tokenizeLabel(t))
-		: [];
-	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
-	const category = inferEntertainmentCategory(baseTokens);
-	const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
-	const searchLabel = topicTokens.slice(0, 4).join(" ") || topic;
-	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
-	const maxResults = clampNumber(
-		Number(opts.maxResults) || 6,
-		1,
-		CSE_MAX_IMAGE_RESULTS,
-	);
-	const maxPages = clampNumber(Number(opts.maxPages) || CSE_MAX_PAGES, 1, 5);
-	const relaxedMinEdge = clampNumber(
-		Number(opts.relaxedMinEdge) || CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
-		200,
-		CSE_MIN_IMAGE_SHORT_EDGE,
-	);
-	const requestSize = Math.min(
-		CSE_MAX_IMAGE_RESULTS,
-		Math.max(12, maxResults * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
-	);
+  if (!topic) return [];
+  const extra = Array.isArray(extraTokens)
+    ? extraTokens.flatMap((t) => tokenizeLabel(t))
+    : [];
+  const baseTokens = [...topicTokensFromTitle(topic), ...extra];
+  const category = inferEntertainmentCategory(baseTokens);
+  const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+  const searchLabel = topicTokens.slice(0, 4).join(" ") || topic;
+  const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
+  const maxResults = clampNumber(
+    Number(opts.maxResults) || 6,
+    1,
+    CSE_MAX_IMAGE_RESULTS,
+  );
+  const maxPages = clampNumber(Number(opts.maxPages) || CSE_MAX_PAGES, 1, 5);
+  const relaxedMinEdge = clampNumber(
+    Number(opts.relaxedMinEdge) || CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
+    200,
+    CSE_MIN_IMAGE_SHORT_EDGE,
+  );
+  const requestSize = Math.min(
+    CSE_MAX_IMAGE_RESULTS,
+    Math.max(12, maxResults * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
+  );
 
-	const queries = [
-		`${searchLabel} press photo`,
-		`${searchLabel} news photo`,
-		`${searchLabel} photo`,
-	];
-	if (category === "film") {
-		queries.unshift(
-			`${searchLabel} official still`,
-			`${searchLabel} movie still`,
-			`${searchLabel} premiere`,
-		);
-	} else if (category === "tv") {
-		queries.unshift(
-			`${searchLabel} episode still`,
-			`${searchLabel} cast photo`,
-		);
-	} else if (category === "music") {
-		queries.unshift(
-			`${searchLabel} live performance`,
-			`${searchLabel} stage photo`,
-		);
-	} else if (category === "celebrity") {
-		queries.unshift(
-			`${searchLabel} red carpet`,
-			`${searchLabel} interview photo`,
-		);
-	}
+  const queries = [
+    `${searchLabel} press photo`,
+    `${searchLabel} news photo`,
+    `${searchLabel} photo`,
+  ];
+  if (category === "film") {
+    queries.unshift(
+      `${searchLabel} official still`,
+      `${searchLabel} movie still`,
+      `${searchLabel} premiere`,
+    );
+  } else if (category === "tv") {
+    queries.unshift(
+      `${searchLabel} episode still`,
+      `${searchLabel} cast photo`,
+    );
+  } else if (category === "music") {
+    queries.unshift(
+      `${searchLabel} live performance`,
+      `${searchLabel} stage photo`,
+    );
+  } else if (category === "celebrity") {
+    queries.unshift(
+      `${searchLabel} red carpet`,
+      `${searchLabel} interview photo`,
+    );
+  }
 
-	const fallbackQueries = [
-		`${searchLabel} photo`,
-		`${searchLabel} press`,
-		`${searchLabel} red carpet`,
-		`${searchLabel} still`,
-		`${searchLabel} interview`,
-	];
-	const keyPhrase = filterSpecificTopicTokens(baseTokens).slice(0, 2).join(" ");
-	if (keyPhrase) {
-		fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
-	}
+  const fallbackQueries = [
+    `${searchLabel} photo`,
+    `${searchLabel} press`,
+    `${searchLabel} red carpet`,
+    `${searchLabel} still`,
+    `${searchLabel} interview`,
+  ];
+  const keyPhrase = filterSpecificTopicTokens(baseTokens).slice(0, 2).join(" ");
+  if (keyPhrase) {
+    fallbackQueries.push(`${keyPhrase} photo`, `${keyPhrase} press`);
+  }
 
-	const attemptStats = [];
-	let items = await fetchCseItems(queries, {
-		num: requestSize,
-		maxPages,
-		searchType: "image",
-		imgSize: CSE_ULTRA_IMG_SIZE,
-	});
-	attemptStats.push({
-		label: "primary_ultra",
-		items: items.length,
-		imgSize: CSE_ULTRA_IMG_SIZE,
-		maxPages,
-	});
-	if (!items.length) {
-		items = await fetchCseItems(queries, {
-			num: requestSize,
-			maxPages,
-			searchType: "image",
-			imgSize: CSE_PREFERRED_IMG_SIZE,
-		});
-		attemptStats.push({
-			label: "primary_preferred",
-			items: items.length,
-			imgSize: CSE_PREFERRED_IMG_SIZE,
-			maxPages,
-		});
-	}
-	if (!items.length) {
-		items = await fetchCseItems(fallbackQueries, {
-			num: requestSize,
-			maxPages,
-			searchType: "image",
-			imgSize: CSE_PREFERRED_IMG_SIZE,
-		});
-		attemptStats.push({
-			label: "fallback_preferred",
-			items: items.length,
-			imgSize: CSE_PREFERRED_IMG_SIZE,
-			maxPages,
-		});
-	}
-	if (!items.length) {
-		items = await fetchCseItems(fallbackQueries, {
-			num: requestSize,
-			maxPages,
-			searchType: "image",
-			imgSize: CSE_FALLBACK_IMG_SIZE,
-		});
-		attemptStats.push({
-			label: "fallback_large",
-			items: items.length,
-			imgSize: CSE_FALLBACK_IMG_SIZE,
-			maxPages,
-		});
-	}
-	const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
-	const minMatches = minTopicTokenMatches(matchTokens);
-	const relaxedMinMatches = Math.max(1, minMatches - 1);
-	const relaxedRequiredMatches = requiredTopicMatches ? 1 : 0;
+  const attemptStats = [];
+  let items = await fetchCseItems(queries, {
+    num: requestSize,
+    maxPages,
+    searchType: "image",
+    imgSize: CSE_ULTRA_IMG_SIZE,
+  });
+  attemptStats.push({
+    label: "primary_ultra",
+    items: items.length,
+    imgSize: CSE_ULTRA_IMG_SIZE,
+    maxPages,
+  });
+  if (!items.length) {
+    items = await fetchCseItems(queries, {
+      num: requestSize,
+      maxPages,
+      searchType: "image",
+      imgSize: CSE_PREFERRED_IMG_SIZE,
+    });
+    attemptStats.push({
+      label: "primary_preferred",
+      items: items.length,
+      imgSize: CSE_PREFERRED_IMG_SIZE,
+      maxPages,
+    });
+  }
+  if (!items.length) {
+    items = await fetchCseItems(fallbackQueries, {
+      num: requestSize,
+      maxPages,
+      searchType: "image",
+      imgSize: CSE_PREFERRED_IMG_SIZE,
+    });
+    attemptStats.push({
+      label: "fallback_preferred",
+      items: items.length,
+      imgSize: CSE_PREFERRED_IMG_SIZE,
+      maxPages,
+    });
+  }
+  if (!items.length) {
+    items = await fetchCseItems(fallbackQueries, {
+      num: requestSize,
+      maxPages,
+      searchType: "image",
+      imgSize: CSE_FALLBACK_IMG_SIZE,
+    });
+    attemptStats.push({
+      label: "fallback_large",
+      items: items.length,
+      imgSize: CSE_FALLBACK_IMG_SIZE,
+      maxPages,
+    });
+  }
+  const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
+  const minMatches = minTopicTokenMatches(matchTokens);
+  const relaxedMinMatches = Math.max(1, minMatches - 1);
+  const relaxedRequiredMatches = requiredTopicMatches ? 1 : 0;
 
-	const strictCandidates = [];
-	const relaxedCandidates = [];
-	const maxCandidates = Math.max(24, maxResults * 4);
-	for (const it of items) {
-		const url = it.link || "";
-		if (!url || !/^https:\/\//i.test(url)) continue;
-		const fields = [it.title, it.snippet, it.link, it.image?.contextLink || ""];
-		const info = topicMatchInfo(matchTokens, fields);
-		const topicInfo = topicMatchInfo(topicTokens, fields);
-		const w = Number(it.image?.width || 0);
-		const h = Number(it.image?.height || 0);
-		const shortEdge = w && h ? Math.min(w, h) : 0;
-		const urlText = `${it.link || ""} ${
-			it.image?.contextLink || ""
-		}`.toLowerCase();
-		const urlMatches = matchTokens.filter((tok) =>
-			urlText.includes(tok),
-		).length;
-		const score = info.count + urlMatches * 0.75;
-		const entry = { url, score, urlMatches, w, h };
-		const strictOk =
-			(!requiredTopicMatches || topicInfo.count >= requiredTopicMatches) &&
-			info.count >= minMatches &&
-			(!shortEdge || shortEdge >= CSE_MIN_IMAGE_SHORT_EDGE);
-		if (strictOk) {
-			strictCandidates.push(entry);
-		} else {
-			const relaxedOk =
-				(!relaxedRequiredMatches ||
-					topicInfo.count >= relaxedRequiredMatches) &&
-				info.count >= relaxedMinMatches &&
-				(!shortEdge || shortEdge >= relaxedMinEdge);
-			if (relaxedOk) relaxedCandidates.push(entry);
-		}
-		if (strictCandidates.length + relaxedCandidates.length >= maxCandidates)
-			break;
-	}
+  const strictCandidates = [];
+  const relaxedCandidates = [];
+  const maxCandidates = Math.max(24, maxResults * 4);
+  for (const it of items) {
+    const url = it.link || "";
+    if (!url || !/^https:\/\//i.test(url)) continue;
+    const fields = [it.title, it.snippet, it.link, it.image?.contextLink || ""];
+    const info = topicMatchInfo(matchTokens, fields);
+    const topicInfo = topicMatchInfo(topicTokens, fields);
+    const w = Number(it.image?.width || 0);
+    const h = Number(it.image?.height || 0);
+    const shortEdge = w && h ? Math.min(w, h) : 0;
+    const urlText = `${it.link || ""} ${
+      it.image?.contextLink || ""
+    }`.toLowerCase();
+    const urlMatches = matchTokens.filter((tok) =>
+      urlText.includes(tok),
+    ).length;
+    const score = info.count + urlMatches * 0.75;
+    const entry = { url, score, urlMatches, w, h };
+    const strictOk =
+      (!requiredTopicMatches || topicInfo.count >= requiredTopicMatches) &&
+      info.count >= minMatches &&
+      (!shortEdge || shortEdge >= CSE_MIN_IMAGE_SHORT_EDGE);
+    if (strictOk) {
+      strictCandidates.push(entry);
+    } else {
+      const relaxedOk =
+        (!relaxedRequiredMatches ||
+          topicInfo.count >= relaxedRequiredMatches) &&
+        info.count >= relaxedMinMatches &&
+        (!shortEdge || shortEdge >= relaxedMinEdge);
+      if (relaxedOk) relaxedCandidates.push(entry);
+    }
+    if (strictCandidates.length + relaxedCandidates.length >= maxCandidates)
+      break;
+  }
 
-	const candidates = strictCandidates.length
-		? [...strictCandidates, ...relaxedCandidates]
-		: relaxedCandidates;
-	candidates.sort((a, b) => {
-		if (b.score !== a.score) return b.score - a.score;
-		if (b.w !== a.w) return b.w - a.w;
-		return b.h - a.h;
-	});
+  const candidates = strictCandidates.length
+    ? [...strictCandidates, ...relaxedCandidates]
+    : relaxedCandidates;
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.w !== a.w) return b.w - a.w;
+    return b.h - a.h;
+  });
 
-	let pool = candidates;
-	if (matchTokens.length >= 2) {
-		const strict = candidates.filter((c) => c.urlMatches >= 1);
-		if (strict.length) {
-			const relaxed = candidates.filter((c) => c.urlMatches < 1);
-			pool = [...strict, ...relaxed];
-		}
-	}
+  let pool = candidates;
+  if (matchTokens.length >= 2) {
+    const strict = candidates.filter((c) => c.urlMatches >= 1);
+    if (strict.length) {
+      const relaxed = candidates.filter((c) => c.urlMatches < 1);
+      pool = [...strict, ...relaxed];
+    }
+  }
 
-	const filtered = [];
-	const seen = new Set();
-	for (const c of pool) {
-		if (!c?.url) continue;
-		const key = normalizeImageUrlKey(c.url);
-		if (seen.has(key)) continue;
-		seen.add(key);
-		const looksDirect = isProbablyDirectImageUrl(c.url);
-		const ct = looksDirect ? null : await headContentType(c.url, 7000);
-		if (ct && !ct.startsWith("image/")) continue;
-		filtered.push(c.url);
-		if (filtered.length >= maxResults) break;
-	}
-	if (jobId)
-		logJob(jobId, "cse image search summary", {
-			topic,
-			category,
-			attempts: attemptStats,
-			candidates: candidates.length,
-			filtered: filtered.length,
-			maxResults,
-		});
-	return filtered;
+  const filtered = [];
+  const seen = new Set();
+  for (const c of pool) {
+    if (!c?.url) continue;
+    const key = normalizeImageUrlKey(c.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const looksDirect = isProbablyDirectImageUrl(c.url);
+    const ct = looksDirect ? null : await headContentType(c.url, 7000);
+    if (ct && !ct.startsWith("image/")) continue;
+    filtered.push(c.url);
+    if (filtered.length >= maxResults) break;
+  }
+  if (jobId)
+    logJob(jobId, "cse image search summary", {
+      topic,
+      category,
+      attempts: attemptStats,
+      candidates: candidates.length,
+      filtered: filtered.length,
+      maxResults,
+    });
+  return filtered;
 }
 
 function parseMetaAttributes(tag = "") {
-	const attrs = {};
-	const re = /([a-zA-Z0-9:_-]+)\s*=\s*["']([^"']+)["']/g;
-	let match = null;
-	while ((match = re.exec(tag))) {
-		const key = String(match[1] || "").toLowerCase();
-		const val = String(match[2] || "").trim();
-		if (key && val) attrs[key] = val;
-	}
-	return attrs;
+  const attrs = {};
+  const re = /([a-zA-Z0-9:_-]+)\s*=\s*["']([^"']+)["']/g;
+  let match = null;
+  while ((match = re.exec(tag))) {
+    const key = String(match[1] || "").toLowerCase();
+    const val = String(match[2] || "").trim();
+    if (key && val) attrs[key] = val;
+  }
+  return attrs;
 }
 
 function extractOpenGraphImage(html = "", baseUrl = "") {
-	const metaTags = String(html || "").match(/<meta[^>]+>/gi) || [];
-	const priority = [
-		"og:image:secure_url",
-		"og:image",
-		"twitter:image:src",
-		"twitter:image",
-	];
-	for (const key of priority) {
-		for (const tag of metaTags) {
-			const attrs = parseMetaAttributes(tag);
-			const prop = attrs.property || attrs.name || "";
-			if (!prop || prop.toLowerCase() !== key) continue;
-			const content = attrs.content || "";
-			if (!content) continue;
-			try {
-				const resolved = new URL(content, baseUrl);
-				if (!/^https?:$/i.test(resolved.protocol)) continue;
-				return resolved.toString();
-			} catch {
-				continue;
-			}
-		}
-	}
-	return "";
+  const metaTags = String(html || "").match(/<meta[^>]+>/gi) || [];
+  const priority = [
+    "og:image:secure_url",
+    "og:image",
+    "twitter:image:src",
+    "twitter:image",
+  ];
+  for (const key of priority) {
+    for (const tag of metaTags) {
+      const attrs = parseMetaAttributes(tag);
+      const prop = attrs.property || attrs.name || "";
+      if (!prop || prop.toLowerCase() !== key) continue;
+      const content = attrs.content || "";
+      if (!content) continue;
+      try {
+        const resolved = new URL(content, baseUrl);
+        if (!/^https?:$/i.test(resolved.protocol)) continue;
+        return resolved.toString();
+      } catch {
+        continue;
+      }
+    }
+  }
+  return "";
 }
 
 async function fetchOpenGraphImageUrl(pageUrl, timeoutMs = 9000) {
-	try {
-		if (!/^https?:\/\//i.test(pageUrl || "")) return null;
-		const res = await axios.get(pageUrl, {
-			timeout: timeoutMs,
-			maxContentLength: 1024 * 1024,
-			maxBodyLength: 1024 * 1024,
-			headers: { "User-Agent": "agentai-long-video/2.0" },
-			validateStatus: (s) => s >= 200 && s < 400,
-		});
-		const html = String(res.data || "");
-		if (!html) return null;
-		const og = extractOpenGraphImage(html, pageUrl);
-		return og || null;
-	} catch {
-		return null;
-	}
+  try {
+    if (!/^https?:\/\//i.test(pageUrl || "")) return null;
+    const res = await axios.get(pageUrl, {
+      timeout: timeoutMs,
+      maxContentLength: 1024 * 1024,
+      maxBodyLength: 1024 * 1024,
+      headers: { "User-Agent": "agentai-long-video/2.0" },
+      validateStatus: (s) => s >= 200 && s < 400,
+    });
+    const html = String(res.data || "");
+    if (!html) return null;
+    const og = extractOpenGraphImage(html, pageUrl);
+    return og || null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchWikipediaPageImageUrl(topic = "") {
-	const title = cleanTopicLabel(topic);
-	if (!title) return null;
-	const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
-	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
-	try {
-		const { data } = await axios.get(WIKIPEDIA_API_BASE, {
-			params: {
-				action: "query",
-				format: "json",
-				prop: "pageimages|info",
-				inprop: "url",
-				piprop: "original|thumbnail",
-				pithumbsize: 1200,
-				redirects: 1,
-				titles: title,
-			},
-			timeout: 8000,
-			validateStatus: (s) => s < 500,
-			headers: { "User-Agent": "agentai-long-video/2.0" },
-		});
-		const pages = data?.query?.pages || {};
-		const page = Object.values(pages)[0];
-		if (!page || page.missing) return null;
-		if (
-			requiredTopicMatches &&
-			topicMatchInfo(topicTokens, [page.title]).count < requiredTopicMatches
-		)
-			return null;
-		const imageUrl = page.original?.source || page.thumbnail?.source || "";
-		return imageUrl || null;
-	} catch {
-		return null;
-	}
+  const title = cleanTopicLabel(topic);
+  if (!title) return null;
+  const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+  const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
+  try {
+    const { data } = await axios.get(WIKIPEDIA_API_BASE, {
+      params: {
+        action: "query",
+        format: "json",
+        prop: "pageimages|info",
+        inprop: "url",
+        piprop: "original|thumbnail",
+        pithumbsize: 1200,
+        redirects: 1,
+        titles: title,
+      },
+      timeout: 8000,
+      validateStatus: (s) => s < 500,
+      headers: { "User-Agent": "agentai-long-video/2.0" },
+    });
+    const pages = data?.query?.pages || {};
+    const page = Object.values(pages)[0];
+    if (!page || page.missing) return null;
+    if (
+      requiredTopicMatches &&
+      topicMatchInfo(topicTokens, [page.title]).count < requiredTopicMatches
+    )
+      return null;
+    const imageUrl = page.original?.source || page.thumbnail?.source || "";
+    return imageUrl || null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchWikimediaImageUrls(query = "", limit = 3) {
-	const q = sanitizeOverlayQuery(query);
-	if (!q) return [];
-	const target = clampNumber(Number(limit) || 3, 1, 8);
-	const matchTokens = filterSpecificTopicTokens(tokenizeLabel(q));
-	const requiredTopicMatches = minImageTopicTokenMatches(matchTokens);
-	try {
-		const { data } = await axios.get(WIKIMEDIA_API_BASE, {
-			params: {
-				action: "query",
-				format: "json",
-				generator: "search",
-				gsrsearch: q,
-				gsrnamespace: 6,
-				gsrlimit: Math.max(5, target * 2),
-				prop: "imageinfo",
-				iiprop: "url|size|mime",
-				iiurlwidth: 1600,
-			},
-			timeout: 8000,
-			validateStatus: (s) => s < 500,
-			headers: { "User-Agent": "agentai-long-video/2.0" },
-		});
-		const pages = data?.query?.pages || {};
-		const urls = [];
-		for (const page of Object.values(pages)) {
-			if (
-				requiredTopicMatches &&
-				topicMatchInfo(matchTokens, [page.title]).count < requiredTopicMatches
-			)
-				continue;
-			const info = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
-			const url = String(info?.url || info?.thumburl || "").trim();
-			const mime = String(info?.mime || "").toLowerCase();
-			if (!url || (mime && !mime.startsWith("image/"))) continue;
-			urls.push(url);
-			if (urls.length >= target) break;
-		}
-		return uniqueStrings(urls, { limit: target });
-	} catch {
-		return [];
-	}
+  const q = sanitizeOverlayQuery(query);
+  if (!q) return [];
+  const target = clampNumber(Number(limit) || 3, 1, 8);
+  const matchTokens = filterSpecificTopicTokens(tokenizeLabel(q));
+  const requiredTopicMatches = minImageTopicTokenMatches(matchTokens);
+  try {
+    const { data } = await axios.get(WIKIMEDIA_API_BASE, {
+      params: {
+        action: "query",
+        format: "json",
+        generator: "search",
+        gsrsearch: q,
+        gsrnamespace: 6,
+        gsrlimit: Math.max(5, target * 2),
+        prop: "imageinfo",
+        iiprop: "url|size|mime",
+        iiurlwidth: 1600,
+      },
+      timeout: 8000,
+      validateStatus: (s) => s < 500,
+      headers: { "User-Agent": "agentai-long-video/2.0" },
+    });
+    const pages = data?.query?.pages || {};
+    const urls = [];
+    for (const page of Object.values(pages)) {
+      if (
+        requiredTopicMatches &&
+        topicMatchInfo(matchTokens, [page.title]).count < requiredTopicMatches
+      )
+        continue;
+      const info = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
+      const url = String(info?.url || info?.thumburl || "").trim();
+      const mime = String(info?.mime || "").toLowerCase();
+      if (!url || (mime && !mime.startsWith("image/"))) continue;
+      urls.push(url);
+      if (urls.length >= target) break;
+    }
+    return uniqueStrings(urls, { limit: target });
+  } catch {
+    return [];
+  }
 }
 
 function sanitizeOverlayQuery(query = "") {
-	return String(query || "")
-		.replace(/[^a-z0-9\s]/gi, " ")
-		.replace(/\s+/g, " ")
-		.trim()
-		.slice(0, 80);
+  return String(query || "")
+    .replace(/[^a-z0-9\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
 }
 
 function ensureTopicInQuery(query = "", topicLabel = "") {
-	const base = sanitizeOverlayQuery(query);
-	const topic = sanitizeOverlayQuery(topicLabel);
-	if (!topic) return base;
-	if (!base) return topic;
-	const baseTokens = new Set(tokenizeLabel(base));
-	const topicTokens = tokenizeLabel(topic);
-	const hasTopicToken = topicTokens.some((t) => baseTokens.has(t));
-	if (hasTopicToken) return base;
-	return sanitizeOverlayQuery(`${topic} ${base}`) || topic;
+  const base = sanitizeOverlayQuery(query);
+  const topic = sanitizeOverlayQuery(topicLabel);
+  if (!topic) return base;
+  if (!base) return topic;
+  const baseTokens = new Set(tokenizeLabel(base));
+  const topicTokens = tokenizeLabel(topic);
+  const hasTopicToken = topicTokens.some((t) => baseTokens.has(t));
+  if (hasTopicToken) return base;
+  return sanitizeOverlayQuery(`${topic} ${base}`) || topic;
 }
 
 function isGenericOverlayQuery(query = "", topicLabel = "") {
-	const base = sanitizeOverlayQuery(query);
-	if (!base) return true;
-	const tokens = tokenizeLabel(base);
-	if (tokens.length < 2) return true;
-	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
-	const nonTopic = tokens.filter((t) => !topicTokens.has(t));
-	return nonTopic.length === 0;
+  const base = sanitizeOverlayQuery(query);
+  if (!base) return true;
+  const tokens = tokenizeLabel(base);
+  if (tokens.length < 2) return true;
+  const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
+  const nonTopic = tokens.filter((t) => !topicTokens.has(t));
+  return nonTopic.length === 0;
 }
 
 function buildOverlayQueryFallback(text = "", topic = "") {
-	const base = cleanTopicCandidate(topic);
-	const tokens = filterSpecificTopicTokens(tokenizeLabel(text)).slice(0, 4);
-	const extras = tokens.filter(
-		(t) => !base.toLowerCase().includes(String(t || "").toLowerCase()),
-	);
-	const parts = [base, ...extras].filter(Boolean);
-	return sanitizeOverlayQuery(parts.join(" "));
+  const base = cleanTopicCandidate(topic);
+  const tokens = filterSpecificTopicTokens(tokenizeLabel(text)).slice(0, 4);
+  const extras = tokens.filter(
+    (t) => !base.toLowerCase().includes(String(t || "").toLowerCase()),
+  );
+  const parts = [base, ...extras].filter(Boolean);
+  return sanitizeOverlayQuery(parts.join(" "));
 }
 
 async function fetchCseImagesForQuery(
-	query,
-	topicTokens = [],
-	maxResults = 4,
-	jobId = null,
-	opts = {},
+  query,
+  topicTokens = [],
+  maxResults = 4,
+  jobId = null,
+  opts = {},
 ) {
-	const q = sanitizeOverlayQuery(query);
-	if (!q) return [];
-	const target = clampNumber(Number(maxResults) || 4, 1, CSE_MAX_IMAGE_RESULTS);
-	const maxPages = clampNumber(Number(opts.maxPages) || CSE_MAX_PAGES, 1, 5);
-	const relaxedMinEdge = clampNumber(
-		Number(opts.relaxedMinEdge) || CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
-		200,
-		CSE_MIN_IMAGE_SHORT_EDGE,
-	);
-	const requestSize = Math.min(
-		CSE_MAX_IMAGE_RESULTS,
-		Math.max(12, target * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
-	);
-	const strictTopicTokens = filterSpecificTopicTokens(topicTokens);
-	const tokens = expandTopicTokens(
-		filterSpecificTopicTokens([...tokenizeLabel(q), ...strictTopicTokens]),
-	);
-	const minMatches = minTopicTokenMatches(tokens);
-	const relaxedMinMatches = Math.max(1, minMatches - 1);
-	const requiredTopicMatches = minImageTopicTokenMatches(strictTopicTokens);
-	const relaxedRequiredMatches = requiredTopicMatches ? 1 : 0;
-	const attemptStats = [];
-	let items = await fetchCseItems([q], {
-		num: requestSize,
-		maxPages,
-		searchType: "image",
-		imgSize: CSE_ULTRA_IMG_SIZE,
-	});
-	attemptStats.push({
-		label: "query_ultra",
-		items: items.length,
-		imgSize: CSE_ULTRA_IMG_SIZE,
-		maxPages,
-	});
-	if (!items.length) {
-		items = await fetchCseItems([q], {
-			num: requestSize,
-			maxPages,
-			searchType: "image",
-			imgSize: CSE_PREFERRED_IMG_SIZE,
-		});
-		attemptStats.push({
-			label: "query_preferred",
-			items: items.length,
-			imgSize: CSE_PREFERRED_IMG_SIZE,
-			maxPages,
-		});
-	}
-	const strictCandidates = [];
-	const relaxedCandidates = [];
-	const maxCandidates = Math.max(12, target * 4);
+  const q = sanitizeOverlayQuery(query);
+  if (!q) return [];
+  const target = clampNumber(Number(maxResults) || 4, 1, CSE_MAX_IMAGE_RESULTS);
+  const maxPages = clampNumber(Number(opts.maxPages) || CSE_MAX_PAGES, 1, 5);
+  const relaxedMinEdge = clampNumber(
+    Number(opts.relaxedMinEdge) || CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
+    200,
+    CSE_MIN_IMAGE_SHORT_EDGE,
+  );
+  const requestSize = Math.min(
+    CSE_MAX_IMAGE_RESULTS,
+    Math.max(12, target * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
+  );
+  const strictTopicTokens = filterSpecificTopicTokens(topicTokens);
+  const tokens = expandTopicTokens(
+    filterSpecificTopicTokens([...tokenizeLabel(q), ...strictTopicTokens]),
+  );
+  const minMatches = minTopicTokenMatches(tokens);
+  const relaxedMinMatches = Math.max(1, minMatches - 1);
+  const requiredTopicMatches = minImageTopicTokenMatches(strictTopicTokens);
+  const relaxedRequiredMatches = requiredTopicMatches ? 1 : 0;
+  const attemptStats = [];
+  let items = await fetchCseItems([q], {
+    num: requestSize,
+    maxPages,
+    searchType: "image",
+    imgSize: CSE_ULTRA_IMG_SIZE,
+  });
+  attemptStats.push({
+    label: "query_ultra",
+    items: items.length,
+    imgSize: CSE_ULTRA_IMG_SIZE,
+    maxPages,
+  });
+  if (!items.length) {
+    items = await fetchCseItems([q], {
+      num: requestSize,
+      maxPages,
+      searchType: "image",
+      imgSize: CSE_PREFERRED_IMG_SIZE,
+    });
+    attemptStats.push({
+      label: "query_preferred",
+      items: items.length,
+      imgSize: CSE_PREFERRED_IMG_SIZE,
+      maxPages,
+    });
+  }
+  const strictCandidates = [];
+  const relaxedCandidates = [];
+  const maxCandidates = Math.max(12, target * 4);
 
-	for (const it of items) {
-		const url = it.link || "";
-		if (!url || !/^https:\/\//i.test(url)) continue;
-		const fields = [it.title, it.snippet, it.link, it.image?.contextLink || ""];
-		const info = topicMatchInfo(tokens, fields);
-		const topicInfo = topicMatchInfo(strictTopicTokens, fields);
-		const w = Number(it.image?.width || 0);
-		const h = Number(it.image?.height || 0);
-		const shortEdge = w && h ? Math.min(w, h) : 0;
-		const urlText = `${it.link || ""} ${
-			it.image?.contextLink || ""
-		}`.toLowerCase();
-		const urlMatches = tokens.filter((tok) => urlText.includes(tok)).length;
-		const score = info.count + urlMatches * 0.75;
-		const entry = { url, score, urlMatches, w, h };
-		const strictOk =
-			(!requiredTopicMatches || topicInfo.count >= requiredTopicMatches) &&
-			info.count >= minMatches &&
-			(!shortEdge || shortEdge >= CSE_MIN_IMAGE_SHORT_EDGE);
-		if (strictOk) {
-			strictCandidates.push(entry);
-		} else {
-			const relaxedOk =
-				(!relaxedRequiredMatches ||
-					topicInfo.count >= relaxedRequiredMatches) &&
-				info.count >= relaxedMinMatches &&
-				(!shortEdge || shortEdge >= relaxedMinEdge);
-			if (relaxedOk) relaxedCandidates.push(entry);
-		}
-		if (strictCandidates.length + relaxedCandidates.length >= maxCandidates)
-			break;
-	}
+  for (const it of items) {
+    const url = it.link || "";
+    if (!url || !/^https:\/\//i.test(url)) continue;
+    const fields = [it.title, it.snippet, it.link, it.image?.contextLink || ""];
+    const info = topicMatchInfo(tokens, fields);
+    const topicInfo = topicMatchInfo(strictTopicTokens, fields);
+    const w = Number(it.image?.width || 0);
+    const h = Number(it.image?.height || 0);
+    const shortEdge = w && h ? Math.min(w, h) : 0;
+    const urlText = `${it.link || ""} ${
+      it.image?.contextLink || ""
+    }`.toLowerCase();
+    const urlMatches = tokens.filter((tok) => urlText.includes(tok)).length;
+    const score = info.count + urlMatches * 0.75;
+    const entry = { url, score, urlMatches, w, h };
+    const strictOk =
+      (!requiredTopicMatches || topicInfo.count >= requiredTopicMatches) &&
+      info.count >= minMatches &&
+      (!shortEdge || shortEdge >= CSE_MIN_IMAGE_SHORT_EDGE);
+    if (strictOk) {
+      strictCandidates.push(entry);
+    } else {
+      const relaxedOk =
+        (!relaxedRequiredMatches ||
+          topicInfo.count >= relaxedRequiredMatches) &&
+        info.count >= relaxedMinMatches &&
+        (!shortEdge || shortEdge >= relaxedMinEdge);
+      if (relaxedOk) relaxedCandidates.push(entry);
+    }
+    if (strictCandidates.length + relaxedCandidates.length >= maxCandidates)
+      break;
+  }
 
-	const candidates = strictCandidates.length
-		? [...strictCandidates, ...relaxedCandidates]
-		: relaxedCandidates;
-	candidates.sort((a, b) => {
-		if (b.score !== a.score) return b.score - a.score;
-		if (b.w !== a.w) return b.w - a.w;
-		return b.h - a.h;
-	});
+  const candidates = strictCandidates.length
+    ? [...strictCandidates, ...relaxedCandidates]
+    : relaxedCandidates;
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.w !== a.w) return b.w - a.w;
+    return b.h - a.h;
+  });
 
-	let pool = candidates;
-	if (tokens.length >= 2) {
-		const strict = candidates.filter((c) => c.urlMatches >= 1);
-		if (strict.length) {
-			const relaxed = candidates.filter((c) => c.urlMatches < 1);
-			pool = [...strict, ...relaxed];
-		}
-	}
+  let pool = candidates;
+  if (tokens.length >= 2) {
+    const strict = candidates.filter((c) => c.urlMatches >= 1);
+    if (strict.length) {
+      const relaxed = candidates.filter((c) => c.urlMatches < 1);
+      pool = [...strict, ...relaxed];
+    }
+  }
 
-	const filtered = [];
-	const seen = new Set();
-	for (const c of pool) {
-		if (!c?.url) continue;
-		const key = normalizeImageUrlKey(c.url);
-		if (seen.has(key)) continue;
-		seen.add(key);
-		const looksDirect = isProbablyDirectImageUrl(c.url);
-		const ct = looksDirect ? null : await headContentType(c.url, 7000);
-		if (ct && !ct.startsWith("image/")) continue;
-		filtered.push(c.url);
-		if (filtered.length >= target) break;
-	}
-	if (jobId)
-		logJob(jobId, "cse image query summary", {
-			query: q,
-			attempts: attemptStats,
-			candidates: candidates.length,
-			filtered: filtered.length,
-			target,
-		});
+  const filtered = [];
+  const seen = new Set();
+  for (const c of pool) {
+    if (!c?.url) continue;
+    const key = normalizeImageUrlKey(c.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const looksDirect = isProbablyDirectImageUrl(c.url);
+    const ct = looksDirect ? null : await headContentType(c.url, 7000);
+    if (ct && !ct.startsWith("image/")) continue;
+    filtered.push(c.url);
+    if (filtered.length >= target) break;
+  }
+  if (jobId)
+    logJob(jobId, "cse image query summary", {
+      query: q,
+      attempts: attemptStats,
+      candidates: candidates.length,
+      filtered: filtered.length,
+      target,
+    });
 
-	return filtered;
+  return filtered;
 }
 
 async function buildOverlayAssetsFromSegments({
-	segments = [],
-	timeline = [],
-	topics = [],
-	maxOverlays = MAX_AUTO_OVERLAYS,
+  segments = [],
+  timeline = [],
+  topics = [],
+  maxOverlays = MAX_AUTO_OVERLAYS,
 }) {
-	if (!segments.length || !GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
+  if (!segments.length || !GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
 
-	const byIndex = new Map((timeline || []).map((t) => [Number(t.index), t]));
-	const prioritized = [];
-	const extras = [];
-	const seenTopics = new Set();
+  const byIndex = new Map((timeline || []).map((t) => [Number(t.index), t]));
+  const prioritized = [];
+  const extras = [];
+  const seenTopics = new Set();
 
-	for (const seg of segments) {
-		const t = byIndex.get(Number(seg.index));
-		if (!t) continue;
-		const topicIndex = Number(seg.topicIndex) || 0;
-		const topicLabel = String(
-			seg.topicLabel ||
-				topics[topicIndex]?.displayTopic ||
-				topics[topicIndex]?.topic ||
-				"",
-		).trim();
-		const cueRaw = Array.isArray(seg.overlayCues) ? seg.overlayCues[0] : null;
-		const cueQuery =
-			cueRaw?.query || buildOverlayQueryFallback(seg.text, topicLabel);
-		const query = ensureTopicInQuery(cueQuery, topicLabel);
-		if (!query) continue;
-		const rawPos = String(cueRaw?.position || OVERLAY_DEFAULT_POSITION);
-		const position = rawPos.startsWith("bottom")
-			? rawPos.replace("bottom", "top")
-			: rawPos;
-		const cue = {
-			segmentIndex: seg.index,
-			topicIndex,
-			topicLabel,
-			query,
-			position,
-			startPct: Number(cueRaw?.startPct),
-			endPct: Number(cueRaw?.endPct),
-		};
-		if (!seenTopics.has(topicIndex)) {
-			seenTopics.add(topicIndex);
-			prioritized.push(cue);
-		} else {
-			extras.push(cue);
-		}
-	}
+  for (const seg of segments) {
+    const t = byIndex.get(Number(seg.index));
+    if (!t) continue;
+    const topicIndex = Number(seg.topicIndex) || 0;
+    const topicLabel = String(
+      seg.topicLabel ||
+        topics[topicIndex]?.displayTopic ||
+        topics[topicIndex]?.topic ||
+        "",
+    ).trim();
+    const cueRaw = Array.isArray(seg.overlayCues) ? seg.overlayCues[0] : null;
+    const cueQuery =
+      cueRaw?.query || buildOverlayQueryFallback(seg.text, topicLabel);
+    const query = ensureTopicInQuery(cueQuery, topicLabel);
+    if (!query) continue;
+    const rawPos = String(cueRaw?.position || OVERLAY_DEFAULT_POSITION);
+    const position = rawPos.startsWith("bottom")
+      ? rawPos.replace("bottom", "top")
+      : rawPos;
+    const cue = {
+      segmentIndex: seg.index,
+      topicIndex,
+      topicLabel,
+      query,
+      position,
+      startPct: Number(cueRaw?.startPct),
+      endPct: Number(cueRaw?.endPct),
+    };
+    if (!seenTopics.has(topicIndex)) {
+      seenTopics.add(topicIndex);
+      prioritized.push(cue);
+    } else {
+      extras.push(cue);
+    }
+  }
 
-	const candidates = [...prioritized, ...extras].slice(0, maxOverlays);
-	const overlays = [];
-	const fallbackByTopic = new Map();
+  const candidates = [...prioritized, ...extras].slice(0, maxOverlays);
+  const overlays = [];
+  const fallbackByTopic = new Map();
 
-	for (const cue of candidates) {
-		const t = byIndex.get(Number(cue.segmentIndex));
-		if (!t) continue;
-		const segDur = Math.max(0.6, Number(t.endSec) - Number(t.startSec));
-		const startPct = clampNumber(
-			Number.isFinite(cue.startPct) ? cue.startPct : 0.25,
-			0.2,
-			0.75,
-		);
-		const endPct = clampNumber(
-			Number.isFinite(cue.endPct) ? cue.endPct : 0.75,
-			startPct + 0.2,
-			0.9,
-		);
-		let startSec = Number(t.startSec) + segDur * startPct;
-		let endSec = Number(t.startSec) + segDur * endPct;
-		if (endSec - startSec < 1.6) {
-			endSec = Math.min(Number(t.endSec) - 0.1, startSec + 2.0);
-		}
-		if (endSec <= startSec) continue;
+  for (const cue of candidates) {
+    const t = byIndex.get(Number(cue.segmentIndex));
+    if (!t) continue;
+    const segDur = Math.max(0.6, Number(t.endSec) - Number(t.startSec));
+    const startPct = clampNumber(
+      Number.isFinite(cue.startPct) ? cue.startPct : 0.25,
+      0.2,
+      0.75,
+    );
+    const endPct = clampNumber(
+      Number.isFinite(cue.endPct) ? cue.endPct : 0.75,
+      startPct + 0.2,
+      0.9,
+    );
+    let startSec = Number(t.startSec) + segDur * startPct;
+    let endSec = Number(t.startSec) + segDur * endPct;
+    if (endSec - startSec < 1.6) {
+      endSec = Math.min(Number(t.endSec) - 0.1, startSec + 2.0);
+    }
+    if (endSec <= startSec) continue;
 
-		const topicTokens = topicTokensFromTitle(cue.topicLabel || "");
-		let images = await fetchCseImagesForQuery(cue.query, topicTokens);
-		if (!images.length && cue.topicLabel) {
-			images = await fetchCseImages(cue.topicLabel, [cue.query]);
-		}
-		if (
-			!images.length &&
-			cue.topicLabel &&
-			fallbackByTopic.has(cue.topicLabel)
-		) {
-			images = [fallbackByTopic.get(cue.topicLabel)];
-		}
-		const url = images[0];
-		if (!url) continue;
+    const topicTokens = topicTokensFromTitle(cue.topicLabel || "");
+    let images = await fetchCseImagesForQuery(cue.query, topicTokens);
+    if (!images.length && cue.topicLabel) {
+      images = await fetchCseImages(cue.topicLabel, [cue.query]);
+    }
+    if (
+      !images.length &&
+      cue.topicLabel &&
+      fallbackByTopic.has(cue.topicLabel)
+    ) {
+      images = [fallbackByTopic.get(cue.topicLabel)];
+    }
+    const url = images[0];
+    if (!url) continue;
 
-		overlays.push({
-			type: "image",
-			url,
-			startSec,
-			endSec,
-			position: cue.position || OVERLAY_DEFAULT_POSITION,
-			scale: OVERLAY_SCALE,
-		});
-		if (cue.topicLabel && url) fallbackByTopic.set(cue.topicLabel, url);
-		if (overlays.length >= maxOverlays) break;
-	}
+    overlays.push({
+      type: "image",
+      url,
+      startSec,
+      endSec,
+      position: cue.position || OVERLAY_DEFAULT_POSITION,
+      scale: OVERLAY_SCALE,
+    });
+    if (cue.topicLabel && url) fallbackByTopic.set(cue.topicLabel, url);
+    if (overlays.length >= maxOverlays) break;
+  }
 
-	return overlays;
+  return overlays;
 }
 
 function pickEvenlySpacedIndices(total, target) {
-	if (!Number.isFinite(total) || total <= 0) return [];
-	const t = Math.max(0, Math.min(Math.floor(target), total));
-	if (t <= 0) return [];
-	if (t >= total) return Array.from({ length: total }, (_, i) => i);
-	const out = [];
-	for (let i = 0; i < t; i++) {
-		const idx = Math.floor((i * total) / t);
-		out.push(Math.min(total - 1, Math.max(0, idx)));
-	}
-	return Array.from(new Set(out)).sort((a, b) => a - b);
+  if (!Number.isFinite(total) || total <= 0) return [];
+  const t = Math.max(0, Math.min(Math.floor(target), total));
+  if (t <= 0) return [];
+  if (t >= total) return Array.from({ length: total }, (_, i) => i);
+  const out = [];
+  for (let i = 0; i < t; i++) {
+    const idx = Math.floor((i * total) / t);
+    out.push(Math.min(total - 1, Math.max(0, idx)));
+  }
+  return Array.from(new Set(out)).sort((a, b) => a - b);
 }
 
 function computeSegmentImageCount(segDur) {
-	const dur = Math.max(0, Number(segDur) || 0);
-	if (dur < IMAGE_SEGMENT_MULTI_MIN_SEC) return 1;
-	const ideal = Math.round(dur / IMAGE_SEGMENT_TARGET_SEC);
-	return clampNumber(ideal, IMAGE_SEGMENT_MIN_IMAGES, IMAGE_SEGMENT_MAX_IMAGES);
+  const dur = Math.max(0, Number(segDur) || 0);
+  if (dur < IMAGE_SEGMENT_MULTI_MIN_SEC) return 1;
+  const ideal = Math.round(dur / IMAGE_SEGMENT_TARGET_SEC);
+  return clampNumber(ideal, IMAGE_SEGMENT_MIN_IMAGES, IMAGE_SEGMENT_MAX_IMAGES);
 }
 
 function resolveSegmentImageQuery(seg, topics = []) {
-	const topicIndex = Number(seg?.topicIndex) || 0;
-	const topicLabel = String(
-		seg?.topicLabel ||
-			topics?.[topicIndex]?.displayTopic ||
-			topics?.[topicIndex]?.topic ||
-			"",
-	).trim();
-	const cueRaw = Array.isArray(seg?.overlayCues) ? seg.overlayCues[0] : null;
-	const fallbackQuery = buildOverlayQueryFallback(seg?.text || "", topicLabel);
-	const baseQuery = String(cueRaw?.query || "").trim();
-	const preferredQuery = isGenericOverlayQuery(baseQuery, topicLabel)
-		? fallbackQuery
-		: baseQuery || fallbackQuery;
-	const query = ensureTopicInQuery(preferredQuery, topicLabel);
-	return { query, topicLabel };
+  const topicIndex = Number(seg?.topicIndex) || 0;
+  const topicLabel = String(
+    seg?.topicLabel ||
+      topics?.[topicIndex]?.displayTopic ||
+      topics?.[topicIndex]?.topic ||
+      "",
+  ).trim();
+  const cueRaw = Array.isArray(seg?.overlayCues) ? seg.overlayCues[0] : null;
+  const fallbackQuery = buildOverlayQueryFallback(seg?.text || "", topicLabel);
+  const baseQuery = String(cueRaw?.query || "").trim();
+  const preferredQuery = isGenericOverlayQuery(baseQuery, topicLabel)
+    ? fallbackQuery
+    : baseQuery || fallbackQuery;
+  const query = ensureTopicInQuery(preferredQuery, topicLabel);
+  return { query, topicLabel };
 }
 
 function buildSegmentImageQueryVariants({
-	baseQuery,
-	topicLabel,
-	segmentText,
-	topicKeywords = [],
-	articleTitles = [],
-	maxVariants = IMAGE_SEARCH_MAX_QUERY_VARIANTS,
+  baseQuery,
+  topicLabel,
+  segmentText,
+  topicKeywords = [],
+  articleTitles = [],
+  maxVariants = IMAGE_SEARCH_MAX_QUERY_VARIANTS,
 } = {}) {
-	const variants = [];
-	const push = (raw) => {
-		const q = sanitizeOverlayQuery(raw);
-		if (!q) return;
-		variants.push(q);
-	};
+  const variants = [];
+  const push = (raw) => {
+    const q = sanitizeOverlayQuery(raw);
+    if (!q) return;
+    variants.push(q);
+  };
 
-	push(baseQuery);
-	if (segmentText || topicLabel) {
-		const fallback = buildOverlayQueryFallback(
-			segmentText || "",
-			topicLabel || "",
-		);
-		push(fallback);
-	}
-	if (topicLabel) push(topicLabel);
+  push(baseQuery);
+  if (segmentText || topicLabel) {
+    const fallback = buildOverlayQueryFallback(
+      segmentText || "",
+      topicLabel || "",
+    );
+    push(fallback);
+  }
+  if (topicLabel) push(topicLabel);
 
-	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
-	const textTokens = filterSpecificTopicTokens(
-		tokenizeLabel(segmentText || ""),
-	).filter((t) => !topicTokens.has(t));
-	if (topicLabel && textTokens.length) {
-		push(`${topicLabel} ${textTokens.slice(0, 3).join(" ")}`);
-	}
+  const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
+  const textTokens = filterSpecificTopicTokens(
+    tokenizeLabel(segmentText || ""),
+  ).filter((t) => !topicTokens.has(t));
+  if (topicLabel && textTokens.length) {
+    push(`${topicLabel} ${textTokens.slice(0, 3).join(" ")}`);
+  }
 
-	const hintList = uniqueStrings(
-		[
-			...(Array.isArray(topicKeywords) ? topicKeywords : []),
-			...(Array.isArray(articleTitles) ? articleTitles : []),
-		],
-		{ limit: Math.max(6, Number(maxVariants) || 6) },
-	);
-	for (const hint of hintList) {
-		if (variants.length >= maxVariants) break;
-		const withTopic = ensureTopicInQuery(hint, topicLabel);
-		push(withTopic);
-	}
+  const hintList = uniqueStrings(
+    [
+      ...(Array.isArray(topicKeywords) ? topicKeywords : []),
+      ...(Array.isArray(articleTitles) ? articleTitles : []),
+    ],
+    { limit: Math.max(6, Number(maxVariants) || 6) },
+  );
+  for (const hint of hintList) {
+    if (variants.length >= maxVariants) break;
+    const withTopic = ensureTopicInQuery(hint, topicLabel);
+    push(withTopic);
+  }
 
-	const unique = uniqueStrings(variants, { limit: maxVariants });
-	const multiWord = unique.filter((v) => tokenizeLabel(v).length >= 2);
-	return multiWord.length
-		? uniqueStrings(multiWord, { limit: maxVariants })
-		: unique;
+  const unique = uniqueStrings(variants, { limit: maxVariants });
+  const multiWord = unique.filter((v) => tokenizeLabel(v).length >= 2);
+  return multiWord.length
+    ? uniqueStrings(multiWord, { limit: maxVariants })
+    : unique;
 }
 
 function extractSegmentMatchTokens(
-	segmentText = "",
-	topicLabel = "",
-	maxTokens = 4,
+  segmentText = "",
+  topicLabel = "",
+  maxTokens = 4,
 ) {
-	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
-	const tokens = filterSpecificTopicTokens(
-		tokenizeLabel(segmentText || ""),
-	).filter((t) => !topicTokens.has(t));
-	return tokens.slice(0, Math.max(1, Number(maxTokens) || 1));
+  const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
+  const tokens = filterSpecificTopicTokens(
+    tokenizeLabel(segmentText || ""),
+  ).filter((t) => !topicTokens.has(t));
+  return tokens.slice(0, Math.max(1, Number(maxTokens) || 1));
 }
 
 function getUrlHost(url = "") {
-	try {
-		const host = new URL(String(url)).hostname || "";
-		return host.replace(/^www\./i, "");
-	} catch {
-		return "";
-	}
+  try {
+    const host = new URL(String(url)).hostname || "";
+    return host.replace(/^www\./i, "");
+  } catch {
+    return "";
+  }
 }
 
 function sanitizeImageUrl(raw = "") {
-	let url = String(raw || "").trim();
-	if (!url) return "";
-	url = url.replace(/&amp;|&#38;|&#038;|\\u0026/gi, "&");
-	url = url.replace(/\s/g, "%20");
-	return url;
+  let url = String(raw || "").trim();
+  if (!url) return "";
+  url = url.replace(/&amp;|&#38;|&#038;|\\u0026/gi, "&");
+  url = url.replace(/\s/g, "%20");
+  return url;
 }
 
 function normalizeImageUrlKey(url = "") {
-	try {
-		const parsed = new URL(sanitizeImageUrl(url));
-		parsed.hash = "";
-		parsed.search = "";
-		return parsed.toString().toLowerCase();
-	} catch {
-		return sanitizeImageUrl(url).split("?")[0].split("#")[0].toLowerCase();
-	}
+  try {
+    const parsed = new URL(sanitizeImageUrl(url));
+    parsed.hash = "";
+    parsed.search = "";
+    return parsed.toString().toLowerCase();
+  } catch {
+    return sanitizeImageUrl(url).split("?")[0].split("#")[0].toLowerCase();
+  }
 }
 
 function scoreUrlTokenMatch(url = "", tokens = []) {
-	const normTokens = normalizeTopicTokens(tokens);
-	if (!normTokens.length) return 0;
-	const base = String(url || "").toLowerCase();
-	let hay = base;
-	try {
-		hay += ` ${decodeURIComponent(base)}`;
-	} catch {}
-	let count = 0;
-	for (const tok of normTokens) {
-		if (tok && hay.includes(tok)) count += 1;
-	}
-	return count;
+  const normTokens = normalizeTopicTokens(tokens);
+  if (!normTokens.length) return 0;
+  const base = String(url || "").toLowerCase();
+  let hay = base;
+  try {
+    hay += ` ${decodeURIComponent(base)}`;
+  } catch {}
+  let count = 0;
+  for (const tok of normTokens) {
+    if (tok && hay.includes(tok)) count += 1;
+  }
+  return count;
 }
 
 function dedupeUrlsPreserveOrder(urls = []) {
-	const out = [];
-	const seen = new Set();
-	for (const raw of Array.isArray(urls) ? urls : []) {
-		const url = sanitizeImageUrl(raw);
-		if (!url) continue;
-		const key = normalizeImageUrlKey(url);
-		if (seen.has(key)) continue;
-		seen.add(key);
-		out.push(url);
-	}
-	return out;
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(urls) ? urls : []) {
+    const url = sanitizeImageUrl(raw);
+    if (!url) continue;
+    const key = normalizeImageUrlKey(url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(url);
+  }
+  return out;
 }
 
 function pickSegmentImageUrls(
-	candidates = [],
-	desiredCount = 1,
-	usedUrls,
-	usedHosts,
-	opts = {},
+  candidates = [],
+  desiredCount = 1,
+  usedUrls,
+  usedHosts,
+  opts = {},
 ) {
-	let pool = dedupeUrlsPreserveOrder(candidates);
-	if (!pool.length) return [];
+  let pool = dedupeUrlsPreserveOrder(candidates);
+  if (!pool.length) return [];
 
-	const target = Math.max(1, Math.floor(desiredCount));
-	const maxPicks = Math.max(
-		target,
-		Math.floor(Number(opts.maxPicks) || target),
-	);
-	const usedUrlsGlobal =
-		opts && opts.usedUrlsGlobal instanceof Set ? opts.usedUrlsGlobal : null;
-	const requireTokens = Array.isArray(opts.requireTokens)
-		? normalizeTopicTokens(opts.requireTokens)
-		: [];
-	const preferTokens = Array.isArray(opts.preferTokens)
-		? normalizeTopicTokens(opts.preferTokens)
-		: [];
-	if (requireTokens.length) {
-		const matched = pool.filter(
-			(url) => scoreUrlTokenMatch(url, requireTokens) > 0,
-		);
-		if (matched.length) {
-			const matchedKeys = new Set(
-				matched.map((url) => normalizeImageUrlKey(url)),
-			);
-			const rest = pool.filter(
-				(url) => !matchedKeys.has(normalizeImageUrlKey(url)),
-			);
-			pool = matched.concat(rest);
-			if (matched.length >= target) pool = matched;
-		}
-	}
-	if (preferTokens.length && pool.length > 1) {
-		const scored = pool.map((url) => ({
-			url,
-			score: scoreUrlTokenMatch(url, preferTokens),
-		}));
-		const withScore = scored.filter((c) => c.score > 0);
-		const withoutScore = scored.filter((c) => c.score === 0);
-		withScore.sort((a, b) => b.score - a.score);
-		pool = [...withScore, ...withoutScore].map((c) => c.url);
-	}
-	const picks = [];
-	const picked = new Set();
+  const target = Math.max(1, Math.floor(desiredCount));
+  const maxPicks = Math.max(
+    target,
+    Math.floor(Number(opts.maxPicks) || target),
+  );
+  const usedUrlsGlobal =
+    opts && opts.usedUrlsGlobal instanceof Set ? opts.usedUrlsGlobal : null;
+  const requireTokens = Array.isArray(opts.requireTokens)
+    ? normalizeTopicTokens(opts.requireTokens)
+    : [];
+  const preferTokens = Array.isArray(opts.preferTokens)
+    ? normalizeTopicTokens(opts.preferTokens)
+    : [];
+  if (requireTokens.length) {
+    const matched = pool.filter(
+      (url) => scoreUrlTokenMatch(url, requireTokens) > 0,
+    );
+    if (matched.length) {
+      const matchedKeys = new Set(
+        matched.map((url) => normalizeImageUrlKey(url)),
+      );
+      const rest = pool.filter(
+        (url) => !matchedKeys.has(normalizeImageUrlKey(url)),
+      );
+      pool = matched.concat(rest);
+      if (matched.length >= target) pool = matched;
+    }
+  }
+  if (preferTokens.length && pool.length > 1) {
+    const scored = pool.map((url) => ({
+      url,
+      score: scoreUrlTokenMatch(url, preferTokens),
+    }));
+    const withScore = scored.filter((c) => c.score > 0);
+    const withoutScore = scored.filter((c) => c.score === 0);
+    withScore.sort((a, b) => b.score - a.score);
+    pool = [...withScore, ...withoutScore].map((c) => c.url);
+  }
+  const picks = [];
+  const picked = new Set();
 
-	for (const url of pool) {
-		if (picks.length >= maxPicks) break;
-		const key = normalizeImageUrlKey(url);
-		if (usedUrls && usedUrls.has(key)) continue;
-		if (usedUrlsGlobal && usedUrlsGlobal.has(key)) continue;
-		const host = getUrlHost(url);
-		if (usedHosts && host && usedHosts.has(host)) continue;
-		picks.push(url);
-		picked.add(key);
-	}
+  for (const url of pool) {
+    if (picks.length >= maxPicks) break;
+    const key = normalizeImageUrlKey(url);
+    if (usedUrls && usedUrls.has(key)) continue;
+    if (usedUrlsGlobal && usedUrlsGlobal.has(key)) continue;
+    const host = getUrlHost(url);
+    if (usedHosts && host && usedHosts.has(host)) continue;
+    picks.push(url);
+    picked.add(key);
+  }
 
-	if (picks.length < maxPicks) {
-		for (const url of pool) {
-			if (picks.length >= maxPicks) break;
-			const key = normalizeImageUrlKey(url);
-			if (picked.has(key)) continue;
-			if (usedUrls && usedUrls.has(key)) continue;
-			if (usedUrlsGlobal && usedUrlsGlobal.has(key)) continue;
-			picks.push(url);
-			picked.add(key);
-		}
-	}
+  if (picks.length < maxPicks) {
+    for (const url of pool) {
+      if (picks.length >= maxPicks) break;
+      const key = normalizeImageUrlKey(url);
+      if (picked.has(key)) continue;
+      if (usedUrls && usedUrls.has(key)) continue;
+      if (usedUrlsGlobal && usedUrlsGlobal.has(key)) continue;
+      picks.push(url);
+      picked.add(key);
+    }
+  }
 
-	if (picks.length < target && usedHosts) {
-		for (const url of pool) {
-			if (picks.length >= target) break;
-			const key = normalizeImageUrlKey(url);
-			if (picked.has(key)) continue;
-			if (usedUrls && usedUrls.has(key)) continue;
-			if (usedUrlsGlobal && usedUrlsGlobal.has(key)) continue;
-			picks.push(url);
-			picked.add(key);
-		}
-	}
+  if (picks.length < target && usedHosts) {
+    for (const url of pool) {
+      if (picks.length >= target) break;
+      const key = normalizeImageUrlKey(url);
+      if (picked.has(key)) continue;
+      if (usedUrls && usedUrls.has(key)) continue;
+      if (usedUrlsGlobal && usedUrlsGlobal.has(key)) continue;
+      picks.push(url);
+      picked.add(key);
+    }
+  }
 
-	return picks;
+  return picks;
 }
 
 async function downloadSegmentImages(
-	urls,
-	tmpDir,
-	jobId,
-	segIndex,
-	targetCount = 0,
+  urls,
+  tmpDir,
+  jobId,
+  segIndex,
+  targetCount = 0,
 ) {
-	const localPaths = [];
-	const usedUrls = [];
-	const seen = new Set();
-	for (let i = 0; i < urls.length; i++) {
-		const url = sanitizeImageUrl(urls[i]);
-		if (!url) continue;
-		const key = normalizeImageUrlKey(url);
-		if (seen.has(key)) continue;
-		seen.add(key);
-		const extGuess = path
-			.extname(String(url).split("?")[0] || "")
-			.toLowerCase();
-		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".jpg";
-		const out = path.join(
-			tmpDir,
-			`seg_${jobId}_${segIndex}_img_${i}_${crypto
-				.randomUUID()
-				.slice(0, 8)}${ext}`,
-		);
-		try {
-			await downloadToFile(url, out, 25000, 2);
-			const detected = detectFileType(out);
-			if (!detected || detected.kind !== "image") {
-				safeUnlink(out);
-				continue;
-			}
-			localPaths.push(out);
-			usedUrls.push(url);
-			if (targetCount && localPaths.length >= targetCount) break;
-		} catch {
-			safeUnlink(out);
-		}
-	}
-	return { localPaths, usedUrls };
+  const localPaths = [];
+  const usedUrls = [];
+  const seen = new Set();
+  for (let i = 0; i < urls.length; i++) {
+    const url = sanitizeImageUrl(urls[i]);
+    if (!url) continue;
+    const key = normalizeImageUrlKey(url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const extGuess = path
+      .extname(String(url).split("?")[0] || "")
+      .toLowerCase();
+    const ext = extGuess && extGuess.length <= 5 ? extGuess : ".jpg";
+    const out = path.join(
+      tmpDir,
+      `seg_${jobId}_${segIndex}_img_${i}_${crypto
+        .randomUUID()
+        .slice(0, 8)}${ext}`,
+    );
+    try {
+      await downloadToFile(url, out, 25000, 2);
+      const detected = detectFileType(out);
+      if (!detected || detected.kind !== "image") {
+        safeUnlink(out);
+        continue;
+      }
+      localPaths.push(out);
+      usedUrls.push(url);
+      if (targetCount && localPaths.length >= targetCount) break;
+    } catch {
+      safeUnlink(out);
+    }
+  }
+  return { localPaths, usedUrls };
 }
 
 async function uploadLocalImageToCloudinary(
-	localPath,
-	{ publicIdBase, output, jobId, segIndex } = {},
+  localPath,
+  { publicIdBase, output, jobId, segIndex } = {},
 ) {
-	if (!CLOUDINARY_ENABLED || !localPath || !fs.existsSync(localPath))
-		return null;
-	const baseOpts = {
-		public_id: publicIdBase,
-		resource_type: "image",
-		overwrite: false,
-		folder: "aivideomatic/long_feed",
-	};
-	try {
-		const result = await cloudinary.uploader.upload(localPath, {
-			...baseOpts,
-			quality: "auto:good",
-			fetch_format: "auto",
-		});
-		return {
-			public_id: result.public_id,
-			url: result.secure_url,
-		};
-	} catch (e) {
-		const msg = String(e?.message || "");
-		const sizeIssue =
-			msg.includes("Maximum image size is 25 Megapixels") ||
-			msg.includes("File size too large");
-		if (!sizeIssue) throw e;
+  if (!CLOUDINARY_ENABLED || !localPath || !fs.existsSync(localPath))
+    return null;
+  const baseOpts = {
+    public_id: publicIdBase,
+    resource_type: "image",
+    overwrite: false,
+    folder: "aivideomatic/long_feed",
+  };
+  try {
+    const result = await cloudinary.uploader.upload(localPath, {
+      ...baseOpts,
+      quality: "auto:good",
+      fetch_format: "auto",
+    });
+    return {
+      public_id: result.public_id,
+      url: result.secure_url,
+    };
+  } catch (e) {
+    const msg = String(e?.message || "");
+    const sizeIssue =
+      msg.includes("Maximum image size is 25 Megapixels") ||
+      msg.includes("File size too large");
+    if (!sizeIssue) throw e;
 
-		const targetW = Math.max(640, Number(output?.w) || 1280);
-		const targetH = Math.max(360, Number(output?.h) || 720);
-		const scaledPath = path.join(
-			path.dirname(localPath),
-			`cloud_scaled_${jobId || "job"}_${segIndex || "seg"}_${crypto
-				.randomUUID()
-				.slice(0, 8)}.jpg`,
-		);
-		await spawnBin(
-			ffmpegPath,
-			[
-				"-i",
-				localPath,
-				"-vf",
-				`scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease:flags=lanczos`,
-				"-frames:v",
-				"1",
-				"-q:v",
-				"4",
-				"-y",
-				scaledPath,
-			],
-			"cloudinary_downscale",
-			{ timeoutMs: 120000 },
-		);
-		const result = await cloudinary.uploader.upload(scaledPath, {
-			...baseOpts,
-			quality: "auto:good",
-			fetch_format: "auto",
-		});
-		safeUnlink(scaledPath);
-		return {
-			public_id: result.public_id,
-			url: result.secure_url,
-		};
-	}
+    const targetW = Math.max(640, Number(output?.w) || 1280);
+    const targetH = Math.max(360, Number(output?.h) || 720);
+    const scaledPath = path.join(
+      path.dirname(localPath),
+      `cloud_scaled_${jobId || "job"}_${segIndex || "seg"}_${crypto
+        .randomUUID()
+        .slice(0, 8)}.jpg`,
+    );
+    await spawnBin(
+      ffmpegPath,
+      [
+        "-i",
+        localPath,
+        "-vf",
+        `scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease:flags=lanczos`,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "4",
+        "-y",
+        scaledPath,
+      ],
+      "cloudinary_downscale",
+      { timeoutMs: 120000 },
+    );
+    const result = await cloudinary.uploader.upload(scaledPath, {
+      ...baseOpts,
+      quality: "auto:good",
+      fetch_format: "auto",
+    });
+    safeUnlink(scaledPath);
+    return {
+      public_id: result.public_id,
+      url: result.secure_url,
+    };
+  }
 }
 
 async function uploadSegmentImagesToCloudinary({
-	localPaths = [],
-	jobId,
-	segIndex,
-	topicLabel,
-	output,
+  localPaths = [],
+  jobId,
+  segIndex,
+  topicLabel,
+  output,
 }) {
-	if (!CLOUDINARY_ENABLED || !Array.isArray(localPaths) || !localPaths.length)
-		return [];
-	const slug = safeSlug(topicLabel || `segment_${segIndex}`, 40) || "segment";
-	const uploaded = [];
-	for (let i = 0; i < localPaths.length; i++) {
-		const publicIdBase = `aivideomatic/long_feed/${slug}_${jobId}_${segIndex}_${
-			i + 1
-		}`;
-		try {
-			const result = await uploadLocalImageToCloudinary(localPaths[i], {
-				publicIdBase,
-				output,
-				jobId,
-				segIndex,
-			});
-			if (result?.url) uploaded.push(result.url);
-		} catch (e) {
-			logJob(jobId, "cloudinary upload failed (segment image)", {
-				segment: segIndex,
-				error: e.message,
-			});
-		}
-	}
-	return uploaded;
+  if (!CLOUDINARY_ENABLED || !Array.isArray(localPaths) || !localPaths.length)
+    return [];
+  const slug = safeSlug(topicLabel || `segment_${segIndex}`, 40) || "segment";
+  const uploaded = [];
+  for (let i = 0; i < localPaths.length; i++) {
+    const publicIdBase = `aivideomatic/long_feed/${slug}_${jobId}_${segIndex}_${
+      i + 1
+    }`;
+    try {
+      const result = await uploadLocalImageToCloudinary(localPaths[i], {
+        publicIdBase,
+        output,
+        jobId,
+        segIndex,
+      });
+      if (result?.url) uploaded.push(result.url);
+    } catch (e) {
+      logJob(jobId, "cloudinary upload failed (segment image)", {
+        segment: segIndex,
+        error: e.message,
+      });
+    }
+  }
+  return uploaded;
 }
 
 function isCloudinaryImageUrl(url = "") {
-	return /res\.cloudinary\.com\/[^/]+\/image\/upload\//i.test(
-		String(url || ""),
-	);
+  return /res\.cloudinary\.com\/[^/]+\/image\/upload\//i.test(
+    String(url || ""),
+  );
 }
 
 function buildThumbnailSeedCandidateUrls(topicObj = {}) {
-	const story = topicObj?.trendStory || {};
-	const potentialUrls = uniqueStrings(
-		(Array.isArray(story.potentialImages) ? story.potentialImages : [])
-			.map((p) => p?.url)
-			.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
-		{ limit: 12 },
-	);
-	const topicSeeds = uniqueStrings(
-		[
-			topicObj?.image,
-			...(Array.isArray(topicObj?.images) ? topicObj.images : []),
-		].filter(Boolean),
-		{ limit: 8 },
-	).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
-	const storySeeds = uniqueStrings(
-		[
-			story.image,
-			...(Array.isArray(story.images) ? story.images : []),
-			...(Array.isArray(story.articles)
-				? story.articles.map((a) => a?.image)
-				: []),
-		].filter(Boolean),
-		{ limit: 12 },
-	).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
-	return dedupeUrlsPreserveOrder([
-		...potentialUrls,
-		...topicSeeds,
-		...storySeeds,
-	]);
+  const story = topicObj?.trendStory || {};
+  const potentialUrls = uniqueStrings(
+    (Array.isArray(story.potentialImages) ? story.potentialImages : [])
+      .map((p) => p?.url)
+      .filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
+    { limit: 12 },
+  );
+  const topicSeeds = uniqueStrings(
+    [
+      topicObj?.image,
+      ...(Array.isArray(topicObj?.images) ? topicObj.images : []),
+    ].filter(Boolean),
+    { limit: 8 },
+  ).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
+  const storySeeds = uniqueStrings(
+    [
+      story.image,
+      ...(Array.isArray(story.images) ? story.images : []),
+      ...(Array.isArray(story.articles)
+        ? story.articles.map((a) => a?.image)
+        : []),
+    ].filter(Boolean),
+    { limit: 12 },
+  ).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
+  return dedupeUrlsPreserveOrder([
+    ...potentialUrls,
+    ...topicSeeds,
+    ...storySeeds,
+  ]);
 }
 
 async function collectThumbnailFallbackUrls({
-	topicLabel,
-	articleUrls = [],
-	seedUrls = [],
-	limit = 6,
+  topicLabel,
+  articleUrls = [],
+  seedUrls = [],
+  limit = 6,
 }) {
-	const target = clampNumber(Number(limit) || 6, 1, 10);
-	const urls = uniqueStrings(seedUrls, { limit: Math.max(6, target * 2) });
-	const articleCandidates = uniqueStrings(articleUrls, { limit: 6 });
-	for (const pageUrl of articleCandidates) {
-		if (urls.length >= target) break;
-		const og = await fetchOpenGraphImageUrl(pageUrl);
-		if (!og || isLikelyThumbnailUrl(og)) continue;
-		if (isProbablyDirectImageUrl(og)) {
-			urls.push(og);
-			continue;
-		}
-		const ct = await headContentType(og, 7000);
-		if (ct && !ct.startsWith("image/")) continue;
-		urls.push(og);
-	}
-	if (urls.length < target && topicLabel) {
-		const wiki = await fetchWikipediaPageImageUrl(topicLabel);
-		if (wiki && !isLikelyThumbnailUrl(wiki)) urls.push(wiki);
-	}
-	if (urls.length < target && topicLabel) {
-		const commons = await fetchWikimediaImageUrls(
-			topicLabel,
-			Math.max(2, target - urls.length),
-		);
-		urls.push(...commons.filter((u) => !isLikelyThumbnailUrl(u)));
-	}
-	return uniqueStrings(urls, { limit: target });
+  const target = clampNumber(Number(limit) || 6, 1, 10);
+  const urls = uniqueStrings(seedUrls, { limit: Math.max(6, target * 2) });
+  const articleCandidates = uniqueStrings(articleUrls, { limit: 6 });
+  for (const pageUrl of articleCandidates) {
+    if (urls.length >= target) break;
+    const og = await fetchOpenGraphImageUrl(pageUrl);
+    if (!og || isLikelyThumbnailUrl(og)) continue;
+    if (isProbablyDirectImageUrl(og)) {
+      urls.push(og);
+      continue;
+    }
+    const ct = await headContentType(og, 7000);
+    if (ct && !ct.startsWith("image/")) continue;
+    urls.push(og);
+  }
+  if (urls.length < target && topicLabel) {
+    const wiki = await fetchWikipediaPageImageUrl(topicLabel);
+    if (wiki && !isLikelyThumbnailUrl(wiki)) urls.push(wiki);
+  }
+  if (urls.length < target && topicLabel) {
+    const commons = await fetchWikimediaImageUrls(
+      topicLabel,
+      Math.max(2, target - urls.length),
+    );
+    urls.push(...commons.filter((u) => !isLikelyThumbnailUrl(u)));
+  }
+  return uniqueStrings(urls, { limit: target });
 }
 
 async function selectBestThumbnailSeedCandidate({
-	urls = [],
-	tmpDir,
-	jobId,
-	topicLabel,
-	maxDownloads = 6,
-	minEdge = CSE_MIN_IMAGE_SHORT_EDGE,
-	relaxedEdge = CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
+  urls = [],
+  tmpDir,
+  jobId,
+  topicLabel,
+  maxDownloads = 6,
+  minEdge = CSE_MIN_IMAGE_SHORT_EDGE,
+  relaxedEdge = CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
 }) {
-	const candidates = dedupeUrlsPreserveOrder(urls).filter(
-		(u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u),
-	);
-	for (const url of candidates) {
-		if (isCloudinaryImageUrl(url)) {
-			return { url, cloudinary: true };
-		}
-	}
-	let attempts = 0;
-	let best = null;
-	for (const url of candidates) {
-		if (attempts >= maxDownloads) break;
-		const looksDirect = isProbablyDirectImageUrl(url);
-		if (!looksDirect) {
-			const ct = await headContentType(url, 7000);
-			if (ct && !ct.startsWith("image/")) continue;
-		}
-		const extGuess = path
-			.extname(String(url).split("?")[0] || "")
-			.toLowerCase();
-		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".jpg";
-		const outPath = path.join(
-			tmpDir,
-			`thumb_seed_${safeSlug(
-				topicLabel || "topic",
-				24,
-			)}_${jobId}_${attempts}_${crypto.randomUUID().slice(0, 8)}${ext}`,
-		);
-		try {
-			attempts += 1;
-			await downloadToFile(url, outPath, 25000, 2);
-			const detected = detectFileType(outPath);
-			if (!detected || detected.kind !== "image") {
-				safeUnlink(outPath);
-				continue;
-			}
-			const info = await probeMedia(outPath);
-			const stream = Array.isArray(info?.streams)
-				? info.streams.find((s) => s.codec_type === "video")
-				: null;
-			const width = Number(stream?.width || 0);
-			const height = Number(stream?.height || 0);
-			if (!width || !height) {
-				safeUnlink(outPath);
-				continue;
-			}
-			const aspectRatio = height / width;
-			const shortEdge = Math.min(width, height);
-			const area = width * height;
-			const tier = shortEdge >= minEdge ? 2 : shortEdge >= relaxedEdge ? 1 : 0;
-			const portraitBoost =
-				Number.isFinite(aspectRatio) && aspectRatio >= 1.08
-					? Math.min((aspectRatio - 1) * 0.12, 0.22)
-					: 0;
-			const score = tier * 1e9 + area * (1 + portraitBoost);
-			if (!best || score > best.score) {
-				if (best?.localPath) safeUnlink(best.localPath);
-				best = {
-					url,
-					localPath: outPath,
-					width,
-					height,
-					shortEdge,
-					score,
-				};
-			} else {
-				safeUnlink(outPath);
-			}
-		} catch {
-			safeUnlink(outPath);
-		}
-	}
-	return best;
+  const candidates = dedupeUrlsPreserveOrder(urls).filter(
+    (u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u),
+  );
+  for (const url of candidates) {
+    if (isCloudinaryImageUrl(url)) {
+      return { url, cloudinary: true };
+    }
+  }
+  let attempts = 0;
+  let best = null;
+  for (const url of candidates) {
+    if (attempts >= maxDownloads) break;
+    const looksDirect = isProbablyDirectImageUrl(url);
+    if (!looksDirect) {
+      const ct = await headContentType(url, 7000);
+      if (ct && !ct.startsWith("image/")) continue;
+    }
+    const extGuess = path
+      .extname(String(url).split("?")[0] || "")
+      .toLowerCase();
+    const ext = extGuess && extGuess.length <= 5 ? extGuess : ".jpg";
+    const outPath = path.join(
+      tmpDir,
+      `thumb_seed_${safeSlug(
+        topicLabel || "topic",
+        24,
+      )}_${jobId}_${attempts}_${crypto.randomUUID().slice(0, 8)}${ext}`,
+    );
+    try {
+      attempts += 1;
+      await downloadToFile(url, outPath, 25000, 2);
+      const detected = detectFileType(outPath);
+      if (!detected || detected.kind !== "image") {
+        safeUnlink(outPath);
+        continue;
+      }
+      const info = await probeMedia(outPath);
+      const stream = Array.isArray(info?.streams)
+        ? info.streams.find((s) => s.codec_type === "video")
+        : null;
+      const width = Number(stream?.width || 0);
+      const height = Number(stream?.height || 0);
+      if (!width || !height) {
+        safeUnlink(outPath);
+        continue;
+      }
+      const aspectRatio = height / width;
+      const shortEdge = Math.min(width, height);
+      const area = width * height;
+      const tier = shortEdge >= minEdge ? 2 : shortEdge >= relaxedEdge ? 1 : 0;
+      const portraitBoost =
+        Number.isFinite(aspectRatio) && aspectRatio >= 1.08
+          ? Math.min((aspectRatio - 1) * 0.12, 0.22)
+          : 0;
+      const score = tier * 1e9 + area * (1 + portraitBoost);
+      if (!best || score > best.score) {
+        if (best?.localPath) safeUnlink(best.localPath);
+        best = {
+          url,
+          localPath: outPath,
+          width,
+          height,
+          shortEdge,
+          score,
+        };
+      } else {
+        safeUnlink(outPath);
+      }
+    } catch {
+      safeUnlink(outPath);
+    }
+  }
+  return best;
 }
 
 async function ensureThumbnailSeedImages({
-	topics = [],
-	tmpDir,
-	jobId,
-	output,
-	log,
+  topics = [],
+  tmpDir,
+  jobId,
+  output,
+  log,
 }) {
-	if (!Array.isArray(topics) || !topics.length) return;
-	const outputCfg =
-		output && typeof output === "object"
-			? output
-			: parseRatio(output || DEFAULT_OUTPUT_RATIO);
-	const cseAvailable = Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
-	for (let i = 0; i < topics.length; i++) {
-		const t = topics[i];
-		if (!t) continue;
-		const topicLabel = String(t.displayTopic || t.topic || "").trim();
-		const existingRaw = uniqueStrings(
-			Array.isArray(t.thumbnailImageUrls) ? t.thumbnailImageUrls : [],
-			{ limit: 4 },
-		);
-		const existingCloudinary = existingRaw.filter(isCloudinaryImageUrl);
-		if (existingCloudinary.length) {
-			t.thumbnailImageUrls = existingCloudinary;
-			if (log)
-				log("thumbnail seed image reused", {
-					topic: topicLabel,
-					count: existingCloudinary.length,
-				});
-			continue;
-		}
+  if (!Array.isArray(topics) || !topics.length) return;
+  const outputCfg =
+    output && typeof output === "object"
+      ? output
+      : parseRatio(output || DEFAULT_OUTPUT_RATIO);
+  const cseAvailable = Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
+  for (let i = 0; i < topics.length; i++) {
+    const t = topics[i];
+    if (!t) continue;
+    const topicLabel = String(t.displayTopic || t.topic || "").trim();
+    const existingRaw = uniqueStrings(
+      Array.isArray(t.thumbnailImageUrls) ? t.thumbnailImageUrls : [],
+      { limit: 4 },
+    );
+    const existingCloudinary = existingRaw.filter(isCloudinaryImageUrl);
+    if (existingCloudinary.length) {
+      t.thumbnailImageUrls = existingCloudinary;
+      if (log)
+        log("thumbnail seed image reused", {
+          topic: topicLabel,
+          count: existingCloudinary.length,
+        });
+      continue;
+    }
 
-		const candidateUrls = dedupeUrlsPreserveOrder([
-			...existingRaw,
-			...buildThumbnailSeedCandidateUrls(t),
-		]);
-		const story = t.trendStory || {};
-		const articleUrls = (Array.isArray(story.articles) ? story.articles : [])
-			.map((a) => a?.url)
-			.filter((u) => isHttpUrl(u));
+    const candidateUrls = dedupeUrlsPreserveOrder([
+      ...existingRaw,
+      ...buildThumbnailSeedCandidateUrls(t),
+    ]);
+    const story = t.trendStory || {};
+    const articleUrls = (Array.isArray(story.articles) ? story.articles : [])
+      .map((a) => a?.url)
+      .filter((u) => isHttpUrl(u));
 
-		let selected = await selectBestThumbnailSeedCandidate({
-			urls: candidateUrls,
-			tmpDir,
-			jobId,
-			topicLabel,
-		});
-		let source = "seed";
+    let selected = await selectBestThumbnailSeedCandidate({
+      urls: candidateUrls,
+      tmpDir,
+      jobId,
+      topicLabel,
+    });
+    let source = "seed";
 
-		if (!selected) {
-			const fallbackUrls = await collectThumbnailFallbackUrls({
-				topicLabel,
-				articleUrls,
-				seedUrls: candidateUrls,
-				limit: 6,
-			});
-			if (fallbackUrls.length) {
-				source = "fallback";
-				selected = await selectBestThumbnailSeedCandidate({
-					urls: fallbackUrls,
-					tmpDir,
-					jobId,
-					topicLabel,
-				});
-			}
-		}
+    if (!selected) {
+      const fallbackUrls = await collectThumbnailFallbackUrls({
+        topicLabel,
+        articleUrls,
+        seedUrls: candidateUrls,
+        limit: 6,
+      });
+      if (fallbackUrls.length) {
+        source = "fallback";
+        selected = await selectBestThumbnailSeedCandidate({
+          urls: fallbackUrls,
+          tmpDir,
+          jobId,
+          topicLabel,
+        });
+      }
+    }
 
-		if (!selected && cseAvailable && topicLabel) {
-			const cseUrls = await fetchCseImages(
-				topicLabel,
-				Array.isArray(t.keywords) ? t.keywords : [],
-				jobId,
-				{ maxResults: 8, maxPages: 1 },
-			);
-			if (log && cseUrls.length) {
-				log("thumbnail seed image cse fallback", {
-					topic: topicLabel,
-					count: cseUrls.length,
-				});
-			}
-			source = "cse";
-			selected = await selectBestThumbnailSeedCandidate({
-				urls: cseUrls,
-				tmpDir,
-				jobId,
-				topicLabel,
-			});
-		}
+    if (!selected && cseAvailable && topicLabel) {
+      const cseUrls = await fetchCseImages(
+        topicLabel,
+        Array.isArray(t.keywords) ? t.keywords : [],
+        jobId,
+        { maxResults: 8, maxPages: 1 },
+      );
+      if (log && cseUrls.length) {
+        log("thumbnail seed image cse fallback", {
+          topic: topicLabel,
+          count: cseUrls.length,
+        });
+      }
+      source = "cse";
+      selected = await selectBestThumbnailSeedCandidate({
+        urls: cseUrls,
+        tmpDir,
+        jobId,
+        topicLabel,
+      });
+    }
 
-		if (!selected) {
-			if (log)
-				log("thumbnail seed image missing", {
-					topic: topicLabel,
-				});
-			continue;
-		}
+    if (!selected) {
+      if (log)
+        log("thumbnail seed image missing", {
+          topic: topicLabel,
+        });
+      continue;
+    }
 
-		if (selected.cloudinary && selected.url) {
-			t.thumbnailImageUrls = [selected.url];
-			if (log)
-				log("thumbnail seed image selected", {
-					topic: topicLabel,
-					source: "cloudinary",
-					url: selected.url,
-				});
-			continue;
-		}
+    if (selected.cloudinary && selected.url) {
+      t.thumbnailImageUrls = [selected.url];
+      if (log)
+        log("thumbnail seed image selected", {
+          topic: topicLabel,
+          source: "cloudinary",
+          url: selected.url,
+        });
+      continue;
+    }
 
-		if (selected.localPath && fs.existsSync(selected.localPath)) {
-			const slug = safeSlug(topicLabel || "topic", 36) || "topic";
-			const publicIdBase = `aivideomatic/long_feed/thumb_seed_${slug}_${jobId}_${
-				i + 1
-			}`;
-			try {
-				const uploaded = await uploadLocalImageToCloudinary(
-					selected.localPath,
-					{
-						publicIdBase,
-						output: outputCfg,
-						jobId,
-						segIndex: `thumb_${i + 1}`,
-					},
-				);
-				if (uploaded?.url) {
-					t.thumbnailImageUrls = [uploaded.url];
-					if (log)
-						log("thumbnail seed image uploaded", {
-							topic: topicLabel,
-							source,
-							url: uploaded.url,
-							width: selected.width,
-							height: selected.height,
-						});
-				} else if (selected.url) {
-					t.thumbnailImageUrls = [selected.url];
-					if (log)
-						log("thumbnail seed image upload missing; using raw url", {
-							topic: topicLabel,
-							source,
-							url: selected.url,
-						});
-				}
-			} catch (e) {
-				if (selected.url) t.thumbnailImageUrls = [selected.url];
-				if (log)
-					log("thumbnail seed image upload failed", {
-						topic: topicLabel,
-						error: e.message,
-					});
-			} finally {
-				safeUnlink(selected.localPath);
-			}
-			continue;
-		}
+    if (selected.localPath && fs.existsSync(selected.localPath)) {
+      const slug = safeSlug(topicLabel || "topic", 36) || "topic";
+      const publicIdBase = `aivideomatic/long_feed/thumb_seed_${slug}_${jobId}_${
+        i + 1
+      }`;
+      try {
+        const uploaded = await uploadLocalImageToCloudinary(
+          selected.localPath,
+          {
+            publicIdBase,
+            output: outputCfg,
+            jobId,
+            segIndex: `thumb_${i + 1}`,
+          },
+        );
+        if (uploaded?.url) {
+          t.thumbnailImageUrls = [uploaded.url];
+          if (log)
+            log("thumbnail seed image uploaded", {
+              topic: topicLabel,
+              source,
+              url: uploaded.url,
+              width: selected.width,
+              height: selected.height,
+            });
+        } else if (selected.url) {
+          t.thumbnailImageUrls = [selected.url];
+          if (log)
+            log("thumbnail seed image upload missing; using raw url", {
+              topic: topicLabel,
+              source,
+              url: selected.url,
+            });
+        }
+      } catch (e) {
+        if (selected.url) t.thumbnailImageUrls = [selected.url];
+        if (log)
+          log("thumbnail seed image upload failed", {
+            topic: topicLabel,
+            error: e.message,
+          });
+      } finally {
+        safeUnlink(selected.localPath);
+      }
+      continue;
+    }
 
-		if (selected.url) {
-			t.thumbnailImageUrls = [selected.url];
-			if (log)
-				log("thumbnail seed image selected", {
-					topic: topicLabel,
-					source,
-					url: selected.url,
-				});
-		}
-	}
+    if (selected.url) {
+      t.thumbnailImageUrls = [selected.url];
+      if (log)
+        log("thumbnail seed image selected", {
+          topic: topicLabel,
+          source,
+          url: selected.url,
+        });
+    }
+  }
 }
 
 async function fetchFallbackImageUrlsForSegment({
-	query,
-	topicLabel,
-	limit = 4,
-	articleUrls = [],
-	seedUrls = [],
+  query,
+  topicLabel,
+  limit = 4,
+  articleUrls = [],
+  seedUrls = [],
 }) {
-	const target = clampNumber(Number(limit) || 4, 1, 8);
-	const urls = [];
-	const seeded = uniqueStrings(seedUrls, { limit: Math.max(6, target * 2) });
-	urls.push(...seeded);
+  const target = clampNumber(Number(limit) || 4, 1, 8);
+  const urls = [];
+  const seeded = uniqueStrings(seedUrls, { limit: Math.max(6, target * 2) });
+  urls.push(...seeded);
 
-	const topicTokens = filterSpecificTopicTokens(
-		topicTokensFromTitle(topicLabel || query || ""),
-	);
-	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
-	const contextItems = await fetchCseContext(
-		query || topicLabel,
-		topicLabel ? [topicLabel] : [],
-	);
-	const strictContextItems = requiredTopicMatches
-		? contextItems.filter(
-				(it) =>
-					topicMatchInfo(topicTokens, [it.title, it.snippet, it.link]).count >=
-					requiredTopicMatches,
-			)
-		: contextItems;
-	const contextArticleUrls = uniqueStrings(
-		[
-			...strictContextItems.map((c) => c?.link).filter(Boolean),
-			...(Array.isArray(articleUrls) ? articleUrls : []),
-		],
-		{ limit: 10 },
-	);
-	for (const pageUrl of contextArticleUrls) {
-		if (urls.length >= target) break;
-		const og = await fetchOpenGraphImageUrl(pageUrl);
-		if (!og) continue;
-		if (isProbablyDirectImageUrl(og)) {
-			urls.push(og);
-			continue;
-		}
-		const ct = await headContentType(og, 7000);
-		if (ct && ct.startsWith("image/")) urls.push(og);
-	}
+  const topicTokens = filterSpecificTopicTokens(
+    topicTokensFromTitle(topicLabel || query || ""),
+  );
+  const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
+  const contextItems = await fetchCseContext(
+    query || topicLabel,
+    topicLabel ? [topicLabel] : [],
+  );
+  const strictContextItems = requiredTopicMatches
+    ? contextItems.filter(
+        (it) =>
+          topicMatchInfo(topicTokens, [it.title, it.snippet, it.link]).count >=
+          requiredTopicMatches,
+      )
+    : contextItems;
+  const contextArticleUrls = uniqueStrings(
+    [
+      ...strictContextItems.map((c) => c?.link).filter(Boolean),
+      ...(Array.isArray(articleUrls) ? articleUrls : []),
+    ],
+    { limit: 10 },
+  );
+  for (const pageUrl of contextArticleUrls) {
+    if (urls.length >= target) break;
+    const og = await fetchOpenGraphImageUrl(pageUrl);
+    if (!og) continue;
+    if (isProbablyDirectImageUrl(og)) {
+      urls.push(og);
+      continue;
+    }
+    const ct = await headContentType(og, 7000);
+    if (ct && ct.startsWith("image/")) urls.push(og);
+  }
 
-	if (urls.length < target && topicLabel) {
-		const wiki = await fetchWikipediaPageImageUrl(topicLabel);
-		if (wiki) urls.push(wiki);
-	}
+  if (urls.length < target && topicLabel) {
+    const wiki = await fetchWikipediaPageImageUrl(topicLabel);
+    if (wiki) urls.push(wiki);
+  }
 
-	if (urls.length < target && topicLabel) {
-		const commons = await fetchWikimediaImageUrls(topicLabel, target);
-		urls.push(...commons);
-	}
+  if (urls.length < target && topicLabel) {
+    const commons = await fetchWikimediaImageUrls(topicLabel, target);
+    urls.push(...commons);
+  }
 
-	return uniqueStrings(urls, { limit: target });
+  return uniqueStrings(urls, { limit: target });
 }
 
 async function prepareImageSegments({
-	timeline = [],
-	topics = [],
-	tmpDir,
-	jobId,
-	baseUrl,
-	output,
+  timeline = [],
+  topics = [],
+  tmpDir,
+  jobId,
+  baseUrl,
+  output,
 }) {
-	if (!timeline.length) {
-		return {
-			timeline,
-			segmentImagePaths: new Map(),
-			imagePlanSummary: [],
-		};
-	}
+  if (!timeline.length) {
+    return {
+      timeline,
+      segmentImagePaths: new Map(),
+      imagePlanSummary: [],
+    };
+  }
 
-	const cseAvailable = Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
-	if (!cseAvailable) {
-		logJob(jobId, "image segments CSE disabled; using seed images only");
-	}
+  const cseAvailable = Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
+  if (!cseAvailable) {
+    logJob(jobId, "image segments CSE disabled; using seed images only");
+  }
 
-	const queryCache = new Map();
-	const topicCache = new Map();
-	const fallbackCache = new Map();
-	const googleImageCache = new Map();
-	const usedHosts = new Set();
-	const usedUrlsGlobal = new Set();
-	const usedUrlsByTopic = new Map();
-	const topicMetaByIndex = new Map();
-	const outputCfg =
-		output && typeof output === "object"
-			? output
-			: parseRatio(output || DEFAULT_OUTPUT_RATIO);
+  const queryCache = new Map();
+  const topicCache = new Map();
+  const fallbackCache = new Map();
+  const googleImageCache = new Map();
+  const usedHosts = new Set();
+  const usedUrlsGlobal = new Set();
+  const usedUrlsByTopic = new Map();
+  const topicMetaByIndex = new Map();
+  const outputCfg =
+    output && typeof output === "object"
+      ? output
+      : parseRatio(output || DEFAULT_OUTPUT_RATIO);
 
-	for (let i = 0; i < (topics || []).length; i++) {
-		const t = topics[i] || {};
-		const story = t.trendStory || {};
-		const label = String(t.displayTopic || t.topic || "").trim();
-		const keywordHints = uniqueStrings(
-			[
-				...(Array.isArray(t.keywords) ? t.keywords : []),
-				...(story.searchPhrases || []),
-				...(story.entityNames || []),
-			],
-			{ limit: 10 },
-		);
-		const articleTitles = (story.articles || [])
-			.map((a) => a.title)
-			.filter(Boolean);
-		const articleUrls = (story.articles || [])
-			.map((a) => a.url)
-			.filter((u) => isHttpUrl(u));
-		const potentialUrls = uniqueStrings(
-			(Array.isArray(story.potentialImages) ? story.potentialImages : [])
-				.map((p) => p?.url)
-				.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
-			{ limit: 14 },
-		);
-		const potentialKeys = new Set(
-			potentialUrls.map((u) => normalizeImageUrlKey(u)),
-		);
-		const seedUrls = uniqueStrings(
-			[
-				...(Array.isArray(t.images) ? t.images : []),
-				t.image,
-				story.image,
-				...(Array.isArray(story.images) ? story.images : []),
-				...(story.articles || [])
-					.map((a) => a.image)
-					.filter((u) => isHttpUrl(u)),
-			],
-			{ limit: 12 },
-		)
-			.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
-			.filter((u) => !potentialKeys.has(normalizeImageUrlKey(u)));
-		topicMetaByIndex.set(i, {
-			label,
-			keywordHints,
-			articleTitles,
-			articleUrls,
-			potentialUrls,
-			seedUrls,
-		});
-	}
+  for (let i = 0; i < (topics || []).length; i++) {
+    const t = topics[i] || {};
+    const story = t.trendStory || {};
+    const label = String(t.displayTopic || t.topic || "").trim();
+    const keywordHints = uniqueStrings(
+      [
+        ...(Array.isArray(t.keywords) ? t.keywords : []),
+        ...(story.searchPhrases || []),
+        ...(story.entityNames || []),
+      ],
+      { limit: 10 },
+    );
+    const articleTitles = (story.articles || [])
+      .map((a) => a.title)
+      .filter(Boolean);
+    const articleUrls = (story.articles || [])
+      .map((a) => a.url)
+      .filter((u) => isHttpUrl(u));
+    const potentialUrls = uniqueStrings(
+      (Array.isArray(story.potentialImages) ? story.potentialImages : [])
+        .map((p) => p?.url)
+        .filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
+      { limit: 14 },
+    );
+    const potentialKeys = new Set(
+      potentialUrls.map((u) => normalizeImageUrlKey(u)),
+    );
+    const seedUrls = uniqueStrings(
+      [
+        ...(Array.isArray(t.images) ? t.images : []),
+        t.image,
+        story.image,
+        ...(Array.isArray(story.images) ? story.images : []),
+        ...(story.articles || [])
+          .map((a) => a.image)
+          .filter((u) => isHttpUrl(u)),
+      ],
+      { limit: 12 },
+    )
+      .filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
+      .filter((u) => !potentialKeys.has(normalizeImageUrlKey(u)));
+    topicMetaByIndex.set(i, {
+      label,
+      keywordHints,
+      articleTitles,
+      articleUrls,
+      potentialUrls,
+      seedUrls,
+    });
+  }
 
-	const getUsedUrlKeys = (topicIndex) => {
-		if (!usedUrlsByTopic.has(topicIndex)) {
-			usedUrlsByTopic.set(topicIndex, new Set());
-		}
-		return usedUrlsByTopic.get(topicIndex);
-	};
+  const getUsedUrlKeys = (topicIndex) => {
+    if (!usedUrlsByTopic.has(topicIndex)) {
+      usedUrlsByTopic.set(topicIndex, new Set());
+    }
+    return usedUrlsByTopic.get(topicIndex);
+  };
 
-	const segmentImagePaths = new Map();
-	const imagePlanSummary = [];
-	const updated = [];
-	const imageSourceSummary = {
-		segments: 0,
-		plannedUrls: 0,
-		potentialUrls: 0,
-		seedUrls: 0,
-		plannedAvailable: 0,
-		cseQueryCalls: 0,
-		cseTopicCalls: 0,
-		cseCacheHits: 0,
-		cseUrls: 0,
-		pickedTotal: 0,
-		pickedPlanned: 0,
-		pickedPotential: 0,
-		pickedCse: 0,
-		pickedSeed: 0,
-		pickedFallback: 0,
-	};
+  const segmentImagePaths = new Map();
+  const imagePlanSummary = [];
+  const updated = [];
+  const imageSourceSummary = {
+    segments: 0,
+    plannedUrls: 0,
+    potentialUrls: 0,
+    seedUrls: 0,
+    plannedAvailable: 0,
+    cseQueryCalls: 0,
+    cseTopicCalls: 0,
+    cseCacheHits: 0,
+    cseUrls: 0,
+    pickedTotal: 0,
+    pickedPlanned: 0,
+    pickedPotential: 0,
+    pickedCse: 0,
+    pickedSeed: 0,
+    pickedFallback: 0,
+  };
 
-	for (const seg of timeline) {
-		if (seg.visualType !== "image") {
-			updated.push(seg);
-			continue;
-		}
+  for (const seg of timeline) {
+    if (seg.visualType !== "image") {
+      updated.push(seg);
+      continue;
+    }
 
-		const segDur = Math.max(0.2, Number(seg.endSec) - Number(seg.startSec));
-		const desiredCount = computeSegmentImageCount(segDur);
-		const topicIndex = Number(seg.topicIndex) || 0;
-		const { query, topicLabel } = resolveSegmentImageQuery(seg, topics);
-		const meta = topicMetaByIndex.get(topicIndex) || {};
-		const effectiveTopicLabel = topicLabel || meta.label || "";
-		const topicTokens = topicTokensFromTitle(effectiveTopicLabel || "");
-		const segmentTokens = extractSegmentMatchTokens(
-			seg.text || "",
-			effectiveTopicLabel,
-			4,
-		);
-		const queryVariants = buildSegmentImageQueryVariants({
-			baseQuery: query,
-			topicLabel: effectiveTopicLabel,
-			segmentText: seg.text,
-			topicKeywords: meta.keywordHints,
-			articleTitles: meta.articleTitles,
-			maxVariants: IMAGE_SEARCH_MAX_QUERY_VARIANTS,
-		});
-		if (!queryVariants.length && query) queryVariants.push(query);
-		if (!queryVariants.length && effectiveTopicLabel)
-			queryVariants.push(effectiveTopicLabel);
+    const segDur = Math.max(0.2, Number(seg.endSec) - Number(seg.startSec));
+    const desiredCount = computeSegmentImageCount(segDur);
+    const topicIndex = Number(seg.topicIndex) || 0;
+    const { query, topicLabel } = resolveSegmentImageQuery(seg, topics);
+    const meta = topicMetaByIndex.get(topicIndex) || {};
+    const effectiveTopicLabel = topicLabel || meta.label || "";
+    const topicTokens = topicTokensFromTitle(effectiveTopicLabel || "");
+    const segmentTokens = extractSegmentMatchTokens(
+      seg.text || "",
+      effectiveTopicLabel,
+      4,
+    );
+    const queryVariants = buildSegmentImageQueryVariants({
+      baseQuery: query,
+      topicLabel: effectiveTopicLabel,
+      segmentText: seg.text,
+      topicKeywords: meta.keywordHints,
+      articleTitles: meta.articleTitles,
+      maxVariants: IMAGE_SEARCH_MAX_QUERY_VARIANTS,
+    });
+    if (!queryVariants.length && query) queryVariants.push(query);
+    if (!queryVariants.length && effectiveTopicLabel)
+      queryVariants.push(effectiveTopicLabel);
 
-		logJob(jobId, "segment image search", {
-			segment: seg.index,
-			query,
-			topicLabel: effectiveTopicLabel,
-			desiredCount,
-			variantCount: queryVariants.length,
-			segmentTokens,
-		});
+    logJob(jobId, "segment image search", {
+      segment: seg.index,
+      query,
+      topicLabel: effectiveTopicLabel,
+      desiredCount,
+      variantCount: queryVariants.length,
+      segmentTokens,
+    });
 
-		const plannedSegmentUrls = dedupeUrlsPreserveOrder(
-			Array.isArray(seg.imageUrls) ? seg.imageUrls : [],
-		).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
-		const potentialUrls = Array.isArray(meta.potentialUrls)
-			? meta.potentialUrls.filter(
-					(u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u),
-				)
-			: [];
-		const seedUrls = Array.isArray(meta.seedUrls)
-			? meta.seedUrls.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
-			: [];
+    const plannedSegmentUrls = dedupeUrlsPreserveOrder(
+      Array.isArray(seg.imageUrls) ? seg.imageUrls : [],
+    ).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
+    const potentialUrls = Array.isArray(meta.potentialUrls)
+      ? meta.potentialUrls.filter(
+          (u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u),
+        )
+      : [];
+    const seedUrls = Array.isArray(meta.seedUrls)
+      ? meta.seedUrls.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
+      : [];
 
-		const plannedUrlKeys = new Set(
-			plannedSegmentUrls.map((u) => normalizeImageUrlKey(u)),
-		);
-		const potentialUrlKeys = new Set(
-			potentialUrls.map((u) => normalizeImageUrlKey(u)),
-		);
-		const seedUrlKeys = new Set(seedUrls.map((u) => normalizeImageUrlKey(u)));
+    const plannedUrlKeys = new Set(
+      plannedSegmentUrls.map((u) => normalizeImageUrlKey(u)),
+    );
+    const potentialUrlKeys = new Set(
+      potentialUrls.map((u) => normalizeImageUrlKey(u)),
+    );
+    const seedUrlKeys = new Set(seedUrls.map((u) => normalizeImageUrlKey(u)));
 
-		let candidates = dedupeUrlsPreserveOrder([
-			...plannedSegmentUrls,
-			...potentialUrls,
-			...seedUrls,
-		]);
-		const plannedAvailable = candidates.filter((url) => {
-			const key = normalizeImageUrlKey(url);
-			return !usedUrlsGlobal.has(key);
-		});
-		const allowCseTopUp =
-			cseAvailable && plannedAvailable.length < desiredCount;
+    let candidates = dedupeUrlsPreserveOrder([
+      ...plannedSegmentUrls,
+      ...potentialUrls,
+      ...seedUrls,
+    ]);
+    const plannedAvailable = candidates.filter((url) => {
+      const key = normalizeImageUrlKey(url);
+      return !usedUrlsGlobal.has(key);
+    });
+    const allowCseTopUp =
+      cseAvailable && plannedAvailable.length < desiredCount;
 
-		let segmentCseQueryCalls = 0;
-		let segmentCseTopicCalls = 0;
-		let segmentCseCacheHits = 0;
+    let segmentCseQueryCalls = 0;
+    let segmentCseTopicCalls = 0;
+    let segmentCseCacheHits = 0;
 
-		const fromQueryUrls = [];
-		if (allowCseTopUp) {
-			for (const qVariant of queryVariants) {
-				const cacheKey = `q::${qVariant}`;
-				let urls = queryCache.get(cacheKey);
-				if (!urls) {
-					segmentCseQueryCalls += 1;
-					urls = await fetchCseImagesForQuery(
-						qVariant,
-						topicTokens,
-						Math.max(12, desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
-						jobId,
-						{ maxPages: CSE_MAX_PAGES },
-					);
-					queryCache.set(cacheKey, urls);
-				} else {
-					segmentCseCacheHits += 1;
-				}
-				fromQueryUrls.push(...(urls || []));
-			}
-		}
+    const fromQueryUrls = [];
+    if (allowCseTopUp) {
+      for (const qVariant of queryVariants) {
+        const cacheKey = `q::${qVariant}`;
+        let urls = queryCache.get(cacheKey);
+        if (!urls) {
+          segmentCseQueryCalls += 1;
+          urls = await fetchCseImagesForQuery(
+            qVariant,
+            topicTokens,
+            Math.max(12, desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
+            jobId,
+            { maxPages: CSE_MAX_PAGES },
+          );
+          queryCache.set(cacheKey, urls);
+        } else {
+          segmentCseCacheHits += 1;
+        }
+        fromQueryUrls.push(...(urls || []));
+      }
+    }
 
-		let fromTopicUrls = [];
-		if (allowCseTopUp && effectiveTopicLabel) {
-			const topicKey = `topic::${topicIndex}`;
-			fromTopicUrls = topicCache.get(topicKey) || [];
-			if (!fromTopicUrls.length) {
-				segmentCseTopicCalls += 1;
-				const topicExtras = uniqueStrings(
-					[...queryVariants, ...(segmentTokens || [])],
-					{ limit: 12 },
-				);
-				fromTopicUrls = await fetchCseImages(
-					effectiveTopicLabel,
-					topicExtras,
-					jobId,
-					{
-						maxResults: Math.max(
-							12,
-							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
-						),
-						maxPages: CSE_MAX_PAGES,
-					},
-				);
-				topicCache.set(topicKey, fromTopicUrls);
-			} else {
-				segmentCseCacheHits += 1;
-			}
-		}
+    let fromTopicUrls = [];
+    if (allowCseTopUp && effectiveTopicLabel) {
+      const topicKey = `topic::${topicIndex}`;
+      fromTopicUrls = topicCache.get(topicKey) || [];
+      if (!fromTopicUrls.length) {
+        segmentCseTopicCalls += 1;
+        const topicExtras = uniqueStrings(
+          [...queryVariants, ...(segmentTokens || [])],
+          { limit: 12 },
+        );
+        fromTopicUrls = await fetchCseImages(
+          effectiveTopicLabel,
+          topicExtras,
+          jobId,
+          {
+            maxResults: Math.max(
+              12,
+              desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+            ),
+            maxPages: CSE_MAX_PAGES,
+          },
+        );
+        topicCache.set(topicKey, fromTopicUrls);
+      } else {
+        segmentCseCacheHits += 1;
+      }
+    }
 
-		if (allowCseTopUp && (fromQueryUrls.length || fromTopicUrls.length)) {
-			candidates = dedupeUrlsPreserveOrder([
-				...candidates,
-				...fromQueryUrls,
-				...fromTopicUrls,
-			]);
-		}
+    if (allowCseTopUp && (fromQueryUrls.length || fromTopicUrls.length)) {
+      candidates = dedupeUrlsPreserveOrder([
+        ...candidates,
+        ...fromQueryUrls,
+        ...fromTopicUrls,
+      ]);
+    }
 
-		logJob(jobId, "segment image candidates", {
-			segment: seg.index,
-			query,
-			topicLabel: effectiveTopicLabel,
-			queryVariants: queryVariants.length,
-			planned: plannedSegmentUrls.length,
-			potential: potentialUrls.length,
-			seeded: seedUrls.length,
-			fromQuery: fromQueryUrls.length,
-			fromTopic: fromTopicUrls.length,
-			total: candidates.length,
-			cseTopUp: allowCseTopUp,
-		});
+    logJob(jobId, "segment image candidates", {
+      segment: seg.index,
+      query,
+      topicLabel: effectiveTopicLabel,
+      queryVariants: queryVariants.length,
+      planned: plannedSegmentUrls.length,
+      potential: potentialUrls.length,
+      seeded: seedUrls.length,
+      fromQuery: fromQueryUrls.length,
+      fromTopic: fromTopicUrls.length,
+      total: candidates.length,
+      cseTopUp: allowCseTopUp,
+    });
 
-		if (
-			GOOGLE_IMAGES_SEARCH_ENABLED &&
-			candidates.length <
-				desiredCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER)
-		) {
-			const googleVariants = queryVariants.slice(
-				0,
-				Math.max(1, GOOGLE_IMAGES_VARIANT_LIMIT),
-			);
-			const googleUrls = [];
-			for (const gQuery of googleVariants) {
-				const cacheKey = `gimg::${gQuery}`;
-				let urls = googleImageCache.get(cacheKey);
-				if (!urls) {
-					urls = await fetchGoogleImagesFromService(gQuery, {
-						limit: Math.max(
-							12,
-							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
-							GOOGLE_IMAGES_RESULTS_PER_QUERY,
-						),
-						baseUrl,
-						jobId,
-					});
-					googleImageCache.set(cacheKey, urls);
-				}
-				googleUrls.push(...(urls || []));
-			}
-			if (googleUrls.length) {
-				candidates = dedupeUrlsPreserveOrder([...candidates, ...googleUrls]);
-				logJob(jobId, "segment google images added", {
-					segment: seg.index,
-					query,
-					topicLabel: effectiveTopicLabel,
-					variants: googleVariants.length,
-					added: googleUrls.length,
-					total: candidates.length,
-				});
-			}
-		}
+    if (
+      GOOGLE_IMAGES_SEARCH_ENABLED &&
+      candidates.length <
+        desiredCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER)
+    ) {
+      const googleVariants = queryVariants.slice(
+        0,
+        Math.max(1, GOOGLE_IMAGES_VARIANT_LIMIT),
+      );
+      const googleUrls = [];
+      for (const gQuery of googleVariants) {
+        const cacheKey = `gimg::${gQuery}`;
+        let urls = googleImageCache.get(cacheKey);
+        if (!urls) {
+          urls = await fetchGoogleImagesFromService(gQuery, {
+            limit: Math.max(
+              12,
+              desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+              GOOGLE_IMAGES_RESULTS_PER_QUERY,
+            ),
+            baseUrl,
+            jobId,
+          });
+          googleImageCache.set(cacheKey, urls);
+        }
+        googleUrls.push(...(urls || []));
+      }
+      if (googleUrls.length) {
+        candidates = dedupeUrlsPreserveOrder([...candidates, ...googleUrls]);
+        logJob(jobId, "segment google images added", {
+          segment: seg.index,
+          query,
+          topicLabel: effectiveTopicLabel,
+          variants: googleVariants.length,
+          added: googleUrls.length,
+          total: candidates.length,
+        });
+      }
+    }
 
-		if (candidates.length < desiredCount) {
-			const fallbackKey = `${query}||${effectiveTopicLabel}`;
-			let fallbackUrls = fallbackCache.get(fallbackKey);
-			if (!fallbackUrls) {
-				fallbackUrls = await fetchFallbackImageUrlsForSegment({
-					query,
-					topicLabel: effectiveTopicLabel,
-					limit: Math.max(6, desiredCount * 2),
-					articleUrls: meta.articleUrls,
-					seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
-				});
-				fallbackCache.set(fallbackKey, fallbackUrls);
-			}
-			candidates = dedupeUrlsPreserveOrder([
-				...candidates,
-				...(fallbackUrls || []),
-			]);
-			logJob(jobId, "segment image candidates (fallback)", {
-				segment: seg.index,
-				query,
-				topicLabel: effectiveTopicLabel,
-				total: candidates.length,
-			});
-		}
+    if (candidates.length < desiredCount) {
+      const fallbackKey = `${query}||${effectiveTopicLabel}`;
+      let fallbackUrls = fallbackCache.get(fallbackKey);
+      if (!fallbackUrls) {
+        fallbackUrls = await fetchFallbackImageUrlsForSegment({
+          query,
+          topicLabel: effectiveTopicLabel,
+          limit: Math.max(6, desiredCount * 2),
+          articleUrls: meta.articleUrls,
+          seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
+        });
+        fallbackCache.set(fallbackKey, fallbackUrls);
+      }
+      candidates = dedupeUrlsPreserveOrder([
+        ...candidates,
+        ...(fallbackUrls || []),
+      ]);
+      logJob(jobId, "segment image candidates (fallback)", {
+        segment: seg.index,
+        query,
+        topicLabel: effectiveTopicLabel,
+        total: candidates.length,
+      });
+    }
 
-		const usedUrlKeys = getUsedUrlKeys(topicIndex);
-		const picks = pickSegmentImageUrls(
-			candidates,
-			desiredCount,
-			usedUrlKeys,
-			usedHosts,
-			{
-				maxPicks: Math.max(
-					desiredCount,
-					desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
-				),
-				requireTokens: segmentTokens,
-				preferTokens: topicTokens,
-				usedUrlsGlobal,
-			},
-		);
-		let download = await downloadSegmentImages(
-			picks,
-			tmpDir,
-			jobId,
-			seg.index,
-			desiredCount,
-		);
-		let localPaths = download.localPaths;
-		let pickedUrls = download.usedUrls;
+    const usedUrlKeys = getUsedUrlKeys(topicIndex);
+    const picks = pickSegmentImageUrls(
+      candidates,
+      desiredCount,
+      usedUrlKeys,
+      usedHosts,
+      {
+        maxPicks: Math.max(
+          desiredCount,
+          desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+        ),
+        requireTokens: segmentTokens,
+        preferTokens: topicTokens,
+        usedUrlsGlobal,
+      },
+    );
+    let download = await downloadSegmentImages(
+      picks,
+      tmpDir,
+      jobId,
+      seg.index,
+      desiredCount,
+    );
+    let localPaths = download.localPaths;
+    let pickedUrls = download.usedUrls;
 
-		if (pickedUrls.length) {
-			for (const url of pickedUrls) {
-				usedUrlKeys.add(normalizeImageUrlKey(url));
-				usedUrlsGlobal.add(normalizeImageUrlKey(url));
-				const host = getUrlHost(url);
-				if (host) usedHosts.add(host);
-			}
-		}
+    if (pickedUrls.length) {
+      for (const url of pickedUrls) {
+        usedUrlKeys.add(normalizeImageUrlKey(url));
+        usedUrlsGlobal.add(normalizeImageUrlKey(url));
+        const host = getUrlHost(url);
+        if (host) usedHosts.add(host);
+      }
+    }
 
-		logJob(jobId, "segment image picks", {
-			segment: seg.index,
-			desiredCount,
-			picked: picks.length,
-			downloaded: localPaths.length,
-		});
+    logJob(jobId, "segment image picks", {
+      segment: seg.index,
+      desiredCount,
+      picked: picks.length,
+      downloaded: localPaths.length,
+    });
 
-		if (localPaths.length < desiredCount) {
-			const missing = Math.max(0, desiredCount - localPaths.length);
-			const fallbackKey = `${query}||${effectiveTopicLabel}`;
-			const fallbackUrls =
-				fallbackCache.get(fallbackKey) ||
-				(await fetchFallbackImageUrlsForSegment({
-					query,
-					topicLabel: effectiveTopicLabel,
-					limit: Math.max(6, desiredCount * 2),
-					articleUrls: meta.articleUrls,
-					seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
-				}));
-			fallbackCache.set(fallbackKey, fallbackUrls);
-			const fallbackPicks = pickSegmentImageUrls(
-				fallbackUrls,
-				missing || desiredCount,
-				usedUrlKeys,
-				usedHosts,
-				{
-					maxPicks: Math.max(
-						missing || desiredCount,
-						(missing || desiredCount) * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
-					),
-					requireTokens: segmentTokens,
-					preferTokens: topicTokens,
-					usedUrlsGlobal,
-				},
-			);
-			download = await downloadSegmentImages(
-				fallbackPicks,
-				tmpDir,
-				jobId,
-				seg.index,
-				missing || desiredCount,
-			);
-			localPaths = localPaths.concat(download.localPaths || []);
-			pickedUrls = pickedUrls.concat(download.usedUrls || []);
-			if (download.usedUrls?.length) {
-				for (const url of download.usedUrls) {
-					usedUrlKeys.add(normalizeImageUrlKey(url));
-					usedUrlsGlobal.add(normalizeImageUrlKey(url));
-					const host = getUrlHost(url);
-					if (host) usedHosts.add(host);
-				}
-			}
-			logJob(jobId, "segment image picks (fallback)", {
-				segment: seg.index,
-				desiredCount,
-				picked: fallbackPicks.length,
-				downloaded: localPaths.length,
-			});
-		}
+    if (localPaths.length < desiredCount) {
+      const missing = Math.max(0, desiredCount - localPaths.length);
+      const fallbackKey = `${query}||${effectiveTopicLabel}`;
+      const fallbackUrls =
+        fallbackCache.get(fallbackKey) ||
+        (await fetchFallbackImageUrlsForSegment({
+          query,
+          topicLabel: effectiveTopicLabel,
+          limit: Math.max(6, desiredCount * 2),
+          articleUrls: meta.articleUrls,
+          seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
+        }));
+      fallbackCache.set(fallbackKey, fallbackUrls);
+      const fallbackPicks = pickSegmentImageUrls(
+        fallbackUrls,
+        missing || desiredCount,
+        usedUrlKeys,
+        usedHosts,
+        {
+          maxPicks: Math.max(
+            missing || desiredCount,
+            (missing || desiredCount) * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+          ),
+          requireTokens: segmentTokens,
+          preferTokens: topicTokens,
+          usedUrlsGlobal,
+        },
+      );
+      download = await downloadSegmentImages(
+        fallbackPicks,
+        tmpDir,
+        jobId,
+        seg.index,
+        missing || desiredCount,
+      );
+      localPaths = localPaths.concat(download.localPaths || []);
+      pickedUrls = pickedUrls.concat(download.usedUrls || []);
+      if (download.usedUrls?.length) {
+        for (const url of download.usedUrls) {
+          usedUrlKeys.add(normalizeImageUrlKey(url));
+          usedUrlsGlobal.add(normalizeImageUrlKey(url));
+          const host = getUrlHost(url);
+          if (host) usedHosts.add(host);
+        }
+      }
+      logJob(jobId, "segment image picks (fallback)", {
+        segment: seg.index,
+        desiredCount,
+        picked: fallbackPicks.length,
+        downloaded: localPaths.length,
+      });
+    }
 
-		const cseUrlKeys = new Set(
-			[...fromQueryUrls, ...fromTopicUrls].map((u) => normalizeImageUrlKey(u)),
-		);
-		let pickedPlanned = 0;
-		let pickedPotential = 0;
-		let pickedCse = 0;
-		let pickedSeed = 0;
-		let pickedFallback = 0;
-		for (const url of pickedUrls) {
-			const key = normalizeImageUrlKey(url);
-			if (plannedUrlKeys.has(key)) pickedPlanned += 1;
-			else if (potentialUrlKeys.has(key)) pickedPotential += 1;
-			else if (cseUrlKeys.has(key)) pickedCse += 1;
-			else if (seedUrlKeys.has(key)) pickedSeed += 1;
-			else pickedFallback += 1;
-		}
+    const cseUrlKeys = new Set(
+      [...fromQueryUrls, ...fromTopicUrls].map((u) => normalizeImageUrlKey(u)),
+    );
+    let pickedPlanned = 0;
+    let pickedPotential = 0;
+    let pickedCse = 0;
+    let pickedSeed = 0;
+    let pickedFallback = 0;
+    for (const url of pickedUrls) {
+      const key = normalizeImageUrlKey(url);
+      if (plannedUrlKeys.has(key)) pickedPlanned += 1;
+      else if (potentialUrlKeys.has(key)) pickedPotential += 1;
+      else if (cseUrlKeys.has(key)) pickedCse += 1;
+      else if (seedUrlKeys.has(key)) pickedSeed += 1;
+      else pickedFallback += 1;
+    }
 
-		logJob(jobId, "segment image source stats", {
-			segment: seg.index,
-			query,
-			topicLabel: effectiveTopicLabel,
-			planned: plannedSegmentUrls.length,
-			potential: potentialUrls.length,
-			seeded: seedUrls.length,
-			plannedAvailable: plannedAvailable.length,
-			cseQueryCalls: segmentCseQueryCalls,
-			cseTopicCalls: segmentCseTopicCalls,
-			cseCacheHits: segmentCseCacheHits,
-			cseUrls: fromQueryUrls.length + fromTopicUrls.length,
-			pickedTotal: pickedUrls.length,
-			pickedPlanned,
-			pickedPotential,
-			pickedCse,
-			pickedSeed,
-			pickedFallback,
-		});
+    logJob(jobId, "segment image source stats", {
+      segment: seg.index,
+      query,
+      topicLabel: effectiveTopicLabel,
+      planned: plannedSegmentUrls.length,
+      potential: potentialUrls.length,
+      seeded: seedUrls.length,
+      plannedAvailable: plannedAvailable.length,
+      cseQueryCalls: segmentCseQueryCalls,
+      cseTopicCalls: segmentCseTopicCalls,
+      cseCacheHits: segmentCseCacheHits,
+      cseUrls: fromQueryUrls.length + fromTopicUrls.length,
+      pickedTotal: pickedUrls.length,
+      pickedPlanned,
+      pickedPotential,
+      pickedCse,
+      pickedSeed,
+      pickedFallback,
+    });
 
-		imageSourceSummary.segments += 1;
-		imageSourceSummary.plannedUrls += plannedSegmentUrls.length;
-		imageSourceSummary.potentialUrls += potentialUrls.length;
-		imageSourceSummary.seedUrls += seedUrls.length;
-		imageSourceSummary.plannedAvailable += plannedAvailable.length;
-		imageSourceSummary.cseQueryCalls += segmentCseQueryCalls;
-		imageSourceSummary.cseTopicCalls += segmentCseTopicCalls;
-		imageSourceSummary.cseCacheHits += segmentCseCacheHits;
-		imageSourceSummary.cseUrls += fromQueryUrls.length + fromTopicUrls.length;
-		imageSourceSummary.pickedTotal += pickedUrls.length;
-		imageSourceSummary.pickedPlanned += pickedPlanned;
-		imageSourceSummary.pickedPotential += pickedPotential;
-		imageSourceSummary.pickedCse += pickedCse;
-		imageSourceSummary.pickedSeed += pickedSeed;
-		imageSourceSummary.pickedFallback += pickedFallback;
+    imageSourceSummary.segments += 1;
+    imageSourceSummary.plannedUrls += plannedSegmentUrls.length;
+    imageSourceSummary.potentialUrls += potentialUrls.length;
+    imageSourceSummary.seedUrls += seedUrls.length;
+    imageSourceSummary.plannedAvailable += plannedAvailable.length;
+    imageSourceSummary.cseQueryCalls += segmentCseQueryCalls;
+    imageSourceSummary.cseTopicCalls += segmentCseTopicCalls;
+    imageSourceSummary.cseCacheHits += segmentCseCacheHits;
+    imageSourceSummary.cseUrls += fromQueryUrls.length + fromTopicUrls.length;
+    imageSourceSummary.pickedTotal += pickedUrls.length;
+    imageSourceSummary.pickedPlanned += pickedPlanned;
+    imageSourceSummary.pickedPotential += pickedPotential;
+    imageSourceSummary.pickedCse += pickedCse;
+    imageSourceSummary.pickedSeed += pickedSeed;
+    imageSourceSummary.pickedFallback += pickedFallback;
 
-		let cloudinaryUrls = [];
-		if (localPaths.length) {
-			cloudinaryUrls = await uploadSegmentImagesToCloudinary({
-				localPaths,
-				jobId,
-				segIndex: seg.index,
-				topicLabel: effectiveTopicLabel,
-				output: outputCfg,
-			});
-		}
+    let cloudinaryUrls = [];
+    if (localPaths.length) {
+      cloudinaryUrls = await uploadSegmentImagesToCloudinary({
+        localPaths,
+        jobId,
+        segIndex: seg.index,
+        topicLabel: effectiveTopicLabel,
+        output: outputCfg,
+      });
+    }
 
-		if (!localPaths.length) {
-			logJob(jobId, "segment images missing; fallback to presenter", {
-				segment: seg.index,
-				query,
-				topicLabel: effectiveTopicLabel,
-			});
-			updated.push({ ...seg, visualType: "presenter" });
-			continue;
-		}
+    if (!localPaths.length) {
+      logJob(jobId, "segment images missing; fallback to presenter", {
+        segment: seg.index,
+        query,
+        topicLabel: effectiveTopicLabel,
+      });
+      updated.push({ ...seg, visualType: "presenter" });
+      continue;
+    }
 
-		segmentImagePaths.set(seg.index, localPaths);
-		imagePlanSummary.push({
-			segment: seg.index,
-			imageCount: localPaths.length,
-			cloudinaryCount: cloudinaryUrls.length,
-			query,
-			topicLabel: effectiveTopicLabel,
-		});
-		updated.push({
-			...seg,
-			imageUrls: pickedUrls,
-			imageCloudinaryUrls: cloudinaryUrls,
-		});
-	}
+    segmentImagePaths.set(seg.index, localPaths);
+    imagePlanSummary.push({
+      segment: seg.index,
+      imageCount: localPaths.length,
+      cloudinaryCount: cloudinaryUrls.length,
+      query,
+      topicLabel: effectiveTopicLabel,
+    });
+    updated.push({
+      ...seg,
+      imageUrls: pickedUrls,
+      imageCloudinaryUrls: cloudinaryUrls,
+    });
+  }
 
-	if (imageSourceSummary.segments) {
-		logJob(jobId, "segment image source summary", imageSourceSummary);
-	}
+  if (imageSourceSummary.segments) {
+    logJob(jobId, "segment image source summary", imageSourceSummary);
+  }
 
-	return { timeline: updated, segmentImagePaths, imagePlanSummary };
+  return { timeline: updated, segmentImagePaths, imagePlanSummary };
 }
 
 async function evaluateImageSegmentDiversity({
-	timeline = [],
-	segmentImagePaths,
-	jobId,
+  timeline = [],
+  segmentImagePaths,
+  jobId,
 }) {
-	const imageSegments = (timeline || []).filter(
-		(seg) => seg.visualType === "image",
-	);
-	const segmentCount = imageSegments.length;
-	if (!segmentCount) {
-		return {
-			ok: true,
-			segmentCount: 0,
-			minUnique: 0,
-			unique: 0,
-			ratio: 1,
-			perTopic: [],
-		};
-	}
+  const imageSegments = (timeline || []).filter(
+    (seg) => seg.visualType === "image",
+  );
+  const segmentCount = imageSegments.length;
+  if (!segmentCount) {
+    return {
+      ok: true,
+      segmentCount: 0,
+      minUnique: 0,
+      unique: 0,
+      ratio: 1,
+      perTopic: [],
+    };
+  }
 
-	const segmentKeys = new Map();
-	const primaryUrls = [];
-	for (const seg of imageSegments) {
-		const cloud = Array.isArray(seg.imageCloudinaryUrls)
-			? seg.imageCloudinaryUrls
-			: [];
-		const raw = Array.isArray(seg.imageUrls) ? seg.imageUrls : [];
-		const pick = cloud[0] || raw[0] || "";
-		if (pick) primaryUrls.push(pick);
-	}
-	const uniquePrimary = new Set(primaryUrls.map((u) => normalizeImageUrlKey(u)))
-		.size;
+  const segmentKeys = new Map();
+  const primaryUrls = [];
+  for (const seg of imageSegments) {
+    const cloud = Array.isArray(seg.imageCloudinaryUrls)
+      ? seg.imageCloudinaryUrls
+      : [];
+    const raw = Array.isArray(seg.imageUrls) ? seg.imageUrls : [];
+    const pick = cloud[0] || raw[0] || "";
+    if (pick) primaryUrls.push(pick);
+  }
+  const uniquePrimary = new Set(primaryUrls.map((u) => normalizeImageUrlKey(u)))
+    .size;
 
-	let uniqueHash = null;
-	if (segmentImagePaths instanceof Map) {
-		const hashes = [];
-		for (const seg of imageSegments) {
-			const paths = segmentImagePaths.get(seg.index) || [];
-			const p = paths[0];
-			if (!p) continue;
-			try {
-				const h = await hashFileSha1(p);
-				hashes.push(h);
-				segmentKeys.set(seg.index, `hash:${h}`);
-			} catch (e) {
-				logJob(jobId, "segment image hash failed", {
-					segment: seg.index,
-					error: e.message,
-				});
-			}
-		}
-		if (hashes.length) {
-			uniqueHash = new Set(hashes).size;
-		}
-	}
+  let uniqueHash = null;
+  if (segmentImagePaths instanceof Map) {
+    const hashes = [];
+    for (const seg of imageSegments) {
+      const paths = segmentImagePaths.get(seg.index) || [];
+      const p = paths[0];
+      if (!p) continue;
+      try {
+        const h = await hashFileSha1(p);
+        hashes.push(h);
+        segmentKeys.set(seg.index, `hash:${h}`);
+      } catch (e) {
+        logJob(jobId, "segment image hash failed", {
+          segment: seg.index,
+          error: e.message,
+        });
+      }
+    }
+    if (hashes.length) {
+      uniqueHash = new Set(hashes).size;
+    }
+  }
 
-	for (const seg of imageSegments) {
-		if (segmentKeys.has(seg.index)) continue;
-		const cloud = Array.isArray(seg.imageCloudinaryUrls)
-			? seg.imageCloudinaryUrls
-			: [];
-		const raw = Array.isArray(seg.imageUrls) ? seg.imageUrls : [];
-		const pick = cloud[0] || raw[0] || "";
-		if (pick) {
-			segmentKeys.set(seg.index, `url:${normalizeImageUrlKey(pick)}`);
-		}
-	}
+  for (const seg of imageSegments) {
+    if (segmentKeys.has(seg.index)) continue;
+    const cloud = Array.isArray(seg.imageCloudinaryUrls)
+      ? seg.imageCloudinaryUrls
+      : [];
+    const raw = Array.isArray(seg.imageUrls) ? seg.imageUrls : [];
+    const pick = cloud[0] || raw[0] || "";
+    if (pick) {
+      segmentKeys.set(seg.index, `url:${normalizeImageUrlKey(pick)}`);
+    }
+  }
 
-	const topics = new Map();
-	for (const seg of imageSegments) {
-		const topicIndex = Number.isFinite(Number(seg.topicIndex))
-			? Number(seg.topicIndex)
-			: 0;
-		const topicLabel = String(seg.topicLabel || "").trim();
-		const key = `${topicIndex}:${topicLabel || "topic"}`;
-		const list = topics.get(key) || {
-			topicIndex,
-			topicLabel,
-			segments: [],
-		};
-		list.segments.push(seg);
-		topics.set(key, list);
-	}
+  const topics = new Map();
+  for (const seg of imageSegments) {
+    const topicIndex = Number.isFinite(Number(seg.topicIndex))
+      ? Number(seg.topicIndex)
+      : 0;
+    const topicLabel = String(seg.topicLabel || "").trim();
+    const key = `${topicIndex}:${topicLabel || "topic"}`;
+    const list = topics.get(key) || {
+      topicIndex,
+      topicLabel,
+      segments: [],
+    };
+    list.segments.push(seg);
+    topics.set(key, list);
+  }
 
-	const perTopic = [];
-	let ok = true;
-	for (const [key, data] of topics.entries()) {
-		const segs = data.segments || [];
-		const segCount = segs.length;
-		const minUnique = Math.max(
-			1,
-			Math.ceil(segCount * IMAGE_SEGMENT_MIN_UNIQUE_RATIO),
-		);
-		const uniqSet = new Set();
-		for (const seg of segs) {
-			const k = segmentKeys.get(seg.index);
-			if (k) uniqSet.add(k);
-		}
-		const unique = uniqSet.size;
-		const ratio = segCount ? unique / segCount : 1;
-		const entry = {
-			topicKey: key,
-			topicIndex: data.topicIndex,
-			topicLabel: data.topicLabel,
-			segmentCount: segCount,
-			minUnique,
-			unique,
-			ratio: Number(ratio.toFixed(3)),
-		};
-		if (unique < minUnique) ok = false;
-		perTopic.push(entry);
-	}
+  const perTopic = [];
+  let ok = true;
+  for (const [key, data] of topics.entries()) {
+    const segs = data.segments || [];
+    const segCount = segs.length;
+    const minUnique = Math.max(
+      1,
+      Math.ceil(segCount * IMAGE_SEGMENT_MIN_UNIQUE_RATIO),
+    );
+    const uniqSet = new Set();
+    for (const seg of segs) {
+      const k = segmentKeys.get(seg.index);
+      if (k) uniqSet.add(k);
+    }
+    const unique = uniqSet.size;
+    const ratio = segCount ? unique / segCount : 1;
+    const entry = {
+      topicKey: key,
+      topicIndex: data.topicIndex,
+      topicLabel: data.topicLabel,
+      segmentCount: segCount,
+      minUnique,
+      unique,
+      ratio: Number(ratio.toFixed(3)),
+    };
+    if (unique < minUnique) ok = false;
+    perTopic.push(entry);
+  }
 
-	const totalMinUnique = Math.max(
-		1,
-		Math.ceil(segmentCount * IMAGE_SEGMENT_MIN_UNIQUE_RATIO),
-	);
-	const unique = Number.isFinite(uniqueHash) ? uniqueHash : uniquePrimary;
-	const ratio = segmentCount ? unique / segmentCount : 1;
-	return {
-		ok,
-		segmentCount,
-		minUnique: totalMinUnique,
-		unique,
-		uniquePrimary,
-		uniqueHash,
-		ratio: Number(ratio.toFixed(3)),
-		perTopic,
-	};
+  const totalMinUnique = Math.max(
+    1,
+    Math.ceil(segmentCount * IMAGE_SEGMENT_MIN_UNIQUE_RATIO),
+  );
+  const unique = Number.isFinite(uniqueHash) ? uniqueHash : uniquePrimary;
+  const ratio = segmentCount ? unique / segmentCount : 1;
+  return {
+    ok,
+    segmentCount,
+    minUnique: totalMinUnique,
+    unique,
+    uniquePrimary,
+    uniqueHash,
+    ratio: Number(ratio.toFixed(3)),
+    perTopic,
+  };
 }
 
 /* ---------------------------------------------------------------
@@ -4499,412 +4502,412 @@ async function evaluateImageSegmentDiversity({
  * ------------------------------------------------------------- */
 
 async function ensureLocalPresenterAsset(
-	assetUrl,
-	tmpDir,
-	jobId,
-	options = {},
+  assetUrl,
+  tmpDir,
+  jobId,
+  options = {},
 ) {
-	const {
-		defaultAssetUrl = DEFAULT_PRESENTER_ASSET_URL,
-		allowOverride = false,
-	} = options || {};
-	const requested = String(assetUrl || "").trim();
-	const fallbackUrl = String(
-		defaultAssetUrl || DEFAULT_PRESENTER_ASSET_URL,
-	).trim();
-	let url = fallbackUrl;
-	if (requested && allowOverride) {
-		url = requested;
-	} else if (requested && requested !== fallbackUrl) {
-		logJob(jobId, "presenter asset override ignored (forced default)", {
-			requested,
-		});
-	}
+  const {
+    defaultAssetUrl = DEFAULT_PRESENTER_ASSET_URL,
+    allowOverride = false,
+  } = options || {};
+  const requested = String(assetUrl || "").trim();
+  const fallbackUrl = String(
+    defaultAssetUrl || DEFAULT_PRESENTER_ASSET_URL,
+  ).trim();
+  let url = fallbackUrl;
+  if (requested && allowOverride) {
+    url = requested;
+  } else if (requested && requested !== fallbackUrl) {
+    logJob(jobId, "presenter asset override ignored (forced default)", {
+      requested,
+    });
+  }
 
-	const downloadAndValidate = async (u) => {
-		const extGuess = path.extname(u.split("?")[0] || "").toLowerCase();
-		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".png";
-		const outPath = path.join(tmpDir, `presenter_${crypto.randomUUID()}${ext}`);
-		await downloadToFile(u, outPath, 35000, 2);
+  const downloadAndValidate = async (u) => {
+    const extGuess = path.extname(u.split("?")[0] || "").toLowerCase();
+    const ext = extGuess && extGuess.length <= 5 ? extGuess : ".png";
+    const outPath = path.join(tmpDir, `presenter_${crypto.randomUUID()}${ext}`);
+    await downloadToFile(u, outPath, 35000, 2);
 
-		const detected = detectFileType(outPath);
-		if (!detected || detected.kind === "text") {
-			safeUnlink(outPath);
-			return null;
-		}
-		return outPath;
-	};
+    const detected = detectFileType(outPath);
+    if (!detected || detected.kind === "text") {
+      safeUnlink(outPath);
+      return null;
+    }
+    return outPath;
+  };
 
-	if (isHttpUrl(url)) {
-		const ct = await headContentType(url, 9000);
-		if (ct && ct.startsWith("text/")) {
-			logJob(jobId, "presenter url invalid content-type; fallback to default", {
-				url,
-				ct,
-			});
-			url = fallbackUrl;
-		}
-		const p = await downloadAndValidate(url);
-		if (p) return p;
-		if (fallbackUrl && url !== fallbackUrl) {
-			const p2 = await downloadAndValidate(fallbackUrl);
-			if (p2) return p2;
-		}
-		throw new Error("Presenter asset could not be downloaded/validated");
-	}
+  if (isHttpUrl(url)) {
+    const ct = await headContentType(url, 9000);
+    if (ct && ct.startsWith("text/")) {
+      logJob(jobId, "presenter url invalid content-type; fallback to default", {
+        url,
+        ct,
+      });
+      url = fallbackUrl;
+    }
+    const p = await downloadAndValidate(url);
+    if (p) return p;
+    if (fallbackUrl && url !== fallbackUrl) {
+      const p2 = await downloadAndValidate(fallbackUrl);
+      if (p2) return p2;
+    }
+    throw new Error("Presenter asset could not be downloaded/validated");
+  }
 
-	if (!fs.existsSync(url)) {
-		logJob(jobId, "presenter local path missing; fallback to default", { url });
-		if (fallbackUrl && url !== fallbackUrl) {
-			const p2 = await downloadAndValidate(fallbackUrl);
-			if (p2) return p2;
-		}
-		throw new Error("Presenter asset not found");
-	}
+  if (!fs.existsSync(url)) {
+    logJob(jobId, "presenter local path missing; fallback to default", { url });
+    if (fallbackUrl && url !== fallbackUrl) {
+      const p2 = await downloadAndValidate(fallbackUrl);
+      if (p2) return p2;
+    }
+    throw new Error("Presenter asset not found");
+  }
 
-	const detected = detectFileType(url);
-	if (!detected || detected.kind === "text") {
-		logJob(jobId, "presenter local invalid; fallback to default", { url });
-		if (fallbackUrl && url !== fallbackUrl) {
-			const p2 = await downloadAndValidate(fallbackUrl);
-			if (p2) return p2;
-		}
-		throw new Error("Presenter asset invalid");
-	}
+  const detected = detectFileType(url);
+  if (!detected || detected.kind === "text") {
+    logJob(jobId, "presenter local invalid; fallback to default", { url });
+    if (fallbackUrl && url !== fallbackUrl) {
+      const p2 = await downloadAndValidate(fallbackUrl);
+      if (p2) return p2;
+    }
+    throw new Error("Presenter asset invalid");
+  }
 
-	return url;
+  return url;
 }
 
 async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
-	if (!USE_MOTION_REF_BASELINE) return null;
-	for (const candidate of DEFAULT_PRESENTER_MOTION_VIDEO_PATHS) {
-		try {
-			if (candidate && fs.existsSync(candidate)) {
-				const detected = detectFileType(candidate);
-				if (detected?.kind === "video") return candidate;
-			}
-		} catch (e) {
-			logJob(jobId, "local motion reference check failed (ignored)", {
-				error: e.message,
-				candidate,
-			});
-		}
-	}
+  if (!USE_MOTION_REF_BASELINE) return null;
+  for (const candidate of DEFAULT_PRESENTER_MOTION_VIDEO_PATHS) {
+    try {
+      if (candidate && fs.existsSync(candidate)) {
+        const detected = detectFileType(candidate);
+        if (detected?.kind === "video") return candidate;
+      }
+    } catch (e) {
+      logJob(jobId, "local motion reference check failed (ignored)", {
+        error: e.message,
+        candidate,
+      });
+    }
+  }
 
-	const url = DEFAULT_PRESENTER_MOTION_VIDEO_URL;
-	if (!url) return null;
+  const url = DEFAULT_PRESENTER_MOTION_VIDEO_URL;
+  if (!url) return null;
 
-	const downloadAndValidate = async (u) => {
-		const extGuess = path.extname(u.split("?")[0] || "").toLowerCase();
-		const ext = extGuess && extGuess.length <= 5 ? extGuess : ".mp4";
-		const outPath = path.join(
-			tmpDir,
-			`motion_ref_${crypto.randomUUID()}${ext}`,
-		);
-		await downloadToFile(u, outPath, 60000, 2);
-		const detected = detectFileType(outPath);
-		if (!detected || detected.kind !== "video") {
-			safeUnlink(outPath);
-			return null;
-		}
-		return outPath;
-	};
+  const downloadAndValidate = async (u) => {
+    const extGuess = path.extname(u.split("?")[0] || "").toLowerCase();
+    const ext = extGuess && extGuess.length <= 5 ? extGuess : ".mp4";
+    const outPath = path.join(
+      tmpDir,
+      `motion_ref_${crypto.randomUUID()}${ext}`,
+    );
+    await downloadToFile(u, outPath, 60000, 2);
+    const detected = detectFileType(outPath);
+    if (!detected || detected.kind !== "video") {
+      safeUnlink(outPath);
+      return null;
+    }
+    return outPath;
+  };
 
-	try {
-		const p = await downloadAndValidate(url);
-		if (p) return p;
-	} catch (e) {
-		logJob(jobId, "motion reference download failed (ignored)", {
-			error: e.message,
-		});
-	}
-	return null;
+  try {
+    const p = await downloadAndValidate(url);
+    if (p) return p;
+  } catch (e) {
+    logJob(jobId, "motion reference download failed (ignored)", {
+      error: e.message,
+    });
+  }
+  return null;
 }
 
 function buildPresenterReferenceMotionHint({ intro = false } = {}) {
-	const handLine = intro
-		? "Hands stay low on the desk or just below frame, with at most one brief small emphasis gesture before settling again."
-		: "Hands stay low near the torso, usually lightly clasped or relaxed, with only brief small open-palm emphasis gestures before settling again.";
-	return [
-		"Match the presenter's real reference behavior from motion_reference.mp4 and DemoVideo.mp4.",
-		"Face behavior: direct eye contact, friendly-neutral expression, natural unhurried blinks, mildly readable brow changes, and natural speech-ready jaw and lip behavior with no over-open vowels or reaction-face peaks.",
-		"Head behavior: mostly upright and centered with tiny neck-driven corrections, soft chin dips on emphasis, and one or two light conversational nods over the shot; no swaying, no forward lunges, no head tilts, and no looped nodding.",
-		`Body behavior: shoulders square and steady but not rigid, torso grounded in the seat with subtle breathing and small posture settling, ${handLine}`,
-		"Keep the emotional read composed and consistent from start to finish, but do not let the presenter feel frozen or statue-like.",
-	].join(" ");
+  const handLine = intro
+    ? "Hands stay low on the desk or just below frame, with at most one brief small emphasis gesture before settling again."
+    : "Hands stay low near the torso, usually lightly clasped or relaxed, with only brief small open-palm emphasis gestures before settling again.";
+  return [
+    "Match the presenter's real reference behavior from motion_reference.mp4 and DemoVideo.mp4.",
+    "Face behavior: direct eye contact, friendly-neutral expression, natural unhurried blinks, mildly readable brow changes, and natural speech-ready jaw and lip behavior with no over-open vowels or reaction-face peaks.",
+    "Head behavior: mostly upright and centered with tiny neck-driven corrections, soft chin dips on emphasis, and one or two light conversational nods over the shot; no swaying, no forward lunges, no head tilts, and no looped nodding.",
+    `Body behavior: shoulders square and steady but not rigid, torso grounded in the seat with subtle breathing and small posture settling, ${handLine}`,
+    "Keep the emotional read composed and consistent from start to finish, but do not let the presenter feel frozen or statue-like.",
+  ].join(" ");
 }
 
 function runwayHeadersJson() {
-	return {
-		Authorization: `Bearer ${RUNWAY_API_KEY}`,
-		"X-Runway-Version": RUNWAY_VERSION,
-		"Content-Type": "application/json",
-	};
+  return {
+    Authorization: `Bearer ${RUNWAY_API_KEY}`,
+    "X-Runway-Version": RUNWAY_VERSION,
+    "Content-Type": "application/json",
+  };
 }
 
 async function runwayCreateEphemeralUpload({ filePath, filename }) {
-	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
-	if (!fs.existsSync(filePath))
-		throw new Error("file missing for runway upload");
+  if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
+  if (!fs.existsSync(filePath))
+    throw new Error("file missing for runway upload");
 
-	const baseName = filename || path.basename(filePath || "asset.bin");
+  const baseName = filename || path.basename(filePath || "asset.bin");
 
-	const init = await axios.post(
-		"https://api.dev.runwayml.com/v1/uploads",
-		{ filename: baseName, type: "ephemeral" },
-		{
-			headers: runwayHeadersJson(),
-			timeout: 20000,
-			validateStatus: (s) => s < 500,
-		},
-	);
+  const init = await axios.post(
+    "https://api.dev.runwayml.com/v1/uploads",
+    { filename: baseName, type: "ephemeral" },
+    {
+      headers: runwayHeadersJson(),
+      timeout: 20000,
+      validateStatus: (s) => s < 500,
+    },
+  );
 
-	if (init.status >= 300) {
-		const msg =
-			typeof init.data === "string"
-				? init.data
-				: JSON.stringify(init.data || {});
-		throw new Error(
-			`Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`,
-		);
-	}
+  if (init.status >= 300) {
+    const msg =
+      typeof init.data === "string"
+        ? init.data
+        : JSON.stringify(init.data || {});
+    throw new Error(
+      `Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`,
+    );
+  }
 
-	const { uploadUrl, fields, runwayUri } = init.data || {};
-	if (!uploadUrl || !fields || !runwayUri)
-		throw new Error("Runway upload init returned incomplete response");
+  const { uploadUrl, fields, runwayUri } = init.data || {};
+  if (!uploadUrl || !fields || !runwayUri)
+    throw new Error("Runway upload init returned incomplete response");
 
-	// Upload to presigned URL
-	if (FormDataNode) {
-		const form = new FormDataNode();
-		Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
-		form.append("file", fs.createReadStream(filePath));
-		const r = await axios.post(uploadUrl, form, {
-			headers: { ...form.getHeaders() },
-			maxBodyLength: Infinity,
-			timeout: 60000,
-			validateStatus: () => true,
-		});
-		if (r.status >= 300) throw new Error(`Runway upload failed (${r.status})`);
-		return runwayUri;
-	}
+  // Upload to presigned URL
+  if (FormDataNode) {
+    const form = new FormDataNode();
+    Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
+    form.append("file", fs.createReadStream(filePath));
+    const r = await axios.post(uploadUrl, form, {
+      headers: { ...form.getHeaders() },
+      maxBodyLength: Infinity,
+      timeout: 60000,
+      validateStatus: () => true,
+    });
+    if (r.status >= 300) throw new Error(`Runway upload failed (${r.status})`);
+    return runwayUri;
+  }
 
-	// Node 18+ fallback
-	if (typeof fetch !== "function" || typeof FormData !== "function") {
-		throw new Error(
-			"Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'",
-		);
-	}
-	const form = new FormData();
-	Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
-	form.append("file", new Blob([fs.readFileSync(filePath)]), baseName);
-	const resp = await fetch(uploadUrl, { method: "POST", body: form });
-	if (!resp.ok) throw new Error(`Runway upload failed (${resp.status})`);
-	return runwayUri;
+  // Node 18+ fallback
+  if (typeof fetch !== "function" || typeof FormData !== "function") {
+    throw new Error(
+      "Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'",
+    );
+  }
+  const form = new FormData();
+  Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
+  form.append("file", new Blob([fs.readFileSync(filePath)]), baseName);
+  const resp = await fetch(uploadUrl, { method: "POST", body: form });
+  if (!resp.ok) throw new Error(`Runway upload failed (${resp.status})`);
+  return runwayUri;
 }
 
 async function pollRunwayTask(taskId, label) {
-	const url = `https://api.dev.runwayml.com/v1/tasks/${taskId}`;
-	for (let i = 0; i < 120; i++) {
-		await sleep(2000);
-		const res = await axios.get(url, {
-			headers: {
-				Authorization: `Bearer ${RUNWAY_API_KEY}`,
-				"X-Runway-Version": RUNWAY_VERSION,
-			},
-			timeout: 20000,
-			validateStatus: (s) => s < 500,
-		});
-		if (res.status >= 300) {
-			const msg =
-				typeof res.data === "string"
-					? res.data
-					: JSON.stringify(res.data || {});
-			throw new Error(
-				`${label} polling failed (${res.status}): ${msg.slice(0, 500)}`,
-			);
-		}
-		const data = res.data || {};
-		const status = String(data.status || "").toUpperCase();
-		if (status === "SUCCEEDED") {
-			if (Array.isArray(data.output) && data.output[0]) return data.output[0];
-			if (typeof data.output === "string") return data.output;
-			throw new Error(`${label} succeeded but returned no output`);
-		}
-		if (status === "FAILED") {
-			throw new Error(
-				`${label} failed: ${data.failureCode || data.error || "FAILED"}`,
-			);
-		}
-	}
-	throw new Error(`${label} timed out`);
+  const url = `https://api.dev.runwayml.com/v1/tasks/${taskId}`;
+  for (let i = 0; i < 120; i++) {
+    await sleep(2000);
+    const res = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${RUNWAY_API_KEY}`,
+        "X-Runway-Version": RUNWAY_VERSION,
+      },
+      timeout: 20000,
+      validateStatus: (s) => s < 500,
+    });
+    if (res.status >= 300) {
+      const msg =
+        typeof res.data === "string"
+          ? res.data
+          : JSON.stringify(res.data || {});
+      throw new Error(
+        `${label} polling failed (${res.status}): ${msg.slice(0, 500)}`,
+      );
+    }
+    const data = res.data || {};
+    const status = String(data.status || "").toUpperCase();
+    if (status === "SUCCEEDED") {
+      if (Array.isArray(data.output) && data.output[0]) return data.output[0];
+      if (typeof data.output === "string") return data.output;
+      throw new Error(`${label} succeeded but returned no output`);
+    }
+    if (status === "FAILED") {
+      throw new Error(
+        `${label} failed: ${data.failureCode || data.error || "FAILED"}`,
+      );
+    }
+  }
+  throw new Error(`${label} timed out`);
 }
 
 function runwayRatio(ratio) {
-	// Runway accepts explicit resolutions; keep safe set
-	const allowed = new Set([
-		"1280:720",
-		"720:1280",
-		"1104:832",
-		"832:1104",
-		"960:960",
-		"1584:672",
-		"1280:768",
-		"768:1280",
-	]);
-	const r = String(ratio || "").trim();
-	if (allowed.has(r)) return r;
-	if (r === "16:9") return "1280:720";
-	if (r === "9:16") return "720:1280";
-	return "1280:720";
+  // Runway accepts explicit resolutions; keep safe set
+  const allowed = new Set([
+    "1280:720",
+    "720:1280",
+    "1104:832",
+    "832:1104",
+    "960:960",
+    "1584:672",
+    "1280:768",
+    "768:1280",
+  ]);
+  const r = String(ratio || "").trim();
+  if (allowed.has(r)) return r;
+  if (r === "16:9") return "1280:720";
+  if (r === "9:16") return "720:1280";
+  return "1280:720";
 }
 
 function seedFromJobId(jobId) {
-	// Deterministic 32-bit seed from uuid
-	const h = crypto.createHash("sha256").update(String(jobId)).digest();
-	return h.readUInt32BE(0);
+  // Deterministic 32-bit seed from uuid
+  const h = crypto.createHash("sha256").update(String(jobId)).digest();
+  return h.readUInt32BE(0);
 }
 
 function pickIntroExpression(jobId) {
-	void jobId;
-	return "calm, neutral expression with settled brows and relaxed eyes";
+  void jobId;
+  return "calm, neutral expression with settled brows and relaxed eyes";
 }
 
 async function runwayImageToVideo({
-	runwayImageUri,
-	promptText,
-	durationSec,
-	ratio,
-	modelOrder,
+  runwayImageUri,
+  promptText,
+  durationSec,
+  ratio,
+  modelOrder,
 }) {
-	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
-	const models = [];
-	const requested = Array.isArray(modelOrder)
-		? modelOrder.map((m) => String(m || "").trim()).filter(Boolean)
-		: [];
-	if (requested.length) {
-		for (const m of requested) {
-			if (!models.includes(m)) models.push(m);
-		}
-	} else {
-		if (RUNWAY_VIDEO_MODEL) models.push(RUNWAY_VIDEO_MODEL);
-		if (
-			RUNWAY_VIDEO_MODEL_FALLBACK &&
-			RUNWAY_VIDEO_MODEL_FALLBACK !== RUNWAY_VIDEO_MODEL
-		)
-			models.push(RUNWAY_VIDEO_MODEL_FALLBACK);
-	}
-	if (!models.length) throw new Error("Runway image_to_video model missing");
+  if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
+  const models = [];
+  const requested = Array.isArray(modelOrder)
+    ? modelOrder.map((m) => String(m || "").trim()).filter(Boolean)
+    : [];
+  if (requested.length) {
+    for (const m of requested) {
+      if (!models.includes(m)) models.push(m);
+    }
+  } else {
+    if (RUNWAY_VIDEO_MODEL) models.push(RUNWAY_VIDEO_MODEL);
+    if (
+      RUNWAY_VIDEO_MODEL_FALLBACK &&
+      RUNWAY_VIDEO_MODEL_FALLBACK !== RUNWAY_VIDEO_MODEL
+    )
+      models.push(RUNWAY_VIDEO_MODEL_FALLBACK);
+  }
+  if (!models.length) throw new Error("Runway image_to_video model missing");
 
-	let lastErr = null;
-	for (const model of models) {
-		const payload = {
-			model,
-			promptImage: [{ uri: runwayImageUri, position: "first" }],
-			promptText: String(promptText || "").slice(0, 900),
-			ratio: runwayRatio(ratio),
-			duration: clampNumber(Math.round(Number(durationSec) || 5), 2, 10),
-		};
+  let lastErr = null;
+  for (const model of models) {
+    const payload = {
+      model,
+      promptImage: [{ uri: runwayImageUri, position: "first" }],
+      promptText: String(promptText || "").slice(0, 900),
+      ratio: runwayRatio(ratio),
+      duration: clampNumber(Math.round(Number(durationSec) || 5), 2, 10),
+    };
 
-		const res = await axios.post(
-			"https://api.dev.runwayml.com/v1/image_to_video",
-			payload,
-			{
-				headers: runwayHeadersJson(),
-				timeout: 30000,
-				validateStatus: (s) => s < 500,
-			},
-		);
-		if (res.status < 300 && res.data?.id)
-			return await pollRunwayTask(res.data.id, "runway_image_to_video");
+    const res = await axios.post(
+      "https://api.dev.runwayml.com/v1/image_to_video",
+      payload,
+      {
+        headers: runwayHeadersJson(),
+        timeout: 30000,
+        validateStatus: (s) => s < 500,
+      },
+    );
+    if (res.status < 300 && res.data?.id)
+      return await pollRunwayTask(res.data.id, "runway_image_to_video");
 
-		const msg =
-			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
-		lastErr = new Error(
-			`Runway image_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
-		);
-		if (model !== models[models.length - 1]) {
-			console.warn(
-				`[Runway] image_to_video failed for model ${model}; trying fallback ${
-					models[models.length - 1]
-				}`,
-			);
-		}
-	}
-	throw lastErr || new Error("Runway image_to_video failed");
+    const msg =
+      typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
+    lastErr = new Error(
+      `Runway image_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
+    );
+    if (model !== models[models.length - 1]) {
+      console.warn(
+        `[Runway] image_to_video failed for model ${model}; trying fallback ${
+          models[models.length - 1]
+        }`,
+      );
+    }
+  }
+  throw lastErr || new Error("Runway image_to_video failed");
 }
 
 async function runwayVideoToVideo({
-	runwayVideoUri,
-	promptText,
-	ratio,
-	seed,
-	references,
+  runwayVideoUri,
+  promptText,
+  ratio,
+  seed,
+  references,
 }) {
-	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
+  if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
 
-	// Per Runway docs, video_to_video expects model gen4_aleph and videoUri field.
-	const payload = {
-		model: "gen4_aleph",
-		videoUri: runwayVideoUri,
-		promptText: String(promptText || "").slice(0, 900),
-		ratio: runwayRatio(ratio),
-		seed: Number.isFinite(seed) ? seed : undefined,
-		...(Array.isArray(references) && references.length ? { references } : {}),
-	};
+  // Per Runway docs, video_to_video expects model gen4_aleph and videoUri field.
+  const payload = {
+    model: "gen4_aleph",
+    videoUri: runwayVideoUri,
+    promptText: String(promptText || "").slice(0, 900),
+    ratio: runwayRatio(ratio),
+    seed: Number.isFinite(seed) ? seed : undefined,
+    ...(Array.isArray(references) && references.length ? { references } : {}),
+  };
 
-	const res = await axios.post(
-		"https://api.dev.runwayml.com/v1/video_to_video",
-		payload,
-		{
-			headers: runwayHeadersJson(),
-			timeout: 30000,
-			validateStatus: (s) => s < 500,
-		},
-	);
+  const res = await axios.post(
+    "https://api.dev.runwayml.com/v1/video_to_video",
+    payload,
+    {
+      headers: runwayHeadersJson(),
+      timeout: 30000,
+      validateStatus: (s) => s < 500,
+    },
+  );
 
-	if (res.status >= 300 || !res.data?.id) {
-		const msg =
-			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
-		throw new Error(
-			`Runway video_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
-		);
-	}
+  if (res.status >= 300 || !res.data?.id) {
+    const msg =
+      typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
+    throw new Error(
+      `Runway video_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
+    );
+  }
 
-	return await pollRunwayTask(res.data.id, "runway_video_to_video");
+  return await pollRunwayTask(res.data.id, "runway_video_to_video");
 }
 
 function buildBaselinePrompt(
-	expression = "neutral",
-	motionRefVideo,
-	variant = 0,
+  expression = "neutral",
+  motionRefVideo,
+  variant = 0,
 ) {
-	const expr = normalizeExpression(expression);
-	let expressionLine =
-		"Expression: calm and professional; neutral mouth, brows settled, no smile.";
-	if (expr === "warm")
-		expressionLine =
-			"Expression: friendly and approachable with only a trace micro-smile (closed mouth, no teeth), brows settled, and no reaction-face peaks.";
-	if (expr === "excited")
-		expressionLine =
-			"Expression: engaged and attentive but restrained; neutral mouth or trace smile only, no grin, no raised-brow surprise, and no wide eyes.";
-	if (expr === "serious")
-		expressionLine =
-			"Expression: neutral and steady, brows settled, no frown, no exaggerated concern, soft eye contact.";
-	if (expr === "thoughtful")
-		expressionLine =
-			"Expression: thoughtful and composed, neutral mouth, gentle eye focus, settled brows, no smile.";
+  const expr = normalizeExpression(expression);
+  let expressionLine =
+    "Expression: calm and professional; neutral mouth, brows settled, no smile.";
+  if (expr === "warm")
+    expressionLine =
+      "Expression: friendly and approachable with only a trace micro-smile (closed mouth, no teeth), brows settled, and no reaction-face peaks.";
+  if (expr === "excited")
+    expressionLine =
+      "Expression: engaged and attentive but restrained; neutral mouth or trace smile only, no grin, no raised-brow surprise, and no wide eyes.";
+  if (expr === "serious")
+    expressionLine =
+      "Expression: neutral and steady, brows settled, no frown, no exaggerated concern, soft eye contact.";
+  if (expr === "thoughtful")
+    expressionLine =
+      "Expression: thoughtful and composed, neutral mouth, gentle eye focus, settled brows, no smile.";
 
-	const variantHint =
-		variant === 1
-			? "Use a slightly different blink cadence and allow one soft emphasis nod or chin dip across the shot; keep movement natural, restrained, and never looped."
-			: variant === 2
-				? "Allow a tiny shoulder-settling shift and one brief micro-lean recovery while keeping framing stable and the performance calm."
-				: "";
-	const motionHint = motionRefVideo
-		? buildPresenterReferenceMotionHint()
-		: PRESENTER_MOTION_STYLE;
+  const variantHint =
+    variant === 1
+      ? "Use a slightly different blink cadence and allow one soft emphasis nod or chin dip across the shot; keep movement natural, restrained, and never looped."
+      : variant === 2
+        ? "Allow a tiny shoulder-settling shift and one brief micro-lean recovery while keeping framing stable and the performance calm."
+        : "";
+  const motionHint = motionRefVideo
+    ? buildPresenterReferenceMotionHint()
+    : PRESENTER_MOTION_STYLE;
 
-	return `
+  return `
 Photorealistic talking-head video of the SAME person as the reference image.
 Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT}
 Background must remain locked and static; no movement or people behind the presenter.
@@ -4930,1487 +4933,1487 @@ Do NOT try to lip-sync.
  * ------------------------------------------------------------- */
 
 function computeSegmentCount(narrationTargetSec) {
-	const n = Math.ceil((Number(narrationTargetSec) || 1) / SEGMENT_TARGET_SEC);
-	const minSegs = narrationTargetSec < 26 ? 2 : 3;
-	return clampNumber(n, minSegs, MAX_SEGMENTS);
+  const n = Math.ceil((Number(narrationTargetSec) || 1) / SEGMENT_TARGET_SEC);
+  const minSegs = narrationTargetSec < 26 ? 2 : 3;
+  return clampNumber(n, minSegs, MAX_SEGMENTS);
 }
 
 function buildWordCaps(segmentCount, narrationTargetSec) {
-	const avg = (Number(narrationTargetSec) || 60) / segmentCount;
-	const caps = [];
-	for (let i = 0; i < segmentCount; i++) {
-		const hookBoost = i === 0 ? 1.05 : 1.0;
-		const endCut = i === segmentCount - 1 ? 0.95 : 1.0;
-		const cap = Math.max(
-			14,
-			Math.round(
-				avg * SCRIPT_VOICE_WPS * SCRIPT_PACE_BIAS * hookBoost * endCut,
-			),
-		);
-		caps.push(cap);
-	}
-	return caps;
+  const avg = (Number(narrationTargetSec) || 60) / segmentCount;
+  const caps = [];
+  for (let i = 0; i < segmentCount; i++) {
+    const hookBoost = i === 0 ? 1.05 : 1.0;
+    const endCut = i === segmentCount - 1 ? 0.95 : 1.0;
+    const cap = Math.max(
+      14,
+      Math.round(
+        avg * SCRIPT_VOICE_WPS * SCRIPT_PACE_BIAS * hookBoost * endCut,
+      ),
+    );
+    caps.push(cap);
+  }
+  return caps;
 }
 
 function allocateTopicSegments(segmentCount, topics = []) {
-	const topicCount = Math.max(1, topics.length || 1);
-	const base = Math.max(1, Math.floor(segmentCount / topicCount));
-	let remainder = Math.max(0, segmentCount - base * topicCount);
-	const ranges = [];
-	let start = 0;
+  const topicCount = Math.max(1, topics.length || 1);
+  const base = Math.max(1, Math.floor(segmentCount / topicCount));
+  let remainder = Math.max(0, segmentCount - base * topicCount);
+  const ranges = [];
+  let start = 0;
 
-	for (let i = 0; i < topicCount; i++) {
-		const count = base + (remainder > 0 ? 1 : 0);
-		remainder = Math.max(0, remainder - 1);
-		const end = Math.min(segmentCount - 1, start + count - 1);
-		ranges.push({ topicIndex: i, startIndex: start, endIndex: end, count });
-		start = end + 1;
-	}
+  for (let i = 0; i < topicCount; i++) {
+    const count = base + (remainder > 0 ? 1 : 0);
+    remainder = Math.max(0, remainder - 1);
+    const end = Math.min(segmentCount - 1, start + count - 1);
+    ranges.push({ topicIndex: i, startIndex: start, endIndex: end, count });
+    start = end + 1;
+  }
 
-	return ranges;
+  return ranges;
 }
 
 const FICTIONAL_CONTEXT_STRONG_TOKENS = [
-	"episode",
-	"season",
-	"series",
-	"character",
-	"plot",
-	"storyline",
-	"ending",
-	"finale",
-	"spoiler",
-	"recap",
-	"scene",
+  "episode",
+  "season",
+  "series",
+  "character",
+  "plot",
+  "storyline",
+  "ending",
+  "finale",
+  "spoiler",
+  "recap",
+  "scene",
 ];
 
 const FICTIONAL_CONTEXT_WEAK_TOKENS = [
-	"show",
-	"tv",
-	"television",
-	"movie",
-	"film",
-	"trailer",
-	"cast",
-	"premiere",
-	"streaming",
-	"netflix",
-	"hbo",
-	"disney",
-	"prime",
-	"paramount",
-	"peacock",
-	"apple tv",
+  "show",
+  "tv",
+  "television",
+  "movie",
+  "film",
+  "trailer",
+  "cast",
+  "premiere",
+  "streaming",
+  "netflix",
+  "hbo",
+  "disney",
+  "prime",
+  "paramount",
+  "peacock",
+  "apple tv",
 ];
 
 const REAL_PERSON_CONTEXT_TOKENS = [
-	"actor",
-	"actress",
-	"singer",
-	"rapper",
-	"musician",
-	"comedian",
-	"director",
-	"producer",
-	"influencer",
-	"model",
-	"celebrity",
-	"instagram",
-	"tiktok",
-	"onlyfans",
-	"youtube",
-	"twitter",
-	"x.com",
-	"facebook",
-	"snapchat",
-	"podcast",
-	"interview",
-	"net worth",
-	"paparazzi",
-	"viral",
-	"born",
-	"birth",
-	"age",
-	"daughter",
-	"son",
-	"wife",
-	"husband",
-	"family",
-	"parent",
-	"parents",
-	"child",
-	"children",
-	"police",
-	"court",
-	"trial",
-	"arrest",
-	"charged",
-	"lawsuit",
-	"hospital",
-	"overdose",
-	"coroner",
-	"autopsy",
-	"obituary",
-	"investigation",
+  "actor",
+  "actress",
+  "singer",
+  "rapper",
+  "musician",
+  "comedian",
+  "director",
+  "producer",
+  "influencer",
+  "model",
+  "celebrity",
+  "instagram",
+  "tiktok",
+  "onlyfans",
+  "youtube",
+  "twitter",
+  "x.com",
+  "facebook",
+  "snapchat",
+  "podcast",
+  "interview",
+  "net worth",
+  "paparazzi",
+  "viral",
+  "born",
+  "birth",
+  "age",
+  "daughter",
+  "son",
+  "wife",
+  "husband",
+  "family",
+  "parent",
+  "parents",
+  "child",
+  "children",
+  "police",
+  "court",
+  "trial",
+  "arrest",
+  "charged",
+  "lawsuit",
+  "hospital",
+  "overdose",
+  "coroner",
+  "autopsy",
+  "obituary",
+  "investigation",
 ];
 
 const REAL_WORLD_OVERRIDE_TOKENS = [
-	"daughter",
-	"son",
-	"wife",
-	"husband",
-	"family",
-	"parents",
-	"child",
-	"children",
-	"police",
-	"court",
-	"trial",
-	"arrest",
-	"charged",
-	"lawsuit",
-	"hospital",
-	"overdose",
-	"coroner",
-	"autopsy",
-	"obituary",
-	"investigation",
-	"found dead",
-	"cause of death",
-	"instagram",
-	"tiktok",
-	"onlyfans",
-	"net worth",
-	"paparazzi",
+  "daughter",
+  "son",
+  "wife",
+  "husband",
+  "family",
+  "parents",
+  "child",
+  "children",
+  "police",
+  "court",
+  "trial",
+  "arrest",
+  "charged",
+  "lawsuit",
+  "hospital",
+  "overdose",
+  "coroner",
+  "autopsy",
+  "obituary",
+  "investigation",
+  "found dead",
+  "cause of death",
+  "instagram",
+  "tiktok",
+  "onlyfans",
+  "net worth",
+  "paparazzi",
 ];
 
 const ANCHOR_NOISE_TOKENS = new Set([
-	"latest",
-	"trending",
-	"trend",
-	"news",
-	"update",
-	"updates",
-	"explained",
-	"report",
-	"reports",
-	"reporting",
-	"breaking",
-	"official",
-	"video",
-	"live",
-	"today",
-	"yesterday",
-	"vlog",
-	"shorts",
-	"reel",
-	"clip",
-	"stream",
-	"watch",
-	"highlights",
-	"full",
+  "latest",
+  "trending",
+  "trend",
+  "news",
+  "update",
+  "updates",
+  "explained",
+  "report",
+  "reports",
+  "reporting",
+  "breaking",
+  "official",
+  "video",
+  "live",
+  "today",
+  "yesterday",
+  "vlog",
+  "shorts",
+  "reel",
+  "clip",
+  "stream",
+  "watch",
+  "highlights",
+  "full",
 ]);
 const ANCHOR_SHORT_TOKENS_KEEP = new Set([
-	"us",
-	"uk",
-	"eu",
-	"uae",
-	"ai",
-	"nba",
-	"nfl",
-	"mlb",
-	"nhl",
+  "us",
+  "uk",
+  "eu",
+  "uae",
+  "ai",
+  "nba",
+  "nfl",
+  "mlb",
+  "nhl",
 ]);
 const CONTEXT_NOISE_TOKENS = new Set([
-	"live",
-	"today",
-	"yesterday",
-	"official",
-	"breaking",
+  "live",
+  "today",
+  "yesterday",
+  "official",
+  "breaking",
 ]);
 const CONTEXT_SHORT_TOKENS_KEEP = new Set([
-	"us",
-	"uk",
-	"eu",
-	"uae",
-	"ai",
-	"nba",
-	"nfl",
-	"mlb",
-	"nhl",
+  "us",
+  "uk",
+  "eu",
+  "uae",
+  "ai",
+  "nba",
+  "nfl",
+  "mlb",
+  "nhl",
 ]);
 
 const TOPIC_DOMAIN_TOKENS = [
-	{
-		domain: "sports",
-		tokens: [
-			"nba",
-			"nfl",
-			"mlb",
-			"nhl",
-			"wnba",
-			"fifa",
-			"uefa",
-			"premier league",
-			"champions league",
-			"match",
-			"game",
-			"playoff",
-			"finals",
-			"tournament",
-			"team",
-			"coach",
-		],
-	},
-	{
-		domain: "music",
-		tokens: [
-			"album",
-			"song",
-			"single",
-			"tour",
-			"concert",
-			"festival",
-			"track",
-			"band",
-			"singer",
-			"rapper",
-			"billboard",
-		],
-	},
-	{
-		domain: "politics",
-		tokens: [
-			"election",
-			"senate",
-			"congress",
-			"house",
-			"president",
-			"campaign",
-			"vote",
-			"policy",
-			"governor",
-			"mayor",
-			"parliament",
-		],
-	},
-	{
-		domain: "business",
-		tokens: [
-			"earnings",
-			"stock",
-			"ipo",
-			"merger",
-			"acquisition",
-			"ceo",
-			"company",
-			"startup",
-			"investor",
-			"funding",
-		],
-	},
-	{
-		domain: "tech",
-		tokens: [
-			"ai",
-			"app",
-			"iphone",
-			"android",
-			"software",
-			"hardware",
-			"release",
-			"update",
-			"startup",
-			"platform",
-		],
-	},
-	{
-		domain: "gaming",
-		tokens: ["game", "gaming", "esports", "console", "steam", "playstation"],
-	},
+  {
+    domain: "sports",
+    tokens: [
+      "nba",
+      "nfl",
+      "mlb",
+      "nhl",
+      "wnba",
+      "fifa",
+      "uefa",
+      "premier league",
+      "champions league",
+      "match",
+      "game",
+      "playoff",
+      "finals",
+      "tournament",
+      "team",
+      "coach",
+    ],
+  },
+  {
+    domain: "music",
+    tokens: [
+      "album",
+      "song",
+      "single",
+      "tour",
+      "concert",
+      "festival",
+      "track",
+      "band",
+      "singer",
+      "rapper",
+      "billboard",
+    ],
+  },
+  {
+    domain: "politics",
+    tokens: [
+      "election",
+      "senate",
+      "congress",
+      "house",
+      "president",
+      "campaign",
+      "vote",
+      "policy",
+      "governor",
+      "mayor",
+      "parliament",
+    ],
+  },
+  {
+    domain: "business",
+    tokens: [
+      "earnings",
+      "stock",
+      "ipo",
+      "merger",
+      "acquisition",
+      "ceo",
+      "company",
+      "startup",
+      "investor",
+      "funding",
+    ],
+  },
+  {
+    domain: "tech",
+    tokens: [
+      "ai",
+      "app",
+      "iphone",
+      "android",
+      "software",
+      "hardware",
+      "release",
+      "update",
+      "startup",
+      "platform",
+    ],
+  },
+  {
+    domain: "gaming",
+    tokens: ["game", "gaming", "esports", "console", "steam", "playstation"],
+  },
 ];
 
 function detectFictionalContext(text = "") {
-	const raw = String(text || "");
-	const hay = raw.toLowerCase();
-	if (!hay) return false;
-	const hasStrong = FICTIONAL_CONTEXT_STRONG_TOKENS.some((tok) =>
-		hay.includes(tok),
-	);
-	const hasRealWorldOverride = REAL_WORLD_OVERRIDE_TOKENS.some((tok) =>
-		hay.includes(tok),
-	);
-	const hasPersonCue = REAL_PERSON_CONTEXT_TOKENS.some((tok) =>
-		hay.includes(tok),
-	);
-	const hasNamePattern =
-		/\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b/.test(raw);
-	if (hasStrong && (hasRealWorldOverride || hasPersonCue)) return false;
-	if (hasStrong) return true;
-	if (hasPersonCue) return false;
-	if (hasNamePattern && hasRealWorldOverride) return false;
-	const hasWeak = FICTIONAL_CONTEXT_WEAK_TOKENS.some((tok) =>
-		hay.includes(tok),
-	);
-	if (!hasWeak) return false;
-	const hasQuestionCue =
-		/\b(did|does|do)\s+\w[\w\s]{0,40}\b(die|dies|died|killed|survive|survives|alive)\b/.test(
-			hay,
-		) ||
-		/\bending explained\b/.test(hay) ||
-		/\bwho\s+(dies|died|survives|survived)\b/.test(hay);
-	return hasQuestionCue;
+  const raw = String(text || "");
+  const hay = raw.toLowerCase();
+  if (!hay) return false;
+  const hasStrong = FICTIONAL_CONTEXT_STRONG_TOKENS.some((tok) =>
+    hay.includes(tok),
+  );
+  const hasRealWorldOverride = REAL_WORLD_OVERRIDE_TOKENS.some((tok) =>
+    hay.includes(tok),
+  );
+  const hasPersonCue = REAL_PERSON_CONTEXT_TOKENS.some((tok) =>
+    hay.includes(tok),
+  );
+  const hasNamePattern =
+    /\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b/.test(raw);
+  if (hasStrong && (hasRealWorldOverride || hasPersonCue)) return false;
+  if (hasStrong) return true;
+  if (hasPersonCue) return false;
+  if (hasNamePattern && hasRealWorldOverride) return false;
+  const hasWeak = FICTIONAL_CONTEXT_WEAK_TOKENS.some((tok) =>
+    hay.includes(tok),
+  );
+  if (!hasWeak) return false;
+  const hasQuestionCue =
+    /\b(did|does|do)\s+\w[\w\s]{0,40}\b(die|dies|died|killed|survive|survives|alive)\b/.test(
+      hay,
+    ) ||
+    /\bending explained\b/.test(hay) ||
+    /\bwho\s+(dies|died|survives|survived)\b/.test(hay);
+  return hasQuestionCue;
 }
 
 function inferFictionalMedium(text = "") {
-	const hay = String(text || "").toLowerCase();
-	if (
-		/\b(season|episode|series|show|tv|television|streaming|finale)\b/.test(hay)
-	)
-		return "series";
-	if (/\b(movie|film|trailer|premiere)\b/.test(hay)) return "film";
-	if (/\b(game|gaming|videogame)\b/.test(hay)) return "game";
-	if (/\b(anime|manga|novel|book|comic)\b/.test(hay)) return "story";
-	return "story";
+  const hay = String(text || "").toLowerCase();
+  if (
+    /\b(season|episode|series|show|tv|television|streaming|finale)\b/.test(hay)
+  )
+    return "series";
+  if (/\b(movie|film|trailer|premiere)\b/.test(hay)) return "film";
+  if (/\b(game|gaming|videogame)\b/.test(hay)) return "game";
+  if (/\b(anime|manga|novel|book|comic)\b/.test(hay)) return "story";
+  return "story";
 }
 
 function inferTopicDomainFromText(text = "") {
-	const hay = String(text || "").toLowerCase();
-	if (!hay) return { domain: "general" };
-	if (detectFictionalContext(hay)) {
-		return { domain: "fictional", medium: inferFictionalMedium(hay) };
-	}
-	let best = { domain: "general", score: 0 };
-	for (const group of TOPIC_DOMAIN_TOKENS) {
-		const score = group.tokens.reduce(
-			(acc, tok) => acc + (hay.includes(tok) ? 1 : 0),
-			0,
-		);
-		if (score > best.score) best = { domain: group.domain, score };
-	}
-	return best.score ? { domain: best.domain } : { domain: "general" };
+  const hay = String(text || "").toLowerCase();
+  if (!hay) return { domain: "general" };
+  if (detectFictionalContext(hay)) {
+    return { domain: "fictional", medium: inferFictionalMedium(hay) };
+  }
+  let best = { domain: "general", score: 0 };
+  for (const group of TOPIC_DOMAIN_TOKENS) {
+    const score = group.tokens.reduce(
+      (acc, tok) => acc + (hay.includes(tok) ? 1 : 0),
+      0,
+    );
+    if (score > best.score) best = { domain: group.domain, score };
+  }
+  return best.score ? { domain: best.domain } : { domain: "general" };
 }
 
 function splitTitleSegments(text = "") {
-	const raw = String(text || "").trim();
-	if (!raw) return [];
-	return raw
-		.split(/\s(?:-|\u2013|\u2014|\||:)\s/)
-		.map((seg) => seg.trim())
-		.filter(Boolean);
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  return raw
+    .split(/\s(?:-|\u2013|\u2014|\||:)\s/)
+    .map((seg) => seg.trim())
+    .filter(Boolean);
 }
 
 function normalizeContextLine(line = "") {
-	let text = String(line || "")
-		.replace(/\s+/g, " ")
-		.trim();
-	if (!text) return "";
-	text = text.replace(/[|:]+/g, " ");
-	text = text.replace(/\s*-\s*/g, " ");
-	text = text.replace(/([a-z])[-\u2013\u2014](\s*)([a-z])/gi, "$1 $3");
-	text = text.replace(/([a-z])([A-Z])/g, "$1 $2");
-	text = text.replace(
-		/\b(vlog|clip|shorts|reel)(today|yesterday)\b/gi,
-		"$1 $2",
-	);
-	text = text.replace(/\b(today|yesterday)\b/gi, "");
-	text = text.replace(/\s+/g, " ").trim();
-	if (!text) return "";
+  let text = String(line || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  text = text.replace(/[|:]+/g, " ");
+  text = text.replace(/\s*-\s*/g, " ");
+  text = text.replace(/([a-z])[-\u2013\u2014](\s*)([a-z])/gi, "$1 $3");
+  text = text.replace(/([a-z])([A-Z])/g, "$1 $2");
+  text = text.replace(
+    /\b(vlog|clip|shorts|reel)(today|yesterday)\b/gi,
+    "$1 $2",
+  );
+  text = text.replace(/\b(today|yesterday)\b/gi, "");
+  text = text.replace(/\s+/g, " ").trim();
+  if (!text) return "";
 
-	const tokens = text.split(/\s+/).filter(Boolean);
-	const filtered = tokens.filter((tok, idx) => {
-		const lower = tok.toLowerCase();
-		if (CONTEXT_NOISE_TOKENS.has(lower)) return false;
-		const isEdge = idx === 0 || idx === tokens.length - 1;
-		if (
-			isEdge &&
-			tok.length <= 2 &&
-			tokens.length > 3 &&
-			!CONTEXT_SHORT_TOKENS_KEEP.has(lower)
-		) {
-			return false;
-		}
-		return true;
-	});
+  const tokens = text.split(/\s+/).filter(Boolean);
+  const filtered = tokens.filter((tok, idx) => {
+    const lower = tok.toLowerCase();
+    if (CONTEXT_NOISE_TOKENS.has(lower)) return false;
+    const isEdge = idx === 0 || idx === tokens.length - 1;
+    if (
+      isEdge &&
+      tok.length <= 2 &&
+      tokens.length > 3 &&
+      !CONTEXT_SHORT_TOKENS_KEEP.has(lower)
+    ) {
+      return false;
+    }
+    return true;
+  });
 
-	const cleaned = filtered.join(" ");
-	if (filtered.length >= 2) return cleaned;
-	return text;
+  const cleaned = filtered.join(" ");
+  if (filtered.length >= 2) return cleaned;
+  return text;
 }
 
 function buildTopicContextStrings(topicObj, contextItems = []) {
-	const list = [];
-	const topicLabel = cleanTopicLabel(
-		topicObj?.displayTopic || topicObj?.topic || "",
-	);
-	const pushLine = (value) => {
-		const cleaned = normalizeContextLine(value);
-		if (cleaned) list.push(cleaned);
-	};
-	if (topicLabel) pushLine(topicLabel);
-	if (topicObj?.rawTitle) pushLine(String(topicObj.rawTitle));
-	if (topicObj?.seoTitle) pushLine(String(topicObj.seoTitle));
-	if (topicObj?.youtubeShortTitle) pushLine(String(topicObj.youtubeShortTitle));
+  const list = [];
+  const topicLabel = cleanTopicLabel(
+    topicObj?.displayTopic || topicObj?.topic || "",
+  );
+  const pushLine = (value) => {
+    const cleaned = normalizeContextLine(value);
+    if (cleaned) list.push(cleaned);
+  };
+  if (topicLabel) pushLine(topicLabel);
+  if (topicObj?.rawTitle) pushLine(String(topicObj.rawTitle));
+  if (topicObj?.seoTitle) pushLine(String(topicObj.seoTitle));
+  if (topicObj?.youtubeShortTitle) pushLine(String(topicObj.youtubeShortTitle));
 
-	const story = topicObj?.trendStory || topicObj || {};
-	const phrases = Array.isArray(story.searchPhrases) ? story.searchPhrases : [];
-	const entities = Array.isArray(story.entityNames) ? story.entityNames : [];
-	const articles = Array.isArray(story.articles) ? story.articles : [];
-	const articleTitles = articles.map((a) => a?.title).filter(Boolean);
-	const imageComment = story.imageComment || "";
-	const related = normalizeRelatedQueries(
-		story.relatedQueries || topicObj?.relatedQueries || null,
-	);
+  const story = topicObj?.trendStory || topicObj || {};
+  const phrases = Array.isArray(story.searchPhrases) ? story.searchPhrases : [];
+  const entities = Array.isArray(story.entityNames) ? story.entityNames : [];
+  const articles = Array.isArray(story.articles) ? story.articles : [];
+  const articleTitles = articles.map((a) => a?.title).filter(Boolean);
+  const imageComment = story.imageComment || "";
+  const related = normalizeRelatedQueries(
+    story.relatedQueries || topicObj?.relatedQueries || null,
+  );
 
-	for (const value of [
-		...phrases,
-		...entities,
-		...articleTitles,
-		...related.rising,
-		...related.top,
-	]) {
-		pushLine(value);
-	}
-	if (imageComment) pushLine(String(imageComment));
+  for (const value of [
+    ...phrases,
+    ...entities,
+    ...articleTitles,
+    ...related.rising,
+    ...related.top,
+  ]) {
+    pushLine(value);
+  }
+  if (imageComment) pushLine(String(imageComment));
 
-	for (const item of Array.isArray(contextItems) ? contextItems : []) {
-		if (typeof item === "string") {
-			pushLine(item);
-			continue;
-		}
-		if (item?.title) pushLine(String(item.title));
-		if (item?.snippet) pushLine(String(item.snippet));
-	}
+  for (const item of Array.isArray(contextItems) ? contextItems : []) {
+    if (typeof item === "string") {
+      pushLine(item);
+      continue;
+    }
+    if (item?.title) pushLine(String(item.title));
+    if (item?.snippet) pushLine(String(item.snippet));
+  }
 
-	return uniqueStrings(list.filter(Boolean), { limit: 24 });
+  return uniqueStrings(list.filter(Boolean), { limit: 24 });
 }
 
 function scoreAnchorCandidate(candidate = "", baseTokens = []) {
-	const cleaned = cleanTopicLabel(candidate);
-	if (!cleaned) return -999;
-	const lower = cleaned.toLowerCase();
-	const tokens = tokenizeLabel(cleaned);
-	if (!tokens.length) return -999;
-	const matchCount = baseTokens.filter((t) => lower.includes(t)).length;
-	const noiseHits = tokens.filter((t) => ANCHOR_NOISE_TOKENS.has(t)).length;
-	const baseSet = new Set(baseTokens);
-	const extraTokens = tokens.filter(
-		(t) =>
-			!baseSet.has(t) &&
-			!TOPIC_STOP_WORDS.has(t) &&
-			!GENERIC_TOPIC_TOKENS.has(t),
-	);
-	const capWords = (candidate.match(/\b[A-Z][a-z]+\b/g) || []).length;
-	const wordCount = tokens.length;
-	let score =
-		matchCount * 2 +
-		capWords * 0.6 +
-		Math.min(wordCount, 6) * 0.25 -
-		Math.max(0, wordCount - 8) * 0.4;
-	if (noiseHits) score -= Math.min(1.4, noiseHits * 0.7);
-	if (extraTokens.length > 1)
-		score -= Math.min(1.2, (extraTokens.length - 1) * 0.25);
-	if (
-		/^(did|does|do|is|are|was|were|will|can|could|should|would|has|have|had)\b/i.test(
-			cleaned,
-		)
-	) {
-		score -= 0.7;
-	}
-	const isGenericOnly = tokens.every(
-		(t) => TOPIC_STOP_WORDS.has(t) || GENERIC_TOPIC_TOKENS.has(t),
-	);
-	if (isGenericOnly) score -= 2;
-	return score;
+  const cleaned = cleanTopicLabel(candidate);
+  if (!cleaned) return -999;
+  const lower = cleaned.toLowerCase();
+  const tokens = tokenizeLabel(cleaned);
+  if (!tokens.length) return -999;
+  const matchCount = baseTokens.filter((t) => lower.includes(t)).length;
+  const noiseHits = tokens.filter((t) => ANCHOR_NOISE_TOKENS.has(t)).length;
+  const baseSet = new Set(baseTokens);
+  const extraTokens = tokens.filter(
+    (t) =>
+      !baseSet.has(t) &&
+      !TOPIC_STOP_WORDS.has(t) &&
+      !GENERIC_TOPIC_TOKENS.has(t),
+  );
+  const capWords = (candidate.match(/\b[A-Z][a-z]+\b/g) || []).length;
+  const wordCount = tokens.length;
+  let score =
+    matchCount * 2 +
+    capWords * 0.6 +
+    Math.min(wordCount, 6) * 0.25 -
+    Math.max(0, wordCount - 8) * 0.4;
+  if (noiseHits) score -= Math.min(1.4, noiseHits * 0.7);
+  if (extraTokens.length > 1)
+    score -= Math.min(1.2, (extraTokens.length - 1) * 0.25);
+  if (
+    /^(did|does|do|is|are|was|were|will|can|could|should|would|has|have|had)\b/i.test(
+      cleaned,
+    )
+  ) {
+    score -= 0.7;
+  }
+  const isGenericOnly = tokens.every(
+    (t) => TOPIC_STOP_WORDS.has(t) || GENERIC_TOPIC_TOKENS.has(t),
+  );
+  if (isGenericOnly) score -= 2;
+  return score;
 }
 
 function pickTopicAnchorLabel(topicLabel = "", contextStrings = []) {
-	const baseLabel = normalizeTopicLabelForQuestion(topicLabel) || topicLabel;
-	const baseTokens = filterSpecificTopicTokens(
-		topicTokensFromTitle(baseLabel || topicLabel),
-	);
-	const candidates = new Set();
-	const pushCandidate = (value) => {
-		const cleaned = cleanTopicLabel(String(value || ""));
-		if (!cleaned || cleaned.length < 3) return;
-		candidates.add(cleaned);
-	};
+  const baseLabel = normalizeTopicLabelForQuestion(topicLabel) || topicLabel;
+  const baseTokens = filterSpecificTopicTokens(
+    topicTokensFromTitle(baseLabel || topicLabel),
+  );
+  const candidates = new Set();
+  const pushCandidate = (value) => {
+    const cleaned = cleanTopicLabel(String(value || ""));
+    if (!cleaned || cleaned.length < 3) return;
+    candidates.add(cleaned);
+  };
 
-	pushCandidate(baseLabel);
-	pushCandidate(topicLabel);
-	for (const raw of Array.isArray(contextStrings) ? contextStrings : []) {
-		pushCandidate(raw);
-		const segments = splitTitleSegments(raw);
-		for (const seg of segments) pushCandidate(seg);
-	}
+  pushCandidate(baseLabel);
+  pushCandidate(topicLabel);
+  for (const raw of Array.isArray(contextStrings) ? contextStrings : []) {
+    pushCandidate(raw);
+    const segments = splitTitleSegments(raw);
+    for (const seg of segments) pushCandidate(seg);
+  }
 
-	let best = "";
-	let bestScore = -999;
-	for (const c of candidates) {
-		const score = scoreAnchorCandidate(c, baseTokens);
-		if (score > bestScore) {
-			bestScore = score;
-			best = c;
-		}
-	}
+  let best = "";
+  let bestScore = -999;
+  for (const c of candidates) {
+    const score = scoreAnchorCandidate(c, baseTokens);
+    if (score > bestScore) {
+      bestScore = score;
+      best = c;
+    }
+  }
 
-	if (!best) return shortTopicLabel(baseLabel || topicLabel, 5);
-	const anchor = shortTopicLabel(best, 5);
-	const cleanedAnchor = stripAnchorNoise(anchor);
-	return cleanedAnchor || anchor || shortTopicLabel(baseLabel || topicLabel, 5);
+  if (!best) return shortTopicLabel(baseLabel || topicLabel, 5);
+  const anchor = shortTopicLabel(best, 5);
+  const cleanedAnchor = stripAnchorNoise(anchor);
+  return cleanedAnchor || anchor || shortTopicLabel(baseLabel || topicLabel, 5);
 }
 
 function pickIntentEvidenceLine(
-	contextStrings = [],
-	anchor = "",
-	topicLabel = "",
+  contextStrings = [],
+  anchor = "",
+  topicLabel = "",
 ) {
-	const lines = Array.isArray(contextStrings) ? contextStrings : [];
-	const anchorLower = String(anchor || "").toLowerCase();
-	if (anchorLower) {
-		const hit = lines.find((l) =>
-			String(l || "")
-				.toLowerCase()
-				.includes(anchorLower),
-		);
-		if (hit) return String(hit || "").slice(0, 160);
-	}
-	const baseTokens = topicTokensFromTitle(
-		normalizeTopicLabelForQuestion(topicLabel) || topicLabel,
-	);
-	if (baseTokens.length) {
-		const hit = lines.find((l) =>
-			baseTokens.some((t) =>
-				String(l || "")
-					.toLowerCase()
-					.includes(t),
-			),
-		);
-		if (hit) return String(hit || "").slice(0, 160);
-	}
-	return lines.length ? String(lines[0] || "").slice(0, 160) : "";
+  const lines = Array.isArray(contextStrings) ? contextStrings : [];
+  const anchorLower = String(anchor || "").toLowerCase();
+  if (anchorLower) {
+    const hit = lines.find((l) =>
+      String(l || "")
+        .toLowerCase()
+        .includes(anchorLower),
+    );
+    if (hit) return String(hit || "").slice(0, 160);
+  }
+  const baseTokens = topicTokensFromTitle(
+    normalizeTopicLabelForQuestion(topicLabel) || topicLabel,
+  );
+  if (baseTokens.length) {
+    const hit = lines.find((l) =>
+      baseTokens.some((t) =>
+        String(l || "")
+          .toLowerCase()
+          .includes(t),
+      ),
+    );
+    if (hit) return String(hit || "").slice(0, 160);
+  }
+  return lines.length ? String(lines[0] || "").slice(0, 160) : "";
 }
 
 function buildTopicIntentSummary(topicObj, contextItems = []) {
-	const label = cleanTopicLabel(
-		topicObj?.displayTopic || topicObj?.topic || "",
-	);
-	const contextStrings = buildTopicContextStrings(topicObj, contextItems);
-	const contextText = contextStrings.join(" ");
-	const domainInfo = inferTopicDomainFromText(contextText);
-	const anchor = pickTopicAnchorLabel(
-		label || topicObj?.topic || "",
-		contextStrings,
-	);
-	const evidence = pickIntentEvidenceLine(contextStrings, anchor, label);
-	return {
-		label,
-		anchor,
-		domain: domainInfo.domain,
-		medium: domainInfo.medium,
-		evidence,
-		hasContext: Boolean(contextStrings.length),
-	};
+  const label = cleanTopicLabel(
+    topicObj?.displayTopic || topicObj?.topic || "",
+  );
+  const contextStrings = buildTopicContextStrings(topicObj, contextItems);
+  const contextText = contextStrings.join(" ");
+  const domainInfo = inferTopicDomainFromText(contextText);
+  const anchor = pickTopicAnchorLabel(
+    label || topicObj?.topic || "",
+    contextStrings,
+  );
+  const evidence = pickIntentEvidenceLine(contextStrings, anchor, label);
+  return {
+    label,
+    anchor,
+    domain: domainInfo.domain,
+    medium: domainInfo.medium,
+    evidence,
+    hasContext: Boolean(contextStrings.length),
+  };
 }
 
 function inferTonePlan({ topic, topics, angle, liveContext }) {
-	const topicLine =
-		Array.isArray(topics) && topics.length
-			? topics.map((t) => t.topic || "").join(" ")
-			: topic || "";
-	const contextLines = Array.isArray(liveContext)
-		? liveContext.map((c) =>
-				typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`,
-			)
-		: [];
-	const hay = [topicLine, angle || "", ...contextLines].join(" ").toLowerCase();
+  const topicLine =
+    Array.isArray(topics) && topics.length
+      ? topics.map((t) => t.topic || "").join(" ")
+      : topic || "";
+  const contextLines = Array.isArray(liveContext)
+    ? liveContext.map((c) =>
+        typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`,
+      )
+    : [];
+  const hay = [topicLine, angle || "", ...contextLines].join(" ").toLowerCase();
 
-	let seriousScore = 0;
-	let excitedScore = 0;
+  let seriousScore = 0;
+  let excitedScore = 0;
 
-	for (const tok of SERIOUS_TONE_TOKENS) {
-		if (hay.includes(tok)) seriousScore += 2;
-	}
-	for (const tok of POLITICAL_TONE_TOKENS) {
-		if (hay.includes(tok)) seriousScore += 2;
-	}
-	for (const tok of EXCITED_TONE_TOKENS) {
-		if (hay.includes(tok)) excitedScore += 1;
-	}
+  for (const tok of SERIOUS_TONE_TOKENS) {
+    if (hay.includes(tok)) seriousScore += 2;
+  }
+  for (const tok of POLITICAL_TONE_TOKENS) {
+    if (hay.includes(tok)) seriousScore += 2;
+  }
+  for (const tok of EXCITED_TONE_TOKENS) {
+    if (hay.includes(tok)) excitedScore += 1;
+  }
 
-	const mood =
-		seriousScore >= excitedScore + 2
-			? "serious"
-			: excitedScore > seriousScore
-				? "excited"
-				: "neutral";
-	return { mood };
+  const mood =
+    seriousScore >= excitedScore + 2
+      ? "serious"
+      : excitedScore > seriousScore
+        ? "excited"
+        : "neutral";
+  return { mood };
 }
 
 const POLITICAL_TONE_TOKENS = [
-	"politic",
-	"election",
-	"vote",
-	"voting",
-	"campaign",
-	"government",
-	"policy",
-	"congress",
-	"senate",
-	"parliament",
-	"president",
-	"prime minister",
-	"governor",
-	"mayor",
-	"legislation",
-	"lawmakers",
-	"bill",
-	"referendum",
-	"ballot",
-	"protest",
-	"protests",
-	"war",
-	"conflict",
-	"invasion",
-	"ceasefire",
-	"sanction",
-	"treaty",
-	"security",
-	"terror",
-	"attack",
+  "politic",
+  "election",
+  "vote",
+  "voting",
+  "campaign",
+  "government",
+  "policy",
+  "congress",
+  "senate",
+  "parliament",
+  "president",
+  "prime minister",
+  "governor",
+  "mayor",
+  "legislation",
+  "lawmakers",
+  "bill",
+  "referendum",
+  "ballot",
+  "protest",
+  "protests",
+  "war",
+  "conflict",
+  "invasion",
+  "ceasefire",
+  "sanction",
+  "treaty",
+  "security",
+  "terror",
+  "attack",
 ];
 
 const ENTERTAINMENT_REACTION_CUES = [
-	"honestly",
-	"frankly",
-	"to me",
-	"i think",
-	"i feel",
-	"it feels",
-	"that feels",
-	"i like",
-	"i love",
-	"i'm into",
-	"i am into",
-	"i'm curious",
-	"i am curious",
-	"i'm surprised",
-	"i am surprised",
-	"i'll be honest",
+  "honestly",
+  "frankly",
+  "to me",
+  "i think",
+  "i feel",
+  "it feels",
+  "that feels",
+  "i like",
+  "i love",
+  "i'm into",
+  "i am into",
+  "i'm curious",
+  "i am curious",
+  "i'm surprised",
+  "i am surprised",
+  "i'll be honest",
 ];
 
 function isEntertainmentTopicText(text = "") {
-	const hay = String(text || "").toLowerCase();
-	if (!hay) return false;
-	return ENTERTAINMENT_KEYWORDS.some((k) => hay.includes(k));
+  const hay = String(text || "").toLowerCase();
+  if (!hay) return false;
+  return ENTERTAINMENT_KEYWORDS.some((k) => hay.includes(k));
 }
 
 function hasEntertainmentReactionCue(text = "") {
-	const hay = String(text || "").toLowerCase();
-	return ENTERTAINMENT_REACTION_CUES.some((tok) => hay.includes(tok));
+  const hay = String(text || "").toLowerCase();
+  return ENTERTAINMENT_REACTION_CUES.some((tok) => hay.includes(tok));
 }
 
 function isSensitiveTopicText(text = "") {
-	const t = String(text || "").toLowerCase();
-	if (!t) return false;
-	const has = (list) => list.some((tok) => t.includes(tok));
-	return (
-		has(SERIOUS_TONE_TOKENS) ||
-		has(EXPLICIT_SERIOUS_CUES) ||
-		has(POLITICAL_TONE_TOKENS)
-	);
+  const t = String(text || "").toLowerCase();
+  if (!t) return false;
+  const has = (list) => list.some((tok) => t.includes(tok));
+  return (
+    has(SERIOUS_TONE_TOKENS) ||
+    has(EXPLICIT_SERIOUS_CUES) ||
+    has(POLITICAL_TONE_TOKENS)
+  );
 }
 
 const EXPRESSION_SET = new Set([
-	"neutral",
-	"warm",
-	"serious",
-	"excited",
-	"thoughtful",
+  "neutral",
+  "warm",
+  "serious",
+  "excited",
+  "thoughtful",
 ]);
 
 function normalizeExpression(raw, mood = "neutral") {
-	const t = String(raw || "")
-		.trim()
-		.toLowerCase();
-	if (EXPRESSION_SET.has(t)) return t;
-	if (t.includes("smile") || t.includes("friendly")) return "warm";
-	if (t.includes("happy") || t.includes("joy")) return "warm";
-	if (t.includes("serious") || t.includes("concern")) return "serious";
-	if (t.includes("sad") || t.includes("sorrow") || t.includes("grief"))
-		return "serious";
-	if (t.includes("excite") || t.includes("hype")) return "excited";
-	if (t.includes("think") || t.includes("reflect")) return "thoughtful";
-	if (mood === "serious") return "serious";
-	if (mood === "excited") return "excited";
-	return "neutral";
+  const t = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (EXPRESSION_SET.has(t)) return t;
+  if (t.includes("smile") || t.includes("friendly")) return "warm";
+  if (t.includes("happy") || t.includes("joy")) return "warm";
+  if (t.includes("serious") || t.includes("concern")) return "serious";
+  if (t.includes("sad") || t.includes("sorrow") || t.includes("grief"))
+    return "serious";
+  if (t.includes("excite") || t.includes("hype")) return "excited";
+  if (t.includes("think") || t.includes("reflect")) return "thoughtful";
+  if (mood === "serious") return "serious";
+  if (mood === "excited") return "excited";
+  return "neutral";
 }
 
 function inferExplicitExpression(text = "") {
-	const t = String(text || "").toLowerCase();
-	const has = (list) => list.some((tok) => t.includes(tok));
-	if (has(EXPLICIT_SERIOUS_CUES)) return "serious";
-	if (has(EXPLICIT_EXCITED_CUES)) return "excited";
-	if (has(EXPLICIT_WARM_CUES)) return "warm";
-	if (has(EXPLICIT_THOUGHTFUL_CUES)) return "thoughtful";
-	return null;
+  const t = String(text || "").toLowerCase();
+  const has = (list) => list.some((tok) => t.includes(tok));
+  if (has(EXPLICIT_SERIOUS_CUES)) return "serious";
+  if (has(EXPLICIT_EXCITED_CUES)) return "excited";
+  if (has(EXPLICIT_WARM_CUES)) return "warm";
+  if (has(EXPLICIT_THOUGHTFUL_CUES)) return "thoughtful";
+  return null;
 }
 
 function coerceExpressionForNaturalness(
-	rawExpression,
-	text,
-	mood = "neutral",
-	topicLabel = "",
+  rawExpression,
+  text,
+  mood = "neutral",
+  topicLabel = "",
 ) {
-	if (isSensitiveTopicText(`${text} ${topicLabel}`)) return "neutral";
-	const base = normalizeExpression(rawExpression, mood);
-	const explicit = inferExplicitExpression(text);
-	if (explicit) {
-		if (explicit === "serious") return "neutral";
-		if (explicit === "excited") return "warm";
-		return explicit;
-	}
-	const entertainment = isEntertainmentTopicText(`${text} ${topicLabel}`);
-	if (entertainment && hasEntertainmentReactionCue(text)) return "warm";
-	if (mood === "serious") return "neutral";
-	if (base === "excited") return "warm";
-	if (base === "warm" || base === "thoughtful") return base;
-	return "neutral";
+  if (isSensitiveTopicText(`${text} ${topicLabel}`)) return "neutral";
+  const base = normalizeExpression(rawExpression, mood);
+  const explicit = inferExplicitExpression(text);
+  if (explicit) {
+    if (explicit === "serious") return "neutral";
+    if (explicit === "excited") return "warm";
+    return explicit;
+  }
+  const entertainment = isEntertainmentTopicText(`${text} ${topicLabel}`);
+  if (entertainment && hasEntertainmentReactionCue(text)) return "warm";
+  if (mood === "serious") return "neutral";
+  if (base === "excited") return "warm";
+  if (base === "warm" || base === "thoughtful") return base;
+  return "neutral";
 }
 
 function smoothExpressionPlan(expressions = [], mood = "neutral") {
-	if (!expressions.length) return expressions;
-	const out = [];
-	let last = normalizeExpression(expressions[0], mood);
-	out.push(last);
+  if (!expressions.length) return expressions;
+  const out = [];
+  let last = normalizeExpression(expressions[0], mood);
+  out.push(last);
 
-	for (let i = 1; i < expressions.length; i++) {
-		const next = normalizeExpression(expressions[i], mood);
-		const allowed =
-			next === last ||
-			(last === "neutral" &&
-				["warm", "serious", "excited", "thoughtful"].includes(next)) ||
-			(next === "neutral" &&
-				["warm", "serious", "excited", "thoughtful"].includes(last)) ||
-			(last === "warm" && next === "thoughtful") ||
-			(last === "thoughtful" && next === "warm");
+  for (let i = 1; i < expressions.length; i++) {
+    const next = normalizeExpression(expressions[i], mood);
+    const allowed =
+      next === last ||
+      (last === "neutral" &&
+        ["warm", "serious", "excited", "thoughtful"].includes(next)) ||
+      (next === "neutral" &&
+        ["warm", "serious", "excited", "thoughtful"].includes(last)) ||
+      (last === "warm" && next === "thoughtful") ||
+      (last === "thoughtful" && next === "warm");
 
-		if (!allowed) {
-			out.push(last);
-			continue;
-		}
-		out.push(next);
-		last = next;
-	}
-	return out;
+    if (!allowed) {
+      out.push(last);
+      continue;
+    }
+    out.push(next);
+    last = next;
+  }
+  return out;
 }
 
 function buildVideoExpressionPlan(expressions = [], mood = "neutral") {
-	if (!expressions.length) return expressions;
-	const normalized = expressions.map((e) => normalizeExpression(e, mood));
-	const out = [];
-	let last = normalized[0];
-	out.push(last);
-	for (let i = 1; i < normalized.length; i++) {
-		const next = normalized[i];
-		const persists = i + 1 < normalized.length && normalized[i + 1] === next;
-		if (next !== last && !persists) {
-			out.push(last);
-			continue;
-		}
-		out.push(next);
-		last = next;
-	}
-	return out;
+  if (!expressions.length) return expressions;
+  const normalized = expressions.map((e) => normalizeExpression(e, mood));
+  const out = [];
+  let last = normalized[0];
+  out.push(last);
+  for (let i = 1; i < normalized.length; i++) {
+    const next = normalized[i];
+    const persists = i + 1 < normalized.length && normalized[i + 1] === next;
+    if (next !== last && !persists) {
+      out.push(last);
+      continue;
+    }
+    out.push(next);
+    last = next;
+  }
+  return out;
 }
 
 function pickSubtleExpressionIndices(
-	total,
-	seed,
-	maxCount = MAX_SUBTLE_VISUAL_EXPRESSIONS,
-	edgeBuffer = SUBTLE_VISUAL_EDGE_BUFFER,
+  total,
+  seed,
+  maxCount = MAX_SUBTLE_VISUAL_EXPRESSIONS,
+  edgeBuffer = SUBTLE_VISUAL_EDGE_BUFFER,
 ) {
-	const t = Number.isFinite(Number(total)) ? Number(total) : 0;
-	const buffer = Math.max(0, Math.floor(Number(edgeBuffer) || 0));
-	const max = Math.max(0, Math.floor(Number(maxCount) || 0));
-	if (!t || max <= 0) return [];
-	if (t <= buffer * 2 + 1) return [];
+  const t = Number.isFinite(Number(total)) ? Number(total) : 0;
+  const buffer = Math.max(0, Math.floor(Number(edgeBuffer) || 0));
+  const max = Math.max(0, Math.floor(Number(maxCount) || 0));
+  if (!t || max <= 0) return [];
+  if (t <= buffer * 2 + 1) return [];
 
-	const eligible = [];
-	for (let i = buffer; i <= t - buffer - 1; i++) eligible.push(i);
-	if (!eligible.length) return [];
+  const eligible = [];
+  for (let i = buffer; i <= t - buffer - 1; i++) eligible.push(i);
+  if (!eligible.length) return [];
 
-	const pickCount = Math.min(max, eligible.length);
-	const base = pickEvenlySpacedIndices(eligible.length, pickCount);
-	const shift = Math.abs(Number(seed) || 0) % eligible.length;
-	const shifted = base.map((idx) => eligible[(idx + shift) % eligible.length]);
-	return Array.from(new Set(shifted)).sort((a, b) => a - b);
+  const pickCount = Math.min(max, eligible.length);
+  const base = pickEvenlySpacedIndices(eligible.length, pickCount);
+  const shift = Math.abs(Number(seed) || 0) % eligible.length;
+  const shifted = base.map((idx) => eligible[(idx + shift) % eligible.length]);
+  return Array.from(new Set(shifted)).sort((a, b) => a - b);
 }
 
 function buildSubtleVideoExpressionPlan(
-	segments = [],
-	mood = "neutral",
-	jobId,
+  segments = [],
+  mood = "neutral",
+  jobId,
 ) {
-	if (!segments.length) return [];
-	const total = segments.length;
-	const plan = Array.from({ length: total }, () => "neutral");
-	if (mood === "serious") return plan;
+  if (!segments.length) return [];
+  const total = segments.length;
+  const plan = Array.from({ length: total }, () => "neutral");
+  if (mood === "serious") return plan;
 
-	const seed = jobId ? seedFromJobId(jobId) : 0;
-	let indices = pickSubtleExpressionIndices(total, seed);
-	const edgeBuffer = Math.max(
-		0,
-		Math.floor(Number(SUBTLE_VISUAL_EDGE_BUFFER) || 0),
-	);
-	const maxCount = Math.max(
-		0,
-		Math.floor(Number(MAX_SUBTLE_VISUAL_EXPRESSIONS) || 0),
-	);
-	const entertainmentIndices = [];
-	for (let i = 0; i < segments.length; i++) {
-		const seg = segments[i] || {};
-		const hay = `${seg.text || ""} ${seg.topicLabel || ""}`;
-		if (isSensitiveTopicText(hay)) continue;
-		if (isEntertainmentTopicText(hay)) entertainmentIndices.push(i);
-	}
-	if (!indices.length && !entertainmentIndices.length) return plan;
+  const seed = jobId ? seedFromJobId(jobId) : 0;
+  let indices = pickSubtleExpressionIndices(total, seed);
+  const edgeBuffer = Math.max(
+    0,
+    Math.floor(Number(SUBTLE_VISUAL_EDGE_BUFFER) || 0),
+  );
+  const maxCount = Math.max(
+    0,
+    Math.floor(Number(MAX_SUBTLE_VISUAL_EXPRESSIONS) || 0),
+  );
+  const entertainmentIndices = [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i] || {};
+    const hay = `${seg.text || ""} ${seg.topicLabel || ""}`;
+    if (isSensitiveTopicText(hay)) continue;
+    if (isEntertainmentTopicText(hay)) entertainmentIndices.push(i);
+  }
+  if (!indices.length && !entertainmentIndices.length) return plan;
 
-	if (entertainmentIndices.length && maxCount > 0) {
-		const eligibleEntertainment = entertainmentIndices.filter(
-			(i) => i >= edgeBuffer && i <= total - edgeBuffer - 1,
-		);
-		const pickFrom = eligibleEntertainment.length
-			? eligibleEntertainment
-			: entertainmentIndices;
-		const hasEntertainmentIndex = indices.some((i) =>
-			entertainmentIndices.includes(i),
-		);
-		if (!hasEntertainmentIndex && pickFrom.length) {
-			const pick =
-				pickFrom[Math.abs(Number(seed) || 0) % pickFrom.length] ?? pickFrom[0];
-			if (indices.length >= maxCount && indices.length > 0) {
-				indices[indices.length - 1] = pick;
-			} else {
-				indices.push(pick);
-			}
-			indices = Array.from(new Set(indices)).sort((a, b) => a - b);
-		}
-	}
+  if (entertainmentIndices.length && maxCount > 0) {
+    const eligibleEntertainment = entertainmentIndices.filter(
+      (i) => i >= edgeBuffer && i <= total - edgeBuffer - 1,
+    );
+    const pickFrom = eligibleEntertainment.length
+      ? eligibleEntertainment
+      : entertainmentIndices;
+    const hasEntertainmentIndex = indices.some((i) =>
+      entertainmentIndices.includes(i),
+    );
+    if (!hasEntertainmentIndex && pickFrom.length) {
+      const pick =
+        pickFrom[Math.abs(Number(seed) || 0) % pickFrom.length] ?? pickFrom[0];
+      if (indices.length >= maxCount && indices.length > 0) {
+        indices[indices.length - 1] = pick;
+      } else {
+        indices.push(pick);
+      }
+      indices = Array.from(new Set(indices)).sort((a, b) => a - b);
+    }
+  }
 
-	const normalized = segments.map((s) =>
-		normalizeExpression(s.expression, mood),
-	);
-	const entertainmentSet = new Set(entertainmentIndices);
-	for (const idx of indices) {
-		const seg = segments[idx] || {};
-		const sensitive = isSensitiveTopicText(
-			`${seg.text || ""} ${seg.topicLabel || ""}`,
-		);
-		if (sensitive) {
-			plan[idx] = "neutral";
-			continue;
-		}
-		const preferred = normalized[idx];
-		if (preferred === "excited")
-			plan[idx] = FORCE_NEUTRAL_VOICEOVER ? "warm" : "excited";
-		else if (preferred === "thoughtful") plan[idx] = "thoughtful";
-		else if (preferred === "warm") plan[idx] = "warm";
-		else if (entertainmentSet.has(idx)) plan[idx] = "warm";
-		else plan[idx] = "neutral";
-	}
-	return plan;
+  const normalized = segments.map((s) =>
+    normalizeExpression(s.expression, mood),
+  );
+  const entertainmentSet = new Set(entertainmentIndices);
+  for (const idx of indices) {
+    const seg = segments[idx] || {};
+    const sensitive = isSensitiveTopicText(
+      `${seg.text || ""} ${seg.topicLabel || ""}`,
+    );
+    if (sensitive) {
+      plan[idx] = "neutral";
+      continue;
+    }
+    const preferred = normalized[idx];
+    if (preferred === "excited")
+      plan[idx] = FORCE_NEUTRAL_VOICEOVER ? "warm" : "excited";
+    else if (preferred === "thoughtful") plan[idx] = "thoughtful";
+    else if (preferred === "warm") plan[idx] = "warm";
+    else if (entertainmentSet.has(idx)) plan[idx] = "warm";
+    else plan[idx] = "neutral";
+  }
+  return plan;
 }
 
 function shortTitleFromText(text = "") {
-	const words = String(text || "")
-		.replace(/["'(){}\[\]]/g, "")
-		.replace(/[.,;:!?]+/g, " ")
-		.trim()
-		.split(/\s+/)
-		.filter(Boolean);
-	if (!words.length) return "Quick Update";
-	return words.slice(0, 5).join(" ");
+  const words = String(text || "")
+    .replace(/["'(){}\[\]]/g, "")
+    .replace(/[.,;:!?]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return "Quick Update";
+  return words.slice(0, 5).join(" ");
 }
 
 function normalizeRelatedQueriesAny(rq) {
-	if (!rq || typeof rq !== "object") return { top: [], rising: [] };
-	const top = Array.isArray(rq.top)
-		? rq.top
-		: Array.isArray(rq.topSample)
-			? rq.topSample
-			: [];
-	const rising = Array.isArray(rq.rising)
-		? rq.rising
-		: Array.isArray(rq.risingSample)
-			? rq.risingSample
-			: [];
-	return {
-		top: uniqueStrings(top.map((s) => String(s || "").trim()).filter(Boolean), {
-			limit: 12,
-		}),
-		rising: uniqueStrings(
-			rising.map((s) => String(s || "").trim()).filter(Boolean),
-			{ limit: 12 },
-		),
-	};
+  if (!rq || typeof rq !== "object") return { top: [], rising: [] };
+  const top = Array.isArray(rq.top)
+    ? rq.top
+    : Array.isArray(rq.topSample)
+      ? rq.topSample
+      : [];
+  const rising = Array.isArray(rq.rising)
+    ? rq.rising
+    : Array.isArray(rq.risingSample)
+      ? rq.risingSample
+      : [];
+  return {
+    top: uniqueStrings(top.map((s) => String(s || "").trim()).filter(Boolean), {
+      limit: 12,
+    }),
+    rising: uniqueStrings(
+      rising.map((s) => String(s || "").trim()).filter(Boolean),
+      { limit: 12 },
+    ),
+  };
 }
 
 function normalizeInterestAny(io) {
-	const safe = (n) => (Number.isFinite(Number(n)) ? Number(n) : 0);
-	return {
-		points: safe(io?.points),
-		avg: safe(io?.avg),
-		latest: safe(io?.latest),
-		peak: safe(io?.peak),
-		slope: safe(io?.slope),
-	};
+  const safe = (n) => (Number.isFinite(Number(n)) ? Number(n) : 0);
+  return {
+    points: safe(io?.points),
+    avg: safe(io?.avg),
+    latest: safe(io?.latest),
+    peak: safe(io?.peak),
+    slope: safe(io?.slope),
+  };
 }
 
 function extractArticleFacts(story) {
-	const articles = Array.isArray(story?.articles) ? story.articles : [];
-	const titles = articles
-		.map((a) => String(a?.title || "").trim())
-		.filter(Boolean);
-	const urls = articles.map((a) => String(a?.url || "").trim()).filter(Boolean);
-	return { titles, urls };
+  const articles = Array.isArray(story?.articles) ? story.articles : [];
+  const titles = articles
+    .map((a) => String(a?.title || "").trim())
+    .filter(Boolean);
+  const urls = articles.map((a) => String(a?.url || "").trim()).filter(Boolean);
+  return { titles, urls };
 }
 
 function buildThumbnailSignalsFromTopicPick(topicPick) {
-	const t = topicPick || {};
-	const story = t.trendStory || t || {};
-	const displayTopic = String(
-		t.displayTopic || t.topic || story.title || story.rawTitle || "",
-	).trim();
-	const keywords = Array.isArray(t.keywords)
-		? t.keywords.map((s) => String(s || "").trim()).filter(Boolean)
-		: [];
-	const relatedQueries = normalizeRelatedQueriesAny(
-		story.relatedQueries || t.relatedQueries,
-	);
-	const interestOverTime = normalizeInterestAny(
-		story.interestOverTime || t.interestOverTime,
-	);
-	const { titles: articleTitles, urls: articleUrls } =
-		extractArticleFacts(story);
-	const seedImages = Array.isArray(story.images)
-		? story.images
-		: Array.isArray(t.images)
-			? t.images
-			: [];
-	const searchPhrases = Array.isArray(story.searchPhrases)
-		? story.searchPhrases
-		: Array.isArray(t.searchPhrases)
-			? t.searchPhrases
-			: [];
-	const entityNames = Array.isArray(story.entityNames)
-		? story.entityNames
-		: Array.isArray(t.entityNames)
-			? t.entityNames
-			: [];
+  const t = topicPick || {};
+  const story = t.trendStory || t || {};
+  const displayTopic = String(
+    t.displayTopic || t.topic || story.title || story.rawTitle || "",
+  ).trim();
+  const keywords = Array.isArray(t.keywords)
+    ? t.keywords.map((s) => String(s || "").trim()).filter(Boolean)
+    : [];
+  const relatedQueries = normalizeRelatedQueriesAny(
+    story.relatedQueries || t.relatedQueries,
+  );
+  const interestOverTime = normalizeInterestAny(
+    story.interestOverTime || t.interestOverTime,
+  );
+  const { titles: articleTitles, urls: articleUrls } =
+    extractArticleFacts(story);
+  const seedImages = Array.isArray(story.images)
+    ? story.images
+    : Array.isArray(t.images)
+      ? t.images
+      : [];
+  const searchPhrases = Array.isArray(story.searchPhrases)
+    ? story.searchPhrases
+    : Array.isArray(t.searchPhrases)
+      ? t.searchPhrases
+      : [];
+  const entityNames = Array.isArray(story.entityNames)
+    ? story.entityNames
+    : Array.isArray(t.entityNames)
+      ? t.entityNames
+      : [];
 
-	return {
-		displayTopic,
-		keywords,
-		relatedQueries,
-		interestOverTime,
-		articleTitles,
-		articleUrls,
-		seedImages: seedImages.map((u) => String(u || "").trim()).filter(Boolean),
-		searchPhrases: searchPhrases
-			.map((s) => String(s || "").trim())
-			.filter(Boolean),
-		entityNames: entityNames.map((s) => String(s || "").trim()).filter(Boolean),
-		imageComment: String(story.imageComment || t.imageComment || "").trim(),
-		angle: String(t.angle || "").trim(),
-		reason: String(t.reason || "").trim(),
-	};
+  return {
+    displayTopic,
+    keywords,
+    relatedQueries,
+    interestOverTime,
+    articleTitles,
+    articleUrls,
+    seedImages: seedImages.map((u) => String(u || "").trim()).filter(Boolean),
+    searchPhrases: searchPhrases
+      .map((s) => String(s || "").trim())
+      .filter(Boolean),
+    entityNames: entityNames.map((s) => String(s || "").trim()).filter(Boolean),
+    imageComment: String(story.imageComment || t.imageComment || "").trim(),
+    angle: String(t.angle || "").trim(),
+    reason: String(t.reason || "").trim(),
+  };
 }
 
 const THUMBNAIL_SERIOUS_UPDATE_RE =
-	/\b(concussion|injury|injured|health|brain|hospital|recovery|tbi|brain damage|medical|surgery|illness|diagnosis)\b/i;
+  /\b(concussion|injury|injured|health|brain|hospital|recovery|tbi|brain damage|medical|surgery|illness|diagnosis)\b/i;
 const THUMBNAIL_IMAGE_STRIP_TOKENS = [
-	"concussion",
-	"injury",
-	"injured",
-	"health",
-	"brain",
-	"tbi",
-	"brain damage",
-	"hospital",
-	"recovery",
-	"medical",
-	"surgery",
-	"illness",
-	"diagnosis",
+  "concussion",
+  "injury",
+  "injured",
+  "health",
+  "brain",
+  "tbi",
+  "brain damage",
+  "hospital",
+  "recovery",
+  "medical",
+  "surgery",
+  "illness",
+  "diagnosis",
 ];
 const THUMBNAIL_GENERIC_HOOK_HEADLINES = new Set([
-	"TRENDING NOW",
-	"NEW UPDATE",
-	"UPDATE",
-	"TOP STORIES",
-	"TOP STORY",
-	"BREAKING",
+  "TRENDING NOW",
+  "NEW UPDATE",
+  "UPDATE",
+  "TOP STORIES",
+  "TOP STORY",
+  "BREAKING",
 ]);
 const THUMBNAIL_PERSON_EXCLUDE_TOKENS = new Set([
-	"season",
-	"episode",
-	"documentary",
-	"movie",
-	"film",
-	"show",
-	"series",
-	"trailer",
-	"update",
-	"news",
-	"top",
-	"stories",
-	"trending",
-	"super",
-	"bowl",
-	"mtv",
+  "season",
+  "episode",
+  "documentary",
+  "movie",
+  "film",
+  "show",
+  "series",
+  "trailer",
+  "update",
+  "news",
+  "top",
+  "stories",
+  "trending",
+  "super",
+  "bowl",
+  "mtv",
 ]);
 
 const THUMBNAIL_INTENT_RULES = [
-	{
-		intent: "legal",
-		re: /\b(lawsuit|court|judge|trial|appeal|charges|indict|arrest|police|investigation|filing|custody|conservatorship|bankruptcy)\b/i,
-	},
-	{
-		intent: "finance",
-		re: /\b(stock|shares|ipo|earnings|revenue|sec|market|inflation|interest rate|crypto|bitcoin|ethereum)\b/i,
-	},
-	{
-		intent: "sports",
-		re: /\b(nfl|nba|nhl|mlb|ufc|f1|match|goal|playoffs|draft|trade|transfer)\b/i,
-	},
-	{
-		intent: "entertainment",
-		re: /\b(trailer|season|episode|premiere|cast|box office|album|tour)\b/i,
-	},
-	{
-		intent: "politics",
-		re: /\b(election|vote|president|prime minister|senator|congress|parliament|campaign)\b/i,
-	},
-	{
-		intent: "weather",
-		re: /\b(hurricane|storm|tornado|wildfire|flood|heat wave|snow)\b/i,
-	},
+  {
+    intent: "legal",
+    re: /\b(lawsuit|court|judge|trial|appeal|charges|indict|arrest|police|investigation|filing|custody|conservatorship|bankruptcy)\b/i,
+  },
+  {
+    intent: "finance",
+    re: /\b(stock|shares|ipo|earnings|revenue|sec|market|inflation|interest rate|crypto|bitcoin|ethereum)\b/i,
+  },
+  {
+    intent: "sports",
+    re: /\b(nfl|nba|nhl|mlb|ufc|f1|match|goal|playoffs|draft|trade|transfer)\b/i,
+  },
+  {
+    intent: "entertainment",
+    re: /\b(trailer|season|episode|premiere|cast|box office|album|tour)\b/i,
+  },
+  {
+    intent: "politics",
+    re: /\b(election|vote|president|prime minister|senator|congress|parliament|campaign)\b/i,
+  },
+  {
+    intent: "weather",
+    re: /\b(hurricane|storm|tornado|wildfire|flood|heat wave|snow)\b/i,
+  },
 ];
 
 function inferIntentFromSignals({ title, signals }) {
-	const rq = signals.relatedQueries || { top: [], rising: [] };
-	const io = signals.interestOverTime || {};
-	const hay = [
-		title || "",
-		signals.displayTopic || "",
-		signals.angle || "",
-		signals.reason || "",
-		(rq.top || []).join(" "),
-		(rq.rising || []).join(" "),
-		(signals.articleTitles || []).join(" "),
-		(signals.keywords || []).join(" "),
-		signals.imageComment || "",
-	]
-		.join(" ")
-		.toLowerCase();
+  const rq = signals.relatedQueries || { top: [], rising: [] };
+  const io = signals.interestOverTime || {};
+  const hay = [
+    title || "",
+    signals.displayTopic || "",
+    signals.angle || "",
+    signals.reason || "",
+    (rq.top || []).join(" "),
+    (rq.rising || []).join(" "),
+    (signals.articleTitles || []).join(" "),
+    (signals.keywords || []).join(" "),
+    signals.imageComment || "",
+  ]
+    .join(" ")
+    .toLowerCase();
 
-	if (THUMBNAIL_SERIOUS_UPDATE_RE.test(hay)) return "serious_update";
-	for (const rule of THUMBNAIL_INTENT_RULES) {
-		if (rule.re.test(hay)) return rule.intent;
-	}
+  if (THUMBNAIL_SERIOUS_UPDATE_RE.test(hay)) return "serious_update";
+  for (const rule of THUMBNAIL_INTENT_RULES) {
+    if (rule.re.test(hay)) return rule.intent;
+  }
 
-	if (Number(io.slope) >= 15) return "general_trending";
-	return "general";
+  if (Number(io.slope) >= 15) return "general_trending";
+  return "general";
 }
 
 function clampHeadline(text) {
-	const t = String(text || "")
-		.trim()
-		.toUpperCase();
-	if (!t) return "";
-	return t.length > 18 ? t.slice(0, 18).trim() : t;
+  const t = String(text || "")
+    .trim()
+    .toUpperCase();
+  if (!t) return "";
+  return t.length > 18 ? t.slice(0, 18).trim() : t;
 }
 
 function stripImageQueryTokens(text = "") {
-	let cleaned = String(text || "");
-	if (!cleaned) return "";
-	for (const token of THUMBNAIL_IMAGE_STRIP_TOKENS) {
-		const re = new RegExp(`\\b${escapeRegExp(token)}\\b`, "gi");
-		cleaned = cleaned.replace(re, "");
-	}
-	return cleaned.replace(/\s+/g, " ").trim();
+  let cleaned = String(text || "");
+  if (!cleaned) return "";
+  for (const token of THUMBNAIL_IMAGE_STRIP_TOKENS) {
+    const re = new RegExp(`\\b${escapeRegExp(token)}\\b`, "gi");
+    cleaned = cleaned.replace(re, "");
+  }
+  return cleaned.replace(/\s+/g, " ").trim();
 }
 
 function looksLikePersonName(text = "") {
-	const cleaned = cleanTopicLabel(text)
-		.replace(/[^a-zA-Z\s]/g, " ")
-		.replace(/\s+/g, " ")
-		.trim();
-	const tokens = cleaned.split(/\s+/).filter(Boolean);
-	if (tokens.length < 2 || tokens.length > 3) return false;
-	if (tokens.some((t) => /\d/.test(t))) return false;
-	const lowered = tokens.map((t) => t.toLowerCase());
-	if (lowered.some((t) => THUMBNAIL_PERSON_EXCLUDE_TOKENS.has(t))) return false;
-	return true;
+  const cleaned = cleanTopicLabel(text)
+    .replace(/[^a-zA-Z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2 || tokens.length > 3) return false;
+  if (tokens.some((t) => /\d/.test(t))) return false;
+  const lowered = tokens.map((t) => t.toLowerCase());
+  if (lowered.some((t) => THUMBNAIL_PERSON_EXCLUDE_TOKENS.has(t))) return false;
+  return true;
 }
 
 function extractLastName(text = "") {
-	const cleaned = cleanTopicLabel(text)
-		.replace(/[^a-zA-Z\s]/g, " ")
-		.replace(/\s+/g, " ")
-		.trim();
-	const tokens = cleaned.split(/\s+/).filter(Boolean);
-	if (tokens.length < 2) return "";
-	return tokens[tokens.length - 1].toUpperCase();
+  const cleaned = cleanTopicLabel(text)
+    .replace(/[^a-zA-Z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return "";
+  return tokens[tokens.length - 1].toUpperCase();
 }
 
 function buildPersonSpecificHeadline({ title = "", signals } = {}) {
-	const rq = signals?.relatedQueries || { top: [], rising: [] };
-	const hay = [
-		title || "",
-		signals?.displayTopic || "",
-		(rq.top || []).join(" "),
-		(rq.rising || []).join(" "),
-		(signals?.articleTitles || []).join(" "),
-	].join(" ");
-	const lower = hay.toLowerCase();
-	if (/\b(steps back|stepping away)\b/.test(lower)) return "STEPS BACK";
-	if (/\b(acting pause|pause from acting|acting break)\b/.test(lower))
-		return "ACTING PAUSE";
-	if (/\b(what she said|what he said)\b/.test(lower)) return "WHAT SHE SAID";
-	if (/\b(health update|medical update)\b/.test(lower)) return "HEALTH NEWS";
-	if (THUMBNAIL_SERIOUS_UPDATE_RE.test(lower)) return "WHAT CHANGED";
-	return "";
+  const rq = signals?.relatedQueries || { top: [], rising: [] };
+  const hay = [
+    title || "",
+    signals?.displayTopic || "",
+    (rq.top || []).join(" "),
+    (rq.rising || []).join(" "),
+    (signals?.articleTitles || []).join(" "),
+  ].join(" ");
+  const lower = hay.toLowerCase();
+  if (/\b(steps back|stepping away)\b/.test(lower)) return "STEPS BACK";
+  if (/\b(acting pause|pause from acting|acting break)\b/.test(lower))
+    return "ACTING PAUSE";
+  if (/\b(what she said|what he said)\b/.test(lower)) return "WHAT SHE SAID";
+  if (/\b(health update|medical update)\b/.test(lower)) return "HEALTH NEWS";
+  if (THUMBNAIL_SERIOUS_UPDATE_RE.test(lower)) return "WHAT CHANGED";
+  return "";
 }
 
 function pickHookFromQueries({
-	rqTop = [],
-	rqRising = [],
-	intent = "general",
-	slope = 0,
+  rqTop = [],
+  rqRising = [],
+  intent = "general",
+  slope = 0,
 }) {
-	const hay = `${rqTop.join(" ")} ${rqRising.join(" ")}`.toLowerCase();
+  const hay = `${rqTop.join(" ")} ${rqRising.join(" ")}`.toLowerCase();
 
-	if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
-		return { headline: "WHAT HAPPENED", badge: "NEW DETAILS" };
-	if (/\bwhy\b|\bexplained\b|\bmeaning\b/.test(hay))
-		return { headline: "EXPLAINED", badge: "BREAKDOWN" };
-	if (/\breaction\b|\bresigns?\b|\bsteps down\b/.test(hay))
-		return { headline: "BIG REACTION", badge: "JUST DROPPED" };
+  if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
+    return { headline: "WHAT HAPPENED", badge: "NEW DETAILS" };
+  if (/\bwhy\b|\bexplained\b|\bmeaning\b/.test(hay))
+    return { headline: "EXPLAINED", badge: "BREAKDOWN" };
+  if (/\breaction\b|\bresigns?\b|\bsteps down\b/.test(hay))
+    return { headline: "BIG REACTION", badge: "JUST DROPPED" };
 
-	if (intent === "serious_update") {
-		if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
-			return { headline: "WHAT HAPPENED?", badge: "WHAT CHANGED" };
-		if (/\bwhat she said\b|\bwhat he said\b/.test(hay))
-			return { headline: "WHAT SHE SAID", badge: "NEW DETAILS" };
-		if (/\brecovery\b|\bhealth\b/.test(hay))
-			return { headline: "HEALTH NEWS", badge: "WHAT CHANGED" };
-		return { headline: "WHAT WE KNOW?", badge: "NEW DETAILS" };
-	}
-	if (intent === "legal")
-		return { headline: "LEGAL MOVE", badge: "COURT FILE" };
-	if (intent === "finance")
-		return {
-			headline: "MARKET MOVE",
-			badge: slope >= 15 ? "BIG SWING" : "NEW DETAILS",
-		};
-	if (intent === "sports") return { headline: "KEY MOMENT", badge: "BIG PLAY" };
-	if (intent === "entertainment")
-		return {
-			headline: "NEW DETAILS",
-			badge: slope >= 15 ? "JUST DROPPED" : "INSIDE LOOK",
-		};
-	if (intent === "politics")
-		return { headline: "POWER MOVE", badge: "NEW DETAILS" };
-	if (intent === "weather") return { headline: "STORM TRACK", badge: "ALERT" };
+  if (intent === "serious_update") {
+    if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
+      return { headline: "WHAT HAPPENED?", badge: "WHAT CHANGED" };
+    if (/\bwhat she said\b|\bwhat he said\b/.test(hay))
+      return { headline: "WHAT SHE SAID", badge: "NEW DETAILS" };
+    if (/\brecovery\b|\bhealth\b/.test(hay))
+      return { headline: "HEALTH NEWS", badge: "WHAT CHANGED" };
+    return { headline: "WHAT WE KNOW?", badge: "NEW DETAILS" };
+  }
+  if (intent === "legal")
+    return { headline: "LEGAL MOVE", badge: "COURT FILE" };
+  if (intent === "finance")
+    return {
+      headline: "MARKET MOVE",
+      badge: slope >= 15 ? "BIG SWING" : "NEW DETAILS",
+    };
+  if (intent === "sports") return { headline: "KEY MOMENT", badge: "BIG PLAY" };
+  if (intent === "entertainment")
+    return {
+      headline: "NEW DETAILS",
+      badge: slope >= 15 ? "JUST DROPPED" : "INSIDE LOOK",
+    };
+  if (intent === "politics")
+    return { headline: "POWER MOVE", badge: "NEW DETAILS" };
+  if (intent === "weather") return { headline: "STORM TRACK", badge: "ALERT" };
 
-	return {
-		headline: slope >= 15 ? "TRENDING NOW" : "WHAT CHANGED",
-		badge: slope >= 15 ? "JUST DROPPED" : "NEW DETAILS",
-	};
+  return {
+    headline: slope >= 15 ? "TRENDING NOW" : "WHAT CHANGED",
+    badge: slope >= 15 ? "JUST DROPPED" : "NEW DETAILS",
+  };
 }
 
 function buildTopicImageQueries({ signals, intent }) {
-	const topic = signals.displayTopic || "";
-	const entities = (signals.entityNames || []).slice(0, 2);
-	const rqRising = (signals.relatedQueries?.rising || []).slice(0, 4);
+  const topic = signals.displayTopic || "";
+  const entities = (signals.entityNames || []).slice(0, 2);
+  const rqRising = (signals.relatedQueries?.rising || []).slice(0, 4);
 
-	const base = [topic, ...entities, ...rqRising]
-		.map((s) => String(s || "").trim())
-		.filter(Boolean);
-	const rawCore = base[0] || topic;
-	const core = stripImageQueryTokens(rawCore) || rawCore;
+  const base = [topic, ...entities, ...rqRising]
+    .map((s) => String(s || "").trim())
+    .filter(Boolean);
+  const rawCore = base[0] || topic;
+  const core = stripImageQueryTokens(rawCore) || rawCore;
 
-	if (intent === "legal") {
-		return uniqueStrings(
-			[
-				`${core} headshot`,
-				`${core} portrait`,
-				`${core} press photo`,
-				`${core} interview`,
-			],
-			{ limit: 6 },
-		);
-	}
-	if (intent === "serious_update") {
-		return uniqueStrings(
-			[
-				`${core} headshot`,
-				`${core} portrait`,
-				`${core} press photo`,
-				`${core} interview`,
-			],
-			{ limit: 6 },
-		);
-	}
+  if (intent === "legal") {
+    return uniqueStrings(
+      [
+        `${core} headshot`,
+        `${core} portrait`,
+        `${core} press photo`,
+        `${core} interview`,
+      ],
+      { limit: 6 },
+    );
+  }
+  if (intent === "serious_update") {
+    return uniqueStrings(
+      [
+        `${core} headshot`,
+        `${core} portrait`,
+        `${core} press photo`,
+        `${core} interview`,
+      ],
+      { limit: 6 },
+    );
+  }
 
-	if (intent === "finance") {
-		return uniqueStrings(
-			[
-				`${core} CEO headshot`,
-				`${core} logo`,
-				`${core} press photo`,
-				`${core} conference`,
-			],
-			{ limit: 6 },
-		);
-	}
+  if (intent === "finance") {
+    return uniqueStrings(
+      [
+        `${core} CEO headshot`,
+        `${core} logo`,
+        `${core} press photo`,
+        `${core} conference`,
+      ],
+      { limit: 6 },
+    );
+  }
 
-	if (intent === "entertainment") {
-		const awardsRe =
-			/\b(award|awards|golden globes|globes|oscars|oscar|emmys|emmy|grammys|grammy|bafta|baftas|red carpet)\b/i;
-		if (awardsRe.test(core) || awardsRe.test(topic)) {
-			return uniqueStrings(
-				[
-					`${core} trophy`,
-					`${core} awards stage`,
-					`${core} red carpet`,
-					`${core} ballroom`,
-					`${core} ceremony`,
-				],
-				{ limit: 6 },
-			);
-		}
-		return uniqueStrings(
-			[
-				`${core} portrait`,
-				`${core} close up`,
-				`${core} interview`,
-				`${core} red carpet`,
-			],
-			{ limit: 6 },
-		);
-	}
+  if (intent === "entertainment") {
+    const awardsRe =
+      /\b(award|awards|golden globes|globes|oscars|oscar|emmys|emmy|grammys|grammy|bafta|baftas|red carpet)\b/i;
+    if (awardsRe.test(core) || awardsRe.test(topic)) {
+      return uniqueStrings(
+        [
+          `${core} trophy`,
+          `${core} awards stage`,
+          `${core} red carpet`,
+          `${core} ballroom`,
+          `${core} ceremony`,
+        ],
+        { limit: 6 },
+      );
+    }
+    return uniqueStrings(
+      [
+        `${core} portrait`,
+        `${core} close up`,
+        `${core} interview`,
+        `${core} red carpet`,
+      ],
+      { limit: 6 },
+    );
+  }
 
-	return uniqueStrings(
-		[`${core} portrait`, `${core} close up`, `${core} press photo`],
-		{ limit: 6 },
-	);
+  return uniqueStrings(
+    [`${core} portrait`, `${core} close up`, `${core} press photo`],
+    { limit: 6 },
+  );
 }
 
 function buildThumbnailHookPlan({ title, topicPicks }) {
-	const topics = Array.isArray(topicPicks) ? topicPicks : [];
-	const t0 = topics[0] || {};
-	const signals = buildThumbnailSignalsFromTopicPick(t0);
-	const intent = inferIntentFromSignals({ title, signals });
-	const rq = signals.relatedQueries || { top: [], rising: [] };
-	const slope = Number(signals.interestOverTime?.slope || 0);
-	const { headline, badge } = pickHookFromQueries({
-		rqTop: rq.top,
-		rqRising: rq.rising,
-		intent,
-		slope,
-	});
-	let resolvedHeadline = clampHeadline(headline);
-	const isPerson = looksLikePersonName(signals.displayTopic || "");
-	if (topics.length === 1 && isPerson) {
-		const isGeneric = THUMBNAIL_GENERIC_HOOK_HEADLINES.has(resolvedHeadline);
-		if (isGeneric) {
-			const actionHeadline = buildPersonSpecificHeadline({ title, signals });
-			const lastName = extractLastName(signals.displayTopic || "");
-			const fallback =
-				(actionHeadline && actionHeadline !== "WHAT CHANGED"
-					? actionHeadline
-					: lastName
-						? `${lastName} DETAILS`
-						: actionHeadline) || "";
-			if (fallback) resolvedHeadline = clampHeadline(fallback);
-		}
-	}
+  const topics = Array.isArray(topicPicks) ? topicPicks : [];
+  const t0 = topics[0] || {};
+  const signals = buildThumbnailSignalsFromTopicPick(t0);
+  const intent = inferIntentFromSignals({ title, signals });
+  const rq = signals.relatedQueries || { top: [], rising: [] };
+  const slope = Number(signals.interestOverTime?.slope || 0);
+  const { headline, badge } = pickHookFromQueries({
+    rqTop: rq.top,
+    rqRising: rq.rising,
+    intent,
+    slope,
+  });
+  let resolvedHeadline = clampHeadline(headline);
+  const isPerson = looksLikePersonName(signals.displayTopic || "");
+  if (topics.length === 1 && isPerson) {
+    const isGeneric = THUMBNAIL_GENERIC_HOOK_HEADLINES.has(resolvedHeadline);
+    if (isGeneric) {
+      const actionHeadline = buildPersonSpecificHeadline({ title, signals });
+      const lastName = extractLastName(signals.displayTopic || "");
+      const fallback =
+        (actionHeadline && actionHeadline !== "WHAT CHANGED"
+          ? actionHeadline
+          : lastName
+            ? `${lastName} DETAILS`
+            : actionHeadline) || "";
+      if (fallback) resolvedHeadline = clampHeadline(fallback);
+    }
+  }
 
-	if (topics.length > 1) {
-		return {
-			intent: "multi",
-			headline: "TOP PICKS",
-			badgeText: "FAST ROUNDUP",
-			imageQueries: [],
-		};
-	}
+  if (topics.length > 1) {
+    return {
+      intent: "multi",
+      headline: "TOP PICKS",
+      badgeText: "FAST ROUNDUP",
+      imageQueries: [],
+    };
+  }
 
-	return {
-		intent,
-		headline: resolvedHeadline,
-		badgeText: String(badge || "NEW DETAILS")
-			.trim()
-			.toUpperCase(),
-		imageQueries: buildTopicImageQueries({ signals, intent }),
-	};
+  return {
+    intent,
+    headline: resolvedHeadline,
+    badgeText: String(badge || "NEW DETAILS")
+      .trim()
+      .toUpperCase(),
+    imageQueries: buildTopicImageQueries({ signals, intent }),
+  };
 }
 
 function cleanTopicLabel(text = "") {
-	return String(text || "")
-		.replace(/["'(){}\[\]]/g, "")
-		.replace(/\s+/g, " ")
-		.replace(/[.!?]+$/g, "")
-		.trim();
+  return String(text || "")
+    .replace(/["'(){}\[\]]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.!?]+$/g, "")
+    .trim();
 }
 
 function stripAnchorNoise(label = "") {
-	const tokens = cleanTopicLabel(label)
-		.split(/\s+/)
-		.filter(Boolean)
-		.filter((t) => /[a-z0-9]/i.test(t));
-	while (tokens.length) {
-		const lower = tokens[0].toLowerCase();
-		if (
-			ANCHOR_NOISE_TOKENS.has(lower) ||
-			(tokens.length > 3 &&
-				tokens[0].length <= 2 &&
-				!ANCHOR_SHORT_TOKENS_KEEP.has(lower))
-		) {
-			tokens.shift();
-			continue;
-		}
-		break;
-	}
-	while (tokens.length) {
-		const lower = tokens[tokens.length - 1].toLowerCase();
-		if (
-			ANCHOR_NOISE_TOKENS.has(lower) ||
-			(tokens.length > 3 &&
-				tokens[tokens.length - 1].length <= 2 &&
-				!ANCHOR_SHORT_TOKENS_KEEP.has(lower))
-		) {
-			tokens.pop();
-			continue;
-		}
-		break;
-	}
-	return tokens.join(" ");
+  const tokens = cleanTopicLabel(label)
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((t) => /[a-z0-9]/i.test(t));
+  while (tokens.length) {
+    const lower = tokens[0].toLowerCase();
+    if (
+      ANCHOR_NOISE_TOKENS.has(lower) ||
+      (tokens.length > 3 &&
+        tokens[0].length <= 2 &&
+        !ANCHOR_SHORT_TOKENS_KEEP.has(lower))
+    ) {
+      tokens.shift();
+      continue;
+    }
+    break;
+  }
+  while (tokens.length) {
+    const lower = tokens[tokens.length - 1].toLowerCase();
+    if (
+      ANCHOR_NOISE_TOKENS.has(lower) ||
+      (tokens.length > 3 &&
+        tokens[tokens.length - 1].length <= 2 &&
+        !ANCHOR_SHORT_TOKENS_KEEP.has(lower))
+    ) {
+      tokens.pop();
+      continue;
+    }
+    break;
+  }
+  return tokens.join(" ");
 }
 
 function looksLikeQuestionTopic(text = "") {
-	const t = String(text || "")
-		.trim()
-		.toLowerCase();
-	return (
-		/\?/.test(t) ||
-		/^(what|when|where|why|how|who|did|does|do|is|are|was|were|can|could|will|would|should|has|have|had|may|might)\b/.test(
-			t,
-		) ||
-		/\bwhat time\b/.test(t) ||
-		/\bcome out\b/.test(t)
-	);
+  const t = String(text || "")
+    .trim()
+    .toLowerCase();
+  return (
+    /\?/.test(t) ||
+    /^(what|when|where|why|how|who|did|does|do|is|are|was|were|can|could|will|would|should|has|have|had|may|might)\b/.test(
+      t,
+    ) ||
+    /\bwhat time\b/.test(t) ||
+    /\bcome out\b/.test(t)
+  );
 }
 
 function normalizeTopicLabelForQuestion(text = "") {
-	let t = cleanTopicLabel(text);
-	if (!t) return t;
-	t = t
-		.replace(
-			/^(did|does|do|is|are|was|were|can|could|will|would|should|has|have|had|may|might)\s+/i,
-			"",
-		)
-		.replace(/^(what time does|what time do|when does|when do)\s+/i, "")
-		.replace(
-			/^(what is|who is|who are|how does|how do|why does|why is)\s+/i,
-			"",
-		)
-		.replace(/\bcome out\b/i, "")
-		.replace(/\brelease date\b/i, "release")
-		.replace(/\s+/g, " ")
-		.trim();
-	return t;
+  let t = cleanTopicLabel(text);
+  if (!t) return t;
+  t = t
+    .replace(
+      /^(did|does|do|is|are|was|were|can|could|will|would|should|has|have|had|may|might)\s+/i,
+      "",
+    )
+    .replace(/^(what time does|what time do|when does|when do)\s+/i, "")
+    .replace(
+      /^(what is|who is|who are|how does|how do|why does|why is)\s+/i,
+      "",
+    )
+    .replace(/\bcome out\b/i, "")
+    .replace(/\brelease date\b/i, "release")
+    .replace(/\s+/g, " ")
+    .trim();
+  return t;
 }
 
 function stripTrailingPreposition(text = "") {
-	return String(text || "")
-		.replace(/\b(in|on|at|about|for|to|of|from|with|by|during)\s*$/i, "")
-		.trim();
+  return String(text || "")
+    .replace(/\b(in|on|at|about|for|to|of|from|with|by|during)\s*$/i, "")
+    .trim();
 }
 
 function normalizeEngagementLabel(text = "") {
-	let t = normalizeTopicLabelForQuestion(text);
-	if (!t) return t;
-	const deathMatch = t.match(
-		/^(.*)\b(die|dies|died|death)\b\s*(?:in|on|at|during)?\s*(.*)$/i,
-	);
-	if (deathMatch) {
-		const subject = String(deathMatch[1] || "").trim();
-		let tail = String(deathMatch[3] || "").trim();
-		tail = tail.replace(/^(in|on|at|during)\s+/i, "").trim();
-		if (subject) {
-			const possessive = subject.endsWith("s") ? `${subject}'` : `${subject}'s`;
-			t = tail ? `${possessive} fate in ${tail}` : `${possessive} fate`;
-		}
-	}
-	t = stripTrailingPreposition(t);
-	return t || normalizeTopicLabelForQuestion(text) || cleanTopicLabel(text);
+  let t = normalizeTopicLabelForQuestion(text);
+  if (!t) return t;
+  const deathMatch = t.match(
+    /^(.*)\b(die|dies|died|death)\b\s*(?:in|on|at|during)?\s*(.*)$/i,
+  );
+  if (deathMatch) {
+    const subject = String(deathMatch[1] || "").trim();
+    let tail = String(deathMatch[3] || "").trim();
+    tail = tail.replace(/^(in|on|at|during)\s+/i, "").trim();
+    if (subject) {
+      const possessive = subject.endsWith("s") ? `${subject}'` : `${subject}'s`;
+      t = tail ? `${possessive} fate in ${tail}` : `${possessive} fate`;
+    }
+  }
+  t = stripTrailingPreposition(t);
+  return t || normalizeTopicLabelForQuestion(text) || cleanTopicLabel(text);
 }
 
 function selectEngagementLabel({ topicLabel, shortTitle, maxWords = 4 }) {
-	const base = cleanTopicLabel(topicLabel);
-	const isQuestion = looksLikeQuestionTopic(base);
-	const normalized = isQuestion ? normalizeEngagementLabel(base) : base;
-	const safeShortTitle = cleanTopicLabel(shortTitle || "");
-	const normalizedShortTitle = isQuestion
-		? normalizeEngagementLabel(safeShortTitle)
-		: safeShortTitle;
-	const preferred =
-		isQuestion &&
-		normalizedShortTitle &&
-		normalizedShortTitle.toLowerCase() !== "quick update"
-			? normalizedShortTitle
-			: normalized || normalizedShortTitle || base;
-	return shortTopicLabel(preferred, maxWords);
+  const base = cleanTopicLabel(topicLabel);
+  const isQuestion = looksLikeQuestionTopic(base);
+  const normalized = isQuestion ? normalizeEngagementLabel(base) : base;
+  const safeShortTitle = cleanTopicLabel(shortTitle || "");
+  const normalizedShortTitle = isQuestion
+    ? normalizeEngagementLabel(safeShortTitle)
+    : safeShortTitle;
+  const preferred =
+    isQuestion &&
+    normalizedShortTitle &&
+    normalizedShortTitle.toLowerCase() !== "quick update"
+      ? normalizedShortTitle
+      : normalized || normalizedShortTitle || base;
+  return shortTopicLabel(preferred, maxWords);
 }
 
 function shortTopicLabel(text = "", maxWords = 4) {
-	const base = cleanTopicLabel(text);
-	const words = base.split(/\s+/).filter(Boolean);
-	if (!words.length) return "today's topic";
-	if (words.length <= maxWords) {
-		const full = words.join(" ");
-		return stripTrailingPreposition(full) || full;
-	}
-	const clipped = stripTrailingPreposition(words.slice(0, maxWords).join(" "));
-	return clipped || words[0];
+  const base = cleanTopicLabel(text);
+  const words = base.split(/\s+/).filter(Boolean);
+  if (!words.length) return "today's topic";
+  if (words.length <= maxWords) {
+    const full = words.join(" ");
+    return stripTrailingPreposition(full) || full;
+  }
+  const clipped = stripTrailingPreposition(words.slice(0, maxWords).join(" "));
+  return clipped || words[0];
 }
 
 function formatTopicList(topics = []) {
-	const labels = (topics || [])
-		.map((t) => shortTopicLabel(t?.displayTopic || t?.topic || t, 3))
-		.filter(Boolean);
-	if (!labels.length) return "today's topic";
-	if (labels.length === 1) return labels[0];
-	if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
-	return `${labels[0]}, ${labels[1]}, and ${labels[2]}`;
+  const labels = (topics || [])
+    .map((t) => shortTopicLabel(t?.displayTopic || t?.topic || t, 3))
+    .filter(Boolean);
+  if (!labels.length) return "today's topic";
+  if (labels.length === 1) return labels[0];
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels[0]}, ${labels[1]}, and ${labels[2]}`;
 }
 
 function formatLabelList(labels = []) {
-	const list = (labels || []).filter(Boolean).slice(0, 3);
-	if (!list.length) return "";
-	if (list.length === 1) return list[0];
-	if (list.length === 2) return `${list[0]} and ${list[1]}`;
-	return `${list[0]}, ${list[1]}, and ${list[2]}`;
+  const list = (labels || []).filter(Boolean).slice(0, 3);
+  if (!list.length) return "";
+  if (list.length === 1) return list[0];
+  if (list.length === 2) return `${list[0]} and ${list[1]}`;
+  return `${list[0]}, ${list[1]}, and ${list[2]}`;
 }
 
 function buildIntroTopicLabels(topics = [], maxWords = 4) {
-	return (topics || [])
-		.map((t) => shortTopicLabel(t?.displayTopic || t?.topic || t, maxWords))
-		.filter(Boolean)
-		.slice(0, 3);
+  return (topics || [])
+    .map((t) => shortTopicLabel(t?.displayTopic || t?.topic || t, maxWords))
+    .filter(Boolean)
+    .slice(0, 3);
 }
 
 const FILLER_WORD_REGEX = /\b(?:um+|uh+|uhm+|erm+|er|ah+|hmm+)\b/gi;
@@ -6418,795 +6421,795 @@ const LIKE_FILLER_REGEX = /([,.!?]\s+)like\s*,\s*/gi;
 const MICRO_EMOTE_REGEX = /\b(?:heh|whew)\b/gi;
 
 function cleanupSpeechText(text = "") {
-	let t = String(text || "");
-	t = t.replace(/\s+([,.;:!?])/g, "$1");
-	t = t.replace(/([,;:!?]){2,}/g, "$1");
-	t = t.replace(/,\s*,/g, ", ");
-	t = t.replace(/,\s*([.!?])/g, "$1");
-	t = t.replace(/\s+/g, " ").trim();
-	return t;
+  let t = String(text || "");
+  t = t.replace(/\s+([,.;:!?])/g, "$1");
+  t = t.replace(/([,;:!?]){2,}/g, "$1");
+  t = t.replace(/,\s*,/g, ", ");
+  t = t.replace(/,\s*([.!?])/g, "$1");
+  t = t.replace(/\s+/g, " ").trim();
+  return t;
 }
 
 const MICRO_BREATH_BREAK_TOKENS = new Set([
-	"and",
-	"but",
-	"so",
-	"because",
-	"while",
-	"as",
-	"when",
-	"which",
-	"that",
-	"though",
-	"however",
+  "and",
+  "but",
+  "so",
+  "because",
+  "while",
+  "as",
+  "when",
+  "which",
+  "that",
+  "though",
+  "however",
 ]);
 
 function hasBreathPunctuation(text = "") {
-	const t = String(text || "");
-	return /[,;:]/.test(t) || /\.{3,}/.test(t) || /\s--\s/.test(t);
+  const t = String(text || "");
+  return /[,;:]/.test(t) || /\.{3,}/.test(t) || /\s--\s/.test(t);
 }
 
 function injectMicroBreath(text = "", state) {
-	if (!ENABLE_MICRO_BREATHS || !FORCE_NEUTRAL_VOICEOVER || !state)
-		return String(text || "").trim();
-	if (state.used >= MAX_MICRO_BREATHS_PER_VIDEO)
-		return String(text || "").trim();
+  if (!ENABLE_MICRO_BREATHS || !FORCE_NEUTRAL_VOICEOVER || !state)
+    return String(text || "").trim();
+  if (state.used >= MAX_MICRO_BREATHS_PER_VIDEO)
+    return String(text || "").trim();
 
-	const t = String(text || "").trim();
-	if (!t) return t;
-	if (countWords(t) < MICRO_BREATH_MIN_WORDS) return t;
-	if (splitSentences(t).length !== 1) return t;
-	if (hasBreathPunctuation(t)) return t;
+  const t = String(text || "").trim();
+  if (!t) return t;
+  if (countWords(t) < MICRO_BREATH_MIN_WORDS) return t;
+  if (splitSentences(t).length !== 1) return t;
+  if (hasBreathPunctuation(t)) return t;
 
-	const words = t.split(/\s+/);
-	const targetIdx = Math.min(
-		words.length - 5,
-		Math.max(MICRO_BREATH_TARGET_WORD, Math.floor(words.length * 0.45)),
-	);
-	const cleanWord = (w) => w.toLowerCase().replace(/[^a-z']/g, "");
-	const scan = (start, end, step) => {
-		for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
-			if (i <= 2 || i >= words.length - 2) continue;
-			const w = cleanWord(words[i]);
-			if (MICRO_BREATH_BREAK_TOKENS.has(w)) return i;
-		}
-		return -1;
-	};
+  const words = t.split(/\s+/);
+  const targetIdx = Math.min(
+    words.length - 5,
+    Math.max(MICRO_BREATH_TARGET_WORD, Math.floor(words.length * 0.45)),
+  );
+  const cleanWord = (w) => w.toLowerCase().replace(/[^a-z']/g, "");
+  const scan = (start, end, step) => {
+    for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
+      if (i <= 2 || i >= words.length - 2) continue;
+      const w = cleanWord(words[i]);
+      if (MICRO_BREATH_BREAK_TOKENS.has(w)) return i;
+    }
+    return -1;
+  };
 
-	let breakIdx = scan(targetIdx, Math.min(words.length - 3, targetIdx + 6), 1);
-	if (breakIdx === -1) {
-		breakIdx = scan(targetIdx, Math.max(3, targetIdx - 6), -1);
-	}
-	if (breakIdx === -1) breakIdx = targetIdx;
+  let breakIdx = scan(targetIdx, Math.min(words.length - 3, targetIdx + 6), 1);
+  if (breakIdx === -1) {
+    breakIdx = scan(targetIdx, Math.max(3, targetIdx - 6), -1);
+  }
+  if (breakIdx === -1) breakIdx = targetIdx;
 
-	if (/[,.!?;:]$/.test(words[breakIdx])) return t;
-	words[breakIdx] = `${words[breakIdx]},`;
-	state.used += 1;
-	return cleanupSpeechText(words.join(" "));
+  if (/[,.!?;:]$/.test(words[breakIdx])) return t;
+  words[breakIdx] = `${words[breakIdx]},`;
+  state.used += 1;
+  return cleanupSpeechText(words.join(" "));
 }
 
 const META_SENTENCE_PATTERNS = [
-	/\b(outro|intro)\b/i,
-	/\b(in this video|in this clip|in this segment|next video|next clip)\b/i,
-	/\b(next|this|that|first|second|third|final)\s+segment\b/i,
-	/\b(move on to the outro|moving to the outro|go to the outro)\b/i,
+  /\b(outro|intro)\b/i,
+  /\b(in this video|in this clip|in this segment|next video|next clip)\b/i,
+  /\b(next|this|that|first|second|third|final)\s+segment\b/i,
+  /\b(move on to the outro|moving to the outro|go to the outro)\b/i,
 ];
 
 function isMetaSentence(sentence = "") {
-	const s = String(sentence || "").toLowerCase();
-	return META_SENTENCE_PATTERNS.some((rx) => rx.test(s));
+  const s = String(sentence || "").toLowerCase();
+  return META_SENTENCE_PATTERNS.some((rx) => rx.test(s));
 }
 
 function splitSentences(text = "") {
-	const raw = String(text || "").trim();
-	if (!raw) return [];
-	const parts = raw.split(/([.!?])\s+/);
-	const sentences = [];
-	for (let i = 0; i < parts.length; i += 2) {
-		const chunk = String(parts[i] || "").trim();
-		const punct = String(parts[i + 1] || "").trim();
-		const sentence = `${chunk}${punct}`.trim();
-		if (sentence) sentences.push(sentence);
-	}
-	return sentences.length ? sentences : [raw];
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  const parts = raw.split(/([.!?])\s+/);
+  const sentences = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    const chunk = String(parts[i] || "").trim();
+    const punct = String(parts[i + 1] || "").trim();
+    const sentence = `${chunk}${punct}`.trim();
+    if (sentence) sentences.push(sentence);
+  }
+  return sentences.length ? sentences : [raw];
 }
 
 function trimToSentenceCap(text = "", cap = 0) {
-	const clean = String(text || "").trim();
-	if (!clean) return clean;
-	const limit = Number(cap) || 0;
-	if (!limit) return clean;
-	const words = clean.split(/\s+/).filter(Boolean);
-	if (words.length <= limit) return clean;
+  const clean = String(text || "").trim();
+  if (!clean) return clean;
+  const limit = Number(cap) || 0;
+  if (!limit) return clean;
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (words.length <= limit) return clean;
 
-	const sentences = splitSentences(clean);
-	if (sentences.length <= 1) return clean;
+  const sentences = splitSentences(clean);
+  if (sentences.length <= 1) return clean;
 
-	let count = 0;
-	const kept = [];
-	for (const sentence of sentences) {
-		const w = countWords(sentence);
-		if (!kept.length && w > limit) {
-			return clean;
-		}
-		if (count + w > limit) break;
-		kept.push(sentence);
-		count += w;
-	}
-	const trimmed = cleanupSpeechText(kept.join(" "));
-	return trimmed || clean;
+  let count = 0;
+  const kept = [];
+  for (const sentence of sentences) {
+    const w = countWords(sentence);
+    if (!kept.length && w > limit) {
+      return clean;
+    }
+    if (count + w > limit) break;
+    kept.push(sentence);
+    count += w;
+  }
+  const trimmed = cleanupSpeechText(kept.join(" "));
+  return trimmed || clean;
 }
 
 function stripMetaNarration(text = "") {
-	const raw = String(text || "").trim();
-	if (!raw) return raw;
-	const parts = splitSentences(raw);
-	const kept = parts.filter((p) => !isMetaSentence(p));
-	const cleaned = cleanupSpeechText(kept.join(" "));
-	if (cleaned) return cleaned;
-	const softened = raw
-		.replace(/\b(outro|intro)\b/gi, "")
-		.replace(
-			/\b(in this video|in this clip|in this segment|next video|next clip)\b/gi,
-			"",
-		)
-		.replace(/\b(next|this|that|first|second|third|final)\s+segment\b/gi, "")
-		.replace(/\s+/g, " ")
-		.trim();
-	return cleanupSpeechText(softened);
+  const raw = String(text || "").trim();
+  if (!raw) return raw;
+  const parts = splitSentences(raw);
+  const kept = parts.filter((p) => !isMetaSentence(p));
+  const cleaned = cleanupSpeechText(kept.join(" "));
+  if (cleaned) return cleaned;
+  const softened = raw
+    .replace(/\b(outro|intro)\b/gi, "")
+    .replace(
+      /\b(in this video|in this clip|in this segment|next video|next clip)\b/gi,
+      "",
+    )
+    .replace(/\b(next|this|that|first|second|third|final)\s+segment\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleanupSpeechText(softened);
 }
 
 function stripFillerAndEmotes(
-	text = "",
-	state,
-	{ maxFillers = 0, maxEmotes = 0 } = {},
+  text = "",
+  state,
+  { maxFillers = 0, maxEmotes = 0 } = {},
 ) {
-	const counter = state || { fillers: 0, emotes: 0 };
-	let t = String(text || "");
+  const counter = state || { fillers: 0, emotes: 0 };
+  let t = String(text || "");
 
-	t = t.replace(FILLER_WORD_REGEX, (match) => {
-		if (counter.fillers >= maxFillers) return "";
-		counter.fillers += 1;
-		return match;
-	});
-	t = t.replace(LIKE_FILLER_REGEX, (match, prefix) => {
-		if (counter.fillers >= maxFillers) return prefix;
-		counter.fillers += 1;
-		return match;
-	});
-	t = t.replace(MICRO_EMOTE_REGEX, (match) => {
-		if (!ENABLE_MICRO_EMOTES || counter.emotes >= maxEmotes) return "";
-		counter.emotes += 1;
-		return match;
-	});
+  t = t.replace(FILLER_WORD_REGEX, (match) => {
+    if (counter.fillers >= maxFillers) return "";
+    counter.fillers += 1;
+    return match;
+  });
+  t = t.replace(LIKE_FILLER_REGEX, (match, prefix) => {
+    if (counter.fillers >= maxFillers) return prefix;
+    counter.fillers += 1;
+    return match;
+  });
+  t = t.replace(MICRO_EMOTE_REGEX, (match) => {
+    if (!ENABLE_MICRO_EMOTES || counter.emotes >= maxEmotes) return "";
+    counter.emotes += 1;
+    return match;
+  });
 
-	return { text: cleanupSpeechText(t), state: counter };
+  return { text: cleanupSpeechText(t), state: counter };
 }
 
 function limitFillerAndEmotesAcrossSegments(segments = [], opts = {}) {
-	const {
-		maxFillers = 0,
-		maxEmotes = 0,
-		maxFillersPerSegment = maxFillers,
-		maxEmotesPerSegment = maxEmotes,
-		noFillerSegmentIndices = [],
-	} = opts;
-	const globalState = { fillers: 0, emotes: 0 };
+  const {
+    maxFillers = 0,
+    maxEmotes = 0,
+    maxFillersPerSegment = maxFillers,
+    maxEmotesPerSegment = maxEmotes,
+    noFillerSegmentIndices = [],
+  } = opts;
+  const globalState = { fillers: 0, emotes: 0 };
 
-	return (segments || []).map((seg, i) => {
-		const segIndex = Number.isFinite(Number(seg.index)) ? Number(seg.index) : i;
-		const allowFillers = !noFillerSegmentIndices.includes(segIndex);
-		const perSegState = { fillers: 0, emotes: 0 };
-		const segmentMaxFillers = allowFillers ? maxFillersPerSegment : 0;
-		const segmentMaxEmotes = maxEmotesPerSegment;
+  return (segments || []).map((seg, i) => {
+    const segIndex = Number.isFinite(Number(seg.index)) ? Number(seg.index) : i;
+    const allowFillers = !noFillerSegmentIndices.includes(segIndex);
+    const perSegState = { fillers: 0, emotes: 0 };
+    const segmentMaxFillers = allowFillers ? maxFillersPerSegment : 0;
+    const segmentMaxEmotes = maxEmotesPerSegment;
 
-		const perSegPass = stripFillerAndEmotes(seg.text, perSegState, {
-			maxFillers: segmentMaxFillers,
-			maxEmotes: segmentMaxEmotes,
-		});
+    const perSegPass = stripFillerAndEmotes(seg.text, perSegState, {
+      maxFillers: segmentMaxFillers,
+      maxEmotes: segmentMaxEmotes,
+    });
 
-		const remainingFillers = Math.max(0, maxFillers - globalState.fillers);
-		const remainingEmotes = Math.max(0, maxEmotes - globalState.emotes);
-		const globalPass = stripFillerAndEmotes(perSegPass.text, globalState, {
-			maxFillers: remainingFillers,
-			maxEmotes: remainingEmotes,
-		});
+    const remainingFillers = Math.max(0, maxFillers - globalState.fillers);
+    const remainingEmotes = Math.max(0, maxEmotes - globalState.emotes);
+    const globalPass = stripFillerAndEmotes(perSegPass.text, globalState, {
+      maxFillers: remainingFillers,
+      maxEmotes: remainingEmotes,
+    });
 
-		return { ...seg, text: globalPass.text };
-	});
+    return { ...seg, text: globalPass.text };
+  });
 }
 
 function sanitizeIntroOutroLine(text = "") {
-	const base = stripMetaNarration(text);
-	const { text: cleaned } = stripFillerAndEmotes(
-		base,
-		{ fillers: 0, emotes: 0 },
-		{ maxFillers: 0, maxEmotes: 0 },
-	);
-	return cleaned;
+  const base = stripMetaNarration(text);
+  const { text: cleaned } = stripFillerAndEmotes(
+    base,
+    { fillers: 0, emotes: 0 },
+    { maxFillers: 0, maxEmotes: 0 },
+  );
+  return cleaned;
 }
 
 function stripAllFillers(text = "") {
-	const base = stripMetaNarration(text);
-	const { text: cleaned } = stripFillerAndEmotes(
-		base,
-		{ fillers: 0, emotes: 0 },
-		{ maxFillers: 0, maxEmotes: 0 },
-	);
-	return cleaned;
+  const base = stripMetaNarration(text);
+  const { text: cleaned } = stripFillerAndEmotes(
+    base,
+    { fillers: 0, emotes: 0 },
+    { maxFillers: 0, maxEmotes: 0 },
+  );
+  return cleaned;
 }
 
 function sanitizeSegmentText(text = "") {
-	const cleaned = stripAllFillers(text);
-	return cleaned || "Quick update.";
+  const cleaned = stripAllFillers(text);
+  return cleaned || "Quick update.";
 }
 
 const SHORTS_CLIP_TYPES = new Set([
-	"hook",
-	"twist",
-	"controversy",
-	"context_needed",
+  "hook",
+  "twist",
+  "controversy",
+  "context_needed",
 ]);
 
 const SHORTS_OPEN_LOOP_HINTS = [
-	/\bbut\b/i,
-	/\bhowever\b/i,
-	/\byet\b/i,
-	/\bstill\b/i,
-	/\bthe detail\b/i,
-	/\bthe twist\b/i,
-	/\bwhat people missed\b/i,
-	/\bwhat people ignore\b/i,
-	/\bthe question\b/i,
-	/\bnot clear\b/i,
-	/\bunclear\b/i,
-	/\bnot confirmed\b/i,
+  /\bbut\b/i,
+  /\bhowever\b/i,
+  /\byet\b/i,
+  /\bstill\b/i,
+  /\bthe detail\b/i,
+  /\bthe twist\b/i,
+  /\bwhat people missed\b/i,
+  /\bwhat people ignore\b/i,
+  /\bthe question\b/i,
+  /\bnot clear\b/i,
+  /\bunclear\b/i,
+  /\bnot confirmed\b/i,
 ];
 
 const SHORTS_EARLY_RESOLUTION_HINTS = [
-	/\bso the answer is\b/i,
-	/\btherefore\b/i,
-	/\bin short\b/i,
-	/\bthe takeaway\b/i,
-	/\bthis means\b/i,
-	/\bthe reason is\b/i,
+  /\bso the answer is\b/i,
+  /\btherefore\b/i,
+  /\bin short\b/i,
+  /\bthe takeaway\b/i,
+  /\bthis means\b/i,
+  /\bthe reason is\b/i,
 ];
 
 const SHORTS_ENDING_BLOCKLIST = [
-	/\bwhat do you think\b/i,
-	/\bthoughts on\b/i,
-	/\bwhich topic stood out\b/i,
+  /\bwhat do you think\b/i,
+  /\bthoughts on\b/i,
+  /\bwhich topic stood out\b/i,
 ];
 
 const SHORTS_FORWARD_LOOKING_HINTS = [
-	/\bwhat happens next\b/i,
-	/\bwatch for\b/i,
-	/\bnext update\b/i,
-	/\bnext piece\b/i,
-	/\bstill unresolved\b/i,
-	/\bmissing detail\b/i,
-	/\bopen question\b/i,
+  /\bwhat happens next\b/i,
+  /\bwatch for\b/i,
+  /\bnext update\b/i,
+  /\bnext piece\b/i,
+  /\bstill unresolved\b/i,
+  /\bmissing detail\b/i,
+  /\bopen question\b/i,
 ];
 
 function textHasAnyRegex(text = "", list = []) {
-	return list.some((rx) => rx.test(String(text || "")));
+  return list.some((rx) => rx.test(String(text || "")));
 }
 
 function segmentHasOpenLoop(text = "") {
-	if (/\?/.test(String(text || ""))) return true;
-	return textHasAnyRegex(text, SHORTS_OPEN_LOOP_HINTS);
+  if (/\?/.test(String(text || ""))) return true;
+  return textHasAnyRegex(text, SHORTS_OPEN_LOOP_HINTS);
 }
 
 function collectTextUpToSeconds(segments = [], seconds = 0) {
-	if (!segments.length || !seconds) return "";
-	let elapsed = 0;
-	const parts = [];
-	for (const seg of segments) {
-		if (elapsed >= seconds) break;
-		const text = String(seg?.text || "").trim();
-		if (text) parts.push(text);
-		elapsed += countWords(text) / SCRIPT_VOICE_WPS;
-	}
-	return parts.join(" ").trim();
+  if (!segments.length || !seconds) return "";
+  let elapsed = 0;
+  const parts = [];
+  for (const seg of segments) {
+    if (elapsed >= seconds) break;
+    const text = String(seg?.text || "").trim();
+    if (text) parts.push(text);
+    elapsed += countWords(text) / SCRIPT_VOICE_WPS;
+  }
+  return parts.join(" ").trim();
 }
 
 function countOpenLoopsWithinSeconds(segments = [], seconds = 0) {
-	if (!segments.length || !seconds) return 0;
-	let elapsed = 0;
-	let count = 0;
-	for (const seg of segments) {
-		const text = String(seg?.text || "").trim();
-		if (!text) continue;
-		if (elapsed > seconds) break;
-		if (segmentHasOpenLoop(text)) count += 1;
-		elapsed += countWords(text) / SCRIPT_VOICE_WPS;
-	}
-	return count;
+  if (!segments.length || !seconds) return 0;
+  let elapsed = 0;
+  let count = 0;
+  for (const seg of segments) {
+    const text = String(seg?.text || "").trim();
+    if (!text) continue;
+    if (elapsed > seconds) break;
+    if (segmentHasOpenLoop(text)) count += 1;
+    elapsed += countWords(text) / SCRIPT_VOICE_WPS;
+  }
+  return count;
 }
 
 function analyzeShortsGuardrails(script = {}) {
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	const issues = [];
-	if (!segments.length) {
-		return { pass: false, needsRewrite: true, issues: ["segments_missing"] };
-	}
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  const issues = [];
+  if (!segments.length) {
+    return { pass: false, needsRewrite: true, issues: ["segments_missing"] };
+  }
 
-	const earlyText = collectTextUpToSeconds(segments, SHORTS_EARLY_WINDOW_SEC);
-	const earlyHasGap =
-		/\?/.test(earlyText) || textHasAnyRegex(earlyText, SHORTS_OPEN_LOOP_HINTS);
-	const earlyHasResolution = textHasAnyRegex(
-		earlyText,
-		SHORTS_EARLY_RESOLUTION_HINTS,
-	);
-	if (!earlyHasGap) issues.push("early_curiosity_gap_missing");
-	if (earlyHasResolution) issues.push("early_resolution_detected");
+  const earlyText = collectTextUpToSeconds(segments, SHORTS_EARLY_WINDOW_SEC);
+  const earlyHasGap =
+    /\?/.test(earlyText) || textHasAnyRegex(earlyText, SHORTS_OPEN_LOOP_HINTS);
+  const earlyHasResolution = textHasAnyRegex(
+    earlyText,
+    SHORTS_EARLY_RESOLUTION_HINTS,
+  );
+  if (!earlyHasGap) issues.push("early_curiosity_gap_missing");
+  if (earlyHasResolution) issues.push("early_resolution_detected");
 
-	const loopCount = countOpenLoopsWithinSeconds(
-		segments,
-		SHORTS_OPEN_LOOP_WINDOW_SEC,
-	);
-	if (loopCount < SHORTS_OPEN_LOOP_MIN_COUNT)
-		issues.push("open_loops_under_target");
+  const loopCount = countOpenLoopsWithinSeconds(
+    segments,
+    SHORTS_OPEN_LOOP_WINDOW_SEC,
+  );
+  if (loopCount < SHORTS_OPEN_LOOP_MIN_COUNT)
+    issues.push("open_loops_under_target");
 
-	const lastText = String(segments[segments.length - 1]?.text || "").trim();
-	const endingBlocked = textHasAnyRegex(lastText, SHORTS_ENDING_BLOCKLIST);
-	const endingForward =
-		/\?/.test(lastText) ||
-		textHasAnyRegex(lastText, SHORTS_FORWARD_LOOKING_HINTS) ||
-		textHasAnyRegex(lastText, SHORTS_OPEN_LOOP_HINTS);
-	if (endingBlocked) issues.push("ending_question_generic");
-	if (!endingForward) issues.push("ending_open_loop_missing");
+  const lastText = String(segments[segments.length - 1]?.text || "").trim();
+  const endingBlocked = textHasAnyRegex(lastText, SHORTS_ENDING_BLOCKLIST);
+  const endingForward =
+    /\?/.test(lastText) ||
+    textHasAnyRegex(lastText, SHORTS_FORWARD_LOOKING_HINTS) ||
+    textHasAnyRegex(lastText, SHORTS_OPEN_LOOP_HINTS);
+  if (endingBlocked) issues.push("ending_question_generic");
+  if (!endingForward) issues.push("ending_open_loop_missing");
 
-	return {
-		pass: issues.length === 0,
-		needsRewrite: issues.length > 0,
-		issues,
-		stats: {
-			earlyHasGap,
-			earlyHasResolution,
-			openLoopCount: loopCount,
-			endingBlocked,
-			endingForward,
-		},
-	};
+  return {
+    pass: issues.length === 0,
+    needsRewrite: issues.length > 0,
+    issues,
+    stats: {
+      earlyHasGap,
+      earlyHasResolution,
+      openLoopCount: loopCount,
+      endingBlocked,
+      endingForward,
+    },
+  };
 }
 
 function normalizeShortsClipType(raw) {
-	const t = String(raw || "")
-		.trim()
-		.toLowerCase();
-	if (SHORTS_CLIP_TYPES.has(t)) return t;
-	return "context_needed";
+  const t = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (SHORTS_CLIP_TYPES.has(t)) return t;
+  return "context_needed";
 }
 
 function normalizeShortsTargetSeconds(raw) {
-	const n = Number(raw);
-	if (SHORTS_TARGET_SECONDS.includes(n)) return n;
-	return SHORTS_DEFAULT_TARGET_SECONDS;
+  const n = Number(raw);
+  if (SHORTS_TARGET_SECONDS.includes(n)) return n;
+  return SHORTS_DEFAULT_TARGET_SECONDS;
 }
 
 const TITLE_SMALL_WORDS = new Set([
-	"a",
-	"an",
-	"and",
-	"as",
-	"at",
-	"but",
-	"by",
-	"for",
-	"from",
-	"in",
-	"into",
-	"nor",
-	"of",
-	"on",
-	"or",
-	"over",
-	"per",
-	"so",
-	"the",
-	"to",
-	"up",
-	"via",
-	"vs",
-	"with",
+  "a",
+  "an",
+  "and",
+  "as",
+  "at",
+  "but",
+  "by",
+  "for",
+  "from",
+  "in",
+  "into",
+  "nor",
+  "of",
+  "on",
+  "or",
+  "over",
+  "per",
+  "so",
+  "the",
+  "to",
+  "up",
+  "via",
+  "vs",
+  "with",
 ]);
 
 function normalizeTitleWhitespace(text = "") {
-	return String(text || "")
-		.replace(/[\r\n]+/g, " ")
-		.replace(/\s+/g, " ")
-		.replace(/\s*([:|!?])/g, "$1")
-		.replace(/([:|!?])(?=\S)/g, "$1 ")
-		.replace(/\s+[\u2013\u2014]\s+/g, " - ")
-		.replace(/\s+-\s+/g, " - ")
-		.trim();
+  return String(text || "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\s*([:|!?])/g, "$1")
+    .replace(/([:|!?])(?=\S)/g, "$1 ")
+    .replace(/\s+[\u2013\u2014]\s+/g, " - ")
+    .replace(/\s+-\s+/g, " - ")
+    .trim();
 }
 
 function isAllCapsTitleToken(token = "") {
-	return /^[A-Z0-9&+/'-]{2,}$/.test(token || "");
+  return /^[A-Z0-9&+/'-]{2,}$/.test(token || "");
 }
 
 function headlineCaseToken(token = "", isBoundary = false) {
-	const match = String(token || "").match(
-		/^([^A-Za-z0-9]*)(.*?)([^A-Za-z0-9]*)$/,
-	);
-	if (!match) return token;
-	const [, prefix, core, suffix] = match;
-	if (!core) return token;
-	if (isAllCapsTitleToken(core) || /\d/.test(core)) {
-		return `${prefix}${core}${suffix}`;
-	}
-	if (/[a-z][A-Z]|[A-Z][a-z].*[A-Z]/.test(core)) {
-		return `${prefix}${core}${suffix}`;
-	}
-	const lower = core.toLowerCase();
-	if (!isBoundary && TITLE_SMALL_WORDS.has(lower)) {
-		return `${prefix}${lower}${suffix}`;
-	}
-	const capitalized = lower.replace(/(^|[-/])([a-z])/g, (_m, lead, char) => {
-		return `${lead}${char.toUpperCase()}`;
-	});
-	return `${prefix}${capitalized}${suffix}`;
+  const match = String(token || "").match(
+    /^([^A-Za-z0-9]*)(.*?)([^A-Za-z0-9]*)$/,
+  );
+  if (!match) return token;
+  const [, prefix, core, suffix] = match;
+  if (!core) return token;
+  if (isAllCapsTitleToken(core) || /\d/.test(core)) {
+    return `${prefix}${core}${suffix}`;
+  }
+  if (/[a-z][A-Z]|[A-Z][a-z].*[A-Z]/.test(core)) {
+    return `${prefix}${core}${suffix}`;
+  }
+  const lower = core.toLowerCase();
+  if (!isBoundary && TITLE_SMALL_WORDS.has(lower)) {
+    return `${prefix}${lower}${suffix}`;
+  }
+  const capitalized = lower.replace(/(^|[-/])([a-z])/g, (_m, lead, char) => {
+    return `${lead}${char.toUpperCase()}`;
+  });
+  return `${prefix}${capitalized}${suffix}`;
 }
 
 function toHeadlineCase(text = "") {
-	const normalized = normalizeTitleWhitespace(text);
-	if (!normalized) return "";
-	const tokens = normalized.split(" ");
-	return tokens
-		.map((token, index) => {
-			const prev = tokens[index - 1] || "";
-			const isBoundary =
-				index === 0 || index === tokens.length - 1 || /[:|!-]$/.test(prev);
-			return headlineCaseToken(token, isBoundary);
-		})
-		.join(" ")
-		.replace(/\s+\|/g, " |")
-		.replace(/\|\s+/g, " | ");
+  const normalized = normalizeTitleWhitespace(text);
+  if (!normalized) return "";
+  const tokens = normalized.split(" ");
+  return tokens
+    .map((token, index) => {
+      const prev = tokens[index - 1] || "";
+      const isBoundary =
+        index === 0 || index === tokens.length - 1 || /[:|!-]$/.test(prev);
+      return headlineCaseToken(token, isBoundary);
+    })
+    .join(" ")
+    .replace(/\s+\|/g, " |")
+    .replace(/\|\s+/g, " | ");
 }
 
 function formatHumanTitle(text = "", max = 95) {
-	let cleaned = normalizeTitleWhitespace(text)
-		.replace(/^["'`]+|["'`]+$/g, "")
-		.replace(/([!?]){2,}/g, "$1")
-		.replace(/\.{2,}/g, "...")
-		.replace(/[.]+$/g, "")
-		.replace(/\s+[|:-]\s*$/g, "")
-		.trim();
-	if (!cleaned) return "";
-	cleaned = toHeadlineCase(cleaned);
-	return trimTitleToLimit(cleaned, max);
+  let cleaned = normalizeTitleWhitespace(text)
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/([!?]){2,}/g, "$1")
+    .replace(/\.{2,}/g, "...")
+    .replace(/[.]+$/g, "")
+    .replace(/\s+[|:-]\s*$/g, "")
+    .trim();
+  if (!cleaned) return "";
+  cleaned = toHeadlineCase(cleaned);
+  return trimTitleToLimit(cleaned, max);
 }
 
 function buildTitleCandidates(baseTitle = "", shortTitle = "") {
-	const base = String(shortTitle || baseTitle || "").trim();
-	if (!base) return [];
-	const variants = [
-		base,
-		`The detail people missed about ${base}`,
-		`The twist in ${base}`,
-		`Why ${base} is trending`,
-		`What changed with ${base}`,
-		`The real story behind ${base}`,
-		`${base} - the missing piece`,
-	];
-	return uniqueStrings(variants, { limit: 8 }).map((t) =>
-		formatHumanTitle(t, 95),
-	);
+  const base = String(shortTitle || baseTitle || "").trim();
+  if (!base) return [];
+  const variants = [
+    base,
+    `The detail people missed about ${base}`,
+    `The twist in ${base}`,
+    `Why ${base} is trending`,
+    `What changed with ${base}`,
+    `The real story behind ${base}`,
+    `${base} - the missing piece`,
+  ];
+  return uniqueStrings(variants, { limit: 8 }).map((t) =>
+    formatHumanTitle(t, 95),
+  );
 }
 
 function trimTitleToLimit(text = "", max = 95) {
-	const cleaned = String(text || "")
-		.replace(/\s+/g, " ")
-		.trim();
-	if (!cleaned) return "";
-	if (cleaned.length <= max) return cleaned;
-	const clipped = cleaned.slice(0, max);
-	return clipped.replace(/\s+\S*$/, "").trim();
+  const cleaned = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "";
+  if (cleaned.length <= max) return cleaned;
+  const clipped = cleaned.slice(0, max);
+  return clipped.replace(/\s+\S*$/, "").trim();
 }
 
 function cleanClipTitleBase(text = "") {
-	let cleaned = String(text || "")
-		.replace(/\s+/g, " ")
-		.trim();
-	if (!cleaned) return "";
-	cleaned = cleaned.replace(/^["']+|["']+$/g, "");
-	cleaned = cleaned.replace(
-		/^(here's|here is|this is|there's|there is|today|right now)\b[:,-]?\s*/i,
-		"",
-	);
-	cleaned = cleaned.replace(/^[\-\s]+/, "");
-	cleaned = cleaned.replace(/[.!?]+$/g, "");
-	cleaned = cleaned.replace(/^\s*(and|but|so)\s+/i, "");
-	return cleaned.trim();
+  let cleaned = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "";
+  cleaned = cleaned.replace(/^["']+|["']+$/g, "");
+  cleaned = cleaned.replace(
+    /^(here's|here is|this is|there's|there is|today|right now)\b[:,-]?\s*/i,
+    "",
+  );
+  cleaned = cleaned.replace(/^[\-\s]+/, "");
+  cleaned = cleaned.replace(/[.!?]+$/g, "");
+  cleaned = cleaned.replace(/^\s*(and|but|so)\s+/i, "");
+  return cleaned.trim();
 }
 
 function buildClipTitleCandidates(line = "", fallbackBase = "") {
-	const base = trimTitleToLimit(
-		cleanClipTitleBase(line) || String(fallbackBase || "").trim(),
-		95,
-	);
-	if (!base) return [];
-	const variants = [
-		base,
-		`The key detail: ${base}`,
-		`What changed: ${base}`,
-		`Why it matters: ${base}`,
-		`The quick update: ${base}`,
-		`${base} | The detail people missed`,
-	];
-	return uniqueStrings(variants, { limit: 8 }).map((t) =>
-		formatHumanTitle(t, 95),
-	);
+  const base = trimTitleToLimit(
+    cleanClipTitleBase(line) || String(fallbackBase || "").trim(),
+    95,
+  );
+  if (!base) return [];
+  const variants = [
+    base,
+    `The key detail: ${base}`,
+    `What changed: ${base}`,
+    `Why it matters: ${base}`,
+    `The quick update: ${base}`,
+    `${base} | The detail people missed`,
+  ];
+  return uniqueStrings(variants, { limit: 8 }).map((t) =>
+    formatHumanTitle(t, 95),
+  );
 }
 
 function buildThumbnailTextCandidates(baseTitle = "") {
-	const base = String(baseTitle || "").trim();
-	const tokens = base.split(/\s+/).slice(0, 2).join(" ");
-	const variants = [
-		"The detail",
-		"Still unclear",
-		"The twist",
-		"People missed",
-		"What changed",
-		"The missing piece",
-		"Why it shifted",
-	];
-	if (tokens) variants.unshift(tokens);
-	return uniqueStrings(variants, { limit: 8 }).map((t) => t.trim());
+  const base = String(baseTitle || "").trim();
+  const tokens = base.split(/\s+/).slice(0, 2).join(" ");
+  const variants = [
+    "The detail",
+    "Still unclear",
+    "The twist",
+    "People missed",
+    "What changed",
+    "The missing piece",
+    "Why it shifted",
+  ];
+  if (tokens) variants.unshift(tokens);
+  return uniqueStrings(variants, { limit: 8 }).map((t) => t.trim());
 }
 
 function buildClipThumbnailTextCandidates(line = "", fallbackBase = "") {
-	const base = cleanClipTitleBase(line) || String(fallbackBase || "").trim();
-	const tokens = base.split(/\s+/).slice(0, 3).join(" ");
-	const variants = [
-		tokens || fallbackBase,
-		"Key detail",
-		"What changed",
-		"Why it matters",
-		"The twist",
-		"Still unclear",
-	];
-	return uniqueStrings(variants, { limit: 8 }).map((t) => t.trim());
+  const base = cleanClipTitleBase(line) || String(fallbackBase || "").trim();
+  const tokens = base.split(/\s+/).slice(0, 3).join(" ");
+  const variants = [
+    tokens || fallbackBase,
+    "Key detail",
+    "What changed",
+    "Why it matters",
+    "The twist",
+    "Still unclear",
+  ];
+  return uniqueStrings(variants, { limit: 8 }).map((t) => t.trim());
 }
 
 function scoreSegmentForClip(text = "", index = 0) {
-	const t = String(text || "").toLowerCase();
-	let score = 0;
-	if (index === 0) score += 4;
-	if (/\?/.test(t)) score += 3;
-	if (textHasAnyRegex(t, SHORTS_OPEN_LOOP_HINTS)) score += 2;
-	if (/\bbut\b|\bhowever\b|\bturns out\b|\bodd\b/.test(t)) score += 1;
-	return score;
+  const t = String(text || "").toLowerCase();
+  let score = 0;
+  if (index === 0) score += 4;
+  if (/\?/.test(t)) score += 3;
+  if (textHasAnyRegex(t, SHORTS_OPEN_LOOP_HINTS)) score += 2;
+  if (/\bbut\b|\bhowever\b|\bturns out\b|\bodd\b/.test(t)) score += 1;
+  return score;
 }
 
 function inferClipTypeFromText(text = "", index = 0) {
-	const t = String(text || "").toLowerCase();
-	if (index === 0) return "hook";
-	if (/\bcontroversy\b|\bbacklash\b|\bcritics\b|\bpolarizing\b/.test(t))
-		return "controversy";
-	if (/\btwist\b|\bturns out\b|\bbut\b|\bhowever\b|\bodd\b/.test(t))
-		return "twist";
-	return "context_needed";
+  const t = String(text || "").toLowerCase();
+  if (index === 0) return "hook";
+  if (/\bcontroversy\b|\bbacklash\b|\bcritics\b|\bpolarizing\b/.test(t))
+    return "controversy";
+  if (/\btwist\b|\bturns out\b|\bbut\b|\bhowever\b|\bodd\b/.test(t))
+    return "twist";
+  return "context_needed";
 }
 
 function buildFallbackShortsDetails(script = {}) {
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	const title = String(script?.title || "").trim();
-	const shortTitle = String(script?.shortTitle || "").trim();
-	const scored = segments.map((s, idx) => ({
-		idx,
-		score: scoreSegmentForClip(s.text || "", idx),
-	}));
-	scored.sort((a, b) => b.score - a.score);
-	const picked = scored.slice(0, SHORTS_MAX_CANDIDATES).map((s) => s.idx);
-	const clipCandidates = picked.map((segIndex, i) => {
-		const seg = segments[segIndex] || {};
-		const line = String(seg.text || "").trim();
-		const type = inferClipTypeFromText(line, segIndex);
-		const targetSeconds =
-			type === "hook"
-				? SHORTS_TARGET_SECONDS[0]
-				: type === "twist"
-					? SHORTS_TARGET_SECONDS[1]
-					: SHORTS_TARGET_SECONDS[2] || SHORTS_DEFAULT_TARGET_SECONDS;
-		const fallbackBase = shortTitle || title;
-		return {
-			id: `short_${segIndex}_${i}`,
-			type,
-			segmentIndex: segIndex,
-			line: line || "Quick update.",
-			openLoop: segmentHasOpenLoop(line),
-			ctaLine: SHORTS_DEFAULT_CTA_LINE,
-			targetSeconds: normalizeShortsTargetSeconds(targetSeconds),
-			titleCandidates: buildClipTitleCandidates(line, fallbackBase),
-			thumbnailTextCandidates: buildClipThumbnailTextCandidates(
-				line,
-				fallbackBase,
-			),
-		};
-	});
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  const title = String(script?.title || "").trim();
+  const shortTitle = String(script?.shortTitle || "").trim();
+  const scored = segments.map((s, idx) => ({
+    idx,
+    score: scoreSegmentForClip(s.text || "", idx),
+  }));
+  scored.sort((a, b) => b.score - a.score);
+  const picked = scored.slice(0, SHORTS_MAX_CANDIDATES).map((s) => s.idx);
+  const clipCandidates = picked.map((segIndex, i) => {
+    const seg = segments[segIndex] || {};
+    const line = String(seg.text || "").trim();
+    const type = inferClipTypeFromText(line, segIndex);
+    const targetSeconds =
+      type === "hook"
+        ? SHORTS_TARGET_SECONDS[0]
+        : type === "twist"
+          ? SHORTS_TARGET_SECONDS[1]
+          : SHORTS_TARGET_SECONDS[2] || SHORTS_DEFAULT_TARGET_SECONDS;
+    const fallbackBase = shortTitle || title;
+    return {
+      id: `short_${segIndex}_${i}`,
+      type,
+      segmentIndex: segIndex,
+      line: line || "Quick update.",
+      openLoop: segmentHasOpenLoop(line),
+      ctaLine: SHORTS_DEFAULT_CTA_LINE,
+      targetSeconds: normalizeShortsTargetSeconds(targetSeconds),
+      titleCandidates: buildClipTitleCandidates(line, fallbackBase),
+      thumbnailTextCandidates: buildClipThumbnailTextCandidates(
+        line,
+        fallbackBase,
+      ),
+    };
+  });
 
-	return {
-		angle: shortTitle || title,
-		titleCandidates: buildTitleCandidates(title, shortTitle),
-		thumbnailTextCandidates: buildThumbnailTextCandidates(shortTitle || title),
-		clipCandidates,
-	};
+  return {
+    angle: shortTitle || title,
+    titleCandidates: buildTitleCandidates(title, shortTitle),
+    thumbnailTextCandidates: buildThumbnailTextCandidates(shortTitle || title),
+    clipCandidates,
+  };
 }
 
 function normalizeShortsDetails(raw, script = {}) {
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	const safe = raw && typeof raw === "object" ? raw : {};
-	const angle = String(safe.angle || "").trim();
-	const titleCandidates = Array.isArray(
-		safe.titleCandidates || safe.title_candidates,
-	)
-		? safe.titleCandidates || safe.title_candidates
-		: [];
-	const thumbnailTextCandidates = Array.isArray(
-		safe.thumbnailTextCandidates || safe.thumbnail_text_candidates,
-	)
-		? safe.thumbnailTextCandidates || safe.thumbnail_text_candidates
-		: [];
-	const clipCandidatesRaw =
-		safe.clipCandidates || safe.clip_candidates || safe.clipCandidates || [];
-	const clipCandidates = (
-		Array.isArray(clipCandidatesRaw) ? clipCandidatesRaw : []
-	)
-		.map((c, idx) => {
-			const segIndex = Number(
-				c?.segmentIndex ?? c?.segment_index ?? c?.index ?? c?.segment ?? idx,
-			);
-			if (!Number.isFinite(segIndex) || segIndex < 0) return null;
-			if (segments.length && segIndex >= segments.length) return null;
-			const baseText = segments[segIndex]?.text || "";
-			const rawLine = String(c?.line || "").trim();
-			const line = rawLine || String(baseText || "").trim();
-			if (!line) return null;
-			const type = normalizeShortsClipType(c?.type);
-			const targetSeconds = normalizeShortsTargetSeconds(
-				c?.targetSeconds ?? c?.target_seconds,
-			);
-			const openLoop =
-				typeof c?.openLoop === "boolean"
-					? c.openLoop
-					: segmentHasOpenLoop(line);
-			const ctaLine = String(c?.ctaLine || c?.cta_line || "").trim();
-			const rawTitleCandidates = Array.isArray(
-				c?.titleCandidates ||
-					c?.title_candidates ||
-					c?.seoTitleCandidates ||
-					c?.seo_title_candidates,
-			)
-				? c.titleCandidates ||
-					c.title_candidates ||
-					c.seoTitleCandidates ||
-					c.seo_title_candidates
-				: [];
-			let titleCandidates = uniqueStrings(
-				(rawTitleCandidates || [])
-					.map((t) => String(t || "").trim())
-					.filter(Boolean),
-				{ limit: 8 },
-			);
-			if (titleCandidates.length < 3) {
-				const fallbackTitles = buildClipTitleCandidates(
-					line,
-					script?.shortTitle || script?.title || "",
-				);
-				titleCandidates = uniqueStrings(
-					[...titleCandidates, ...fallbackTitles],
-					{ limit: 8 },
-				);
-			}
-			const rawThumbCandidates = Array.isArray(
-				c?.thumbnailTextCandidates || c?.thumbnail_text_candidates,
-			)
-				? c.thumbnailTextCandidates || c.thumbnail_text_candidates
-				: [];
-			let thumbnailTextCandidates = uniqueStrings(
-				(rawThumbCandidates || [])
-					.map((t) => String(t || "").trim())
-					.filter(Boolean),
-				{ limit: 8 },
-			);
-			if (thumbnailTextCandidates.length < 3) {
-				const fallbackThumbs = buildClipThumbnailTextCandidates(
-					line,
-					script?.shortTitle || script?.title || "",
-				);
-				thumbnailTextCandidates = uniqueStrings(
-					[...thumbnailTextCandidates, ...fallbackThumbs],
-					{ limit: 8 },
-				);
-			}
-			return {
-				id: String(c?.id || `short_${segIndex}_${idx}`),
-				type,
-				segmentIndex: segIndex,
-				line,
-				openLoop,
-				ctaLine: ctaLine || SHORTS_DEFAULT_CTA_LINE,
-				targetSeconds,
-				titleCandidates,
-				thumbnailTextCandidates,
-			};
-		})
-		.filter(Boolean);
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  const safe = raw && typeof raw === "object" ? raw : {};
+  const angle = String(safe.angle || "").trim();
+  const titleCandidates = Array.isArray(
+    safe.titleCandidates || safe.title_candidates,
+  )
+    ? safe.titleCandidates || safe.title_candidates
+    : [];
+  const thumbnailTextCandidates = Array.isArray(
+    safe.thumbnailTextCandidates || safe.thumbnail_text_candidates,
+  )
+    ? safe.thumbnailTextCandidates || safe.thumbnail_text_candidates
+    : [];
+  const clipCandidatesRaw =
+    safe.clipCandidates || safe.clip_candidates || safe.clipCandidates || [];
+  const clipCandidates = (
+    Array.isArray(clipCandidatesRaw) ? clipCandidatesRaw : []
+  )
+    .map((c, idx) => {
+      const segIndex = Number(
+        c?.segmentIndex ?? c?.segment_index ?? c?.index ?? c?.segment ?? idx,
+      );
+      if (!Number.isFinite(segIndex) || segIndex < 0) return null;
+      if (segments.length && segIndex >= segments.length) return null;
+      const baseText = segments[segIndex]?.text || "";
+      const rawLine = String(c?.line || "").trim();
+      const line = rawLine || String(baseText || "").trim();
+      if (!line) return null;
+      const type = normalizeShortsClipType(c?.type);
+      const targetSeconds = normalizeShortsTargetSeconds(
+        c?.targetSeconds ?? c?.target_seconds,
+      );
+      const openLoop =
+        typeof c?.openLoop === "boolean"
+          ? c.openLoop
+          : segmentHasOpenLoop(line);
+      const ctaLine = String(c?.ctaLine || c?.cta_line || "").trim();
+      const rawTitleCandidates = Array.isArray(
+        c?.titleCandidates ||
+          c?.title_candidates ||
+          c?.seoTitleCandidates ||
+          c?.seo_title_candidates,
+      )
+        ? c.titleCandidates ||
+          c.title_candidates ||
+          c.seoTitleCandidates ||
+          c.seo_title_candidates
+        : [];
+      let titleCandidates = uniqueStrings(
+        (rawTitleCandidates || [])
+          .map((t) => String(t || "").trim())
+          .filter(Boolean),
+        { limit: 8 },
+      );
+      if (titleCandidates.length < 3) {
+        const fallbackTitles = buildClipTitleCandidates(
+          line,
+          script?.shortTitle || script?.title || "",
+        );
+        titleCandidates = uniqueStrings(
+          [...titleCandidates, ...fallbackTitles],
+          { limit: 8 },
+        );
+      }
+      const rawThumbCandidates = Array.isArray(
+        c?.thumbnailTextCandidates || c?.thumbnail_text_candidates,
+      )
+        ? c.thumbnailTextCandidates || c.thumbnail_text_candidates
+        : [];
+      let thumbnailTextCandidates = uniqueStrings(
+        (rawThumbCandidates || [])
+          .map((t) => String(t || "").trim())
+          .filter(Boolean),
+        { limit: 8 },
+      );
+      if (thumbnailTextCandidates.length < 3) {
+        const fallbackThumbs = buildClipThumbnailTextCandidates(
+          line,
+          script?.shortTitle || script?.title || "",
+        );
+        thumbnailTextCandidates = uniqueStrings(
+          [...thumbnailTextCandidates, ...fallbackThumbs],
+          { limit: 8 },
+        );
+      }
+      return {
+        id: String(c?.id || `short_${segIndex}_${idx}`),
+        type,
+        segmentIndex: segIndex,
+        line,
+        openLoop,
+        ctaLine: ctaLine || SHORTS_DEFAULT_CTA_LINE,
+        targetSeconds,
+        titleCandidates,
+        thumbnailTextCandidates,
+      };
+    })
+    .filter(Boolean);
 
-	const normalized = {
-		angle,
-		titleCandidates: uniqueStrings(
-			(titleCandidates || [])
-				.map((t) => String(t || "").trim())
-				.filter(Boolean),
-			{ limit: 8 },
-		),
-		thumbnailTextCandidates: uniqueStrings(
-			(thumbnailTextCandidates || [])
-				.map((t) => String(t || "").trim())
-				.filter(Boolean),
-			{ limit: 8 },
-		),
-		clipCandidates,
-	};
+  const normalized = {
+    angle,
+    titleCandidates: uniqueStrings(
+      (titleCandidates || [])
+        .map((t) => String(t || "").trim())
+        .filter(Boolean),
+      { limit: 8 },
+    ),
+    thumbnailTextCandidates: uniqueStrings(
+      (thumbnailTextCandidates || [])
+        .map((t) => String(t || "").trim())
+        .filter(Boolean),
+      { limit: 8 },
+    ),
+    clipCandidates,
+  };
 
-	if (!normalized.angle) {
-		normalized.angle = String(script?.shortTitle || script?.title || "").trim();
-	}
-	if (normalized.titleCandidates.length < 5) {
-		const extra = buildTitleCandidates(script?.title, script?.shortTitle);
-		normalized.titleCandidates = uniqueStrings(
-			[...normalized.titleCandidates, ...extra],
-			{ limit: 8 },
-		);
-	}
-	if (normalized.thumbnailTextCandidates.length < 5) {
-		const extra = buildThumbnailTextCandidates(
-			script?.shortTitle || script?.title || "",
-		);
-		normalized.thumbnailTextCandidates = uniqueStrings(
-			[...normalized.thumbnailTextCandidates, ...extra],
-			{ limit: 8 },
-		);
-	}
-	if (normalized.clipCandidates.length < SHORTS_MIN_CANDIDATES) {
-		const fallback = buildFallbackShortsDetails(script);
-		const merged = [];
-		const seen = new Set();
-		for (const item of [
-			...normalized.clipCandidates,
-			...fallback.clipCandidates,
-		]) {
-			const id = String(item?.id || "").trim();
-			if (!id || seen.has(id)) continue;
-			seen.add(id);
-			merged.push(item);
-			if (merged.length >= SHORTS_MAX_CANDIDATES) break;
-		}
-		normalized.clipCandidates = merged;
-	}
-	if (normalized.clipCandidates.length > SHORTS_MAX_CANDIDATES) {
-		normalized.clipCandidates = normalized.clipCandidates.slice(
-			0,
-			SHORTS_MAX_CANDIDATES,
-		);
-	}
+  if (!normalized.angle) {
+    normalized.angle = String(script?.shortTitle || script?.title || "").trim();
+  }
+  if (normalized.titleCandidates.length < 5) {
+    const extra = buildTitleCandidates(script?.title, script?.shortTitle);
+    normalized.titleCandidates = uniqueStrings(
+      [...normalized.titleCandidates, ...extra],
+      { limit: 8 },
+    );
+  }
+  if (normalized.thumbnailTextCandidates.length < 5) {
+    const extra = buildThumbnailTextCandidates(
+      script?.shortTitle || script?.title || "",
+    );
+    normalized.thumbnailTextCandidates = uniqueStrings(
+      [...normalized.thumbnailTextCandidates, ...extra],
+      { limit: 8 },
+    );
+  }
+  if (normalized.clipCandidates.length < SHORTS_MIN_CANDIDATES) {
+    const fallback = buildFallbackShortsDetails(script);
+    const merged = [];
+    const seen = new Set();
+    for (const item of [
+      ...normalized.clipCandidates,
+      ...fallback.clipCandidates,
+    ]) {
+      const id = String(item?.id || "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      merged.push(item);
+      if (merged.length >= SHORTS_MAX_CANDIDATES) break;
+    }
+    normalized.clipCandidates = merged;
+  }
+  if (normalized.clipCandidates.length > SHORTS_MAX_CANDIDATES) {
+    normalized.clipCandidates = normalized.clipCandidates.slice(
+      0,
+      SHORTS_MAX_CANDIDATES,
+    );
+  }
 
-	return normalized;
+  return normalized;
 }
 
 async function generateShortsDetailsWithModel({ jobId, script, topics = [] }) {
-	if (!process.env.CHATGPT_API_TOKEN) return null;
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	if (!segments.length) return null;
-	const topicLabels = (topics || [])
-		.map((t) => t?.displayTopic || t?.topic || "")
-		.filter(Boolean)
-		.join(", ");
-	const prompt = `
+  if (!process.env.CHATGPT_API_TOKEN) return null;
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  if (!segments.length) return null;
+  const topicLabels = (topics || [])
+    .map((t) => t?.displayTopic || t?.topic || "")
+    .filter(Boolean)
+    .join(", ");
+  const prompt = `
 You are creating clip candidates for YouTube Shorts from a long-form script.
 Keep the voice neutral and factual. Do NOT resolve everything in the clip.
 Provide clip candidates that are cut-ready and end with an open loop.
@@ -7244,1020 +7247,1020 @@ Segments:
 ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 `.trim();
 
-	try {
-		const resp = await openai.chat.completions.create({
-			model: CHAT_MODEL,
-			messages: [{ role: "user", content: prompt }],
-		});
-		const parsed = parseJsonFlexible(
-			resp?.choices?.[0]?.message?.content || "",
-		);
-		if (!parsed || typeof parsed !== "object") return null;
-		return parsed;
-	} catch (e) {
-		if (jobId)
-			logJob(jobId, "shorts details generation failed", { error: e.message });
-		return null;
-	}
+  try {
+    const resp = await openai.chat.completions.create({
+      model: CHAT_MODEL,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const parsed = parseJsonFlexible(
+      resp?.choices?.[0]?.message?.content || "",
+    );
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch (e) {
+    if (jobId)
+      logJob(jobId, "shorts details generation failed", { error: e.message });
+    return null;
+  }
 }
 
 async function ensureShortsDetails({ jobId, script, topics }) {
-	const existing = script?.shortsDetails || null;
-	const normalized = normalizeShortsDetails(existing, script);
-	const needsMore =
-		!normalized ||
-		normalized.clipCandidates.length < SHORTS_MIN_CANDIDATES ||
-		normalized.titleCandidates.length < 3;
-	if (!needsMore) return normalized;
-	const modelDetails = await generateShortsDetailsWithModel({
-		jobId,
-		script,
-		topics,
-	});
-	if (!modelDetails) return normalized;
-	return normalizeShortsDetails(modelDetails, script);
+  const existing = script?.shortsDetails || null;
+  const normalized = normalizeShortsDetails(existing, script);
+  const needsMore =
+    !normalized ||
+    normalized.clipCandidates.length < SHORTS_MIN_CANDIDATES ||
+    normalized.titleCandidates.length < 3;
+  if (!needsMore) return normalized;
+  const modelDetails = await generateShortsDetailsWithModel({
+    jobId,
+    script,
+    topics,
+  });
+  if (!modelDetails) return normalized;
+  return normalizeShortsDetails(modelDetails, script);
 }
 
 const REAL_WORLD_FICTIONAL_REWRITE_RULES = [
-	{ regex: /(^|[.!?]\s+)in[-\s]?universe[:,]?\s+/gi, replace: "$1" },
-	{ regex: /\bin[-\s]?universe\b/gi, replace: "" },
-	{ regex: /\bfictional\b/gi, replace: "" },
-	{ regex: /\bplotline\b/gi, replace: "story" },
-	{ regex: /\bstoryline\b/gi, replace: "story" },
-	{ regex: /\bcharacter arc\b/gi, replace: "story" },
-	{ regex: /\bcanon\b/gi, replace: "record" },
-	{ regex: /\blore\b/gi, replace: "background" },
+  { regex: /(^|[.!?]\s+)in[-\s]?universe[:,]?\s+/gi, replace: "$1" },
+  { regex: /\bin[-\s]?universe\b/gi, replace: "" },
+  { regex: /\bfictional\b/gi, replace: "" },
+  { regex: /\bplotline\b/gi, replace: "story" },
+  { regex: /\bstoryline\b/gi, replace: "story" },
+  { regex: /\bcharacter arc\b/gi, replace: "story" },
+  { regex: /\bcanon\b/gi, replace: "record" },
+  { regex: /\blore\b/gi, replace: "background" },
 ];
 
 function stripFictionalFraming(text = "") {
-	let updated = String(text || "");
-	for (const rule of REAL_WORLD_FICTIONAL_REWRITE_RULES) {
-		updated = updated.replace(rule.regex, rule.replace);
-	}
-	updated = cleanupSpeechText(updated);
-	return updated || String(text || "").trim();
+  let updated = String(text || "");
+  for (const rule of REAL_WORLD_FICTIONAL_REWRITE_RULES) {
+    updated = updated.replace(rule.regex, rule.replace);
+  }
+  updated = cleanupSpeechText(updated);
+  return updated || String(text || "").trim();
 }
 
 function enforceRealWorldFraming(segments = [], topicContextFlags = []) {
-	if (!Array.isArray(segments) || !segments.length) return segments;
-	if (!Array.isArray(topicContextFlags) || !topicContextFlags.length)
-		return segments;
-	return segments.map((seg) => {
-		const topicIndex =
-			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
-				? Number(seg.topicIndex)
-				: 0;
-		const isFictional = Boolean(topicContextFlags?.[topicIndex]?.isFictional);
-		if (isFictional) return seg;
-		const cleaned = stripFictionalFraming(seg.text || "");
-		if (!cleaned || cleaned === seg.text) return seg;
-		return { ...seg, text: cleaned };
-	});
+  if (!Array.isArray(segments) || !segments.length) return segments;
+  if (!Array.isArray(topicContextFlags) || !topicContextFlags.length)
+    return segments;
+  return segments.map((seg) => {
+    const topicIndex =
+      Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+        ? Number(seg.topicIndex)
+        : 0;
+    const isFictional = Boolean(topicContextFlags?.[topicIndex]?.isFictional);
+    if (isFictional) return seg;
+    const cleaned = stripFictionalFraming(seg.text || "");
+    if (!cleaned || cleaned === seg.text) return seg;
+    return { ...seg, text: cleaned };
+  });
 }
 
 function formatAgendaList(items = []) {
-	const list = (items || []).filter(Boolean).slice(0, 4);
-	if (!list.length) return "";
-	if (list.length === 1) return list[0];
-	if (list.length === 2) return `${list[0]} and ${list[1]}`;
-	if (list.length === 3) return `${list[0]}, ${list[1]}, and ${list[2]}`;
-	return `${list[0]}, ${list[1]}, ${list[2]}, and ${list[3]}`;
+  const list = (items || []).filter(Boolean).slice(0, 4);
+  if (!list.length) return "";
+  if (list.length === 1) return list[0];
+  if (list.length === 2) return `${list[0]} and ${list[1]}`;
+  if (list.length === 3) return `${list[0]}, ${list[1]}, and ${list[2]}`;
+  return `${list[0]}, ${list[1]}, ${list[2]}, and ${list[3]}`;
 }
 
 function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
-	const labels = buildIntroTopicLabels(topics, 6);
-	const text = `${shortTitle || ""} ${labels.join(" ")}`.toLowerCase();
-	if (/\b(divorce|split|breakup|separation|custody)\b/.test(text)) {
-		return {
-			beats: [
-				"how this unfolded",
-				"when things really started turning",
-				"what the strongest reporting actually supports",
-				"the detail that could change where this goes next",
-			],
-			cardSubtitle: "Timeline, Fallout, What's Next",
-		};
-	}
-	if (
-		/\b(backlash|controversy|scandal|lawsuit|court|trial|arrest|investigation|feud|accusation|claim)\b/.test(
-			text,
-		)
-	) {
-		return {
-			beats: [
-				"what set this off",
-				"why people are so split on it",
-				"what the strongest reporting actually supports",
-				"the detail that could change where this goes next",
-			],
-			cardSubtitle: "What Set It Off and What's Next",
-		};
-	}
-	if (
-		/\b(movie|film|show|series|episode|season|album|song|tour|cast|trailer|awards?)\b/.test(
-			text,
-		)
-	) {
-		return {
-			beats: [
-				"what changed",
-				"why viewers are split on it",
-				"what the latest reporting actually supports",
-				"what to watch next",
-			],
-			cardSubtitle: "What Changed and What's Next",
-		};
-	}
-	return {
-		beats: [
-			"what happened",
-			"why people are reacting so strongly",
-			"what the key reporting actually supports",
-			"what could happen next",
-		],
-		cardSubtitle: "Why It Matters and What's Next",
-	};
+  const labels = buildIntroTopicLabels(topics, 6);
+  const text = `${shortTitle || ""} ${labels.join(" ")}`.toLowerCase();
+  if (/\b(divorce|split|breakup|separation|custody)\b/.test(text)) {
+    return {
+      beats: [
+        "how this unfolded",
+        "when things really started turning",
+        "what the strongest reporting actually supports",
+        "the detail that could change where this goes next",
+      ],
+      cardSubtitle: "Timeline, Fallout, What's Next",
+    };
+  }
+  if (
+    /\b(backlash|controversy|scandal|lawsuit|court|trial|arrest|investigation|feud|accusation|claim)\b/.test(
+      text,
+    )
+  ) {
+    return {
+      beats: [
+        "what set this off",
+        "why people are so split on it",
+        "what the strongest reporting actually supports",
+        "the detail that could change where this goes next",
+      ],
+      cardSubtitle: "What Set It Off and What's Next",
+    };
+  }
+  if (
+    /\b(movie|film|show|series|episode|season|album|song|tour|cast|trailer|awards?)\b/.test(
+      text,
+    )
+  ) {
+    return {
+      beats: [
+        "what changed",
+        "why viewers are split on it",
+        "what the latest reporting actually supports",
+        "what to watch next",
+      ],
+      cardSubtitle: "What Changed and What's Next",
+    };
+  }
+  return {
+    beats: [
+      "what happened",
+      "why people are reacting so strongly",
+      "what the key reporting actually supports",
+      "what could happen next",
+    ],
+    cardSubtitle: "Why It Matters and What's Next",
+  };
 }
 
 function pickIntroLead({ sensitive = false, topicCount = 1, jobId }) {
-	const seed = jobId ? seedFromJobId(jobId) : 0;
-	const casualSingle = [
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're getting into`,
-		`Hi guys, it's ${INTRO_HOST_NAME}, and we have a really interesting one today around`,
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're breaking down`,
-	];
-	const calmSingle = [
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're taking a closer look at`,
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're unpacking`,
-	];
-	const casualMulti = [
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're checking on`,
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we have a strong lineup around`,
-	];
-	const calmMulti = [
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're taking a closer look at`,
-	];
-	const pool =
-		topicCount <= 1
-			? sensitive
-				? calmSingle
-				: casualSingle
-			: sensitive
-				? calmMulti
-				: casualMulti;
-	return (
-		pool[seed % pool.length] ||
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're getting into`
-	);
+  const seed = jobId ? seedFromJobId(jobId) : 0;
+  const casualSingle = [
+    `Hi guys, it's ${INTRO_HOST_NAME}, and today we're getting into`,
+    `Hi guys, it's ${INTRO_HOST_NAME}, and we have a really interesting one today around`,
+    `Hi guys, it's ${INTRO_HOST_NAME}, and today we're breaking down`,
+  ];
+  const calmSingle = [
+    `Hi guys, it's ${INTRO_HOST_NAME}, and today we're taking a closer look at`,
+    `Hi guys, it's ${INTRO_HOST_NAME}, and today we're unpacking`,
+  ];
+  const casualMulti = [
+    `Hi guys, it's ${INTRO_HOST_NAME}, and today we're checking on`,
+    `Hi guys, it's ${INTRO_HOST_NAME}, and today we have a strong lineup around`,
+  ];
+  const calmMulti = [
+    `Hi guys, it's ${INTRO_HOST_NAME}, and today we're taking a closer look at`,
+  ];
+  const pool =
+    topicCount <= 1
+      ? sensitive
+        ? calmSingle
+        : casualSingle
+      : sensitive
+        ? calmMulti
+        : casualMulti;
+  return (
+    pool[seed % pool.length] ||
+    `Hi guys, it's ${INTRO_HOST_NAME}, and today we're getting into`
+  );
 }
 
 function buildIntroCardSubtitle({ topics = [], shortTitle = "" } = {}) {
-	const profile = inferIntroAgendaProfile({ topics, shortTitle });
-	return formatHumanTitle(profile.cardSubtitle || "", 72);
+  const profile = inferIntroAgendaProfile({ topics, shortTitle });
+  return formatHumanTitle(profile.cardSubtitle || "", 72);
 }
 
 function buildIntroCardTitle({ title = "", shortTitle = "" } = {}) {
-	return formatHumanTitle(shortTitle || title || "Quick Update", 64);
+  return formatHumanTitle(shortTitle || title || "Quick Update", 64);
 }
 
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
-	const fallbackLabel = shortTopicLabel(shortTitle || "today's topic", 6);
-	const topicLabels = buildIntroTopicLabels(topics, 6);
-	const safeLabels = topicLabels.length ? topicLabels : [fallbackLabel];
-	const topicList = formatLabelList(safeLabels) || fallbackLabel;
-	const sensitive = isSensitiveTopicText(
-		`${shortTitle || ""} ${safeLabels.join(" ")} ${mood || ""}`,
-	);
-	const introLead = pickIntroLead({
-		sensitive,
-		topicCount: safeLabels.length,
-		jobId,
-	});
-	const profile = inferIntroAgendaProfile({ topics, shortTitle });
-	const agenda = formatAgendaList(profile.beats);
-	const line =
-		safeLabels.length <= 1
-			? `${introLead} ${safeLabels[0] || topicList}. We're breaking down ${agenda}, so stay with me.`
-			: `${introLead} ${topicList}. I'll walk you through ${agenda}, so stay with me.`;
-	return sanitizeIntroOutroLine(line);
+  const fallbackLabel = shortTopicLabel(shortTitle || "today's topic", 6);
+  const topicLabels = buildIntroTopicLabels(topics, 6);
+  const safeLabels = topicLabels.length ? topicLabels : [fallbackLabel];
+  const topicList = formatLabelList(safeLabels) || fallbackLabel;
+  const sensitive = isSensitiveTopicText(
+    `${shortTitle || ""} ${safeLabels.join(" ")} ${mood || ""}`,
+  );
+  const introLead = pickIntroLead({
+    sensitive,
+    topicCount: safeLabels.length,
+    jobId,
+  });
+  const profile = inferIntroAgendaProfile({ topics, shortTitle });
+  const agenda = formatAgendaList(profile.beats);
+  const line =
+    safeLabels.length <= 1
+      ? `${introLead} ${safeLabels[0] || topicList}. We're breaking down ${agenda}, so stay with me.`
+      : `${introLead} ${topicList}. I'll walk you through ${agenda}, so stay with me.`;
+  return sanitizeIntroOutroLine(line);
 }
 
 function isSportsLikeTopicLabel(text = "") {
-	const t = String(text || "").toLowerCase();
-	return (
-		/\bvs\.?\b|\bversus\b/.test(t) ||
-		/\b(game|matchup|recap|highlights?|takeaways?|postgame|halftime|final four|sweet sixteen|elite eight|playoffs?|tournament)\b/.test(
-			t,
-		) ||
-		/\b(nfl|nba|mlb|nhl|ncaa|ncaa tournament|college basketball|college football|march madness)\b/.test(
-			t,
-		)
-	);
+  const t = String(text || "").toLowerCase();
+  return (
+    /\bvs\.?\b|\bversus\b/.test(t) ||
+    /\b(game|matchup|recap|highlights?|takeaways?|postgame|halftime|final four|sweet sixteen|elite eight|playoffs?|tournament)\b/.test(
+      t,
+    ) ||
+    /\b(nfl|nba|mlb|nhl|ncaa|ncaa tournament|college basketball|college football|march madness)\b/.test(
+      t,
+    )
+  );
 }
 
 function buildTopicEngagementQuestionForLabel(
-	topicLabel,
-	mood = "neutral",
-	{ compact = false, shortTitle = "" } = {},
+  topicLabel,
+  mood = "neutral",
+  { compact = false, shortTitle = "" } = {},
 ) {
-	const label = selectEngagementLabel({
-		topicLabel,
-		shortTitle,
-		maxWords: compact ? 5 : 5,
-	});
-	const fallback = "What detail still feels unresolved?";
-	if (!label) return fallback;
-	if (isSportsLikeTopicLabel(label)) {
-		return compact
-			? `What was the turning point in ${label}?`
-			: `What was the turning point for you in ${label}?`;
-	}
-	if (compact)
-		return mood === "serious"
-			? `Which detail about ${label} still feels unresolved?`
-			: `What detail about ${label} still feels unresolved?`;
-	if (mood === "serious")
-		return `Which detail about ${label} still feels unresolved to you?`;
-	return `What detail about ${label} still feels unresolved to you?`;
+  const label = selectEngagementLabel({
+    topicLabel,
+    shortTitle,
+    maxWords: compact ? 5 : 5,
+  });
+  const fallback = "What detail still feels unresolved?";
+  if (!label) return fallback;
+  if (isSportsLikeTopicLabel(label)) {
+    return compact
+      ? `What was the turning point in ${label}?`
+      : `What was the turning point for you in ${label}?`;
+  }
+  if (compact)
+    return mood === "serious"
+      ? `Which detail about ${label} still feels unresolved?`
+      : `What detail about ${label} still feels unresolved?`;
+  if (mood === "serious")
+    return `Which detail about ${label} still feels unresolved to you?`;
+  return `What detail about ${label} still feels unresolved to you?`;
 }
 
 function buildTopicEngagementQuestion({
-	topics = [],
-	shortTitle,
-	mood = "neutral",
-	compact = false,
+  topics = [],
+  shortTitle,
+  mood = "neutral",
+  compact = false,
 } = {}) {
-	const topicLabels = (topics || [])
-		.map((t) => shortTopicLabel(t?.displayTopic || t?.topic || t, 3))
-		.filter(Boolean);
-	const labels =
-		topicLabels.length > 0
-			? topicLabels
-			: shortTitle
-				? [shortTopicLabel(shortTitle, 4)]
-				: [];
-	if (!labels.length) return "What do you think?";
-	if (labels.length === 1)
-		return buildTopicEngagementQuestionForLabel(labels[0], mood, {
-			compact,
-			shortTitle,
-		});
+  const topicLabels = (topics || [])
+    .map((t) => shortTopicLabel(t?.displayTopic || t?.topic || t, 3))
+    .filter(Boolean);
+  const labels =
+    topicLabels.length > 0
+      ? topicLabels
+      : shortTitle
+        ? [shortTopicLabel(shortTitle, 4)]
+        : [];
+  if (!labels.length) return "What do you think?";
+  if (labels.length === 1)
+    return buildTopicEngagementQuestionForLabel(labels[0], mood, {
+      compact,
+      shortTitle,
+    });
 
-	if (compact) return "Which topic still feels unresolved to you?";
+  if (compact) return "Which topic still feels unresolved to you?";
 
-	const list = formatTopicList(labels);
-	return `Which of these topics still feels unresolved to you: ${list}?`;
+  const list = formatTopicList(labels);
+  return `Which of these topics still feels unresolved to you: ${list}?`;
 }
 
 function buildOutroLine({
-	topics = [],
-	shortTitle,
-	mood = "neutral",
-	includeQuestion = true,
+  topics = [],
+  shortTitle,
+  mood = "neutral",
+  includeQuestion = true,
 }) {
-	const question = includeQuestion
-		? buildTopicEngagementQuestion({
-				topics,
-				shortTitle,
-				mood,
-				compact: true,
-			})
-		: "";
-	let line = includeQuestion
-		? `${question} Thank you for watching, and see you next time.`
-		: "Thank you for watching, and see you next time.";
-	if (includeQuestion) {
-		if (countWords(line) > 18) {
-			line = `${question} Thank you for watching. See you next time.`;
-		}
-		if (countWords(line) > 14) {
-			line = `${question} Thank you for watching.`;
-		}
-	} else {
-		if (countWords(line) > 12) {
-			line = "Thank you for watching and See you next time.";
-		}
-		if (countWords(line) < 12) {
-			line = "Thank you for watching and see you next time.";
-		}
-	}
-	return sanitizeIntroOutroLine(line);
+  const question = includeQuestion
+    ? buildTopicEngagementQuestion({
+        topics,
+        shortTitle,
+        mood,
+        compact: true,
+      })
+    : "";
+  let line = includeQuestion
+    ? `${question} Thank you for watching, and see you next time.`
+    : "Thank you for watching, and see you next time.";
+  if (includeQuestion) {
+    if (countWords(line) > 18) {
+      line = `${question} Thank you for watching. See you next time.`;
+    }
+    if (countWords(line) > 14) {
+      line = `${question} Thank you for watching.`;
+    }
+  } else {
+    if (countWords(line) > 12) {
+      line = "Thank you for watching and See you next time.";
+    }
+    if (countWords(line) < 12) {
+      line = "Thank you for watching and see you next time.";
+    }
+  }
+  return sanitizeIntroOutroLine(line);
 }
 
 const SEGMENT_ENDING_BLOCKLIST = new Set([
-	"and",
-	"but",
-	"so",
-	"because",
-	"with",
-	"to",
-	"for",
-	"that",
+  "and",
+  "but",
+  "so",
+  "because",
+  "with",
+  "to",
+  "for",
+  "that",
 ]);
 
 function endsWithTerminalPunctuation(text = "") {
-	const t = String(text || "").trim();
-	return /[.!?]["')\]]?$/.test(t);
+  const t = String(text || "").trim();
+  return /[.!?]["')\]]?$/.test(t);
 }
 
 function endsWithBlockedWord(text = "") {
-	const t = String(text || "")
-		.trim()
-		.replace(/["')\]]+$/g, "")
-		.replace(/[.!?,;:]+$/g, "");
-	const parts = t.split(/\s+/).filter(Boolean);
-	if (!parts.length) return false;
-	return SEGMENT_ENDING_BLOCKLIST.has(parts[parts.length - 1].toLowerCase());
+  const t = String(text || "")
+    .trim()
+    .replace(/["')\]]+$/g, "")
+    .replace(/[.!?,;:]+$/g, "");
+  const parts = t.split(/\s+/).filter(Boolean);
+  if (!parts.length) return false;
+  return SEGMENT_ENDING_BLOCKLIST.has(parts[parts.length - 1].toLowerCase());
 }
 
 function hasOpenParenthetical(text = "") {
-	const t = String(text || "").trim();
-	if (/[([{]$/.test(t)) return true;
-	const open = (t.match(/\(/g) || []).length;
-	const close = (t.match(/\)/g) || []).length;
-	return open > close;
+  const t = String(text || "").trim();
+  if (/[([{]$/.test(t)) return true;
+  const open = (t.match(/\(/g) || []).length;
+  const close = (t.match(/\)/g) || []).length;
+  return open > close;
 }
 
 function appendClosingPhrase(text = "", mood = "neutral") {
-	const closer =
-		mood === "serious"
-			? "That's the takeaway for now."
-			: "That's the takeaway.";
-	const base = String(text || "").trim();
-	if (!base) return closer;
-	const needsPunct = /[.!?]["')\]]?$/.test(base) ? "" : ".";
-	return `${base}${needsPunct} ${closer}`.trim();
+  const closer =
+    mood === "serious"
+      ? "That's the takeaway for now."
+      : "That's the takeaway.";
+  const base = String(text || "").trim();
+  if (!base) return closer;
+  const needsPunct = /[.!?]["')\]]?$/.test(base) ? "" : ".";
+  return `${base}${needsPunct} ${closer}`.trim();
 }
 
 function enforceCtaQuestion(text = "", mood = "neutral") {
-	let t = String(text || "").trim();
-	if (!t) t = "Quick final thought.";
+  let t = String(text || "").trim();
+  if (!t) t = "Quick final thought.";
 
-	const hasSubscribe = /subscribe/i.test(t);
-	const hasQuestionMark = /\?/.test(t);
-	const subscribeStatement =
-		mood === "serious" ? "Subscribe for updates." : "Subscribe for more.";
-	const commentQuestion = "What detail still feels unresolved to you?";
-	const combinedCta =
-		mood === "serious"
-			? "What detail still feels unresolved to you, and will you subscribe for updates?"
-			: "What detail still feels unresolved to you, and will you subscribe for more?";
+  const hasSubscribe = /subscribe/i.test(t);
+  const hasQuestionMark = /\?/.test(t);
+  const subscribeStatement =
+    mood === "serious" ? "Subscribe for updates." : "Subscribe for more.";
+  const commentQuestion = "What detail still feels unresolved to you?";
+  const combinedCta =
+    mood === "serious"
+      ? "What detail still feels unresolved to you, and will you subscribe for updates?"
+      : "What detail still feels unresolved to you, and will you subscribe for more?";
 
-	if (hasQuestionMark) {
-		// De-dup: keep one question and avoid repeating subscribe prompts.
-		t = t.replace(/\?(?=[^?]*\?)/g, ".").trim();
-		if (hasSubscribe) return t;
-		const needsPunct = /[.!?]["')\]]*$/.test(t) ? "" : ".";
-		return `${t}${needsPunct} ${subscribeStatement}`;
-	}
+  if (hasQuestionMark) {
+    // De-dup: keep one question and avoid repeating subscribe prompts.
+    t = t.replace(/\?(?=[^?]*\?)/g, ".").trim();
+    if (hasSubscribe) return t;
+    const needsPunct = /[.!?]["')\]]*$/.test(t) ? "" : ".";
+    return `${t}${needsPunct} ${subscribeStatement}`;
+  }
 
-	t = t.replace(/[.!?]+["')\]]*$/g, "").trim();
-	if (!t) t = "Quick final thought.";
-	if (hasSubscribe) return `${t}. ${commentQuestion}`;
-	return `${t}. ${combinedCta}`;
+  t = t.replace(/[.!?]+["')\]]*$/g, "").trim();
+  if (!t) t = "Quick final thought.";
+  if (hasSubscribe) return `${t}. ${commentQuestion}`;
+  return `${t}. ${combinedCta}`;
 }
 
 function enforceSegmentCompleteness(
-	segments = [],
-	mood = "neutral",
-	{ includeCta = true } = {},
+  segments = [],
+  mood = "neutral",
+  { includeCta = true } = {},
 ) {
-	return (segments || []).map((s, i, arr) => {
-		const isLast = i === arr.length - 1;
-		let text = String(s.text || "")
-			.replace(/\s+/g, " ")
-			.trim();
-		const hadTrailingOpen = /[([{]$/.test(text);
-		const hadBlockedEnding = endsWithBlockedWord(text);
+  return (segments || []).map((s, i, arr) => {
+    const isLast = i === arr.length - 1;
+    let text = String(s.text || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const hadTrailingOpen = /[([{]$/.test(text);
+    const hadBlockedEnding = endsWithBlockedWord(text);
 
-		if (hadTrailingOpen) text = text.replace(/[([{]\s*$/g, "").trim();
-		const openParen = (text.match(/\(/g) || []).length;
-		const closeParen = (text.match(/\)/g) || []).length;
-		if (openParen > closeParen) {
-			if (endsWithTerminalPunctuation(text)) {
-				text = text.replace(/([.!?]["')\]]*)$/, ")$1");
-			} else {
-				text = `${text})`;
-			}
-		}
-		if (hadBlockedEnding) {
-			text = text
-				.replace(/\b(and|but|so|because|with|to|for|that)\b[.!?,;:]*$/i, "")
-				.trim();
-		}
+    if (hadTrailingOpen) text = text.replace(/[([{]\s*$/g, "").trim();
+    const openParen = (text.match(/\(/g) || []).length;
+    const closeParen = (text.match(/\)/g) || []).length;
+    if (openParen > closeParen) {
+      if (endsWithTerminalPunctuation(text)) {
+        text = text.replace(/([.!?]["')\]]*)$/, ")$1");
+      } else {
+        text = `${text})`;
+      }
+    }
+    if (hadBlockedEnding) {
+      text = text
+        .replace(/\b(and|but|so|because|with|to|for|that)\b[.!?,;:]*$/i, "")
+        .trim();
+    }
 
-		const needsClosure =
-			hadTrailingOpen ||
-			hadBlockedEnding ||
-			hasOpenParenthetical(text) ||
-			/[,:;]$/.test(text);
-		if (needsClosure) text = appendClosingPhrase(text, mood);
-		if (!endsWithTerminalPunctuation(text)) text = `${text}.`;
+    const needsClosure =
+      hadTrailingOpen ||
+      hadBlockedEnding ||
+      hasOpenParenthetical(text) ||
+      /[,:;]$/.test(text);
+    if (needsClosure) text = appendClosingPhrase(text, mood);
+    if (!endsWithTerminalPunctuation(text)) text = `${text}.`;
 
-		if (isLast && includeCta) text = enforceCtaQuestion(text, mood);
+    if (isLast && includeCta) text = enforceCtaQuestion(text, mood);
 
-		return { ...s, text };
-	});
+    return { ...s, text };
+  });
 }
 
 function trimSegmentToCap(text = "", cap = 0) {
-	return trimToSentenceCap(text, cap);
+  return trimToSentenceCap(text, cap);
 }
 
 const TOPIC_TRANSITION_TEMPLATES = [
-	"Alright, switching gears to {topic}. Here's the quick read.",
-	"Next up: {topic}. Here's the key update.",
-	"Now pivoting to {topic}. Here's what matters.",
-	"Alright, moving on to {topic}. Here's the latest.",
-	"Turning to {topic}. Here's the headline.",
+  "Alright, switching gears to {topic}. Here's the quick read.",
+  "Next up: {topic}. Here's the key update.",
+  "Now pivoting to {topic}. Here's what matters.",
+  "Alright, moving on to {topic}. Here's the latest.",
+  "Turning to {topic}. Here's the headline.",
 ];
 
 function dropIntroTransitionSentence(text = "") {
-	const trimmed = String(text || "").trim();
-	if (!trimmed) return "";
-	const transitionRegex =
-		/^(and now|now|next up|switching gears|turning to|moving on|pivoting|lets talk about|let\W*s talk about|we\W*re talking about|we are talking about)\b/i;
-	if (!transitionRegex.test(trimmed)) return trimmed;
-	const boundary = trimmed.search(/[.!?]\s+/);
-	if (boundary >= 0) {
-		const rest = trimmed.slice(boundary + 1).trim();
-		if (rest) return rest;
-	}
-	return trimmed
-		.replace(transitionRegex, "")
-		.replace(/^[,:\-\s]+/, "")
-		.trim();
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return "";
+  const transitionRegex =
+    /^(and now|now|next up|switching gears|turning to|moving on|pivoting|lets talk about|let\W*s talk about|we\W*re talking about|we are talking about)\b/i;
+  if (!transitionRegex.test(trimmed)) return trimmed;
+  const boundary = trimmed.search(/[.!?]\s+/);
+  if (boundary >= 0) {
+    const rest = trimmed.slice(boundary + 1).trim();
+    if (rest) return rest;
+  }
+  return trimmed
+    .replace(transitionRegex, "")
+    .replace(/^[,:\-\s]+/, "")
+    .trim();
 }
 
 function ensureTopicTransitions(segments = [], topics = []) {
-	const out = [];
-	let lastTopicIndex = null;
+  const out = [];
+  let lastTopicIndex = null;
 
-	for (let i = 0; i < (segments || []).length; i++) {
-		const seg = segments[i];
-		const topicIndex =
-			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
-				? Number(seg.topicIndex)
-				: 0;
-		const topicLabel =
-			String(seg.topicLabel || "").trim() ||
-			String(
-				topics[topicIndex]?.displayTopic || topics[topicIndex]?.topic || "",
-			).trim();
-		let text = String(seg.text || "").trim();
+  for (let i = 0; i < (segments || []).length; i++) {
+    const seg = segments[i];
+    const topicIndex =
+      Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+        ? Number(seg.topicIndex)
+        : 0;
+    const topicLabel =
+      String(seg.topicLabel || "").trim() ||
+      String(
+        topics[topicIndex]?.displayTopic || topics[topicIndex]?.topic || "",
+      ).trim();
+    let text = String(seg.text || "").trim();
 
-		if (i === 0) {
-			text = dropIntroTransitionSentence(text);
-		} else if (topicIndex !== lastTopicIndex && topicLabel) {
-			const lower = text.toLowerCase();
-			const topicLower = topicLabel.toLowerCase();
-			const hasTransition =
-				/^(and now|next up|now|switching gears|turning to|moving on|pivoting)/i.test(
-					text,
-				);
-			const mentionsTopic = topicLower && lower.includes(topicLower);
-			if (!hasTransition || !mentionsTopic) {
-				const template =
-					TOPIC_TRANSITION_TEMPLATES[
-						Math.abs(topicIndex + i) % TOPIC_TRANSITION_TEMPLATES.length
-					];
-				const transition = template.replace("{topic}", topicLabel).trim();
-				text = `${transition} ${text}`.trim();
-			}
-		}
+    if (i === 0) {
+      text = dropIntroTransitionSentence(text);
+    } else if (topicIndex !== lastTopicIndex && topicLabel) {
+      const lower = text.toLowerCase();
+      const topicLower = topicLabel.toLowerCase();
+      const hasTransition =
+        /^(and now|next up|now|switching gears|turning to|moving on|pivoting)/i.test(
+          text,
+        );
+      const mentionsTopic = topicLower && lower.includes(topicLower);
+      if (!hasTransition || !mentionsTopic) {
+        const template =
+          TOPIC_TRANSITION_TEMPLATES[
+            Math.abs(topicIndex + i) % TOPIC_TRANSITION_TEMPLATES.length
+          ];
+        const transition = template.replace("{topic}", topicLabel).trim();
+        text = `${transition} ${text}`.trim();
+      }
+    }
 
-		out.push({
-			...seg,
-			topicIndex,
-			topicLabel,
-			text: cleanupSpeechText(text),
-		});
-		lastTopicIndex = topicIndex;
-	}
+    out.push({
+      ...seg,
+      topicIndex,
+      topicLabel,
+      text: cleanupSpeechText(text),
+    });
+    lastTopicIndex = topicIndex;
+  }
 
-	return out;
+  return out;
 }
 
 function ensureTopicAnchors(segments = [], topics = [], topicIntents = []) {
-	const firstIndexByTopic = new Map();
-	for (let i = 0; i < (segments || []).length; i++) {
-		const topicIndex =
-			Number.isFinite(Number(segments[i]?.topicIndex)) &&
-			Number(segments[i]?.topicIndex) >= 0
-				? Number(segments[i]?.topicIndex)
-				: 0;
-		if (!firstIndexByTopic.has(topicIndex))
-			firstIndexByTopic.set(topicIndex, i);
-	}
+  const firstIndexByTopic = new Map();
+  for (let i = 0; i < (segments || []).length; i++) {
+    const topicIndex =
+      Number.isFinite(Number(segments[i]?.topicIndex)) &&
+      Number(segments[i]?.topicIndex) >= 0
+        ? Number(segments[i]?.topicIndex)
+        : 0;
+    if (!firstIndexByTopic.has(topicIndex))
+      firstIndexByTopic.set(topicIndex, i);
+  }
 
-	return (segments || []).map((seg, idx) => {
-		const topicIndex =
-			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
-				? Number(seg.topicIndex)
-				: 0;
-		const intent = topicIntents?.[topicIndex] || {};
-		const anchor = cleanTopicLabel(intent.anchor || "");
-		if (!anchor || anchor.toLowerCase() === "today's topic") return seg;
-		const text = String(seg.text || "").trim();
-		if (!text) return seg;
-		const lower = text.toLowerCase();
-		const anchorLower = anchor.toLowerCase();
-		if (lower.includes(anchorLower)) return seg;
-		if (idx !== firstIndexByTopic.get(topicIndex)) return seg;
+  return (segments || []).map((seg, idx) => {
+    const topicIndex =
+      Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+        ? Number(seg.topicIndex)
+        : 0;
+    const intent = topicIntents?.[topicIndex] || {};
+    const anchor = cleanTopicLabel(intent.anchor || "");
+    if (!anchor || anchor.toLowerCase() === "today's topic") return seg;
+    const text = String(seg.text || "").trim();
+    if (!text) return seg;
+    const lower = text.toLowerCase();
+    const anchorLower = anchor.toLowerCase();
+    if (lower.includes(anchorLower)) return seg;
+    if (idx !== firstIndexByTopic.get(topicIndex)) return seg;
 
-		const domain = intent.domain || "general";
-		const prefix = domain === "fictional" ? `In ${anchor}, ` : `${anchor}: `;
-		const merged = cleanupSpeechText(`${prefix}${text}`);
-		return { ...seg, text: merged };
-	});
+    const domain = intent.domain || "general";
+    const prefix = domain === "fictional" ? `In ${anchor}, ` : `${anchor}: `;
+    const merged = cleanupSpeechText(`${prefix}${text}`);
+    return { ...seg, text: merged };
+  });
 }
 
 function escapeRegExp(value = "") {
-	return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function hasInstallmentEvidence(text = "") {
-	const raw = String(text || "");
-	return (
-		/\b(season|episode|part|chapter|volume)\s*\d+\b/i.test(raw) ||
-		/\bs\s*\d+\s*e\s*\d+\b/i.test(raw)
-	);
+  const raw = String(text || "");
+  return (
+    /\b(season|episode|part|chapter|volume)\s*\d+\b/i.test(raw) ||
+    /\bs\s*\d+\s*e\s*\d+\b/i.test(raw)
+  );
 }
 
 function stripUnverifiedInstallmentDetails(
-	text,
-	{ anchor = "", allowInstallmentNumbers = false } = {},
+  text,
+  { anchor = "", allowInstallmentNumbers = false } = {},
 ) {
-	if (!text || allowInstallmentNumbers) return text;
-	let updated = String(text);
-	const cleanedAnchor = cleanTopicLabel(anchor || "");
-	const hasAnchor = Boolean(cleanedAnchor);
-	if (hasAnchor) {
-		const escaped = escapeRegExp(cleanedAnchor);
-		updated = updated
-			.replace(
-				new RegExp(`\\b${escaped}\\s+\\d+\\s+episode\\s+\\d+\\b`, "gi"),
-				cleanedAnchor,
-			)
-			.replace(
-				new RegExp(`\\b${escaped}\\s+episode\\s+\\d+\\b`, "gi"),
-				cleanedAnchor,
-			)
-			.replace(
-				new RegExp(`\\b${escaped}\\s+season\\s+\\d+\\b`, "gi"),
-				cleanedAnchor,
-			);
-		if (!/\d/.test(cleanedAnchor)) {
-			updated = updated.replace(
-				new RegExp(`\\b${escaped}\\s+\\d+\\b`, "gi"),
-				cleanedAnchor,
-			);
-		}
-	}
-	updated = updated
-		.replace(/\bseason\s*\d+\b/gi, "the season")
-		.replace(/\bepisode\s*\d+\b/gi, "the episode")
-		.replace(/\bpart\s*\d+\b/gi, "the part")
-		.replace(/\bchapter\s*\d+\b/gi, "the chapter")
-		.replace(/\bvolume\s*\d+\b/gi, "the volume")
-		.replace(/\bs\s*\d+\s*e\s*\d+\b/gi, "the episode");
-	if (hasAnchor) {
-		const escaped = escapeRegExp(cleanedAnchor);
-		updated = updated.replace(
-			new RegExp(
-				`\\b${escaped}\\s+the\\s+(episode|season|part|chapter|volume)\\b`,
-				"gi",
-			),
-			cleanedAnchor,
-		);
-	}
-	return updated
-		.replace(/\s{2,}/g, " ")
-		.replace(/\s+,/g, ",")
-		.trim();
+  if (!text || allowInstallmentNumbers) return text;
+  let updated = String(text);
+  const cleanedAnchor = cleanTopicLabel(anchor || "");
+  const hasAnchor = Boolean(cleanedAnchor);
+  if (hasAnchor) {
+    const escaped = escapeRegExp(cleanedAnchor);
+    updated = updated
+      .replace(
+        new RegExp(`\\b${escaped}\\s+\\d+\\s+episode\\s+\\d+\\b`, "gi"),
+        cleanedAnchor,
+      )
+      .replace(
+        new RegExp(`\\b${escaped}\\s+episode\\s+\\d+\\b`, "gi"),
+        cleanedAnchor,
+      )
+      .replace(
+        new RegExp(`\\b${escaped}\\s+season\\s+\\d+\\b`, "gi"),
+        cleanedAnchor,
+      );
+    if (!/\d/.test(cleanedAnchor)) {
+      updated = updated.replace(
+        new RegExp(`\\b${escaped}\\s+\\d+\\b`, "gi"),
+        cleanedAnchor,
+      );
+    }
+  }
+  updated = updated
+    .replace(/\bseason\s*\d+\b/gi, "the season")
+    .replace(/\bepisode\s*\d+\b/gi, "the episode")
+    .replace(/\bpart\s*\d+\b/gi, "the part")
+    .replace(/\bchapter\s*\d+\b/gi, "the chapter")
+    .replace(/\bvolume\s*\d+\b/gi, "the volume")
+    .replace(/\bs\s*\d+\s*e\s*\d+\b/gi, "the episode");
+  if (hasAnchor) {
+    const escaped = escapeRegExp(cleanedAnchor);
+    updated = updated.replace(
+      new RegExp(
+        `\\b${escaped}\\s+the\\s+(episode|season|part|chapter|volume)\\b`,
+        "gi",
+      ),
+      cleanedAnchor,
+    );
+  }
+  return updated
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+,/g, ",")
+    .trim();
 }
 
 function enforceTopicSpecificityGuards(
-	segments = [],
-	topics = [],
-	topicContexts = [],
-	topicIntents = [],
+  segments = [],
+  topics = [],
+  topicContexts = [],
+  topicIntents = [],
 ) {
-	const topicMeta = new Map();
-	for (let i = 0; i < (topics || []).length; i++) {
-		const label = String(
-			topics[i]?.displayTopic || topics[i]?.topic || "",
-		).trim();
-		const contextItems = Array.isArray(topicContexts?.[i]?.context)
-			? topicContexts[i].context
-			: [];
-		const contextText = contextItems
-			.map((c) =>
-				typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`,
-			)
-			.join(" ");
-		const combined = `${label} ${contextText}`.trim();
-		const anchor = cleanTopicLabel(topicIntents?.[i]?.anchor || label || "");
-		topicMeta.set(i, {
-			anchor,
-			allowInstallmentNumbers: hasInstallmentEvidence(combined),
-		});
-	}
+  const topicMeta = new Map();
+  for (let i = 0; i < (topics || []).length; i++) {
+    const label = String(
+      topics[i]?.displayTopic || topics[i]?.topic || "",
+    ).trim();
+    const contextItems = Array.isArray(topicContexts?.[i]?.context)
+      ? topicContexts[i].context
+      : [];
+    const contextText = contextItems
+      .map((c) =>
+        typeof c === "string" ? c : `${c.title || ""} ${c.snippet || ""}`,
+      )
+      .join(" ");
+    const combined = `${label} ${contextText}`.trim();
+    const anchor = cleanTopicLabel(topicIntents?.[i]?.anchor || label || "");
+    topicMeta.set(i, {
+      anchor,
+      allowInstallmentNumbers: hasInstallmentEvidence(combined),
+    });
+  }
 
-	return (segments || []).map((seg) => {
-		const idx =
-			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
-				? Number(seg.topicIndex)
-				: 0;
-		const meta = topicMeta.get(idx);
-		if (!meta) return seg;
-		const updated = stripUnverifiedInstallmentDetails(seg.text, meta);
-		if (!updated || updated === seg.text) return seg;
-		return { ...seg, text: updated };
-	});
+  return (segments || []).map((seg) => {
+    const idx =
+      Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+        ? Number(seg.topicIndex)
+        : 0;
+    const meta = topicMeta.get(idx);
+    if (!meta) return seg;
+    const updated = stripUnverifiedInstallmentDetails(seg.text, meta);
+    if (!updated || updated === seg.text) return seg;
+    return { ...seg, text: updated };
+  });
 }
 
 function ensureTopicEngagementQuestions(
-	segments = [],
-	topics = [],
-	mood = "neutral",
-	wordCapsByIndex = [],
+  segments = [],
+  topics = [],
+  mood = "neutral",
+  wordCapsByIndex = [],
 ) {
-	const lastByTopic = new Map();
-	for (let i = 0; i < (segments || []).length; i++) {
-		const seg = segments[i];
-		const topicIndex =
-			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
-				? Number(seg.topicIndex)
-				: 0;
-		lastByTopic.set(topicIndex, i);
-	}
+  const lastByTopic = new Map();
+  for (let i = 0; i < (segments || []).length; i++) {
+    const seg = segments[i];
+    const topicIndex =
+      Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+        ? Number(seg.topicIndex)
+        : 0;
+    lastByTopic.set(topicIndex, i);
+  }
 
-	return (segments || []).map((seg, i) => {
-		const topicIndex =
-			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
-				? Number(seg.topicIndex)
-				: 0;
-		if (lastByTopic.get(topicIndex) !== i) return seg;
+  return (segments || []).map((seg, i) => {
+    const topicIndex =
+      Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+        ? Number(seg.topicIndex)
+        : 0;
+    if (lastByTopic.get(topicIndex) !== i) return seg;
 
-		const text = String(seg.text || "").trim();
-		if (/\?/.test(text)) return seg;
+    const text = String(seg.text || "").trim();
+    if (/\?/.test(text)) return seg;
 
-		const topicLabel =
-			String(seg.topicLabel || "").trim() ||
-			String(
-				topics[topicIndex]?.displayTopic || topics[topicIndex]?.topic || "",
-			).trim();
-		const question = buildTopicEngagementQuestionForLabel(topicLabel, mood, {
-			compact: true,
-		});
-		const base = text.replace(/[.!?]+["')\]]*$/g, "").trim();
-		const segIndex = Number.isFinite(Number(seg.index)) ? Number(seg.index) : i;
-		const cap =
-			Array.isArray(wordCapsByIndex) &&
-			Number.isFinite(Number(wordCapsByIndex[segIndex]))
-				? Number(wordCapsByIndex[segIndex])
-				: null;
+    const topicLabel =
+      String(seg.topicLabel || "").trim() ||
+      String(
+        topics[topicIndex]?.displayTopic || topics[topicIndex]?.topic || "",
+      ).trim();
+    const question = buildTopicEngagementQuestionForLabel(topicLabel, mood, {
+      compact: true,
+    });
+    const base = text.replace(/[.!?]+["')\]]*$/g, "").trim();
+    const segIndex = Number.isFinite(Number(seg.index)) ? Number(seg.index) : i;
+    const cap =
+      Array.isArray(wordCapsByIndex) &&
+      Number.isFinite(Number(wordCapsByIndex[segIndex]))
+        ? Number(wordCapsByIndex[segIndex])
+        : null;
 
-		let baseText = base;
-		if (cap) {
-			const questionWords = question.split(/\s+/).filter(Boolean);
-			const allowedBaseWords = Math.max(0, cap - questionWords.length);
-			if (allowedBaseWords > 0) {
-				baseText = trimToSentenceCap(baseText, allowedBaseWords);
-			}
-		}
+    let baseText = base;
+    if (cap) {
+      const questionWords = question.split(/\s+/).filter(Boolean);
+      const allowedBaseWords = Math.max(0, cap - questionWords.length);
+      if (allowedBaseWords > 0) {
+        baseText = trimToSentenceCap(baseText, allowedBaseWords);
+      }
+    }
 
-		const combined = cleanupSpeechText(
-			`${baseText ? `${baseText}. ` : ""}${question}`.trim(),
-		);
-		return { ...seg, text: combined };
-	});
+    const combined = cleanupSpeechText(
+      `${baseText ? `${baseText}. ` : ""}${question}`.trim(),
+    );
+    return { ...seg, text: combined };
+  });
 }
 
 function isSportsCategoryLabel(categoryLabel = "", topics = []) {
-	const normalized = normalizeCategoryLabel(categoryLabel).toLowerCase();
-	if (normalized === "sports") return true;
-	return Array.isArray(topics)
-		? topics.some((topic) =>
-				isSportsLikeTopicLabel(
-					topic?.displayTopic || topic?.topic || String(topic || ""),
-				),
-			)
-		: false;
+  const normalized = normalizeCategoryLabel(categoryLabel).toLowerCase();
+  if (normalized === "sports") return true;
+  return Array.isArray(topics)
+    ? topics.some((topic) =>
+        isSportsLikeTopicLabel(
+          topic?.displayTopic || topic?.topic || String(topic || ""),
+        ),
+      )
+    : false;
 }
 
 function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
-	if (!isSportsCategoryLabel(categoryLabel, topics)) {
-		return {
-			isSports: false,
-			lines: [
-				"- Write for spoken delivery first. Translate keyword-style phrases into natural sentences a presenter would actually say.",
-				"- Attribute the reporting source, analyst, or outlet itself. Do not treat a platform host like YouTube, TikTok, Reddit, Instagram, or X as the authority.",
-				"- Avoid search-query phrasing unless it is essential to the hook. After the opening, stay in story mode, not search-results mode.",
-				"- Avoid symbol-heavy wording that sounds awkward in voiceover. Prefer naturally spoken phrasing over shorthand.",
-			],
-		};
-	}
+  if (!isSportsCategoryLabel(categoryLabel, topics)) {
+    return {
+      isSports: false,
+      lines: [
+        "- Write for spoken delivery first. Translate keyword-style phrases into natural sentences a presenter would actually say.",
+        "- Attribute the reporting source, analyst, or outlet itself. Do not treat a platform host like YouTube, TikTok, Reddit, Instagram, or X as the authority.",
+        "- Avoid search-query phrasing unless it is essential to the hook. After the opening, stay in story mode, not search-results mode.",
+        "- Avoid symbol-heavy wording that sounds awkward in voiceover. Prefer naturally spoken phrasing over shorthand.",
+      ],
+    };
+  }
 
-	return {
-		isSports: true,
-		lines: [
-			"- For sports topics, write like a sharp postgame or pregame breakdown, not a search-trends explainer.",
-			"- Open on the matchup tension, turning point, or strategic edge. Do NOT open on what people are searching for.",
-			"- Use natural sports language: pace, shot quality, rebounding, turnovers, foul trouble, coverage change, rotation pressure, late-game execution, and momentum swing.",
-			'- If a source is a preview, recap, or analyst hit, attribute the analyst and outlet. Say "Jon Rothstein on CBS Sports" rather than "According to YouTube".',
-			'- Translate keyword phrases into normal speech. Never say quoted fragments like "where to watch" or "score today" as standalone ideas in the body of the script.',
-			"- Mention odds or betting only if they clarify expectations, and state them plainly without sportsbook-promotional framing.",
-			"- Focus on what actually changed the game: the matchup edge, the run that flipped it, the coaching adjustment, and what the result means next.",
-			'- Keep sports scores and runs easy to read aloud. Prefer phrases like "an eight to nothing run" over symbol-heavy shorthand.',
-		],
-	};
+  return {
+    isSports: true,
+    lines: [
+      "- For sports topics, write like a sharp postgame or pregame breakdown, not a search-trends explainer.",
+      "- Open on the matchup tension, turning point, or strategic edge. Do NOT open on what people are searching for.",
+      "- Use natural sports language: pace, shot quality, rebounding, turnovers, foul trouble, coverage change, rotation pressure, late-game execution, and momentum swing.",
+      '- If a source is a preview, recap, or analyst hit, attribute the analyst and outlet. Say "Jon Rothstein on CBS Sports" rather than "According to YouTube".',
+      '- Translate keyword phrases into normal speech. Never say quoted fragments like "where to watch" or "score today" as standalone ideas in the body of the script.',
+      "- Mention odds or betting only if they clarify expectations, and state them plainly without sportsbook-promotional framing.",
+      "- Focus on what actually changed the game: the matchup edge, the run that flipped it, the coaching adjustment, and what the result means next.",
+      '- Keep sports scores and runs easy to read aloud. Prefer phrases like "an eight to nothing run" over symbol-heavy shorthand.',
+    ],
+  };
 }
 
 const SCRIPT_SEARCH_META_PATTERNS = [
-	/\bwhat(?:'s| is)\s+driving\s+searches\b/i,
-	/\bwhat\s+people\s+are\s+searching\s+for\b/i,
-	/\bwhere\s+to\s+watch\b/i,
-	/\bscore\s+today\b/i,
-	/\bwhat\s+people\s+are\s+asking\b/i,
-	/\bshot\s+up\s+in\s+search(?:es)?\b/i,
-	/\bspiked?\s+in\s+search(?:es)?\b/i,
-	/\btrending\s+search(?:es)?\b/i,
+  /\bwhat(?:'s| is)\s+driving\s+searches\b/i,
+  /\bwhat\s+people\s+are\s+searching\s+for\b/i,
+  /\bwhere\s+to\s+watch\b/i,
+  /\bscore\s+today\b/i,
+  /\bwhat\s+people\s+are\s+asking\b/i,
+  /\bshot\s+up\s+in\s+search(?:es)?\b/i,
+  /\bspiked?\s+in\s+search(?:es)?\b/i,
+  /\btrending\s+search(?:es)?\b/i,
 ];
 
 const SCRIPT_PLATFORM_ATTRIBUTION_PATTERNS = [
-	/\baccording\s+to\s+youtube\b/i,
-	/\baccording\s+to\s+tiktok\b/i,
-	/\baccording\s+to\s+reddit\b/i,
-	/\baccording\s+to\s+instagram\b/i,
-	/\baccording\s+to\s+x\.com\b/i,
-	/\baccording\s+to\s+x\b/i,
+  /\baccording\s+to\s+youtube\b/i,
+  /\baccording\s+to\s+tiktok\b/i,
+  /\baccording\s+to\s+reddit\b/i,
+  /\baccording\s+to\s+instagram\b/i,
+  /\baccording\s+to\s+x\.com\b/i,
+  /\baccording\s+to\s+x\b/i,
 ];
 
 const SCRIPT_BETTING_PROMO_PATTERNS = [
-	/\bhard\s+rock\s+bet\b/i,
-	/\bbetting\s+preview(?:s)?\b/i,
-	/\bsportsbook\b/i,
+  /\bhard\s+rock\s+bet\b/i,
+  /\bbetting\s+preview(?:s)?\b/i,
+  /\bsportsbook\b/i,
 ];
 
 const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
-	/\bvs\.?\b/i,
-	/\b\d{1,3}\s*[\u2013-]\s*\d{1,3}\b/,
-	/^\s*[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+){1,7}\s*:/,
-	/\bloss\s+circle\b/i,
-	/\bthe\s+angle\s+today\s+is\b/i,
+  /\bvs\.?\b/i,
+  /\b\d{1,3}\s*[\u2013-]\s*\d{1,3}\b/,
+  /^\s*[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+){1,7}\s*:/,
+  /\bloss\s+circle\b/i,
+  /\bthe\s+angle\s+today\s+is\b/i,
 ];
 
 function analyzeScriptSpeakability({
-	script,
-	topics = [],
-	categoryLabel = "",
+  script,
+  topics = [],
+  categoryLabel = "",
 }) {
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	const isSports = isSportsCategoryLabel(categoryLabel, topics);
-	const searchMetaSegments = [];
-	const platformAttributionSegments = [];
-	const bettingPromoSegments = [];
-	const speechAwkwardSegments = [];
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  const isSports = isSportsCategoryLabel(categoryLabel, topics);
+  const searchMetaSegments = [];
+  const platformAttributionSegments = [];
+  const bettingPromoSegments = [];
+  const speechAwkwardSegments = [];
 
-	for (let i = 0; i < segments.length; i++) {
-		const seg = segments[i] || {};
-		const text = String(seg.text || "").trim();
-		if (!text) continue;
-		if (SCRIPT_SEARCH_META_PATTERNS.some((rx) => rx.test(text))) {
-			searchMetaSegments.push(i);
-		}
-		if (SCRIPT_PLATFORM_ATTRIBUTION_PATTERNS.some((rx) => rx.test(text))) {
-			platformAttributionSegments.push(i);
-		}
-		if (isSports && SCRIPT_BETTING_PROMO_PATTERNS.some((rx) => rx.test(text))) {
-			bettingPromoSegments.push(i);
-		}
-		if (SCRIPT_SPEECH_AWKWARD_PATTERNS.some((rx) => rx.test(text))) {
-			speechAwkwardSegments.push(i);
-		}
-	}
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i] || {};
+    const text = String(seg.text || "").trim();
+    if (!text) continue;
+    if (SCRIPT_SEARCH_META_PATTERNS.some((rx) => rx.test(text))) {
+      searchMetaSegments.push(i);
+    }
+    if (SCRIPT_PLATFORM_ATTRIBUTION_PATTERNS.some((rx) => rx.test(text))) {
+      platformAttributionSegments.push(i);
+    }
+    if (isSports && SCRIPT_BETTING_PROMO_PATTERNS.some((rx) => rx.test(text))) {
+      bettingPromoSegments.push(i);
+    }
+    if (SCRIPT_SPEECH_AWKWARD_PATTERNS.some((rx) => rx.test(text))) {
+      speechAwkwardSegments.push(i);
+    }
+  }
 
-	const warnings = [];
-	if (searchMetaSegments.length) warnings.push("search_meta_phrasing_detected");
-	if (platformAttributionSegments.length)
-		warnings.push("platform_attribution_detected");
-	if (bettingPromoSegments.length) warnings.push("sportsbook_framing_detected");
-	if (speechAwkwardSegments.length)
-		warnings.push("tts_awkward_symbol_phrasing_detected");
+  const warnings = [];
+  if (searchMetaSegments.length) warnings.push("search_meta_phrasing_detected");
+  if (platformAttributionSegments.length)
+    warnings.push("platform_attribution_detected");
+  if (bettingPromoSegments.length) warnings.push("sportsbook_framing_detected");
+  if (speechAwkwardSegments.length)
+    warnings.push("tts_awkward_symbol_phrasing_detected");
 
-	const needsRewrite =
-		platformAttributionSegments.length > 0 ||
-		searchMetaSegments.length >= (isSports ? 1 : 2) ||
-		bettingPromoSegments.length > 0 ||
-		speechAwkwardSegments.length > 0;
+  const needsRewrite =
+    platformAttributionSegments.length > 0 ||
+    searchMetaSegments.length >= (isSports ? 1 : 2) ||
+    bettingPromoSegments.length > 0 ||
+    speechAwkwardSegments.length > 0;
 
-	return {
-		needsRewrite,
-		warnings,
-		stats: {
-			searchMetaSegments,
-			platformAttributionSegments,
-			bettingPromoSegments,
-			speechAwkwardSegments,
-		},
-	};
+  return {
+    needsRewrite,
+    warnings,
+    stats: {
+      searchMetaSegments,
+      platformAttributionSegments,
+      bettingPromoSegments,
+      speechAwkwardSegments,
+    },
+  };
 }
 
 async function generateScript({
-	jobId,
-	topics = [],
-	languageLabel,
-	narrationTargetSec,
-	segmentCount,
-	wordCaps,
-	topicContexts,
-	tonePlan,
-	topicContextFlags = [],
-	categoryLabel = "",
-	includeOutro = false,
-	contentMode = "trends",
+  jobId,
+  topics = [],
+  languageLabel,
+  narrationTargetSec,
+  segmentCount,
+  wordCaps,
+  topicContexts,
+  tonePlan,
+  topicContextFlags = [],
+  categoryLabel = "",
+  includeOutro = false,
+  contentMode = "trends",
 }) {
-	if (!process.env.CHATGPT_API_TOKEN)
-		throw new Error("CHATGPT_API_TOKEN missing");
+  if (!process.env.CHATGPT_API_TOKEN)
+    throw new Error("CHATGPT_API_TOKEN missing");
 
-	const safeTopics =
-		Array.isArray(topics) && topics.length
-			? topics.filter((t) => t && t.topic)
-			: [{ topic: "today's topic" }];
-	const topicCount = safeTopics.length;
-	const topicLabelFor = (t) => String(t?.displayTopic || t?.topic || "").trim();
-	const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
-	const categoryGuide = buildCategoryScriptGuide(categoryLabel, safeTopics);
-	const briefLine = isPromptMode
-		? topicCount > 1
-			? "This is a multi-topic brief based on a user request."
-			: "This is a user-requested topic brief."
-		: "This is a multi-topic news brief.";
-	const trendSignalLabel = isPromptMode
-		? "Context signals (use if present; do NOT invent):"
-		: categoryGuide.isSports
-			? "Search signals (use as audience context for the hook; translate them into natural sports language and do NOT quote them verbatim):"
-			: "Trending signals (address the #1 rising reason early if present):";
-	const evidenceLine = isPromptMode
-		? '- If a topic\'s evidence is "(none)", keep statements high-level and avoid specific claims; frame it as an open question.'
-		: "- If a topic's evidence is \"(none)\", keep statements high-level and avoid specific claims; say it's trending and frame it as an open question.";
-	const topicRanges = allocateTopicSegments(segmentCount, safeTopics);
-	const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
-	const mood = tonePlan?.mood || "neutral";
-	const deepDiveGuide =
-		topicCount === 1
-			? "Single-topic deep dive: spend more time on background, timeline, key evidence, and implications while staying concise and non-repetitive."
-			: "";
-	const outroGuide = includeOutro
-		? "Last segment: clean wrap that naturally closes the story and leaves space for the closing line (no like/subscribe CTA)."
-		: "Last segment: wrap + CTA question.";
-	const toneGuide =
-		mood === "serious"
-			? `Segment 0: measured, serious tone, slower pacing. ${outroGuide}`
-			: mood === "excited"
-				? `Segment 0: confident, neutral hook with controlled energy (no shouty hype). ${outroGuide}`
-				: `Segment 0: confident, neutral hook. ${outroGuide}`;
-	const ctaLine = includeOutro
-		? "End the LAST segment of EACH topic with one short, topic-specific engagement question for comments. Do NOT add like/subscribe in content; the closing line only says thank you and see you next time."
-		: "Last segment ends with ONE short CTA question (comment + subscribe).";
+  const safeTopics =
+    Array.isArray(topics) && topics.length
+      ? topics.filter((t) => t && t.topic)
+      : [{ topic: "today's topic" }];
+  const topicCount = safeTopics.length;
+  const topicLabelFor = (t) => String(t?.displayTopic || t?.topic || "").trim();
+  const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
+  const categoryGuide = buildCategoryScriptGuide(categoryLabel, safeTopics);
+  const briefLine = isPromptMode
+    ? topicCount > 1
+      ? "This is a multi-topic brief based on a user request."
+      : "This is a user-requested topic brief."
+    : "This is a multi-topic news brief.";
+  const trendSignalLabel = isPromptMode
+    ? "Context signals (use if present; do NOT invent):"
+    : categoryGuide.isSports
+      ? "Search signals (use as audience context for the hook; translate them into natural sports language and do NOT quote them verbatim):"
+      : "Trending signals (address the #1 rising reason early if present):";
+  const evidenceLine = isPromptMode
+    ? '- If a topic\'s evidence is "(none)", keep statements high-level and avoid specific claims; frame it as an open question.'
+    : "- If a topic's evidence is \"(none)\", keep statements high-level and avoid specific claims; say it's trending and frame it as an open question.";
+  const topicRanges = allocateTopicSegments(segmentCount, safeTopics);
+  const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
+  const mood = tonePlan?.mood || "neutral";
+  const deepDiveGuide =
+    topicCount === 1
+      ? "Single-topic deep dive: spend more time on background, timeline, key evidence, and implications while staying concise and non-repetitive."
+      : "";
+  const outroGuide = includeOutro
+    ? "Last segment: clean wrap that naturally closes the story and leaves space for the closing line (no like/subscribe CTA)."
+    : "Last segment: wrap + CTA question.";
+  const toneGuide =
+    mood === "serious"
+      ? `Segment 0: measured, serious tone, slower pacing. ${outroGuide}`
+      : mood === "excited"
+        ? `Segment 0: confident, neutral hook with controlled energy (no shouty hype). ${outroGuide}`
+        : `Segment 0: confident, neutral hook. ${outroGuide}`;
+  const ctaLine = includeOutro
+    ? "End the LAST segment of EACH topic with one short, topic-specific engagement question for comments. Do NOT add like/subscribe in content; the closing line only says thank you and see you next time."
+    : "Last segment ends with ONE short CTA question (comment + subscribe).";
 
-	const topicPlanLines = topicRanges
-		.map((r) => {
-			const label =
-				topicLabelFor(safeTopics[r.topicIndex]) || `Topic ${r.topicIndex + 1}`;
-			return `- Topic ${r.topicIndex + 1} (${label}): segments ${
-				r.startIndex
-			}-${r.endIndex}`;
-		})
-		.join("\n");
+  const topicPlanLines = topicRanges
+    .map((r) => {
+      const label =
+        topicLabelFor(safeTopics[r.topicIndex]) || `Topic ${r.topicIndex + 1}`;
+      return `- Topic ${r.topicIndex + 1} (${label}): segments ${
+        r.startIndex
+      }-${r.endIndex}`;
+    })
+    .join("\n");
 
-	const topicHintLines = safeTopics
-		.map((t, i) => {
-			const rawHints = uniqueStrings(
-				[
-					...(Array.isArray(t.keywords) ? t.keywords : []),
-					...(t.trendStory?.searchPhrases || []),
-					...(t.trendStory?.entityNames || []),
-					...(Array.isArray(t.trendStory?.relatedQueries?.rising)
-						? t.trendStory.relatedQueries.rising
-						: []),
-					...(Array.isArray(t.trendStory?.relatedQueries?.top)
-						? t.trendStory.relatedQueries.top
-						: []),
-				],
-				{ limit: 8 },
-			);
-			const hints = categoryGuide.isSports
-				? rawHints.filter(
-						(hint) =>
-							!SCRIPT_SEARCH_META_PATTERNS.some((rx) =>
-								rx.test(String(hint || "")),
-							),
-					)
-				: rawHints;
-			const articles = (t.trendStory?.articles || [])
-				.map((a) => a.title)
-				.filter(Boolean)
-				.slice(0, 3);
-			return `Topic ${i + 1}: ${topicLabelFor(t) || t.topic}\n- Hints: ${
-				hints.length ? hints.join(", ") : "(none)"
-			}\n- Articles: ${articles.length ? articles.join(" | ") : "(none)"}`;
-		})
-		.join("\n\n");
-	const trendSignalLines = buildTrendSignalLines(safeTopics);
+  const topicHintLines = safeTopics
+    .map((t, i) => {
+      const rawHints = uniqueStrings(
+        [
+          ...(Array.isArray(t.keywords) ? t.keywords : []),
+          ...(t.trendStory?.searchPhrases || []),
+          ...(t.trendStory?.entityNames || []),
+          ...(Array.isArray(t.trendStory?.relatedQueries?.rising)
+            ? t.trendStory.relatedQueries.rising
+            : []),
+          ...(Array.isArray(t.trendStory?.relatedQueries?.top)
+            ? t.trendStory.relatedQueries.top
+            : []),
+        ],
+        { limit: 8 },
+      );
+      const hints = categoryGuide.isSports
+        ? rawHints.filter(
+            (hint) =>
+              !SCRIPT_SEARCH_META_PATTERNS.some((rx) =>
+                rx.test(String(hint || "")),
+              ),
+          )
+        : rawHints;
+      const articles = (t.trendStory?.articles || [])
+        .map((a) => a.title)
+        .filter(Boolean)
+        .slice(0, 3);
+      return `Topic ${i + 1}: ${topicLabelFor(t) || t.topic}\n- Hints: ${
+        hints.length ? hints.join(", ") : "(none)"
+      }\n- Articles: ${articles.length ? articles.join(" | ") : "(none)"}`;
+    })
+    .join("\n\n");
+  const trendSignalLines = buildTrendSignalLines(safeTopics);
 
-	const topicIntents = safeTopics.map((t, idx) => {
-		const contextItems = Array.isArray(topicContexts)
-			? topicContexts[idx]?.context
-			: [];
-		return buildTopicIntentSummary(t, contextItems);
-	});
-	const topicIntentLines = topicIntents
-		.map((intent, idx) => {
-			const label =
-				topicLabelFor(safeTopics[idx]) || intent?.label || `Topic ${idx + 1}`;
-			const anchor = String(intent?.anchor || "(unknown)")
-				.replace(/"/g, "")
-				.trim();
-			const domain = intent?.domain || "general";
-			const medium = intent?.medium ? ` | medium=${intent.medium}` : "";
-			const evidence = String(intent?.evidence || "(none)")
-				.replace(/\s+/g, " ")
-				.trim();
-			return `- Topic ${
-				idx + 1
-			} (${label}): anchor="${anchor}" | domain=${domain}${medium}\n  Evidence: ${evidence}`;
-		})
-		.join("\n");
+  const topicIntents = safeTopics.map((t, idx) => {
+    const contextItems = Array.isArray(topicContexts)
+      ? topicContexts[idx]?.context
+      : [];
+    return buildTopicIntentSummary(t, contextItems);
+  });
+  const topicIntentLines = topicIntents
+    .map((intent, idx) => {
+      const label =
+        topicLabelFor(safeTopics[idx]) || intent?.label || `Topic ${idx + 1}`;
+      const anchor = String(intent?.anchor || "(unknown)")
+        .replace(/"/g, "")
+        .trim();
+      const domain = intent?.domain || "general";
+      const medium = intent?.medium ? ` | medium=${intent.medium}` : "";
+      const evidence = String(intent?.evidence || "(none)")
+        .replace(/\s+/g, " ")
+        .trim();
+      return `- Topic ${
+        idx + 1
+      } (${label}): anchor="${anchor}" | domain=${domain}${medium}\n  Evidence: ${evidence}`;
+    })
+    .join("\n");
 
-	const topicContextGuide =
-		Array.isArray(topicContextFlags) && topicContextFlags.length
-			? topicContextFlags
-					.map((flag, idx) => {
-						const label =
-							topicLabelFor(safeTopics[idx]) ||
-							flag?.topic ||
-							`Topic ${idx + 1}`;
-						if (flag?.isFictional) {
-							return `- Topic ${
-								idx + 1
-							} (${label}): Fictional or in-universe discussion. Frame as plot/character analysis. Do NOT imply a real person died or use condolence language.`;
-						}
-						return `- Topic ${
-							idx + 1
-						} (${label}): Real-world coverage. Keep it factual and grounded. Avoid any in-universe or fictional framing.`;
-					})
-					.join("\n")
-			: "- (none)";
+  const topicContextGuide =
+    Array.isArray(topicContextFlags) && topicContextFlags.length
+      ? topicContextFlags
+          .map((flag, idx) => {
+            const label =
+              topicLabelFor(safeTopics[idx]) ||
+              flag?.topic ||
+              `Topic ${idx + 1}`;
+            if (flag?.isFictional) {
+              return `- Topic ${
+                idx + 1
+              } (${label}): Fictional or in-universe discussion. Frame as plot/character analysis. Do NOT imply a real person died or use condolence language.`;
+            }
+            return `- Topic ${
+              idx + 1
+            } (${label}): Real-world coverage. Keep it factual and grounded. Avoid any in-universe or fictional framing.`;
+          })
+          .join("\n")
+      : "- (none)";
 
-	const contextLines =
-		Array.isArray(topicContexts) && topicContexts.length
-			? topicContexts
-					.map((tc, idx) => {
-						const items = Array.isArray(tc.context) ? tc.context : [];
-						const lineItems = items
-							.map((c) => {
-								if (typeof c === "string") return c;
-								const title = String(c?.title || "").trim();
-								const snippet = String(c?.snippet || "").trim();
-								const sourceHost = getUrlHost(c?.link || "");
-								const sourceTag = sourceHost ? ` (source: ${sourceHost})` : "";
-								if (!title && !snippet) return "";
-								return `${title}${snippet ? " | " + snippet : ""}${sourceTag}`;
-							})
-							.filter(Boolean)
-							.slice(0, 5);
-						return `Topic ${idx + 1} (${tc.topic}):\n${
-							lineItems.length
-								? lineItems.map((l) => `- ${l}`).join("\n")
-								: "- (no context)"
-						}`;
-					})
-					.join("\n\n")
-			: "- (no live context)";
-	const sourceLines =
-		Array.isArray(topicContexts) && topicContexts.length
-			? topicContexts
-					.map((tc, idx) => {
-						const items = Array.isArray(tc.context) ? tc.context : [];
-						const sources = uniqueStrings(
-							items
-								.map((c) =>
-									typeof c === "string" ? "" : getUrlHost(c?.link || ""),
-								)
-								.filter(Boolean),
-							{ limit: 6 },
-						);
-						return `Topic ${idx + 1} (${tc.topic}): ${
-							sources.length ? sources.join(", ") : "(none)"
-						}`;
-					})
-					.join("\n")
-			: "- (none)";
+  const contextLines =
+    Array.isArray(topicContexts) && topicContexts.length
+      ? topicContexts
+          .map((tc, idx) => {
+            const items = Array.isArray(tc.context) ? tc.context : [];
+            const lineItems = items
+              .map((c) => {
+                if (typeof c === "string") return c;
+                const title = String(c?.title || "").trim();
+                const snippet = String(c?.snippet || "").trim();
+                const sourceHost = getUrlHost(c?.link || "");
+                const sourceTag = sourceHost ? ` (source: ${sourceHost})` : "";
+                if (!title && !snippet) return "";
+                return `${title}${snippet ? " | " + snippet : ""}${sourceTag}`;
+              })
+              .filter(Boolean)
+              .slice(0, 5);
+            return `Topic ${idx + 1} (${tc.topic}):\n${
+              lineItems.length
+                ? lineItems.map((l) => `- ${l}`).join("\n")
+                : "- (no context)"
+            }`;
+          })
+          .join("\n\n")
+      : "- (no live context)";
+  const sourceLines =
+    Array.isArray(topicContexts) && topicContexts.length
+      ? topicContexts
+          .map((tc, idx) => {
+            const items = Array.isArray(tc.context) ? tc.context : [];
+            const sources = uniqueStrings(
+              items
+                .map((c) =>
+                  typeof c === "string" ? "" : getUrlHost(c?.link || ""),
+                )
+                .filter(Boolean),
+              { limit: 6 },
+            );
+            return `Topic ${idx + 1} (${tc.topic}): ${
+              sources.length ? sources.join(", ") : "(none)"
+            }`;
+          })
+          .join("\n")
+      : "- (none)";
 
-	const prompt = `
+  const prompt = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
 
 Write a YouTube talking-head script for a US audience.
@@ -8268,8 +8271,8 @@ Tone plan: ${mood} (${toneGuide})
 
 Topics in order (do NOT change order):
 ${safeTopics
-	.map((t, i) => `${i + 1}) ${topicLabelFor(t) || t.topic}`)
-	.join("\n")}
+  .map((t, i) => `${i + 1}) ${topicLabelFor(t) || t.topic}`)
+  .join("\n")}
 
 Segment allocation (follow exactly):
 ${topicPlanLines}
@@ -8277,8 +8280,8 @@ ${topicPlanLines}
 ${deepDiveGuide}
 
 Target narration duration (NOT counting intro/outro): ~${narrationTargetSec.toFixed(
-		1,
-	)}s
+    1,
+  )}s
 Segments: EXACTLY ${segmentCount}
 Per-segment word caps: ${capsLine}
 
@@ -8424,651 +8427,651 @@ Return JSON ONLY:
 }
 `.trim();
 
-	const resp = await openai.chat.completions.create({
-		model: CHAT_MODEL,
-		messages: [{ role: "user", content: prompt }],
-	});
+  const resp = await openai.chat.completions.create({
+    model: CHAT_MODEL,
+    messages: [{ role: "user", content: prompt }],
+  });
 
-	const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
-	if (!parsed || !Array.isArray(parsed.segments))
-		throw new Error("OpenAI script JSON parse failed");
+  const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
+  if (!parsed || !Array.isArray(parsed.segments))
+    throw new Error("OpenAI script JSON parse failed");
 
-	const topicIndexForSegment = (idx) => {
-		const match = topicRanges.find(
-			(r) => Number(idx) >= r.startIndex && Number(idx) <= r.endIndex,
-		);
-		return match ? match.topicIndex : 0;
-	};
+  const topicIndexForSegment = (idx) => {
+    const match = topicRanges.find(
+      (r) => Number(idx) >= r.startIndex && Number(idx) <= r.endIndex,
+    );
+    return match ? match.topicIndex : 0;
+  };
 
-	let segments = parsed.segments
-		.map((s, idx) => {
-			const index = Number.isFinite(Number(s.index)) ? Number(s.index) : idx;
-			const rawTopicIndex = Number(s.topicIndex);
-			const topicIndex =
-				Number.isFinite(rawTopicIndex) &&
-				rawTopicIndex >= 0 &&
-				rawTopicIndex < safeTopics.length
-					? rawTopicIndex
-					: topicIndexForSegment(index);
-			const topicLabel =
-				String(s.topicLabel || "").trim() ||
-				topicLabelFor(safeTopics[topicIndex]) ||
-				String(safeTopics[topicIndex]?.topic || "").trim();
-			return {
-				index,
-				topicIndex,
-				topicLabel,
-				text: String(s.text || "").trim(),
-				expression: normalizeExpression(s.expression, mood),
-				overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
-			};
-		})
-		.filter((s) => s.text);
+  let segments = parsed.segments
+    .map((s, idx) => {
+      const index = Number.isFinite(Number(s.index)) ? Number(s.index) : idx;
+      const rawTopicIndex = Number(s.topicIndex);
+      const topicIndex =
+        Number.isFinite(rawTopicIndex) &&
+        rawTopicIndex >= 0 &&
+        rawTopicIndex < safeTopics.length
+          ? rawTopicIndex
+          : topicIndexForSegment(index);
+      const topicLabel =
+        String(s.topicLabel || "").trim() ||
+        topicLabelFor(safeTopics[topicIndex]) ||
+        String(safeTopics[topicIndex]?.topic || "").trim();
+      return {
+        index,
+        topicIndex,
+        topicLabel,
+        text: String(s.text || "").trim(),
+        expression: normalizeExpression(s.expression, mood),
+        overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
+      };
+    })
+    .filter((s) => s.text);
 
-	segments = segments.map((s) => ({
-		...s,
-		expression: coerceExpressionForNaturalness(
-			s.expression,
-			s.text,
-			mood,
-			s.topicLabel,
-		),
-	}));
+  segments = segments.map((s) => ({
+    ...s,
+    expression: coerceExpressionForNaturalness(
+      s.expression,
+      s.text,
+      mood,
+      s.topicLabel,
+    ),
+  }));
 
-	// Force exact segment count
-	if (segments.length !== segmentCount) {
-		segments = segments.slice(0, segmentCount);
-		while (segments.length < segmentCount) {
-			const idx = segments.length;
-			const topicIndex = topicIndexForSegment(idx);
-			segments.push({
-				index: idx,
-				topicIndex,
-				topicLabel:
-					topicLabelFor(safeTopics[topicIndex]) ||
-					String(safeTopics[topicIndex]?.topic || "").trim(),
-				text: "Quick transition and here is the key detail you should watch.",
-				overlayCues: [],
-			});
-		}
-	}
+  // Force exact segment count
+  if (segments.length !== segmentCount) {
+    segments = segments.slice(0, segmentCount);
+    while (segments.length < segmentCount) {
+      const idx = segments.length;
+      const topicIndex = topicIndexForSegment(idx);
+      segments.push({
+        index: idx,
+        topicIndex,
+        topicLabel:
+          topicLabelFor(safeTopics[topicIndex]) ||
+          String(safeTopics[topicIndex]?.topic || "").trim(),
+        text: "Quick transition and here is the key detail you should watch.",
+        overlayCues: [],
+      });
+    }
+  }
 
-	segments = ensureTopicTransitions(segments, safeTopics);
-	segments = ensureTopicAnchors(segments, safeTopics, topicIntents);
-	segments = enforceTopicSpecificityGuards(
-		segments,
-		safeTopics,
-		topicContexts,
-		topicIntents,
-	);
-	segments = enforceRealWorldFraming(segments, topicContextFlags);
+  segments = ensureTopicTransitions(segments, safeTopics);
+  segments = ensureTopicAnchors(segments, safeTopics, topicIntents);
+  segments = enforceTopicSpecificityGuards(
+    segments,
+    safeTopics,
+    topicContexts,
+    topicIntents,
+  );
+  segments = enforceRealWorldFraming(segments, topicContextFlags);
 
-	// Enforce caps softly (avoid mid-sentence cutoffs; allow longer if needed).
-	segments = segments.map((s, i) => {
-		const cap = wordCaps[i] || 22;
-		const trimmed = trimSegmentToCap(s.text, cap);
-		if (trimmed === s.text) return s;
-		return { ...s, text: trimmed };
-	});
+  // Enforce caps softly (avoid mid-sentence cutoffs; allow longer if needed).
+  segments = segments.map((s, i) => {
+    const cap = wordCaps[i] || 22;
+    const trimmed = trimSegmentToCap(s.text, cap);
+    if (trimmed === s.text) return s;
+    return { ...s, text: trimmed };
+  });
 
-	segments = ensureTopicEngagementQuestions(
-		segments,
-		safeTopics,
-		mood,
-		wordCaps,
-	);
+  segments = ensureTopicEngagementQuestions(
+    segments,
+    safeTopics,
+    mood,
+    wordCaps,
+  );
 
-	// Ensure clean segment endings and CTA consistency.
-	segments = enforceSegmentCompleteness(segments, mood, {
-		includeCta: !includeOutro,
-	});
-	segments = limitFillerAndEmotesAcrossSegments(segments, {
-		maxFillers: MAX_FILLER_WORDS_PER_VIDEO,
-		maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
-		maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
-		maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
-		noFillerSegmentIndices: [0, 1, 2],
-	});
-	segments = segments.map((s) => ({
-		...s,
-		text: sanitizeSegmentText(s.text),
-	}));
-	if (FORCE_NEUTRAL_VOICEOVER && segments[0]) {
-		segments[0] = { ...segments[0], expression: "neutral" };
-	}
-	if (FORCE_NEUTRAL_VOICEOVER) {
-		segments = segments.map((s) =>
-			s.expression === "excited" ? { ...s, expression: "warm" } : s,
-		);
-	}
-	// Smooth expressions so adjacent segments stay coherent.
-	const smoothed = smoothExpressionPlan(
-		segments.map((s) => s.expression),
-		mood,
-	);
-	segments = segments.map((s, i) => ({ ...s, expression: smoothed[i] }));
+  // Ensure clean segment endings and CTA consistency.
+  segments = enforceSegmentCompleteness(segments, mood, {
+    includeCta: !includeOutro,
+  });
+  segments = limitFillerAndEmotesAcrossSegments(segments, {
+    maxFillers: MAX_FILLER_WORDS_PER_VIDEO,
+    maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
+    maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
+    maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
+    noFillerSegmentIndices: [0, 1, 2],
+  });
+  segments = segments.map((s) => ({
+    ...s,
+    text: sanitizeSegmentText(s.text),
+  }));
+  if (FORCE_NEUTRAL_VOICEOVER && segments[0]) {
+    segments[0] = { ...segments[0], expression: "neutral" };
+  }
+  if (FORCE_NEUTRAL_VOICEOVER) {
+    segments = segments.map((s) =>
+      s.expression === "excited" ? { ...s, expression: "warm" } : s,
+    );
+  }
+  // Smooth expressions so adjacent segments stay coherent.
+  const smoothed = smoothExpressionPlan(
+    segments.map((s) => s.expression),
+    mood,
+  );
+  segments = segments.map((s, i) => ({ ...s, expression: smoothed[i] }));
 
-	const fallbackTitle = safeTopics.map((t) => t.topic).join(" | ");
-	const finalTitle =
-		formatHumanTitle(String(parsed.title || fallbackTitle).trim(), 120) ||
-		formatHumanTitle(fallbackTitle, 120) ||
-		"Quick Update";
-	const finalShortTitle = shortTitleFromText(
-		String(parsed.shortTitle || "").trim() || finalTitle,
-	).slice(0, 60);
-	const rawShortsDetails =
-		parsed.shortsDetails || parsed.shorts_details || parsed.shorts || null;
-	const normalizedShortsDetails = normalizeShortsDetails(rawShortsDetails, {
-		title: finalTitle,
-		shortTitle: finalShortTitle,
-		segments,
-	});
+  const fallbackTitle = safeTopics.map((t) => t.topic).join(" | ");
+  const finalTitle =
+    formatHumanTitle(String(parsed.title || fallbackTitle).trim(), 120) ||
+    formatHumanTitle(fallbackTitle, 120) ||
+    "Quick Update";
+  const finalShortTitle = shortTitleFromText(
+    String(parsed.shortTitle || "").trim() || finalTitle,
+  ).slice(0, 60);
+  const rawShortsDetails =
+    parsed.shortsDetails || parsed.shorts_details || parsed.shorts || null;
+  const normalizedShortsDetails = normalizeShortsDetails(rawShortsDetails, {
+    title: finalTitle,
+    shortTitle: finalShortTitle,
+    segments,
+  });
 
-	logJob(jobId, "script ready", {
-		title: finalTitle,
-		shortTitle: finalShortTitle,
-		segments: segments.length,
-		words: segments.reduce((a, s) => a + countWords(s.text), 0),
-	});
+  logJob(jobId, "script ready", {
+    title: finalTitle,
+    shortTitle: finalShortTitle,
+    segments: segments.length,
+    words: segments.reduce((a, s) => a + countWords(s.text), 0),
+  });
 
-	return {
-		title: finalTitle,
-		shortTitle: finalShortTitle,
-		segments,
-		shortsDetails: normalizedShortsDetails,
-	};
+  return {
+    title: finalTitle,
+    shortTitle: finalShortTitle,
+    segments,
+    shortsDetails: normalizedShortsDetails,
+  };
 }
 
 function buildTrendSignalLines(topics = []) {
-	const list = Array.isArray(topics) ? topics : [];
-	if (!list.length) return "- (none)";
-	return list
-		.map((t, idx) => {
-			const label =
-				String(t?.displayTopic || t?.topic || "").trim() || `Topic ${idx + 1}`;
-			const related = normalizeRelatedQueries(t?.trendStory?.relatedQueries);
-			const interest = normalizeInterestOverTime(
-				t?.trendStory?.interestOverTime,
-			);
-			const rising = related.rising.slice(0, 4);
-			const top = related.top.slice(0, 4);
-			const interestLine =
-				interest.points > 0
-					? `interest(avg=${interest.avg}, latest=${interest.latest}, peak=${interest.peak})`
-					: "";
-			return `- Topic ${idx + 1} (${label}): rising=${
-				rising.length ? rising.join(", ") : "(none)"
-			}; top=${top.length ? top.join(", ") : "(none)"}${
-				interestLine ? ` | ${interestLine}` : ""
-			}`;
-		})
-		.join("\n");
+  const list = Array.isArray(topics) ? topics : [];
+  if (!list.length) return "- (none)";
+  return list
+    .map((t, idx) => {
+      const label =
+        String(t?.displayTopic || t?.topic || "").trim() || `Topic ${idx + 1}`;
+      const related = normalizeRelatedQueries(t?.trendStory?.relatedQueries);
+      const interest = normalizeInterestOverTime(
+        t?.trendStory?.interestOverTime,
+      );
+      const rising = related.rising.slice(0, 4);
+      const top = related.top.slice(0, 4);
+      const interestLine =
+        interest.points > 0
+          ? `interest(avg=${interest.avg}, latest=${interest.latest}, peak=${interest.peak})`
+          : "";
+      return `- Topic ${idx + 1} (${label}): rising=${
+        rising.length ? rising.join(", ") : "(none)"
+      }; top=${top.length ? top.join(", ") : "(none)"}${
+        interestLine ? ` | ${interestLine}` : ""
+      }`;
+    })
+    .join("\n");
 }
 
 function extractTrendSignalTokens(relatedQueries = null) {
-	const related = normalizeRelatedQueries(relatedQueries);
-	const list = uniqueStrings(
-		[...related.rising, ...related.top].filter(Boolean),
-		{ limit: 12 },
-	);
-	if (!list.length) return [];
-	const tokens = list.flatMap((q) => tokenizeQaText(q));
-	return uniqueStrings(tokens, { limit: 12 });
+  const related = normalizeRelatedQueries(relatedQueries);
+  const list = uniqueStrings(
+    [...related.rising, ...related.top].filter(Boolean),
+    { limit: 12 },
+  );
+  if (!list.length) return [];
+  const tokens = list.flatMap((q) => tokenizeQaText(q));
+  return uniqueStrings(tokens, { limit: 12 });
 }
 
 function assessTrendSignalCoverage(script = {}, topics = []) {
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	if (!segments.length || !Array.isArray(topics) || !topics.length) {
-		return { missingTopics: [], coverage: [] };
-	}
-	const byTopic = new Map();
-	for (const seg of segments) {
-		const topicIndex =
-			Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
-				? Number(seg.topicIndex)
-				: 0;
-		const prev = byTopic.get(topicIndex) || "";
-		byTopic.set(topicIndex, `${prev} ${seg.text || ""}`.trim());
-	}
-	const coverage = [];
-	const missingTopics = [];
-	for (let i = 0; i < topics.length; i++) {
-		const topic = topics[i] || {};
-		const tokens = extractTrendSignalTokens(topic?.trendStory?.relatedQueries);
-		if (!tokens.length) continue;
-		const text = String(byTopic.get(i) || "").toLowerCase();
-		const hits = tokens.filter((tok) => text.includes(tok));
-		const ok = hits.length > 0;
-		coverage.push({
-			topicIndex: i,
-			tokens: tokens.slice(0, 6),
-			hits: hits.slice(0, 6),
-		});
-		if (!ok) missingTopics.push(i);
-	}
-	return { missingTopics, coverage };
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  if (!segments.length || !Array.isArray(topics) || !topics.length) {
+    return { missingTopics: [], coverage: [] };
+  }
+  const byTopic = new Map();
+  for (const seg of segments) {
+    const topicIndex =
+      Number.isFinite(Number(seg.topicIndex)) && Number(seg.topicIndex) >= 0
+        ? Number(seg.topicIndex)
+        : 0;
+    const prev = byTopic.get(topicIndex) || "";
+    byTopic.set(topicIndex, `${prev} ${seg.text || ""}`.trim());
+  }
+  const coverage = [];
+  const missingTopics = [];
+  for (let i = 0; i < topics.length; i++) {
+    const topic = topics[i] || {};
+    const tokens = extractTrendSignalTokens(topic?.trendStory?.relatedQueries);
+    if (!tokens.length) continue;
+    const text = String(byTopic.get(i) || "").toLowerCase();
+    const hits = tokens.filter((tok) => text.includes(tok));
+    const ok = hits.length > 0;
+    coverage.push({
+      topicIndex: i,
+      tokens: tokens.slice(0, 6),
+      hits: hits.slice(0, 6),
+    });
+    if (!ok) missingTopics.push(i);
+  }
+  return { missingTopics, coverage };
 }
 
 function analyzeScriptQuality({
-	script,
-	topics = [],
-	topicContexts = [],
-	wordCaps = [],
-	categoryLabel = "",
+  script,
+  topics = [],
+  topicContexts = [],
+  wordCaps = [],
+  categoryLabel = "",
 }) {
-	const issues = [];
-	const warnings = [];
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	const title = String(script?.title || "").trim();
-	const shortTitle = String(script?.shortTitle || "").trim();
+  const issues = [];
+  const warnings = [];
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  const title = String(script?.title || "").trim();
+  const shortTitle = String(script?.shortTitle || "").trim();
 
-	if (!title || countWords(title) < 2) {
-		issues.push("title_missing_or_too_short");
-	}
-	if (!shortTitle || countWords(shortTitle) < 2) {
-		warnings.push("short_title_missing_or_too_short");
-	}
-	if (!segments.length) {
-		issues.push("segments_missing");
-	}
+  if (!title || countWords(title) < 2) {
+    issues.push("title_missing_or_too_short");
+  }
+  if (!shortTitle || countWords(shortTitle) < 2) {
+    warnings.push("short_title_missing_or_too_short");
+  }
+  if (!segments.length) {
+    issues.push("segments_missing");
+  }
 
-	const tokenSets = segments.map((s) => tokenizeQaText(s.text || ""));
-	const duplicatePairs = [];
-	for (let i = 0; i < segments.length; i++) {
-		const a = normalizeQaText(segments[i]?.text || "");
-		const aCount = countWords(a);
-		for (let j = i + 1; j < segments.length; j++) {
-			const b = normalizeQaText(segments[j]?.text || "");
-			if (!a || !b) continue;
-			if (a === b) {
-				duplicatePairs.push([i, j]);
-				continue;
-			}
-			const bCount = countWords(b);
-			if (aCount < QA_MIN_SEGMENT_WORDS || bCount < QA_MIN_SEGMENT_WORDS)
-				continue;
-			const ratio = overlapRatio(tokenSets[i], tokenSets[j]);
-			if (ratio >= QA_SIMILARITY_THRESHOLD) duplicatePairs.push([i, j]);
-		}
-	}
-	if (duplicatePairs.length) {
-		warnings.push("segment_redundancy_detected");
-	}
+  const tokenSets = segments.map((s) => tokenizeQaText(s.text || ""));
+  const duplicatePairs = [];
+  for (let i = 0; i < segments.length; i++) {
+    const a = normalizeQaText(segments[i]?.text || "");
+    const aCount = countWords(a);
+    for (let j = i + 1; j < segments.length; j++) {
+      const b = normalizeQaText(segments[j]?.text || "");
+      if (!a || !b) continue;
+      if (a === b) {
+        duplicatePairs.push([i, j]);
+        continue;
+      }
+      const bCount = countWords(b);
+      if (aCount < QA_MIN_SEGMENT_WORDS || bCount < QA_MIN_SEGMENT_WORDS)
+        continue;
+      const ratio = overlapRatio(tokenSets[i], tokenSets[j]);
+      if (ratio >= QA_SIMILARITY_THRESHOLD) duplicatePairs.push([i, j]);
+    }
+  }
+  if (duplicatePairs.length) {
+    warnings.push("segment_redundancy_detected");
+  }
 
-	const shortSegments = segments.filter(
-		(s) => countWords(s.text) < QA_MIN_SEGMENT_WORDS,
-	);
-	if (shortSegments.length) warnings.push("short_segments_detected");
+  const shortSegments = segments.filter(
+    (s) => countWords(s.text) < QA_MIN_SEGMENT_WORDS,
+  );
+  if (shortSegments.length) warnings.push("short_segments_detected");
 
-	const sourceTokensByTopic = new Map();
-	for (let i = 0; i < (topics || []).length; i++) {
-		const ctx = Array.isArray(topicContexts?.[i]?.context)
-			? topicContexts[i].context
-			: [];
-		sourceTokensByTopic.set(i, extractSourceTokensFromContext(ctx));
-	}
+  const sourceTokensByTopic = new Map();
+  for (let i = 0; i < (topics || []).length; i++) {
+    const ctx = Array.isArray(topicContexts?.[i]?.context)
+      ? topicContexts[i].context
+      : [];
+    sourceTokensByTopic.set(i, extractSourceTokensFromContext(ctx));
+  }
 
-	const missingAttributionTopics = [];
-	for (let i = 0; i < (topics || []).length; i++) {
-		const tokens = sourceTokensByTopic.get(i) || [];
-		if (!tokens.length) continue;
-		const topicSegments = segments.filter((s) => Number(s.topicIndex) === i);
-		const hasAttribution = topicSegments.some((s) =>
-			segmentHasAttribution(s.text || "", tokens),
-		);
-		if (!hasAttribution) missingAttributionTopics.push(i);
-	}
-	if (missingAttributionTopics.length)
-		warnings.push("missing_attribution_by_topic");
+  const missingAttributionTopics = [];
+  for (let i = 0; i < (topics || []).length; i++) {
+    const tokens = sourceTokensByTopic.get(i) || [];
+    if (!tokens.length) continue;
+    const topicSegments = segments.filter((s) => Number(s.topicIndex) === i);
+    const hasAttribution = topicSegments.some((s) =>
+      segmentHasAttribution(s.text || "", tokens),
+    );
+    if (!hasAttribution) missingAttributionTopics.push(i);
+  }
+  if (missingAttributionTopics.length)
+    warnings.push("missing_attribution_by_topic");
 
-	const trendCoverage = assessTrendSignalCoverage(script, topics);
-	if (trendCoverage.missingTopics.length)
-		warnings.push("missing_trend_signal_coverage");
+  const trendCoverage = assessTrendSignalCoverage(script, topics);
+  if (trendCoverage.missingTopics.length)
+    warnings.push("missing_trend_signal_coverage");
 
-	const speakability = analyzeScriptSpeakability({
-		script,
-		topics,
-		categoryLabel,
-	});
-	for (const warning of speakability.warnings || []) {
-		if (!warnings.includes(warning)) warnings.push(warning);
-	}
+  const speakability = analyzeScriptSpeakability({
+    script,
+    topics,
+    categoryLabel,
+  });
+  for (const warning of speakability.warnings || []) {
+    if (!warnings.includes(warning)) warnings.push(warning);
+  }
 
-	const needsRewrite =
-		duplicatePairs.length > 0 ||
-		missingAttributionTopics.length > 0 ||
-		trendCoverage.missingTopics.length > 0 ||
-		speakability.needsRewrite;
-	const hasCritical = issues.length > 0;
+  const needsRewrite =
+    duplicatePairs.length > 0 ||
+    missingAttributionTopics.length > 0 ||
+    trendCoverage.missingTopics.length > 0 ||
+    speakability.needsRewrite;
+  const hasCritical = issues.length > 0;
 
-	return {
-		pass: !hasCritical,
-		needsRewrite,
-		hasCritical,
-		issues,
-		warnings,
-		stats: {
-			segmentCount: segments.length,
-			duplicatePairs,
-			shortSegments: shortSegments.map((s) => s.index),
-			missingAttributionTopics,
-			missingTrendSignalTopics: trendCoverage.missingTopics,
-			searchMetaSegments: speakability.stats?.searchMetaSegments || [],
-			platformAttributionSegments:
-				speakability.stats?.platformAttributionSegments || [],
-			bettingPromoSegments: speakability.stats?.bettingPromoSegments || [],
-			speechAwkwardSegments: speakability.stats?.speechAwkwardSegments || [],
-		},
-	};
+  return {
+    pass: !hasCritical,
+    needsRewrite,
+    hasCritical,
+    issues,
+    warnings,
+    stats: {
+      segmentCount: segments.length,
+      duplicatePairs,
+      shortSegments: shortSegments.map((s) => s.index),
+      missingAttributionTopics,
+      missingTrendSignalTopics: trendCoverage.missingTopics,
+      searchMetaSegments: speakability.stats?.searchMetaSegments || [],
+      platformAttributionSegments:
+        speakability.stats?.platformAttributionSegments || [],
+      bettingPromoSegments: speakability.stats?.bettingPromoSegments || [],
+      speechAwkwardSegments: speakability.stats?.speechAwkwardSegments || [],
+    },
+  };
 }
 
 function buildScriptLogText(script = {}) {
-	const title = String(script?.title || "").trim();
-	const shortTitle = String(script?.shortTitle || "").trim();
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	const lines = [];
-	if (title) lines.push(`TITLE: ${title}`);
-	if (shortTitle) lines.push(`SHORT: ${shortTitle}`);
-	for (let i = 0; i < segments.length; i++) {
-		const seg = segments[i] || {};
-		const idx = Number.isFinite(Number(seg.index)) ? Number(seg.index) : i;
-		const topicLabel = String(seg.topicLabel || "").trim();
-		const expr = String(seg.expression || "").trim();
-		const headerParts = [`#${idx}`];
-		if (topicLabel) headerParts.push(`topic=${topicLabel}`);
-		if (expr) headerParts.push(`expr=${expr}`);
-		const text = String(seg.text || "").trim();
-		lines.push(`${headerParts.join(" | ")}: ${text}`);
-	}
-	return lines.join("\n");
+  const title = String(script?.title || "").trim();
+  const shortTitle = String(script?.shortTitle || "").trim();
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  const lines = [];
+  if (title) lines.push(`TITLE: ${title}`);
+  if (shortTitle) lines.push(`SHORT: ${shortTitle}`);
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i] || {};
+    const idx = Number.isFinite(Number(seg.index)) ? Number(seg.index) : i;
+    const topicLabel = String(seg.topicLabel || "").trim();
+    const expr = String(seg.expression || "").trim();
+    const headerParts = [`#${idx}`];
+    if (topicLabel) headerParts.push(`topic=${topicLabel}`);
+    if (expr) headerParts.push(`expr=${expr}`);
+    const text = String(seg.text || "").trim();
+    lines.push(`${headerParts.join(" | ")}: ${text}`);
+  }
+  return lines.join("\n");
 }
 
 function summarizeScriptEngagement(script = {}) {
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	const totalWords = segments.reduce((sum, s) => sum + countWords(s.text), 0);
-	const avgWords =
-		segments.length > 0 ? totalWords / segments.length : totalWords;
-	const questionSegments = segments.filter((s) =>
-		/\?/.test(String(s.text || "")),
-	).length;
-	const fullText = segments
-		.map((s) => String(s.text || "").toLowerCase())
-		.join(" ");
-	const countTokenHits = (tokens = []) =>
-		(tokens || []).reduce(
-			(count, tok) =>
-				fullText.includes(String(tok || "").toLowerCase()) ? count + 1 : count,
-			0,
-		);
-	return {
-		segmentCount: segments.length,
-		totalWords,
-		avgWords: Number(avgWords.toFixed(1)),
-		questionSegments,
-		questionRatio: Number(
-			(segments.length ? questionSegments / segments.length : 0).toFixed(2),
-		),
-		trendTokenHits: countTokenHits(TREND_SIGNAL_TOKENS),
-		excitedTokenHits: countTokenHits(EXCITED_TONE_TOKENS),
-		entertainmentTokenHits: countTokenHits(ENTERTAINMENT_KEYWORDS),
-	};
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  const totalWords = segments.reduce((sum, s) => sum + countWords(s.text), 0);
+  const avgWords =
+    segments.length > 0 ? totalWords / segments.length : totalWords;
+  const questionSegments = segments.filter((s) =>
+    /\?/.test(String(s.text || "")),
+  ).length;
+  const fullText = segments
+    .map((s) => String(s.text || "").toLowerCase())
+    .join(" ");
+  const countTokenHits = (tokens = []) =>
+    (tokens || []).reduce(
+      (count, tok) =>
+        fullText.includes(String(tok || "").toLowerCase()) ? count + 1 : count,
+      0,
+    );
+  return {
+    segmentCount: segments.length,
+    totalWords,
+    avgWords: Number(avgWords.toFixed(1)),
+    questionSegments,
+    questionRatio: Number(
+      (segments.length ? questionSegments / segments.length : 0).toFixed(2),
+    ),
+    trendTokenHits: countTokenHits(TREND_SIGNAL_TOKENS),
+    excitedTokenHits: countTokenHits(EXCITED_TONE_TOKENS),
+    entertainmentTokenHits: countTokenHits(ENTERTAINMENT_KEYWORDS),
+  };
 }
 
 function formatSourceLabel(host = "", topicLabel = "") {
-	const cleaned = String(host || "")
-		.replace(/^www\./i, "")
-		.trim();
-	if (!cleaned) return "";
-	const attributionSkipHosts = new Set([
-		"youtube.com",
-		"tiktok.com",
-		"instagram.com",
-		"reddit.com",
-		"x.com",
-		"twitter.com",
-		"facebook.com",
-	]);
-	const normalizedHost = cleaned.toLowerCase();
-	if (
-		attributionSkipHosts.has(normalizedHost) ||
-		Array.from(attributionSkipHosts).some((entry) =>
-			normalizedHost.endsWith(`.${entry}`),
-		)
-	) {
-		return "";
-	}
-	const base = cleaned.replace(
-		/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
-		"",
-	);
-	const words = base
-		.replace(/[^a-z0-9]+/gi, " ")
-		.split(/\s+/)
-		.filter(Boolean);
-	if (!words.length) return cleaned;
-	if (topicLabel) {
-		const topicTokens = cleanTopicLabel(topicLabel)
-			.toLowerCase()
-			.split(/\s+/)
-			.filter(Boolean);
-		const slug = topicTokens.join("");
-		const baseLower = base.toLowerCase();
-		if (slug && baseLower.includes(slug)) {
-			return topicTokens
-				.map((t) =>
-					t.length <= 3 ? t.toUpperCase() : t[0].toUpperCase() + t.slice(1),
-				)
-				.join(" ");
-		}
-		if (topicTokens.length >= 2) {
-			const nameSlug = `${topicTokens[0]}${topicTokens[1]}`;
-			if (baseLower.includes(nameSlug)) {
-				return `${topicTokens[0][0].toUpperCase() + topicTokens[0].slice(1)} ${
-					topicTokens[1][0].toUpperCase() + topicTokens[1].slice(1)
-				}`;
-			}
-		}
-	}
-	return words
-		.map((w) =>
-			w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1),
-		)
-		.join(" ");
+  const cleaned = String(host || "")
+    .replace(/^www\./i, "")
+    .trim();
+  if (!cleaned) return "";
+  const attributionSkipHosts = new Set([
+    "youtube.com",
+    "tiktok.com",
+    "instagram.com",
+    "reddit.com",
+    "x.com",
+    "twitter.com",
+    "facebook.com",
+  ]);
+  const normalizedHost = cleaned.toLowerCase();
+  if (
+    attributionSkipHosts.has(normalizedHost) ||
+    Array.from(attributionSkipHosts).some((entry) =>
+      normalizedHost.endsWith(`.${entry}`),
+    )
+  ) {
+    return "";
+  }
+  const base = cleaned.replace(
+    /\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
+    "",
+  );
+  const words = base
+    .replace(/[^a-z0-9]+/gi, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return cleaned;
+  if (topicLabel) {
+    const topicTokens = cleanTopicLabel(topicLabel)
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    const slug = topicTokens.join("");
+    const baseLower = base.toLowerCase();
+    if (slug && baseLower.includes(slug)) {
+      return topicTokens
+        .map((t) =>
+          t.length <= 3 ? t.toUpperCase() : t[0].toUpperCase() + t.slice(1),
+        )
+        .join(" ");
+    }
+    if (topicTokens.length >= 2) {
+      const nameSlug = `${topicTokens[0]}${topicTokens[1]}`;
+      if (baseLower.includes(nameSlug)) {
+        return `${topicTokens[0][0].toUpperCase() + topicTokens[0].slice(1)} ${
+          topicTokens[1][0].toUpperCase() + topicTokens[1].slice(1)
+        }`;
+      }
+    }
+  }
+  return words
+    .map((w) =>
+      w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1),
+    )
+    .join(" ");
 }
 
 const SOURCE_HOST_DEPRIORITY = new Set([
-	"wikipedia.org",
-	"imdb.com",
-	"fandom.com",
-	"wikia.com",
-	"twitter.com",
-	"x.com",
-	"facebook.com",
-	"instagram.com",
-	"tiktok.com",
-	"youtube.com",
+  "wikipedia.org",
+  "imdb.com",
+  "fandom.com",
+  "wikia.com",
+  "twitter.com",
+  "x.com",
+  "facebook.com",
+  "instagram.com",
+  "tiktok.com",
+  "youtube.com",
 ]);
 
 function normalizeSourceHost(host = "") {
-	return String(host || "")
-		.toLowerCase()
-		.replace(/^www\./i, "")
-		.trim();
+  return String(host || "")
+    .toLowerCase()
+    .replace(/^www\./i, "")
+    .trim();
 }
 
 function isDeprioritizedSourceHost(host = "") {
-	const normalized = normalizeSourceHost(host);
-	if (!normalized) return false;
-	for (const entry of SOURCE_HOST_DEPRIORITY) {
-		if (normalized === entry || normalized.endsWith(`.${entry}`)) return true;
-	}
-	return false;
+  const normalized = normalizeSourceHost(host);
+  if (!normalized) return false;
+  for (const entry of SOURCE_HOST_DEPRIORITY) {
+    if (normalized === entry || normalized.endsWith(`.${entry}`)) return true;
+  }
+  return false;
 }
 
 function buildSourceTokensFromHosts(hosts = []) {
-	const tokens = new Set();
-	for (const host of Array.isArray(hosts) ? hosts : []) {
-		const lowered = String(host || "")
-			.toLowerCase()
-			.trim();
-		if (!lowered) continue;
-		tokens.add(lowered);
-		const base = lowered.replace(
-			/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
-			"",
-		);
-		const cleaned = base.replace(/[^a-z0-9]+/g, " ").trim();
-		if (cleaned) tokens.add(cleaned);
-	}
-	return Array.from(tokens);
+  const tokens = new Set();
+  for (const host of Array.isArray(hosts) ? hosts : []) {
+    const lowered = String(host || "")
+      .toLowerCase()
+      .trim();
+    if (!lowered) continue;
+    tokens.add(lowered);
+    const base = lowered.replace(
+      /\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
+      "",
+    );
+    const cleaned = base.replace(/[^a-z0-9]+/g, " ").trim();
+    if (cleaned) tokens.add(cleaned);
+  }
+  return Array.from(tokens);
 }
 
 function pickTopicSourceHosts(
-	topic,
-	topicContext = [],
-	{ preferArticles = false } = {},
+  topic,
+  topicContext = [],
+  { preferArticles = false } = {},
 ) {
-	const ctx = Array.isArray(topicContext) ? topicContext : [];
-	const ctxHosts = ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean);
-	const articleHosts = Array.isArray(topic?.trendStory?.articles)
-		? topic.trendStory.articles
-				.map((a) => getUrlHost(a?.url || ""))
-				.filter(Boolean)
-		: [];
-	if (!preferArticles) {
-		return uniqueStrings([...ctxHosts, ...articleHosts], { limit: 6 });
-	}
-	const prioritizedCtxHosts = articleHosts.length
-		? [
-				...ctxHosts.filter((host) => !isDeprioritizedSourceHost(host)),
-				...ctxHosts.filter((host) => isDeprioritizedSourceHost(host)),
-			]
-		: ctxHosts;
-	return uniqueStrings([...articleHosts, ...prioritizedCtxHosts], { limit: 6 });
+  const ctx = Array.isArray(topicContext) ? topicContext : [];
+  const ctxHosts = ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean);
+  const articleHosts = Array.isArray(topic?.trendStory?.articles)
+    ? topic.trendStory.articles
+        .map((a) => getUrlHost(a?.url || ""))
+        .filter(Boolean)
+    : [];
+  if (!preferArticles) {
+    return uniqueStrings([...ctxHosts, ...articleHosts], { limit: 6 });
+  }
+  const prioritizedCtxHosts = articleHosts.length
+    ? [
+        ...ctxHosts.filter((host) => !isDeprioritizedSourceHost(host)),
+        ...ctxHosts.filter((host) => isDeprioritizedSourceHost(host)),
+      ]
+    : ctxHosts;
+  return uniqueStrings([...articleHosts, ...prioritizedCtxHosts], { limit: 6 });
 }
 
 function ensureTopicAttributions({
-	script,
-	topics = [],
-	topicContexts = [],
-	topicContextFlags,
-	wordCaps = [],
-	log,
+  script,
+  topics = [],
+  topicContexts = [],
+  topicContextFlags,
+  wordCaps = [],
+  log,
 } = {}) {
-	const segments = Array.isArray(script?.segments)
-		? script.segments.map((s) => ({ ...s }))
-		: [];
-	if (!segments.length) return { segments, didInsert: false, inserted: [] };
+  const segments = Array.isArray(script?.segments)
+    ? script.segments.map((s) => ({ ...s }))
+    : [];
+  if (!segments.length) return { segments, didInsert: false, inserted: [] };
 
-	const inserted = [];
-	for (let i = 0; i < (topics || []).length; i++) {
-		const ctx = Array.isArray(topicContexts?.[i]?.context)
-			? topicContexts[i].context
-			: [];
-		const contentType = String(
-			topicContextFlags?.contentType || "",
-		).toLowerCase();
-		const topicFlag = Array.isArray(topicContextFlags?.topics)
-			? topicContextFlags.topics[i]
-			: null;
-		const preferArticles =
-			contentType === "real" || topicFlag?.isFictional === false;
-		const sourceHosts = pickTopicSourceHosts(topics[i], ctx, {
-			preferArticles,
-		});
-		if (!sourceHosts.length) continue;
-		let sourceTokens = extractSourceTokensFromContext(ctx);
-		if (!sourceTokens.length)
-			sourceTokens = buildSourceTokensFromHosts(sourceHosts);
-		const topicSegments = segments.filter((s) => Number(s.topicIndex) === i);
-		const hasAttribution = topicSegments.some((s) =>
-			segmentHasAttribution(s.text || "", sourceTokens),
-		);
-		if (hasAttribution) continue;
+  const inserted = [];
+  for (let i = 0; i < (topics || []).length; i++) {
+    const ctx = Array.isArray(topicContexts?.[i]?.context)
+      ? topicContexts[i].context
+      : [];
+    const contentType = String(
+      topicContextFlags?.contentType || "",
+    ).toLowerCase();
+    const topicFlag = Array.isArray(topicContextFlags?.topics)
+      ? topicContextFlags.topics[i]
+      : null;
+    const preferArticles =
+      contentType === "real" || topicFlag?.isFictional === false;
+    const sourceHosts = pickTopicSourceHosts(topics[i], ctx, {
+      preferArticles,
+    });
+    if (!sourceHosts.length) continue;
+    let sourceTokens = extractSourceTokensFromContext(ctx);
+    if (!sourceTokens.length)
+      sourceTokens = buildSourceTokensFromHosts(sourceHosts);
+    const topicSegments = segments.filter((s) => Number(s.topicIndex) === i);
+    const hasAttribution = topicSegments.some((s) =>
+      segmentHasAttribution(s.text || "", sourceTokens),
+    );
+    if (hasAttribution) continue;
 
-		const targetIndex = segments.findIndex((s) => Number(s.topicIndex) === i);
-		if (targetIndex < 0) continue;
-		const sourceLabel = formatSourceLabel(
-			sourceHosts[0],
-			segments[targetIndex]?.topicLabel || topics?.[i]?.topic || "",
-		);
-		if (!sourceLabel) continue;
-		const prefix = `According to ${sourceLabel}, `;
-		const baseText = String(segments[targetIndex].text || "").trim();
-		let updated = baseText.startsWith(prefix)
-			? baseText
-			: `${prefix}${baseText}`;
-		const cap =
-			Array.isArray(wordCaps) && Number.isFinite(Number(wordCaps[targetIndex]))
-				? Number(wordCaps[targetIndex])
-				: null;
-		if (cap) updated = trimSegmentToCap(updated, cap);
-		updated = sanitizeSegmentText(updated);
-		segments[targetIndex] = { ...segments[targetIndex], text: updated };
-		inserted.push({ topicIndex: i, segmentIndex: targetIndex, sourceLabel });
-	}
+    const targetIndex = segments.findIndex((s) => Number(s.topicIndex) === i);
+    if (targetIndex < 0) continue;
+    const sourceLabel = formatSourceLabel(
+      sourceHosts[0],
+      segments[targetIndex]?.topicLabel || topics?.[i]?.topic || "",
+    );
+    if (!sourceLabel) continue;
+    const prefix = `According to ${sourceLabel}, `;
+    const baseText = String(segments[targetIndex].text || "").trim();
+    let updated = baseText.startsWith(prefix)
+      ? baseText
+      : `${prefix}${baseText}`;
+    const cap =
+      Array.isArray(wordCaps) && Number.isFinite(Number(wordCaps[targetIndex]))
+        ? Number(wordCaps[targetIndex])
+        : null;
+    if (cap) updated = trimSegmentToCap(updated, cap);
+    updated = sanitizeSegmentText(updated);
+    segments[targetIndex] = { ...segments[targetIndex], text: updated };
+    inserted.push({ topicIndex: i, segmentIndex: targetIndex, sourceLabel });
+  }
 
-	if (log && inserted.length) log("script attribution inserted", { inserted });
-	if (inserted.length && script && Array.isArray(script.segments)) {
-		script.segments = segments;
-	}
-	return { segments, didInsert: inserted.length > 0, inserted };
+  if (log && inserted.length) log("script attribution inserted", { inserted });
+  if (inserted.length && script && Array.isArray(script.segments)) {
+    script.segments = segments;
+  }
+  return { segments, didInsert: inserted.length > 0, inserted };
 }
 
 async function rewriteSegmentsForQuality({
-	jobId,
-	script,
-	topics = [],
-	topicContexts = [],
-	topicContextFlags = [],
-	wordCaps = [],
-	tonePlan,
-	narrationTargetSec,
-	categoryLabel = "",
-	includeOutro = true,
-	contentMode = "trends",
+  jobId,
+  script,
+  topics = [],
+  topicContexts = [],
+  topicContextFlags = [],
+  wordCaps = [],
+  tonePlan,
+  narrationTargetSec,
+  categoryLabel = "",
+  includeOutro = true,
+  contentMode = "trends",
 }) {
-	const segments = Array.isArray(script?.segments) ? script.segments : [];
-	if (!segments.length) return script;
-	const mood = tonePlan?.mood || "neutral";
-	const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
-	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
-	const trendSignalLabel = isPromptMode
-		? "Context signals (use if present; do NOT invent):"
-		: categoryGuide.isSports
-			? "Search signals (use as audience context for the hook; translate them into natural sports language and do NOT quote them verbatim):"
-			: "Trending signals (address the #1 rising reason early if present):";
+  const segments = Array.isArray(script?.segments) ? script.segments : [];
+  if (!segments.length) return script;
+  const mood = tonePlan?.mood || "neutral";
+  const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
+  const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
+  const trendSignalLabel = isPromptMode
+    ? "Context signals (use if present; do NOT invent):"
+    : categoryGuide.isSports
+      ? "Search signals (use as audience context for the hook; translate them into natural sports language and do NOT quote them verbatim):"
+      : "Trending signals (address the #1 rising reason early if present):";
 
-	const topicSummaries = (topics || []).map((t, idx) => {
-		const ctx = Array.isArray(topicContexts?.[idx]?.context)
-			? topicContexts[idx].context
-			: [];
-		const intent = buildTopicIntentSummary(t, ctx);
-		const isFictional = Boolean(topicContextFlags?.[idx]?.isFictional);
-		const contextLabel = isFictional ? "fictional" : "real-world";
-		const sources = uniqueStrings(
-			ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean),
-			{ limit: 6 },
-		);
-		return `Topic ${idx + 1} (${
-			intent.label || t?.topic || "topic"
-		}): context=${contextLabel} | anchor="${intent.anchor || ""}" | evidence="${
-			intent.evidence || ""
-		}" | sources=${sources.length ? sources.join(", ") : "(none)"}`;
-	});
+  const topicSummaries = (topics || []).map((t, idx) => {
+    const ctx = Array.isArray(topicContexts?.[idx]?.context)
+      ? topicContexts[idx].context
+      : [];
+    const intent = buildTopicIntentSummary(t, ctx);
+    const isFictional = Boolean(topicContextFlags?.[idx]?.isFictional);
+    const contextLabel = isFictional ? "fictional" : "real-world";
+    const sources = uniqueStrings(
+      ctx.map((c) => getUrlHost(c?.link || "")).filter(Boolean),
+      { limit: 6 },
+    );
+    return `Topic ${idx + 1} (${
+      intent.label || t?.topic || "topic"
+    }): context=${contextLabel} | anchor="${intent.anchor || ""}" | evidence="${
+      intent.evidence || ""
+    }" | sources=${sources.length ? sources.join(", ") : "(none)"}`;
+  });
 
-	const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
-	const topicLine = segments
-		.map(
-			(s) =>
-				`#${s.index}: topic ${s.topicIndex} (${
-					s.topicLabel || topics?.[s.topicIndex]?.topic || ""
-				})`,
-		)
-		.join(", ");
-	const trendSignalLines = buildTrendSignalLines(topics);
+  const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
+  const topicLine = segments
+    .map(
+      (s) =>
+        `#${s.index}: topic ${s.topicIndex} (${
+          s.topicLabel || topics?.[s.topicIndex]?.topic || ""
+        })`,
+    )
+    .join(", ");
+  const trendSignalLines = buildTrendSignalLines(topics);
 
-	const rewritePrompt = `
+  const rewritePrompt = `
 Improve this script for clarity, interesting facts, and attribution.
 Target narration duration: ~${Number(narrationTargetSec || 0).toFixed(1)}s
 Mood: ${mood}
@@ -9120,61 +9123,61 @@ Script:
 ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 `.trim();
 
-	const resp = await openai.chat.completions.create({
-		model: CHAT_MODEL,
-		messages: [{ role: "user", content: rewritePrompt }],
-	});
-	const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
-	if (!parsed || !Array.isArray(parsed.segments)) return script;
+  const resp = await openai.chat.completions.create({
+    model: CHAT_MODEL,
+    messages: [{ role: "user", content: rewritePrompt }],
+  });
+  const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
+  if (!parsed || !Array.isArray(parsed.segments)) return script;
 
-	const textByIndex = new Map();
-	for (const seg of parsed.segments) {
-		const idx = Number(seg?.index);
-		if (!Number.isFinite(idx)) continue;
-		const text = String(seg?.text || "").trim();
-		if (text) textByIndex.set(idx, text);
-	}
+  const textByIndex = new Map();
+  for (const seg of parsed.segments) {
+    const idx = Number(seg?.index);
+    if (!Number.isFinite(idx)) continue;
+    const text = String(seg?.text || "").trim();
+    if (text) textByIndex.set(idx, text);
+  }
 
-	let updated = segments.map((s, i) => {
-		const nextText = textByIndex.get(i) || s.text;
-		const cap = wordCaps[i] || 22;
-		const trimmed = trimSegmentToCap(String(nextText || ""), cap);
-		return { ...s, text: sanitizeSegmentText(trimmed) };
-	});
+  let updated = segments.map((s, i) => {
+    const nextText = textByIndex.get(i) || s.text;
+    const cap = wordCaps[i] || 22;
+    const trimmed = trimSegmentToCap(String(nextText || ""), cap);
+    return { ...s, text: sanitizeSegmentText(trimmed) };
+  });
 
-	const topicIntents = (topics || []).map((t, idx) => {
-		const ctx = Array.isArray(topicContexts?.[idx]?.context)
-			? topicContexts[idx].context
-			: [];
-		return buildTopicIntentSummary(t, ctx);
-	});
+  const topicIntents = (topics || []).map((t, idx) => {
+    const ctx = Array.isArray(topicContexts?.[idx]?.context)
+      ? topicContexts[idx].context
+      : [];
+    return buildTopicIntentSummary(t, ctx);
+  });
 
-	updated = ensureTopicTransitions(updated, topics);
-	updated = ensureTopicAnchors(updated, topics, topicIntents);
-	updated = enforceTopicSpecificityGuards(
-		updated,
-		topics,
-		topicContexts,
-		topicIntents,
-	);
-	updated = enforceRealWorldFraming(updated, topicContextFlags);
-	updated = ensureTopicEngagementQuestions(updated, topics, mood, wordCaps);
-	updated = enforceSegmentCompleteness(updated, mood, {
-		includeCta: !includeOutro,
-	});
-	updated = limitFillerAndEmotesAcrossSegments(updated, {
-		maxFillers: MAX_FILLER_WORDS_PER_VIDEO,
-		maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
-		maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
-		maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
-		noFillerSegmentIndices: [0, 1, 2],
-	});
-	updated = updated.map((s) => ({
-		...s,
-		text: sanitizeSegmentText(s.text),
-	}));
+  updated = ensureTopicTransitions(updated, topics);
+  updated = ensureTopicAnchors(updated, topics, topicIntents);
+  updated = enforceTopicSpecificityGuards(
+    updated,
+    topics,
+    topicContexts,
+    topicIntents,
+  );
+  updated = enforceRealWorldFraming(updated, topicContextFlags);
+  updated = ensureTopicEngagementQuestions(updated, topics, mood, wordCaps);
+  updated = enforceSegmentCompleteness(updated, mood, {
+    includeCta: !includeOutro,
+  });
+  updated = limitFillerAndEmotesAcrossSegments(updated, {
+    maxFillers: MAX_FILLER_WORDS_PER_VIDEO,
+    maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
+    maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
+    maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
+    noFillerSegmentIndices: [0, 1, 2],
+  });
+  updated = updated.map((s) => ({
+    ...s,
+    text: sanitizeSegmentText(s.text),
+  }));
 
-	return { ...script, segments: updated };
+  return { ...script, segments: updated };
 }
 
 /* ---------------------------------------------------------------
@@ -9182,270 +9185,270 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
  * ------------------------------------------------------------- */
 
 function buildVoiceSettingsForExpression(
-	expression = "neutral",
-	mood = "neutral",
-	text = "",
-	opts = {},
+  expression = "neutral",
+  mood = "neutral",
+  text = "",
+  opts = {},
 ) {
-	const uniform = Boolean(opts?.uniform);
-	const forceNeutral = Boolean(opts?.forceNeutral);
-	const naturalExpr = coerceExpressionForNaturalness(expression, text, mood);
-	const expr = forceNeutral && naturalExpr === "excited" ? "warm" : naturalExpr;
-	let stability = ELEVEN_TTS_STABILITY;
-	let style = ELEVEN_TTS_STYLE;
-	const expressionScale = forceNeutral ? 0.5 : 1;
+  const uniform = Boolean(opts?.uniform);
+  const forceNeutral = Boolean(opts?.forceNeutral);
+  const naturalExpr = coerceExpressionForNaturalness(expression, text, mood);
+  const expr = forceNeutral && naturalExpr === "excited" ? "warm" : naturalExpr;
+  let stability = ELEVEN_TTS_STABILITY;
+  let style = ELEVEN_TTS_STYLE;
+  const expressionScale = forceNeutral ? 0.5 : 1;
 
-	if (uniform) {
-		stability += 0.04;
-		style -= 0.03;
-	}
+  if (uniform) {
+    stability += 0.04;
+    style -= 0.03;
+  }
 
-	switch (expr) {
-		case "warm":
-			stability -= 0.05 * expressionScale;
-			style += 0.05 * expressionScale;
-			break;
-		case "excited":
-			stability -= 0.1 * expressionScale;
-			style += 0.08 * expressionScale;
-			break;
-		case "serious":
-			stability += 0.05 * expressionScale;
-			style -= 0.04 * expressionScale;
-			break;
-		case "thoughtful":
-			stability += 0.02 * expressionScale;
-			style += 0.02 * expressionScale;
-			break;
-		default:
-			stability -= uniform ? 0 : 0.02;
-			style += uniform ? 0 : 0.01;
-			break;
-	}
+  switch (expr) {
+    case "warm":
+      stability -= 0.05 * expressionScale;
+      style += 0.05 * expressionScale;
+      break;
+    case "excited":
+      stability -= 0.1 * expressionScale;
+      style += 0.08 * expressionScale;
+      break;
+    case "serious":
+      stability += 0.05 * expressionScale;
+      style -= 0.04 * expressionScale;
+      break;
+    case "thoughtful":
+      stability += 0.02 * expressionScale;
+      style += 0.02 * expressionScale;
+      break;
+    default:
+      stability -= uniform ? 0 : 0.02;
+      style += uniform ? 0 : 0.01;
+      break;
+  }
 
-	return {
-		stability: clampNumber(stability, 0.1, 1),
-		similarity_boost: clampNumber(ELEVEN_TTS_SIMILARITY, 0.1, 1),
-		style: clampNumber(style, 0, 0.35),
-		use_speaker_boost: ELEVEN_TTS_SPEAKER_BOOST,
-	};
+  return {
+    stability: clampNumber(stability, 0.1, 1),
+    similarity_boost: clampNumber(ELEVEN_TTS_SIMILARITY, 0.1, 1),
+    style: clampNumber(style, 0, 0.35),
+    use_speaker_boost: ELEVEN_TTS_SPEAKER_BOOST,
+  };
 }
 
 async function synthesizeTtsWav({
-	text,
-	tmpDir,
-	jobId,
-	label,
-	voiceId,
-	voiceSettings,
-	modelId,
-	modelOrder,
+  text,
+  tmpDir,
+  jobId,
+  label,
+  voiceId,
+  voiceSettings,
+  modelId,
+  modelOrder,
 }) {
-	const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
-	const baseText = stripAllFillers(text);
-	const maxAttempts = AUDIO_QA_ENABLED ? AUDIO_QA_MAX_ATTEMPTS : 1;
-	let best = null;
-	let bestScore = -Infinity;
+  const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
+  const baseText = stripAllFillers(text);
+  const maxAttempts = AUDIO_QA_ENABLED ? AUDIO_QA_MAX_ATTEMPTS : 1;
+  let best = null;
+  let bestScore = -Infinity;
 
-	for (let attempt = 0; attempt < maxAttempts; attempt++) {
-		const attemptLabel = attempt ? `${safeLabel}_a${attempt}` : safeLabel;
-		const mp3 = path.join(tmpDir, `${attemptLabel}_${jobId}.mp3`);
-		const wav = path.join(tmpDir, `${attemptLabel}_${jobId}.wav`);
-		const ttsText = attempt === 0 ? baseText : tightenTtsText(baseText);
-		const attemptVoiceSettings = tightenVoiceSettings(voiceSettings, attempt);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const attemptLabel = attempt ? `${safeLabel}_a${attempt}` : safeLabel;
+    const mp3 = path.join(tmpDir, `${attemptLabel}_${jobId}.mp3`);
+    const wav = path.join(tmpDir, `${attemptLabel}_${jobId}.wav`);
+    const ttsText = attempt === 0 ? baseText : tightenTtsText(baseText);
+    const attemptVoiceSettings = tightenVoiceSettings(voiceSettings, attempt);
 
-		const usedModelId = await elevenLabsTTS({
-			text: ttsText,
-			outMp3Path: mp3,
-			voiceId,
-			voiceSettings: attemptVoiceSettings,
-			modelId,
-			modelOrder,
-		});
-		await mp3ToCleanWav(mp3, wav);
-		safeUnlink(mp3);
-		const durationSec = await probeDurationSeconds(wav);
-		let qa = AUDIO_QA_ENABLED
-			? await analyzeAudioQuality({
-					wavPath: wav,
-					expectedText: ttsText,
-					jobId,
-					label: safeLabel,
-				})
-			: { pass: true, issues: [] };
-		let activeWav = wav;
-		let activeDurationSec = durationSec;
+    const usedModelId = await elevenLabsTTS({
+      text: ttsText,
+      outMp3Path: mp3,
+      voiceId,
+      voiceSettings: attemptVoiceSettings,
+      modelId,
+      modelOrder,
+    });
+    await mp3ToCleanWav(mp3, wav);
+    safeUnlink(mp3);
+    const durationSec = await probeDurationSeconds(wav);
+    let qa = AUDIO_QA_ENABLED
+      ? await analyzeAudioQuality({
+          wavPath: wav,
+          expectedText: ttsText,
+          jobId,
+          label: safeLabel,
+        })
+      : { pass: true, issues: [] };
+    let activeWav = wav;
+    let activeDurationSec = durationSec;
 
-		if (jobId && AUDIO_QA_ENABLED) {
-			logJob(jobId, "tts audio qa", {
-				label: safeLabel,
-				attempt,
-				pass: qa.pass,
-				issues: qa.issues,
-				maxInternalSilenceSec: Number(
-					(qa.maxInternalSilenceSec || 0).toFixed(3),
-				),
-				similarity: Number((qa.similarity || 0).toFixed(3)),
-			});
-		}
+    if (jobId && AUDIO_QA_ENABLED) {
+      logJob(jobId, "tts audio qa", {
+        label: safeLabel,
+        attempt,
+        pass: qa.pass,
+        issues: qa.issues,
+        maxInternalSilenceSec: Number(
+          (qa.maxInternalSilenceSec || 0).toFixed(3),
+        ),
+        similarity: Number((qa.similarity || 0).toFixed(3)),
+      });
+    }
 
-		if (!qa.pass && Array.isArray(qa.issues)) {
-			if (qa.issues.includes("long_internal_silence")) {
-				try {
-					const tightened = await tightenInternalSilenceWav({
-						wavPath: wav,
-						tmpDir,
-						jobId,
-						label: attemptLabel,
-					});
-					if (tightened?.changed && tightened?.wavPath) {
-						const tightenedQa = await analyzeAudioQuality({
-							wavPath: tightened.wavPath,
-							expectedText: ttsText,
-							jobId,
-							label: `${safeLabel}_tight`,
-						});
-						if (jobId && AUDIO_QA_ENABLED) {
-							logJob(jobId, "tts audio qa tightened", {
-								label: safeLabel,
-								attempt,
-								pass: tightenedQa.pass,
-								issues: tightenedQa.issues,
-								maxInternalSilenceSec: Number(
-									(tightenedQa.maxInternalSilenceSec || 0).toFixed(3),
-								),
-								similarity: Number((tightenedQa.similarity || 0).toFixed(3)),
-							});
-						}
-						if (tightenedQa.pass) {
-							safeUnlink(wav);
-							return {
-								wavPath: tightened.wavPath,
-								durationSec: tightened.durationSec || activeDurationSec,
-								modelId: usedModelId,
-								text: ttsText,
-								qa: tightenedQa,
-							};
-						}
-						const scoreOriginal =
-							(qa.similarity || 0) -
-							(qa.maxInternalSilenceSec || 0) * 0.5 -
-							(qa.issues?.length || 0);
-						const scoreTight =
-							(tightenedQa.similarity || 0) -
-							(tightenedQa.maxInternalSilenceSec || 0) * 0.5 -
-							(tightenedQa.issues?.length || 0);
-						if (scoreTight > scoreOriginal) {
-							safeUnlink(wav);
-							activeWav = tightened.wavPath;
-							activeDurationSec = tightened.durationSec || activeDurationSec;
-							qa = tightenedQa;
-						} else {
-							safeUnlink(tightened.wavPath);
-						}
-					}
-				} catch (e) {
-					if (jobId) {
-						logJob(jobId, "tts audio tighten failed", {
-							label: safeLabel,
-							attempt,
-							error: e?.message || String(e),
-						});
-					}
-				}
-			}
-		}
+    if (!qa.pass && Array.isArray(qa.issues)) {
+      if (qa.issues.includes("long_internal_silence")) {
+        try {
+          const tightened = await tightenInternalSilenceWav({
+            wavPath: wav,
+            tmpDir,
+            jobId,
+            label: attemptLabel,
+          });
+          if (tightened?.changed && tightened?.wavPath) {
+            const tightenedQa = await analyzeAudioQuality({
+              wavPath: tightened.wavPath,
+              expectedText: ttsText,
+              jobId,
+              label: `${safeLabel}_tight`,
+            });
+            if (jobId && AUDIO_QA_ENABLED) {
+              logJob(jobId, "tts audio qa tightened", {
+                label: safeLabel,
+                attempt,
+                pass: tightenedQa.pass,
+                issues: tightenedQa.issues,
+                maxInternalSilenceSec: Number(
+                  (tightenedQa.maxInternalSilenceSec || 0).toFixed(3),
+                ),
+                similarity: Number((tightenedQa.similarity || 0).toFixed(3)),
+              });
+            }
+            if (tightenedQa.pass) {
+              safeUnlink(wav);
+              return {
+                wavPath: tightened.wavPath,
+                durationSec: tightened.durationSec || activeDurationSec,
+                modelId: usedModelId,
+                text: ttsText,
+                qa: tightenedQa,
+              };
+            }
+            const scoreOriginal =
+              (qa.similarity || 0) -
+              (qa.maxInternalSilenceSec || 0) * 0.5 -
+              (qa.issues?.length || 0);
+            const scoreTight =
+              (tightenedQa.similarity || 0) -
+              (tightenedQa.maxInternalSilenceSec || 0) * 0.5 -
+              (tightenedQa.issues?.length || 0);
+            if (scoreTight > scoreOriginal) {
+              safeUnlink(wav);
+              activeWav = tightened.wavPath;
+              activeDurationSec = tightened.durationSec || activeDurationSec;
+              qa = tightenedQa;
+            } else {
+              safeUnlink(tightened.wavPath);
+            }
+          }
+        } catch (e) {
+          if (jobId) {
+            logJob(jobId, "tts audio tighten failed", {
+              label: safeLabel,
+              attempt,
+              error: e?.message || String(e),
+            });
+          }
+        }
+      }
+    }
 
-		if (qa.pass) {
-			if (best?.wavPath && best.wavPath !== activeWav) safeUnlink(best.wavPath);
-			return {
-				wavPath: activeWav,
-				durationSec: activeDurationSec,
-				modelId: usedModelId,
-				text: ttsText,
-				qa,
-			};
-		}
+    if (qa.pass) {
+      if (best?.wavPath && best.wavPath !== activeWav) safeUnlink(best.wavPath);
+      return {
+        wavPath: activeWav,
+        durationSec: activeDurationSec,
+        modelId: usedModelId,
+        text: ttsText,
+        qa,
+      };
+    }
 
-		const score =
-			(qa.similarity || 0) -
-			(qa.maxInternalSilenceSec || 0) * 0.5 -
-			(qa.issues?.length || 0);
-		if (!best || score > bestScore) {
-			if (best?.wavPath && best.wavPath !== activeWav) safeUnlink(best.wavPath);
-			best = {
-				wavPath: activeWav,
-				durationSec: activeDurationSec,
-				modelId: usedModelId,
-				text: ttsText,
-				qa,
-			};
-			bestScore = score;
-		} else {
-			safeUnlink(activeWav);
-		}
-	}
+    const score =
+      (qa.similarity || 0) -
+      (qa.maxInternalSilenceSec || 0) * 0.5 -
+      (qa.issues?.length || 0);
+    if (!best || score > bestScore) {
+      if (best?.wavPath && best.wavPath !== activeWav) safeUnlink(best.wavPath);
+      best = {
+        wavPath: activeWav,
+        durationSec: activeDurationSec,
+        modelId: usedModelId,
+        text: ttsText,
+        qa,
+      };
+      bestScore = score;
+    } else {
+      safeUnlink(activeWav);
+    }
+  }
 
-	if (best) return best;
-	return {
-		wavPath: "",
-		durationSec: 0,
-		modelId: "",
-		text: baseText,
-		qa: { pass: false, issues: ["tts_failed"] },
-	};
+  if (best) return best;
+  return {
+    wavPath: "",
+    durationSec: 0,
+    modelId: "",
+    text: baseText,
+    qa: { pass: false, issues: ["tts_failed"] },
+  };
 }
 
 async function fitWavToTargetDuration({
-	wavPath,
-	targetSec,
-	minAtempo,
-	maxAtempo,
-	tmpDir,
-	jobId,
-	label,
+  wavPath,
+  targetSec,
+  minAtempo,
+  maxAtempo,
+  tmpDir,
+  jobId,
+  label,
 }) {
-	const cleanDur = await probeDurationSeconds(wavPath);
-	if (!cleanDur || !Number.isFinite(cleanDur)) {
-		return { wavPath, durationSec: 0, atempo: 1, rawAtempo: 1 };
-	}
-	const rawAtempo = Number(targetSec) > 0 ? cleanDur / Number(targetSec) : 1;
-	const atempo = clampNumber(rawAtempo, minAtempo, maxAtempo);
-	if (Math.abs(atempo - 1) < 0.01) {
-		return { wavPath, durationSec: cleanDur, atempo, rawAtempo };
-	}
-	const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
-	const out = path.join(tmpDir, `${safeLabel}_fit_${jobId}.wav`);
-	await applyGlobalAtempoToWav(wavPath, out, atempo);
-	safeUnlink(wavPath);
-	const durationSec = await probeDurationSeconds(out);
-	return { wavPath: out, durationSec, atempo, rawAtempo };
+  const cleanDur = await probeDurationSeconds(wavPath);
+  if (!cleanDur || !Number.isFinite(cleanDur)) {
+    return { wavPath, durationSec: 0, atempo: 1, rawAtempo: 1 };
+  }
+  const rawAtempo = Number(targetSec) > 0 ? cleanDur / Number(targetSec) : 1;
+  const atempo = clampNumber(rawAtempo, minAtempo, maxAtempo);
+  if (Math.abs(atempo - 1) < 0.01) {
+    return { wavPath, durationSec: cleanDur, atempo, rawAtempo };
+  }
+  const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
+  const out = path.join(tmpDir, `${safeLabel}_fit_${jobId}.wav`);
+  await applyGlobalAtempoToWav(wavPath, out, atempo);
+  safeUnlink(wavPath);
+  const durationSec = await probeDurationSeconds(out);
+  return { wavPath: out, durationSec, atempo, rawAtempo };
 }
 
 async function createSilentWav({ durationSec, outPath }) {
-	const dur = Math.max(0.1, Number(durationSec) || 0.1);
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-f",
-			"lavfi",
-			"-i",
-			`anullsrc=r=${AUDIO_SR}:cl=stereo`,
-			"-t",
-			dur.toFixed(3),
-			"-acodec",
-			"pcm_s16le",
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			"2",
-			"-y",
-			outPath,
-		],
-		"silent_wav",
-		{ timeoutMs: 60000 },
-	);
-	return outPath;
+  const dur = Math.max(0.1, Number(durationSec) || 0.1);
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-f",
+      "lavfi",
+      "-i",
+      `anullsrc=r=${AUDIO_SR}:cl=stereo`,
+      "-t",
+      dur.toFixed(3),
+      "-acodec",
+      "pcm_s16le",
+      "-ar",
+      String(AUDIO_SR),
+      "-ac",
+      "2",
+      "-y",
+      outPath,
+    ],
+    "silent_wav",
+    { timeoutMs: 60000 },
+  );
+  return outPath;
 }
 
 /* ---------------------------------------------------------------
@@ -9453,914 +9456,914 @@ async function createSilentWav({ durationSec, outPath }) {
  * ------------------------------------------------------------- */
 
 function resolveYouTubeTokensFromPayload(payload, user) {
-	const bodyTok = {
-		access_token: payload.youtubeAccessToken,
-		refresh_token: payload.youtubeRefreshToken,
-		expiry_date: payload.youtubeTokenExpiresAt
-			? new Date(payload.youtubeTokenExpiresAt).getTime()
-			: undefined,
-	};
-	const userTok = {
-		access_token: user?.youtubeAccessToken,
-		refresh_token: user?.youtubeRefreshToken,
-		expiry_date: user?.youtubeTokenExpiresAt
-			? new Date(user.youtubeTokenExpiresAt).getTime()
-			: undefined,
-	};
-	return bodyTok.refresh_token &&
-		(!userTok.refresh_token ||
-			(userTok.expiry_date || 0) < (bodyTok.expiry_date || 0))
-		? bodyTok
-		: userTok;
+  const bodyTok = {
+    access_token: payload.youtubeAccessToken,
+    refresh_token: payload.youtubeRefreshToken,
+    expiry_date: payload.youtubeTokenExpiresAt
+      ? new Date(payload.youtubeTokenExpiresAt).getTime()
+      : undefined,
+  };
+  const userTok = {
+    access_token: user?.youtubeAccessToken,
+    refresh_token: user?.youtubeRefreshToken,
+    expiry_date: user?.youtubeTokenExpiresAt
+      ? new Date(user.youtubeTokenExpiresAt).getTime()
+      : undefined,
+  };
+  return bodyTok.refresh_token &&
+    (!userTok.refresh_token ||
+      (userTok.expiry_date || 0) < (bodyTok.expiry_date || 0))
+    ? bodyTok
+    : userTok;
 }
 
 function buildYouTubeOAuth2Client(source) {
-	const creds =
-		source && source.access_token !== undefined
-			? source
-			: resolveYouTubeTokensFromPayload({}, source);
-	if (!creds.refresh_token) return null;
-	const o = new google.auth.OAuth2(
-		process.env.YOUTUBE_CLIENT_ID,
-		process.env.YOUTUBE_CLIENT_SECRET,
-		process.env.YOUTUBE_REDIRECT_URI,
-	);
-	o.setCredentials(creds);
-	return o;
+  const creds =
+    source && source.access_token !== undefined
+      ? source
+      : resolveYouTubeTokensFromPayload({}, source);
+  if (!creds.refresh_token) return null;
+  const o = new google.auth.OAuth2(
+    process.env.YOUTUBE_CLIENT_ID,
+    process.env.YOUTUBE_CLIENT_SECRET,
+    process.env.YOUTUBE_REDIRECT_URI,
+  );
+  o.setCredentials(creds);
+  return o;
 }
 
 async function refreshYouTubeTokensIfNeeded(user, payload) {
-	const tokens = resolveYouTubeTokensFromPayload(payload || {}, user || {});
-	const o = buildYouTubeOAuth2Client(tokens);
-	if (!o) return tokens;
-	try {
-		const { token } = await o.getAccessToken();
-		if (token) {
-			const fresh = {
-				access_token: o.credentials.access_token,
-				refresh_token: o.credentials.refresh_token || tokens.refresh_token,
-				expiry_date: o.credentials.expiry_date,
-			};
-			if (user) {
-				user.youtubeAccessToken = fresh.access_token;
-				user.youtubeRefreshToken = fresh.refresh_token;
-				user.youtubeTokenExpiresAt = fresh.expiry_date;
-				if (user.isModified && user.isModified() && user.role !== "admin")
-					await user.save();
-			}
-			return fresh;
-		}
-	} catch {}
-	return tokens;
+  const tokens = resolveYouTubeTokensFromPayload(payload || {}, user || {});
+  const o = buildYouTubeOAuth2Client(tokens);
+  if (!o) return tokens;
+  try {
+    const { token } = await o.getAccessToken();
+    if (token) {
+      const fresh = {
+        access_token: o.credentials.access_token,
+        refresh_token: o.credentials.refresh_token || tokens.refresh_token,
+        expiry_date: o.credentials.expiry_date,
+      };
+      if (user) {
+        user.youtubeAccessToken = fresh.access_token;
+        user.youtubeRefreshToken = fresh.refresh_token;
+        user.youtubeTokenExpiresAt = fresh.expiry_date;
+        if (user.isModified && user.isModified() && user.role !== "admin")
+          await user.save();
+      }
+      return fresh;
+    }
+  } catch {}
+  return tokens;
 }
 
 function normalizeYouTubeTags(tags = []) {
-	const list = Array.isArray(tags) ? tags : [tags];
-	return Array.from(
-		new Set(list.map((t) => String(t || "").trim()).filter(Boolean)),
-	).slice(0, 15);
+  const list = Array.isArray(tags) ? tags : [tags];
+  return Array.from(
+    new Set(list.map((t) => String(t || "").trim()).filter(Boolean)),
+  ).slice(0, 15);
 }
 
 async function uploadToYouTube(
-	u,
-	fp,
-	{ title, description, tags, category, thumbnailPath, jobId },
+  u,
+  fp,
+  { title, description, tags, category, thumbnailPath, jobId },
 ) {
-	const o = buildYouTubeOAuth2Client(u);
-	if (!o) throw new Error("YouTube OAuth missing");
-	const yt = google.youtube({ version: "v3", auth: o });
-	const safeTitle = String(title || "")
-		.trim()
-		.slice(0, 95);
-	const safeDescription = ensureClickableLinks(description);
-	const safeTags = normalizeYouTubeTags(tags);
-	const { data } = await yt.videos.insert(
-		{
-			part: ["snippet", "status"],
-			requestBody: {
-				snippet: {
-					title: safeTitle || "Untitled",
-					description: safeDescription,
-					tags: safeTags,
-					categoryId:
-						YT_CATEGORY_MAP[category] === "0"
-							? "22"
-							: YT_CATEGORY_MAP[category] || "22",
-				},
-				status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
-			},
-			media: { body: fs.createReadStream(fp) },
-		},
-		{ maxContentLength: Infinity, maxBodyLength: Infinity },
-	);
+  const o = buildYouTubeOAuth2Client(u);
+  if (!o) throw new Error("YouTube OAuth missing");
+  const yt = google.youtube({ version: "v3", auth: o });
+  const safeTitle = String(title || "")
+    .trim()
+    .slice(0, 95);
+  const safeDescription = ensureClickableLinks(description);
+  const safeTags = normalizeYouTubeTags(tags);
+  const { data } = await yt.videos.insert(
+    {
+      part: ["snippet", "status"],
+      requestBody: {
+        snippet: {
+          title: safeTitle || "Untitled",
+          description: safeDescription,
+          tags: safeTags,
+          categoryId:
+            YT_CATEGORY_MAP[category] === "0"
+              ? "22"
+              : YT_CATEGORY_MAP[category] || "22",
+        },
+        status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
+      },
+      media: { body: fs.createReadStream(fp) },
+    },
+    { maxContentLength: Infinity, maxBodyLength: Infinity },
+  );
 
-	const videoId = data?.id;
-	if (videoId && thumbnailPath && fs.existsSync(thumbnailPath)) {
-		try {
-			await yt.thumbnails.set({
-				videoId,
-				media: { body: fs.createReadStream(thumbnailPath) },
-			});
-			logJob(jobId, "youtube thumbnail set", {
-				path: path.basename(thumbnailPath),
-			});
-		} catch (e) {
-			logJob(jobId, "youtube thumbnail upload failed (ignored)", {
-				error: e.message,
-			});
-		}
-	}
+  const videoId = data?.id;
+  if (videoId && thumbnailPath && fs.existsSync(thumbnailPath)) {
+    try {
+      await yt.thumbnails.set({
+        videoId,
+        media: { body: fs.createReadStream(thumbnailPath) },
+      });
+      logJob(jobId, "youtube thumbnail set", {
+        path: path.basename(thumbnailPath),
+      });
+    } catch (e) {
+      logJob(jobId, "youtube thumbnail upload failed (ignored)", {
+        error: e.message,
+      });
+    }
+  }
 
-	return `https://www.youtube.com/watch?v=${videoId}`;
+  return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
 async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
-	let seoTitle = String(scriptTitle || "").trim();
-	const topicLine = topics
-		.map((t) => t.displayTopic || t.topic)
-		.filter(Boolean)
-		.join(" | ");
+  let seoTitle = String(scriptTitle || "").trim();
+  const topicLine = topics
+    .map((t) => t.displayTopic || t.topic)
+    .filter(Boolean)
+    .join(" | ");
 
-	if (process.env.CHATGPT_API_TOKEN) {
-		try {
-			const titlePrompt = `Write ONE SEO-friendly YouTube title (max 90 characters) for a long-form news brief covering: ${topicLine}. Use natural search phrasing, clean punctuation, and human headline case. No quotes, no hashtags. If you use an emoji, use at most one and place it naturally.`;
-			const titleResp = await openai.chat.completions.create({
-				model: CHAT_MODEL,
-				messages: [{ role: "user", content: titlePrompt }],
-			});
-			const t = String(titleResp.choices?.[0]?.message?.content || "")
-				.replace(/["']/g, "")
-				.trim();
-			if (t) seoTitle = formatHumanTitle(t, 90) || seoTitle;
-		} catch {}
-	}
-	seoTitle =
-		formatHumanTitle(seoTitle, 90) || formatHumanTitle(scriptTitle, 90);
+  if (process.env.CHATGPT_API_TOKEN) {
+    try {
+      const titlePrompt = `Write ONE SEO-friendly YouTube title (max 90 characters) for a long-form news brief covering: ${topicLine}. Use natural search phrasing, clean punctuation, and human headline case. No quotes, no hashtags. If you use an emoji, use at most one and place it naturally.`;
+      const titleResp = await openai.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: [{ role: "user", content: titlePrompt }],
+      });
+      const t = String(titleResp.choices?.[0]?.message?.content || "")
+        .replace(/["']/g, "")
+        .trim();
+      if (t) seoTitle = formatHumanTitle(t, 90) || seoTitle;
+    } catch {}
+  }
+  seoTitle =
+    formatHumanTitle(seoTitle, 90) || formatHumanTitle(scriptTitle, 90);
 
-	let seoDescription = "";
-	if (process.env.CHATGPT_API_TOKEN) {
-		try {
-			const descPrompt = `Write a YouTube description (max 180 words) for a long-form news brief titled "${seoTitle}". Make the first 2 lines keyword-rich for search. Use short sentences. Add a friendly CTA to comment and like (not pushy). End with 5-7 relevant hashtags.`;
-			const descResp = await openai.chat.completions.create({
-				model: CHAT_MODEL,
-				messages: [{ role: "user", content: descPrompt }],
-			});
-			const descRaw = String(descResp.choices?.[0]?.message?.content || "")
-				.trim()
-				.replace(/\n{3,}/g, "\n\n");
-			seoDescription = ensureClickableLinks(
-				`${MERCH_INTRO}${descRaw}\n\n${BRAND_CREDIT}`,
-			);
-		} catch {}
-	}
-	if (!seoDescription) {
-		seoDescription = ensureClickableLinks(
-			`${MERCH_INTRO}${seoTitle}\n\nTell me your take and tap like if this helped.\n\n${BRAND_CREDIT}`,
-		);
-	}
+  let seoDescription = "";
+  if (process.env.CHATGPT_API_TOKEN) {
+    try {
+      const descPrompt = `Write a YouTube description (max 180 words) for a long-form news brief titled "${seoTitle}". Make the first 2 lines keyword-rich for search. Use short sentences. Add a friendly CTA to comment and like (not pushy). End with 5-7 relevant hashtags.`;
+      const descResp = await openai.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: [{ role: "user", content: descPrompt }],
+      });
+      const descRaw = String(descResp.choices?.[0]?.message?.content || "")
+        .trim()
+        .replace(/\n{3,}/g, "\n\n");
+      seoDescription = ensureClickableLinks(
+        `${MERCH_INTRO}${descRaw}\n\n${BRAND_CREDIT}`,
+      );
+    } catch {}
+  }
+  if (!seoDescription) {
+    seoDescription = ensureClickableLinks(
+      `${MERCH_INTRO}${seoTitle}\n\nTell me your take and tap like if this helped.\n\n${BRAND_CREDIT}`,
+    );
+  }
 
-	let tags = ["news", "entertainment", "longform"];
-	if (process.env.CHATGPT_API_TOKEN) {
-		try {
-			const tagPrompt = `Return a JSON array of 8-12 SHORT tags for the YouTube video "${seoTitle}". Use high-volume search terms viewers actually type (1-3 words each). No hashtags, no duplicates.`;
-			const tagResp = await openai.chat.completions.create({
-				model: CHAT_MODEL,
-				messages: [{ role: "user", content: tagPrompt }],
-			});
-			const parsed = parseJsonFlexible(
-				stripCodeFence(tagResp.choices?.[0]?.message?.content || ""),
-			);
-			if (Array.isArray(parsed)) tags.push(...parsed);
-		} catch {}
-	}
+  let tags = ["news", "entertainment", "longform"];
+  if (process.env.CHATGPT_API_TOKEN) {
+    try {
+      const tagPrompt = `Return a JSON array of 8-12 SHORT tags for the YouTube video "${seoTitle}". Use high-volume search terms viewers actually type (1-3 words each). No hashtags, no duplicates.`;
+      const tagResp = await openai.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: [{ role: "user", content: tagPrompt }],
+      });
+      const parsed = parseJsonFlexible(
+        stripCodeFence(tagResp.choices?.[0]?.message?.content || ""),
+      );
+      if (Array.isArray(parsed)) tags.push(...parsed);
+    } catch {}
+  }
 
-	if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
-	tags = [...new Set(tags.filter(Boolean).map((t) => String(t).trim()))];
+  if (!tags.includes(BRAND_TAG)) tags.unshift(BRAND_TAG);
+  tags = [...new Set(tags.filter(Boolean).map((t) => String(t).trim()))];
 
-	return { seoTitle, seoDescription, tags, languageLabel };
+  return { seoTitle, seoDescription, tags, languageLabel };
 }
 
 const SMALL_NUMBER_WORDS = [
-	"zero",
-	"one",
-	"two",
-	"three",
-	"four",
-	"five",
-	"six",
-	"seven",
-	"eight",
-	"nine",
-	"ten",
-	"eleven",
-	"twelve",
-	"thirteen",
-	"fourteen",
-	"fifteen",
-	"sixteen",
-	"seventeen",
-	"eighteen",
-	"nineteen",
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten",
+  "eleven",
+  "twelve",
+  "thirteen",
+  "fourteen",
+  "fifteen",
+  "sixteen",
+  "seventeen",
+  "eighteen",
+  "nineteen",
 ];
 const TENS_NUMBER_WORDS = [
-	"",
-	"",
-	"twenty",
-	"thirty",
-	"forty",
-	"fifty",
-	"sixty",
-	"seventy",
-	"eighty",
-	"ninety",
+  "",
+  "",
+  "twenty",
+  "thirty",
+  "forty",
+  "fifty",
+  "sixty",
+  "seventy",
+  "eighty",
+  "ninety",
 ];
 
 function twoDigitNumberToWords(value) {
-	const n = Number(value);
-	if (!Number.isFinite(n)) return "";
-	const v = Math.round(n);
-	if (v < 0 || v >= 100) return "";
-	if (v < 20) return SMALL_NUMBER_WORDS[v];
-	const tens = Math.floor(v / 10);
-	const ones = v % 10;
-	return ones
-		? `${TENS_NUMBER_WORDS[tens]} ${SMALL_NUMBER_WORDS[ones]}`
-		: TENS_NUMBER_WORDS[tens];
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  const v = Math.round(n);
+  if (v < 0 || v >= 100) return "";
+  if (v < 20) return SMALL_NUMBER_WORDS[v];
+  const tens = Math.floor(v / 10);
+  const ones = v % 10;
+  return ones
+    ? `${TENS_NUMBER_WORDS[tens]} ${SMALL_NUMBER_WORDS[ones]}`
+    : TENS_NUMBER_WORDS[tens];
 }
 
 function yearToWords(year) {
-	const y = Number(year);
-	if (!Number.isFinite(y)) return "";
-	if (y >= 2000 && y <= 2009) {
-		const tail = y % 100;
-		return tail
-			? `two thousand ${twoDigitNumberToWords(tail)}`
-			: "two thousand";
-	}
-	if (y >= 2010 && y <= 2099) {
-		const tail = y % 100;
-		return `twenty ${twoDigitNumberToWords(tail)}`.trim();
-	}
-	if (y >= 1900 && y <= 1999) {
-		const tail = y % 100;
-		if (tail === 0) return "nineteen hundred";
-		return `nineteen ${twoDigitNumberToWords(tail)}`.trim();
-	}
-	return String(year);
+  const y = Number(year);
+  if (!Number.isFinite(y)) return "";
+  if (y >= 2000 && y <= 2009) {
+    const tail = y % 100;
+    return tail
+      ? `two thousand ${twoDigitNumberToWords(tail)}`
+      : "two thousand";
+  }
+  if (y >= 2010 && y <= 2099) {
+    const tail = y % 100;
+    return `twenty ${twoDigitNumberToWords(tail)}`.trim();
+  }
+  if (y >= 1900 && y <= 1999) {
+    const tail = y % 100;
+    if (tail === 0) return "nineteen hundred";
+    return `nineteen ${twoDigitNumberToWords(tail)}`.trim();
+  }
+  return String(year);
 }
 
 function numberToWordsUnder1000(value) {
-	const n = Number(value);
-	if (!Number.isFinite(n)) return String(value);
-	const v = Math.round(n);
-	if (v < 0 || v >= 1000) return String(v);
-	if (v < 100) return twoDigitNumberToWords(v);
-	const hundreds = Math.floor(v / 100);
-	const rest = v % 100;
-	const prefix = `${SMALL_NUMBER_WORDS[hundreds]} hundred`;
-	return rest ? `${prefix} ${twoDigitNumberToWords(rest)}` : prefix;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  const v = Math.round(n);
+  if (v < 0 || v >= 1000) return String(v);
+  if (v < 100) return twoDigitNumberToWords(v);
+  const hundreds = Math.floor(v / 100);
+  const rest = v % 100;
+  const prefix = `${SMALL_NUMBER_WORDS[hundreds]} hundred`;
+  return rest ? `${prefix} ${twoDigitNumberToWords(rest)}` : prefix;
 }
 
 function normalizeSymbolPhrasesForSpeech(text = "") {
-	let t = String(text || "");
-	t = t.replace(/[\u201C\u201D]/g, '"');
-	t = t.replace(/[\u2018\u2019]/g, "'");
-	t = t.replace(/\bvs\.?\b/gi, "versus");
-	t = t.replace(/\bNo\.\s*(\d{1,3})\b/g, (_, value) => {
-		return `number ${numberToWordsUnder1000(value)}`;
-	});
-	t = t.replace(/\b(\d{1,3})\s*[\u2013-]\s*(\d{1,3})\b/g, (_, left, right) => {
-		return `${numberToWordsUnder1000(left)} to ${numberToWordsUnder1000(right)}`;
-	});
-	t = t.replace(/\b(\d{1,3})%\b/g, (_, value) => {
-		return `${numberToWordsUnder1000(value)} percent`;
-	});
-	return t;
+  let t = String(text || "");
+  t = t.replace(/[\u201C\u201D]/g, '"');
+  t = t.replace(/[\u2018\u2019]/g, "'");
+  t = t.replace(/\bvs\.?\b/gi, "versus");
+  t = t.replace(/\bNo\.\s*(\d{1,3})\b/g, (_, value) => {
+    return `number ${numberToWordsUnder1000(value)}`;
+  });
+  t = t.replace(/\b(\d{1,3})\s*[\u2013-]\s*(\d{1,3})\b/g, (_, left, right) => {
+    return `${numberToWordsUnder1000(left)} to ${numberToWordsUnder1000(right)}`;
+  });
+  t = t.replace(/\b(\d{1,3})%\b/g, (_, value) => {
+    return `${numberToWordsUnder1000(value)} percent`;
+  });
+  return t;
 }
 
 function normalizeNumbersForSpeech(text = "") {
-	let t = String(text || "");
-	t = normalizeSymbolPhrasesForSpeech(t);
-	t = t.replace(/\b([A-Za-z]{2,})\+\b/g, "$1 plus");
-	t = t.replace(/\b(19\d{2}|20\d{2})\b/g, (m) => yearToWords(m));
-	return t;
+  let t = String(text || "");
+  t = normalizeSymbolPhrasesForSpeech(t);
+  t = t.replace(/\b([A-Za-z]{2,})\+\b/g, "$1 plus");
+  t = t.replace(/\b(19\d{2}|20\d{2})\b/g, (m) => yearToWords(m));
+  return t;
 }
 
 function tightenTtsText(text = "") {
-	let t = String(text || "");
-	t = t.replace(/[;:]/g, ".");
-	t = t.replace(/,\s*/g, " ");
-	t = t.replace(/\s*--\s*/g, " ");
-	t = t.replace(/[()]/g, " ");
-	t = t.replace(/\s+/g, " ").trim();
-	return t;
+  let t = String(text || "");
+  t = t.replace(/[;:]/g, ".");
+  t = t.replace(/,\s*/g, " ");
+  t = t.replace(/\s*--\s*/g, " ");
+  t = t.replace(/[()]/g, " ");
+  t = t.replace(/\s+/g, " ").trim();
+  return t;
 }
 
 function cleanForTTS(text = "") {
-	let t = String(text || "");
-	if (FORCE_NEUTRAL_VOICEOVER) t = softenNeutralPunctuation(t);
-	t = normalizeSymbolPhrasesForSpeech(t);
-	// remove URLs/emails
-	t = t.replace(/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi, " ");
-	// normalize numeric speech cues (years, plus sign)
-	t = normalizeNumbersForSpeech(t);
-	// normalize excessive punctuation while preserving natural pauses
-	t = t.replace(/\.{4,}/g, "...");
-	t = t.replace(/([!?]){2,}/g, "$1");
-	t = t.replace(/,{2,}/g, ",");
-	t = t.replace(/;{2,}/g, ";");
-	t = t.replace(/:{2,}/g, ":");
-	// normalize spacing
-	t = t.replace(/\s+/g, " ").trim();
-	return t;
+  let t = String(text || "");
+  if (FORCE_NEUTRAL_VOICEOVER) t = softenNeutralPunctuation(t);
+  t = normalizeSymbolPhrasesForSpeech(t);
+  // remove URLs/emails
+  t = t.replace(/(https?:\/\/\S+|www\.[^\s]+|\S+@\S+\.\S+)/gi, " ");
+  // normalize numeric speech cues (years, plus sign)
+  t = normalizeNumbersForSpeech(t);
+  // normalize excessive punctuation while preserving natural pauses
+  t = t.replace(/\.{4,}/g, "...");
+  t = t.replace(/([!?]){2,}/g, "$1");
+  t = t.replace(/,{2,}/g, ",");
+  t = t.replace(/;{2,}/g, ";");
+  t = t.replace(/:{2,}/g, ":");
+  // normalize spacing
+  t = t.replace(/\s+/g, " ").trim();
+  return t;
 }
 
 function softenNeutralPunctuation(text = "") {
-	let t = String(text || "");
-	t = t.replace(/!\?/g, "?");
-	t = t.replace(/\?!/g, "?");
-	t = t.replace(/!+/g, ".");
-	return t;
+  let t = String(text || "");
+  t = t.replace(/!\?/g, "?");
+  t = t.replace(/\?!/g, "?");
+  t = t.replace(/!+/g, ".");
+  return t;
 }
 
 function isElevenModelNotFound(err) {
-	const msg = String(err?.message || "").toLowerCase();
-	if (msg.includes("model_not_found")) return true;
-	if (msg.includes("model id") && msg.includes("does not exist")) return true;
-	return false;
+  const msg = String(err?.message || "").toLowerCase();
+  if (msg.includes("model_not_found")) return true;
+  if (msg.includes("model id") && msg.includes("does not exist")) return true;
+  return false;
 }
 
 async function streamToString(readable, limitBytes = 2000) {
-	return await new Promise((resolve) => {
-		try {
-			const chunks = [];
-			let total = 0;
-			readable.on("data", (d) => {
-				if (total >= limitBytes) return;
-				const buf = Buffer.isBuffer(d) ? d : Buffer.from(d);
-				const take = buf.slice(0, Math.max(0, limitBytes - total));
-				chunks.push(take);
-				total += take.length;
-			});
-			readable.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-			readable.on("error", () => resolve(""));
-		} catch {
-			resolve("");
-		}
-	});
+  return await new Promise((resolve) => {
+    try {
+      const chunks = [];
+      let total = 0;
+      readable.on("data", (d) => {
+        if (total >= limitBytes) return;
+        const buf = Buffer.isBuffer(d) ? d : Buffer.from(d);
+        const take = buf.slice(0, Math.max(0, limitBytes - total));
+        chunks.push(take);
+        total += take.length;
+      });
+      readable.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      readable.on("error", () => resolve(""));
+    } catch {
+      resolve("");
+    }
+  });
 }
 
 async function elevenLabsTTS({
-	text,
-	outMp3Path,
-	voiceId,
-	voiceSettings,
-	modelId,
-	modelOrder,
+  text,
+  outMp3Path,
+  voiceId,
+  voiceSettings,
+  modelId,
+  modelOrder,
 }) {
-	if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
-	const vId = String(voiceId || ELEVEN_FIXED_VOICE_ID).trim();
-	if (!vId) throw new Error("ELEVENLABS voiceId missing");
+  if (!ELEVEN_API_KEY) throw new Error("ELEVENLABS_API_KEY missing");
+  const vId = String(voiceId || ELEVEN_FIXED_VOICE_ID).trim();
+  if (!vId) throw new Error("ELEVENLABS voiceId missing");
 
-	// Use a more stable configuration to reduce glitches
-	// Higher bitrate MP3 for more natural timbre (avoid low-bitrate artifacts)
-	const url = `https://api.elevenlabs.io/v1/text-to-speech/${vId}/stream?output_format=mp3_44100_192`;
-	const basePayload = {
-		text: cleanForTTS(text),
-		voice_settings: voiceSettings || {
-			stability: ELEVEN_TTS_STABILITY,
-			similarity_boost: ELEVEN_TTS_SIMILARITY,
-			style: ELEVEN_TTS_STYLE,
-			use_speaker_boost: ELEVEN_TTS_SPEAKER_BOOST,
-		},
-	};
+  // Use a more stable configuration to reduce glitches
+  // Higher bitrate MP3 for more natural timbre (avoid low-bitrate artifacts)
+  const url = `https://api.elevenlabs.io/v1/text-to-speech/${vId}/stream?output_format=mp3_44100_192`;
+  const basePayload = {
+    text: cleanForTTS(text),
+    voice_settings: voiceSettings || {
+      stability: ELEVEN_TTS_STABILITY,
+      similarity_boost: ELEVEN_TTS_SIMILARITY,
+      style: ELEVEN_TTS_STYLE,
+      use_speaker_boost: ELEVEN_TTS_SPEAKER_BOOST,
+    },
+  };
 
-	let models = [];
-	if (modelId) {
-		models = [modelId];
-	} else if (Array.isArray(modelOrder) && modelOrder.length) {
-		models = modelOrder.filter(Boolean);
-	} else {
-		if (ELEVEN_TTS_MODEL) models.push(ELEVEN_TTS_MODEL);
-		for (const m of ELEVEN_TTS_MODEL_FALLBACKS) {
-			if (!models.includes(m)) models.push(m);
-		}
-	}
+  let models = [];
+  if (modelId) {
+    models = [modelId];
+  } else if (Array.isArray(modelOrder) && modelOrder.length) {
+    models = modelOrder.filter(Boolean);
+  } else {
+    if (ELEVEN_TTS_MODEL) models.push(ELEVEN_TTS_MODEL);
+    for (const m of ELEVEN_TTS_MODEL_FALLBACKS) {
+      if (!models.includes(m)) models.push(m);
+    }
+  }
 
-	let lastErr = null;
-	for (const candidateModel of models) {
-		const payload = { ...basePayload, model_id: candidateModel };
-		const doReq = async () => {
-			const res = await axios.post(url, payload, {
-				headers: {
-					"xi-api-key": ELEVEN_API_KEY,
-					"Content-Type": "application/json",
-					accept: "audio/mpeg",
-				},
-				responseType: "stream",
-				timeout: 70000,
-				validateStatus: (s) => s < 500,
-			});
+  let lastErr = null;
+  for (const candidateModel of models) {
+    const payload = { ...basePayload, model_id: candidateModel };
+    const doReq = async () => {
+      const res = await axios.post(url, payload, {
+        headers: {
+          "xi-api-key": ELEVEN_API_KEY,
+          "Content-Type": "application/json",
+          accept: "audio/mpeg",
+        },
+        responseType: "stream",
+        timeout: 70000,
+        validateStatus: (s) => s < 500,
+      });
 
-			if (res.status >= 300) {
-				const body = await streamToString(res.data, 2500);
-				const hint = body ? ` | ${body.slice(0, 600)}` : "";
-				const err = new Error(`ElevenLabs TTS failed (${res.status})${hint}`);
-				err.response = { status: res.status };
-				throw err;
-			}
+      if (res.status >= 300) {
+        const body = await streamToString(res.data, 2500);
+        const hint = body ? ` | ${body.slice(0, 600)}` : "";
+        const err = new Error(`ElevenLabs TTS failed (${res.status})${hint}`);
+        err.response = { status: res.status };
+        throw err;
+      }
 
-			await new Promise((resolve, reject) => {
-				const ws = fs.createWriteStream(outMp3Path);
-				res.data.pipe(ws);
-				ws.on("finish", resolve);
-				ws.on("error", reject);
-			});
+      await new Promise((resolve, reject) => {
+        const ws = fs.createWriteStream(outMp3Path);
+        res.data.pipe(ws);
+        ws.on("finish", resolve);
+        ws.on("error", reject);
+      });
 
-			return outMp3Path;
-		};
+      return outMp3Path;
+    };
 
-		try {
-			await withRetries(doReq, {
-				retries: 3,
-				baseDelayMs: 700,
-				label: "elevenlabs_tts",
-			});
-			return candidateModel;
-		} catch (e) {
-			lastErr = e;
-			if (isElevenModelNotFound(e)) {
-				console.warn(`[ElevenLabs] Model not found: ${candidateModel}`);
-				continue;
-			}
-			throw e;
-		}
-	}
+    try {
+      await withRetries(doReq, {
+        retries: 3,
+        baseDelayMs: 700,
+        label: "elevenlabs_tts",
+      });
+      return candidateModel;
+    } catch (e) {
+      lastErr = e;
+      if (isElevenModelNotFound(e)) {
+        console.warn(`[ElevenLabs] Model not found: ${candidateModel}`);
+        continue;
+      }
+      throw e;
+    }
+  }
 
-	throw lastErr || new Error("ElevenLabs TTS failed");
+  throw lastErr || new Error("ElevenLabs TTS failed");
 }
 
 function buildAtempoFilterChain(factor) {
-	// ffmpeg atempo supports 0.5..2.0 per filter; chain if outside
-	let f = Number(factor);
-	if (!Number.isFinite(f) || f <= 0) f = 1;
-	const filters = [];
-	while (f < 0.5) {
-		filters.push("atempo=0.5");
-		f /= 0.5;
-	}
-	while (f > 2.0) {
-		filters.push("atempo=2.0");
-		f /= 2.0;
-	}
-	filters.push(`atempo=${f.toFixed(4)}`);
-	return filters.join(",");
+  // ffmpeg atempo supports 0.5..2.0 per filter; chain if outside
+  let f = Number(factor);
+  if (!Number.isFinite(f) || f <= 0) f = 1;
+  const filters = [];
+  while (f < 0.5) {
+    filters.push("atempo=0.5");
+    f /= 0.5;
+  }
+  while (f > 2.0) {
+    filters.push("atempo=2.0");
+    f /= 2.0;
+  }
+  filters.push(`atempo=${f.toFixed(4)}`);
+  return filters.join(",");
 }
 
 async function mp3ToCleanWav(mp3Path, wavPath) {
-	// IMPORTANT:
-	// - We only trim *leading* and *trailing* silence.
-	// - We do NOT remove internal pauses between words/sentences (those pauses are part of
-	//   natural speech and removing them can make the voice sound rushed / "stuttery").
-	//
-	// We use the common "reverse trick" to trim the tail using start-only silenceremove.
-	const trimLead =
-		"silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB";
-	const trimTail =
-		"areverse,silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB,areverse";
+  // IMPORTANT:
+  // - We only trim *leading* and *trailing* silence.
+  // - We do NOT remove internal pauses between words/sentences (those pauses are part of
+  //   natural speech and removing them can make the voice sound rushed / "stuttery").
+  //
+  // We use the common "reverse trick" to trim the tail using start-only silenceremove.
+  const trimLead =
+    "silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB";
+  const trimTail =
+    "areverse,silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB,areverse";
 
-	const af = [
-		`aresample=${AUDIO_SR}`,
-		"aformat=channel_layouts=mono",
-		trimLead,
-		trimTail,
-		// Loudness normalize (single-pass). Keeps perceived volume consistent.
-		"loudnorm=I=-16:TP=-1.5:LRA=11",
-	].join(",");
+  const af = [
+    `aresample=${AUDIO_SR}`,
+    "aformat=channel_layouts=mono",
+    trimLead,
+    trimTail,
+    // Loudness normalize (single-pass). Keeps perceived volume consistent.
+    "loudnorm=I=-16:TP=-1.5:LRA=11",
+  ].join(",");
 
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-y",
-			"-i",
-			mp3Path,
-			"-vn",
-			"-af",
-			af,
-			"-acodec",
-			"pcm_s16le",
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			String(AUDIO_CHANNELS),
-			wavPath,
-		],
-		"mp3_to_wav",
-		{ timeoutMs: 120000 },
-	);
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-y",
+      "-i",
+      mp3Path,
+      "-vn",
+      "-af",
+      af,
+      "-acodec",
+      "pcm_s16le",
+      "-ar",
+      String(AUDIO_SR),
+      "-ac",
+      String(AUDIO_CHANNELS),
+      wavPath,
+    ],
+    "mp3_to_wav",
+    { timeoutMs: 120000 },
+  );
 }
 
 async function trimLeadingSilenceWav(inWav, outWav) {
-	const trimLead = `silenceremove=start_periods=1:start_duration=${LEAD_SILENCE_MIN_SEC}:start_threshold=${LEAD_SILENCE_THRESHOLD_DB}dB`;
-	const af = [
-		`aresample=${AUDIO_SR}`,
-		"aformat=channel_layouts=mono",
-		trimLead,
-	].join(",");
+  const trimLead = `silenceremove=start_periods=1:start_duration=${LEAD_SILENCE_MIN_SEC}:start_threshold=${LEAD_SILENCE_THRESHOLD_DB}dB`;
+  const af = [
+    `aresample=${AUDIO_SR}`,
+    "aformat=channel_layouts=mono",
+    trimLead,
+  ].join(",");
 
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-i",
-			inWav,
-			"-vn",
-			"-af",
-			af,
-			"-acodec",
-			"pcm_s16le",
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			String(AUDIO_CHANNELS),
-			"-y",
-			outWav,
-		],
-		"trim_lead_silence",
-		{ timeoutMs: 120000 },
-	);
-	return outWav;
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-i",
+      inWav,
+      "-vn",
+      "-af",
+      af,
+      "-acodec",
+      "pcm_s16le",
+      "-ar",
+      String(AUDIO_SR),
+      "-ac",
+      String(AUDIO_CHANNELS),
+      "-y",
+      outWav,
+    ],
+    "trim_lead_silence",
+    { timeoutMs: 120000 },
+  );
+  return outWav;
 }
 
 async function applyGlobalAtempoToWav(inWav, outWav, atempo) {
-	const chain = buildAtempoFilterChain(atempo);
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-i",
-			inWav,
-			"-vn",
-			"-filter:a",
-			`${chain},aresample=${AUDIO_SR},aformat=channel_layouts=mono`,
-			"-acodec",
-			"pcm_s16le",
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			String(AUDIO_CHANNELS),
-			"-y",
-			outWav,
-		],
-		"apply_global_atempo",
-		{ timeoutMs: 120000 },
-	);
-	return outWav;
+  const chain = buildAtempoFilterChain(atempo);
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-i",
+      inWav,
+      "-vn",
+      "-filter:a",
+      `${chain},aresample=${AUDIO_SR},aformat=channel_layouts=mono`,
+      "-acodec",
+      "pcm_s16le",
+      "-ar",
+      String(AUDIO_SR),
+      "-ac",
+      String(AUDIO_CHANNELS),
+      "-y",
+      outWav,
+    ],
+    "apply_global_atempo",
+    { timeoutMs: 120000 },
+  );
+  return outWav;
 }
 
 function tightenVoiceSettings(settings = {}, attempt = 0) {
-	const base = settings || {};
-	if (!attempt || UNIFORM_TTS_VOICE_SETTINGS) return base;
-	const stability = Number(base.stability ?? ELEVEN_TTS_STABILITY);
-	const style = Number(base.style ?? ELEVEN_TTS_STYLE);
-	return {
-		...base,
-		stability: clampNumber(
-			stability + AUDIO_QA_STRICT_STABILITY_BOOST * attempt,
-			0.1,
-			1,
-		),
-		style: clampNumber(Math.min(style, AUDIO_QA_STRICT_STYLE_MAX), 0, 0.35),
-	};
+  const base = settings || {};
+  if (!attempt || UNIFORM_TTS_VOICE_SETTINGS) return base;
+  const stability = Number(base.stability ?? ELEVEN_TTS_STABILITY);
+  const style = Number(base.style ?? ELEVEN_TTS_STYLE);
+  return {
+    ...base,
+    stability: clampNumber(
+      stability + AUDIO_QA_STRICT_STABILITY_BOOST * attempt,
+      0.1,
+      1,
+    ),
+    style: clampNumber(Math.min(style, AUDIO_QA_STRICT_STYLE_MAX), 0, 0.35),
+  };
 }
 
 function buildExpectedQaTokens(text = "") {
-	const base = tokenizeQaText(text);
-	const normalized = tokenizeQaText(normalizeNumbersForSpeech(text));
-	const cleaned = tokenizeQaText(cleanForTTS(text));
-	return uniqueStrings([...base, ...normalized, ...cleaned]);
+  const base = tokenizeQaText(text);
+  const normalized = tokenizeQaText(normalizeNumbersForSpeech(text));
+  const cleaned = tokenizeQaText(cleanForTTS(text));
+  return uniqueStrings([...base, ...normalized, ...cleaned]);
 }
 
 function hasFillerWords(text = "") {
-	if (!text) return false;
-	const rx = new RegExp(FILLER_WORD_REGEX.source, "i");
-	return rx.test(String(text || ""));
+  if (!text) return false;
+  const rx = new RegExp(FILLER_WORD_REGEX.source, "i");
+  return rx.test(String(text || ""));
 }
 
 function estimateSpeechSliceWeight(text = "") {
-	const cleaned = sanitizeSegmentText(text);
-	const words = Math.max(1, countWords(cleaned));
-	const sentencePauses = (cleaned.match(/[.!?]+/g) || []).length;
-	const clausePauses = (cleaned.match(/[,:;]+/g) || []).length;
-	return words + sentencePauses * 2.5 + clausePauses * 0.75;
+  const cleaned = sanitizeSegmentText(text);
+  const words = Math.max(1, countWords(cleaned));
+  const sentencePauses = (cleaned.match(/[.!?]+/g) || []).length;
+  const clausePauses = (cleaned.match(/[,:;]+/g) || []).length;
+  return words + sentencePauses * 2.5 + clausePauses * 0.75;
 }
 
 function buildVoiceoverSliceDurations(segments = [], totalDurationSec = 0) {
-	const safeSegments = Array.isArray(segments) ? segments : [];
-	const total = Math.max(0.2, Number(totalDurationSec) || 0.2);
-	if (!safeSegments.length) return [];
+  const safeSegments = Array.isArray(segments) ? segments : [];
+  const total = Math.max(0.2, Number(totalDurationSec) || 0.2);
+  if (!safeSegments.length) return [];
 
-	const weights = safeSegments.map((seg) =>
-		estimateSpeechSliceWeight(seg?.text || ""),
-	);
-	const weightSum =
-		weights.reduce((sum, weight) => sum + (Number(weight) || 0), 0) ||
-		safeSegments.length;
-	const minSliceSec = Math.min(
-		1.1,
-		Math.max(0.35, total / Math.max(safeSegments.length * 2.8, 1)),
-	);
-	let durations = weights.map(
-		(weight) => ((Number(weight) || 0) / weightSum) * total,
-	);
-	durations = durations.map((dur) => Math.max(minSliceSec, dur));
+  const weights = safeSegments.map((seg) =>
+    estimateSpeechSliceWeight(seg?.text || ""),
+  );
+  const weightSum =
+    weights.reduce((sum, weight) => sum + (Number(weight) || 0), 0) ||
+    safeSegments.length;
+  const minSliceSec = Math.min(
+    1.1,
+    Math.max(0.35, total / Math.max(safeSegments.length * 2.8, 1)),
+  );
+  let durations = weights.map(
+    (weight) => ((Number(weight) || 0) / weightSum) * total,
+  );
+  durations = durations.map((dur) => Math.max(minSliceSec, dur));
 
-	const scaledTotal =
-		durations.reduce((sum, dur) => sum + (Number(dur) || 0), 0) || total;
-	const scale = total / scaledTotal;
-	durations = durations.map((dur) => dur * scale);
+  const scaledTotal =
+    durations.reduce((sum, dur) => sum + (Number(dur) || 0), 0) || total;
+  const scale = total / scaledTotal;
+  durations = durations.map((dur) => dur * scale);
 
-	let assigned = 0;
-	return durations.map((dur, idx) => {
-		if (idx === durations.length - 1) {
-			return Math.max(0.15, Number((total - assigned).toFixed(3)));
-		}
-		const rounded = Math.max(0.15, Number(dur.toFixed(3)));
-		assigned += rounded;
-		return rounded;
-	});
+  let assigned = 0;
+  return durations.map((dur, idx) => {
+    if (idx === durations.length - 1) {
+      return Math.max(0.15, Number((total - assigned).toFixed(3)));
+    }
+    const rounded = Math.max(0.15, Number(dur.toFixed(3)));
+    assigned += rounded;
+    return rounded;
+  });
 }
 
 async function transcribeAudioForQa(audioPath, jobId, label) {
-	if (!AUDIO_QA_TRANSCRIBE) return "";
-	if (!openai?.audio?.transcriptions?.create) return "";
-	const models = [AUDIO_QA_TRANSCRIBE_MODEL, "whisper-1"]
-		.filter(Boolean)
-		.filter((v, i, arr) => arr.indexOf(v) === i);
-	let lastErr = null;
-	for (const model of models) {
-		try {
-			const resp = await openai.audio.transcriptions.create({
-				file: fs.createReadStream(audioPath),
-				model,
-				response_format: "text",
-				temperature: 0,
-			});
-			if (typeof resp === "string") return resp.trim();
-			return String(resp?.text || "").trim();
-		} catch (e) {
-			lastErr = e;
-		}
-	}
-	if (jobId && lastErr) {
-		logJob(jobId, "audio qa transcription failed", {
-			label,
-			error: lastErr.message,
-		});
-	}
-	return "";
+  if (!AUDIO_QA_TRANSCRIBE) return "";
+  if (!openai?.audio?.transcriptions?.create) return "";
+  const models = [AUDIO_QA_TRANSCRIBE_MODEL, "whisper-1"]
+    .filter(Boolean)
+    .filter((v, i, arr) => arr.indexOf(v) === i);
+  let lastErr = null;
+  for (const model of models) {
+    try {
+      const resp = await openai.audio.transcriptions.create({
+        file: fs.createReadStream(audioPath),
+        model,
+        response_format: "text",
+        temperature: 0,
+      });
+      if (typeof resp === "string") return resp.trim();
+      return String(resp?.text || "").trim();
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (jobId && lastErr) {
+    logJob(jobId, "audio qa transcription failed", {
+      label,
+      error: lastErr.message,
+    });
+  }
+  return "";
 }
 
 async function detectInternalSilence(
-	wavPath,
-	{
-		minSilenceSec = AUDIO_QA_INTERNAL_SILENCE_SEC,
-		noiseDb = AUDIO_QA_INTERNAL_SILENCE_DB,
-		edgeBufferSec = AUDIO_QA_EDGE_BUFFER_SEC,
-	} = {},
+  wavPath,
+  {
+    minSilenceSec = AUDIO_QA_INTERNAL_SILENCE_SEC,
+    noiseDb = AUDIO_QA_INTERNAL_SILENCE_DB,
+    edgeBufferSec = AUDIO_QA_EDGE_BUFFER_SEC,
+  } = {},
 ) {
-	const durationSec = await probeDurationSeconds(wavPath);
-	if (!durationSec || !Number.isFinite(durationSec)) {
-		return { durationSec: 0, maxInternalSilenceSec: 0, internalSilences: [] };
-	}
-	const res = await spawnBin(
-		ffmpegPath,
-		[
-			"-i",
-			wavPath,
-			"-af",
-			`silencedetect=noise=${Number(noiseDb)}dB:d=${Number(minSilenceSec)}`,
-			"-f",
-			"null",
-			"-",
-		],
-		"silence_detect",
-		{ timeoutMs: 60000 },
-	);
-	const stderr = String(res?.stderr || "");
-	const lines = stderr.split(/\r?\n/);
-	const silences = [];
-	let currentStart = null;
+  const durationSec = await probeDurationSeconds(wavPath);
+  if (!durationSec || !Number.isFinite(durationSec)) {
+    return { durationSec: 0, maxInternalSilenceSec: 0, internalSilences: [] };
+  }
+  const res = await spawnBin(
+    ffmpegPath,
+    [
+      "-i",
+      wavPath,
+      "-af",
+      `silencedetect=noise=${Number(noiseDb)}dB:d=${Number(minSilenceSec)}`,
+      "-f",
+      "null",
+      "-",
+    ],
+    "silence_detect",
+    { timeoutMs: 60000 },
+  );
+  const stderr = String(res?.stderr || "");
+  const lines = stderr.split(/\r?\n/);
+  const silences = [];
+  let currentStart = null;
 
-	for (const line of lines) {
-		const startMatch = line.match(/silence_start:\s*([0-9.]+)/);
-		if (startMatch) {
-			currentStart = Number(startMatch[1]);
-		}
-		const endMatch = line.match(
-			/silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)/,
-		);
-		if (endMatch) {
-			const end = Number(endMatch[1]);
-			const duration = Number(endMatch[2]);
-			const start =
-				Number.isFinite(currentStart) && currentStart >= 0
-					? currentStart
-					: end - duration;
-			silences.push({ start, end, duration });
-			currentStart = null;
-		}
-	}
+  for (const line of lines) {
+    const startMatch = line.match(/silence_start:\s*([0-9.]+)/);
+    if (startMatch) {
+      currentStart = Number(startMatch[1]);
+    }
+    const endMatch = line.match(
+      /silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)/,
+    );
+    if (endMatch) {
+      const end = Number(endMatch[1]);
+      const duration = Number(endMatch[2]);
+      const start =
+        Number.isFinite(currentStart) && currentStart >= 0
+          ? currentStart
+          : end - duration;
+      silences.push({ start, end, duration });
+      currentStart = null;
+    }
+  }
 
-	const edge = Math.max(0, Number(edgeBufferSec) || 0);
-	const internal = silences.filter(
-		(s) => s.start > edge && s.end < durationSec - edge,
-	);
-	const maxInternal = internal.reduce(
-		(max, s) => Math.max(max, Number(s.duration) || 0),
-		0,
-	);
+  const edge = Math.max(0, Number(edgeBufferSec) || 0);
+  const internal = silences.filter(
+    (s) => s.start > edge && s.end < durationSec - edge,
+  );
+  const maxInternal = internal.reduce(
+    (max, s) => Math.max(max, Number(s.duration) || 0),
+    0,
+  );
 
-	return {
-		durationSec,
-		maxInternalSilenceSec: maxInternal,
-		internalSilences: internal,
-	};
+  return {
+    durationSec,
+    maxInternalSilenceSec: maxInternal,
+    internalSilences: internal,
+  };
 }
 
 function mergeSilenceIntervals(silences = []) {
-	const sorted = (silences || [])
-		.map((s) => ({
-			start: Number(s?.start) || 0,
-			end: Number(s?.end) || 0,
-		}))
-		.filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end))
-		.map((s) => ({
-			start: Math.max(0, s.start),
-			end: Math.max(0, s.end),
-		}))
-		.sort((a, b) => a.start - b.start);
+  const sorted = (silences || [])
+    .map((s) => ({
+      start: Number(s?.start) || 0,
+      end: Number(s?.end) || 0,
+    }))
+    .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end))
+    .map((s) => ({
+      start: Math.max(0, s.start),
+      end: Math.max(0, s.end),
+    }))
+    .sort((a, b) => a.start - b.start);
 
-	const merged = [];
-	for (const s of sorted) {
-		if (!merged.length) {
-			merged.push({ ...s, duration: Math.max(0, s.end - s.start) });
-			continue;
-		}
-		const last = merged[merged.length - 1];
-		if (s.start <= last.end + 0.02) {
-			last.end = Math.max(last.end, s.end);
-			last.duration = Math.max(0, last.end - last.start);
-		} else {
-			merged.push({ ...s, duration: Math.max(0, s.end - s.start) });
-		}
-	}
-	return merged;
+  const merged = [];
+  for (const s of sorted) {
+    if (!merged.length) {
+      merged.push({ ...s, duration: Math.max(0, s.end - s.start) });
+      continue;
+    }
+    const last = merged[merged.length - 1];
+    if (s.start <= last.end + 0.02) {
+      last.end = Math.max(last.end, s.end);
+      last.duration = Math.max(0, last.end - last.start);
+    } else {
+      merged.push({ ...s, duration: Math.max(0, s.end - s.start) });
+    }
+  }
+  return merged;
 }
 
 async function tightenInternalSilenceWav({
-	wavPath,
-	tmpDir,
-	jobId,
-	label,
-	maxSilenceSec = AUDIO_QA_REPAIR_MAX_SILENCE_SEC,
+  wavPath,
+  tmpDir,
+  jobId,
+  label,
+  maxSilenceSec = AUDIO_QA_REPAIR_MAX_SILENCE_SEC,
 }) {
-	const silenceInfo = await detectInternalSilence(wavPath);
-	const durationSec = silenceInfo.durationSec || 0;
-	const longSilences = mergeSilenceIntervals(silenceInfo.internalSilences || [])
-		.filter((s) => (s.duration || 0) >= AUDIO_QA_INTERNAL_SILENCE_SEC)
-		.filter((s) => s.start < s.end);
+  const silenceInfo = await detectInternalSilence(wavPath);
+  const durationSec = silenceInfo.durationSec || 0;
+  const longSilences = mergeSilenceIntervals(silenceInfo.internalSilences || [])
+    .filter((s) => (s.duration || 0) >= AUDIO_QA_INTERNAL_SILENCE_SEC)
+    .filter((s) => s.start < s.end);
 
-	if (!longSilences.length || !durationSec) {
-		return { wavPath, durationSec, changed: false };
-	}
+  if (!longSilences.length || !durationSec) {
+    return { wavPath, durationSec, changed: false };
+  }
 
-	const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
-	const outPath = path.join(
-		tmpDir,
-		`${safeLabel}_tight_${jobId || "audio"}.wav`,
-	);
-	const minSeg = 0.02;
-	const keepSilence = clampNumber(maxSilenceSec, 0.08, 0.5);
-	let cursor = 0;
-	const segments = [];
+  const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
+  const outPath = path.join(
+    tmpDir,
+    `${safeLabel}_tight_${jobId || "audio"}.wav`,
+  );
+  const minSeg = 0.02;
+  const keepSilence = clampNumber(maxSilenceSec, 0.08, 0.5);
+  let cursor = 0;
+  const segments = [];
 
-	for (const silence of longSilences) {
-		const start = Math.max(0, Math.min(durationSec, silence.start));
-		const end = Math.max(start, Math.min(durationSec, silence.end));
-		if (start - cursor >= minSeg) {
-			segments.push({ type: "audio", start: cursor, end: start });
-		}
-		if (keepSilence >= minSeg) {
-			segments.push({ type: "silence", duration: keepSilence });
-		}
-		cursor = end;
-	}
+  for (const silence of longSilences) {
+    const start = Math.max(0, Math.min(durationSec, silence.start));
+    const end = Math.max(start, Math.min(durationSec, silence.end));
+    if (start - cursor >= minSeg) {
+      segments.push({ type: "audio", start: cursor, end: start });
+    }
+    if (keepSilence >= minSeg) {
+      segments.push({ type: "silence", duration: keepSilence });
+    }
+    cursor = end;
+  }
 
-	if (durationSec - cursor >= minSeg) {
-		segments.push({ type: "audio", start: cursor, end: durationSec });
-	}
+  if (durationSec - cursor >= minSeg) {
+    segments.push({ type: "audio", start: cursor, end: durationSec });
+  }
 
-	if (!segments.length || !segments.some((s) => s.type === "audio")) {
-		return { wavPath, durationSec, changed: false };
-	}
+  if (!segments.length || !segments.some((s) => s.type === "audio")) {
+    return { wavPath, durationSec, changed: false };
+  }
 
-	const filterParts = [];
-	const labels = [];
-	let idx = 0;
+  const filterParts = [];
+  const labels = [];
+  let idx = 0;
 
-	for (const seg of segments) {
-		if (seg.type === "audio") {
-			const aLabel = `a${idx}`;
-			filterParts.push(
-				`[0:a]atrim=start=${seg.start.toFixed(3)}:end=${seg.end.toFixed(
-					3,
-				)},asetpts=PTS-STARTPTS[${aLabel}]`,
-			);
-			labels.push(`[${aLabel}]`);
-		} else {
-			const sLabel = `s${idx}`;
-			filterParts.push(
-				`anullsrc=r=${AUDIO_SR}:cl=mono:d=${seg.duration.toFixed(3)}[${sLabel}]`,
-			);
-			labels.push(`[${sLabel}]`);
-		}
-		idx += 1;
-	}
+  for (const seg of segments) {
+    if (seg.type === "audio") {
+      const aLabel = `a${idx}`;
+      filterParts.push(
+        `[0:a]atrim=start=${seg.start.toFixed(3)}:end=${seg.end.toFixed(
+          3,
+        )},asetpts=PTS-STARTPTS[${aLabel}]`,
+      );
+      labels.push(`[${aLabel}]`);
+    } else {
+      const sLabel = `s${idx}`;
+      filterParts.push(
+        `anullsrc=r=${AUDIO_SR}:cl=mono:d=${seg.duration.toFixed(3)}[${sLabel}]`,
+      );
+      labels.push(`[${sLabel}]`);
+    }
+    idx += 1;
+  }
 
-	filterParts.push(
-		`${labels.join("")}concat=n=${
-			labels.length
-		}:v=0:a=1,aresample=${AUDIO_SR},aformat=channel_layouts=mono[clean]`,
-	);
+  filterParts.push(
+    `${labels.join("")}concat=n=${
+      labels.length
+    }:v=0:a=1,aresample=${AUDIO_SR},aformat=channel_layouts=mono[clean]`,
+  );
 
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-i",
-			wavPath,
-			"-filter_complex",
-			filterParts.join(";"),
-			"-map",
-			"[clean]",
-			"-acodec",
-			"pcm_s16le",
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			String(AUDIO_CHANNELS),
-			"-y",
-			outPath,
-		],
-		"tighten_internal_silence",
-		{ timeoutMs: 120000 },
-	);
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-i",
+      wavPath,
+      "-filter_complex",
+      filterParts.join(";"),
+      "-map",
+      "[clean]",
+      "-acodec",
+      "pcm_s16le",
+      "-ar",
+      String(AUDIO_SR),
+      "-ac",
+      String(AUDIO_CHANNELS),
+      "-y",
+      outPath,
+    ],
+    "tighten_internal_silence",
+    { timeoutMs: 120000 },
+  );
 
-	const outDuration = await probeDurationSeconds(outPath);
-	return { wavPath: outPath, durationSec: outDuration, changed: true };
+  const outDuration = await probeDurationSeconds(outPath);
+  return { wavPath: outPath, durationSec: outDuration, changed: true };
 }
 
 async function analyzeAudioQuality({ wavPath, expectedText, jobId, label }) {
-	const result = {
-		pass: true,
-		issues: [],
-		maxInternalSilenceSec: 0,
-		similarity: 1,
-		transcript: "",
-	};
-	try {
-		const silence = await detectInternalSilence(wavPath);
-		result.maxInternalSilenceSec = silence.maxInternalSilenceSec || 0;
-		if (silence.maxInternalSilenceSec >= AUDIO_QA_INTERNAL_SILENCE_SEC) {
-			result.issues.push("long_internal_silence");
-		}
-	} catch (e) {
-		result.issues.push("silence_detect_failed");
-	}
+  const result = {
+    pass: true,
+    issues: [],
+    maxInternalSilenceSec: 0,
+    similarity: 1,
+    transcript: "",
+  };
+  try {
+    const silence = await detectInternalSilence(wavPath);
+    result.maxInternalSilenceSec = silence.maxInternalSilenceSec || 0;
+    if (silence.maxInternalSilenceSec >= AUDIO_QA_INTERNAL_SILENCE_SEC) {
+      result.issues.push("long_internal_silence");
+    }
+  } catch (e) {
+    result.issues.push("silence_detect_failed");
+  }
 
-	try {
-		if (AUDIO_QA_TRANSCRIBE && countWords(expectedText) >= AUDIO_QA_MIN_WORDS) {
-			const transcript = await transcribeAudioForQa(wavPath, jobId, label);
-			result.transcript = transcript;
-			if (!transcript) {
-				result.issues.push("transcription_empty");
-			} else {
-				if (hasFillerWords(transcript)) result.issues.push("filler_detected");
-				const expectedTokens = buildExpectedQaTokens(expectedText);
-				const actualTokens = tokenizeQaText(transcript);
-				if (expectedTokens.length && actualTokens.length) {
-					const similarity = overlapRatio(expectedTokens, actualTokens);
-					result.similarity = similarity;
-					if (similarity < AUDIO_QA_SIMILARITY_THRESHOLD) {
-						result.issues.push("transcript_mismatch");
-					}
-				}
-			}
-		}
-	} catch (e) {
-		result.issues.push("transcription_failed");
-	}
+  try {
+    if (AUDIO_QA_TRANSCRIBE && countWords(expectedText) >= AUDIO_QA_MIN_WORDS) {
+      const transcript = await transcribeAudioForQa(wavPath, jobId, label);
+      result.transcript = transcript;
+      if (!transcript) {
+        result.issues.push("transcription_empty");
+      } else {
+        if (hasFillerWords(transcript)) result.issues.push("filler_detected");
+        const expectedTokens = buildExpectedQaTokens(expectedText);
+        const actualTokens = tokenizeQaText(transcript);
+        if (expectedTokens.length && actualTokens.length) {
+          const similarity = overlapRatio(expectedTokens, actualTokens);
+          result.similarity = similarity;
+          if (similarity < AUDIO_QA_SIMILARITY_THRESHOLD) {
+            result.issues.push("transcript_mismatch");
+          }
+        }
+      }
+    }
+  } catch (e) {
+    result.issues.push("transcription_failed");
+  }
 
-	result.pass = result.issues.length === 0;
-	return result;
+  result.pass = result.issues.length === 0;
+  return result;
 }
 
 /* ---------------------------------------------------------------
@@ -10368,393 +10371,393 @@ async function analyzeAudioQuality({ wavPath, expectedText, jobId, label }) {
  * ------------------------------------------------------------- */
 
 function buildSyncSoHeaders() {
-	return {
-		"x-api-key": SYNC_SO_API_KEY,
-		Authorization: `Bearer ${SYNC_SO_API_KEY}`,
-	};
+  return {
+    "x-api-key": SYNC_SO_API_KEY,
+    Authorization: `Bearer ${SYNC_SO_API_KEY}`,
+  };
 }
 
 function extractSyncSoId(data) {
-	return (
-		data?.id ||
-		data?.jobId ||
-		data?.data?.id ||
-		data?.data?.jobId ||
-		data?.data?.job_id ||
-		null
-	);
+  return (
+    data?.id ||
+    data?.jobId ||
+    data?.data?.id ||
+    data?.data?.jobId ||
+    data?.data?.job_id ||
+    null
+  );
 }
 
 function extractSyncSoStatus(data) {
-	return (
-		data?.status || data?.data?.status || data?.state || data?.data?.state || ""
-	);
+  return (
+    data?.status || data?.data?.status || data?.state || data?.data?.state || ""
+  );
 }
 
 function extractSyncSoOutputUrl(data) {
-	return (
-		data?.outputUrl ||
-		data?.output_url ||
-		data?.data?.outputUrl ||
-		data?.data?.output_url ||
-		data?.output?.url ||
-		data?.data?.output?.url ||
-		(Array.isArray(data?.output)
-			? data.output[0]?.url || data.output[0]
-			: null) ||
-		(Array.isArray(data?.data?.output)
-			? data.data.output[0]?.url || data.data.output[0]
-			: null) ||
-		null
-	);
+  return (
+    data?.outputUrl ||
+    data?.output_url ||
+    data?.data?.outputUrl ||
+    data?.data?.output_url ||
+    data?.output?.url ||
+    data?.data?.output?.url ||
+    (Array.isArray(data?.output)
+      ? data.output[0]?.url || data.output[0]
+      : null) ||
+    (Array.isArray(data?.data?.output)
+      ? data.data.output[0]?.url || data.data.output[0]
+      : null) ||
+    null
+  );
 }
 
 function extractSyncSoError(data, text = "") {
-	return (
-		data?.message ||
-		data?.error ||
-		data?.data?.message ||
-		data?.data?.error ||
-		(text ? String(text).trim().slice(0, 220) : null) ||
-		null
-	);
+  return (
+    data?.message ||
+    data?.error ||
+    data?.data?.message ||
+    data?.data?.error ||
+    (text ? String(text).trim().slice(0, 220) : null) ||
+    null
+  );
 }
 
 async function fetchJson(url, options = {}, timeoutMs = 25000) {
-	if (typeof fetch === "function") {
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), timeoutMs);
-		try {
-			const res = await fetch(url, { ...options, signal: controller.signal });
-			const txt = await res.text().catch(() => "");
-			let data = null;
-			try {
-				data = txt ? JSON.parse(stripCodeFence(txt)) : null;
-			} catch {
-				data = null;
-			}
-			return { status: res.status, ok: res.ok, data, text: txt };
-		} finally {
-			clearTimeout(timer);
-		}
-	}
+  if (typeof fetch === "function") {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      const txt = await res.text().catch(() => "");
+      let data = null;
+      try {
+        data = txt ? JSON.parse(stripCodeFence(txt)) : null;
+      } catch {
+        data = null;
+      }
+      return { status: res.status, ok: res.ok, data, text: txt };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
-	const res = await axios.request({
-		url,
-		method: options.method || "GET",
-		headers: options.headers || {},
-		data: options.body,
-		timeout: timeoutMs,
-		validateStatus: () => true,
-	});
+  const res = await axios.request({
+    url,
+    method: options.method || "GET",
+    headers: options.headers || {},
+    data: options.body,
+    timeout: timeoutMs,
+    validateStatus: () => true,
+  });
 
-	const txt =
-		typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
-	return {
-		status: res.status,
-		ok: res.status >= 200 && res.status < 300,
-		data: typeof res.data === "object" ? res.data : parseJsonFlexible(txt),
-		text: txt,
-	};
+  const txt =
+    typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
+  return {
+    status: res.status,
+    ok: res.status >= 200 && res.status < 300,
+    data: typeof res.data === "object" ? res.data : parseJsonFlexible(txt),
+    text: txt,
+  };
 }
 
 function resolveSyncModelPlan(syncTier = "standard") {
-	const tier = String(syncTier || "standard")
-		.trim()
-		.toLowerCase();
-	if (tier === "hero") {
-		return {
-			tier: "hero",
-			primary: SYNC_SO_MODEL_HERO,
-			secondary: SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_FALLBACK,
-		};
-	}
-	return {
-		tier: "standard",
-		primary: SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_HERO,
-		secondary:
-			SYNC_SO_MODEL_FALLBACK || SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_HERO,
-	};
+  const tier = String(syncTier || "standard")
+    .trim()
+    .toLowerCase();
+  if (tier === "hero") {
+    return {
+      tier: "hero",
+      primary: SYNC_SO_MODEL_HERO,
+      secondary: SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_FALLBACK,
+    };
+  }
+  return {
+    tier: "standard",
+    primary: SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_HERO,
+    secondary:
+      SYNC_SO_MODEL_FALLBACK || SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_HERO,
+  };
 }
 
 function resolveSyncAttemptPlan(attempt = 0, syncTier = "standard") {
-	const modelPlan = resolveSyncModelPlan(syncTier);
-	const primary = modelPlan.primary;
-	const secondary = modelPlan.secondary || primary;
-	if (attempt <= 0)
-		return { modelId: primary, inputVariant: 0, tier: modelPlan.tier };
-	if (attempt === 1)
-		return { modelId: primary, inputVariant: 1, tier: modelPlan.tier };
-	return {
-		modelId: secondary,
-		inputVariant: attempt,
-		tier: modelPlan.tier,
-	};
+  const modelPlan = resolveSyncModelPlan(syncTier);
+  const primary = modelPlan.primary;
+  const secondary = modelPlan.secondary || primary;
+  if (attempt <= 0)
+    return { modelId: primary, inputVariant: 0, tier: modelPlan.tier };
+  if (attempt === 1)
+    return { modelId: primary, inputVariant: 1, tier: modelPlan.tier };
+  return {
+    modelId: secondary,
+    inputVariant: attempt,
+    tier: modelPlan.tier,
+  };
 }
 
 async function detectFrozenVideo(
-	videoPath,
-	{ noise = SYNC_SO_FREEZE_NOISE, minFreezeSec = SYNC_SO_FREEZE_MIN_SEC } = {},
+  videoPath,
+  { noise = SYNC_SO_FREEZE_NOISE, minFreezeSec = SYNC_SO_FREEZE_MIN_SEC } = {},
 ) {
-	const durationSec = await probeDurationSeconds(videoPath);
-	if (!durationSec || !Number.isFinite(durationSec)) {
-		return { durationSec: 0, freezes: [], maxFreezeSec: 0, freezeRatio: 0 };
-	}
+  const durationSec = await probeDurationSeconds(videoPath);
+  if (!durationSec || !Number.isFinite(durationSec)) {
+    return { durationSec: 0, freezes: [], maxFreezeSec: 0, freezeRatio: 0 };
+  }
 
-	const res = await spawnBin(
-		ffmpegPath,
-		[
-			"-i",
-			videoPath,
-			"-vf",
-			`freezedetect=n=${Number(noise)}:d=${Number(minFreezeSec)}`,
-			"-map",
-			"0:v:0",
-			"-f",
-			"null",
-			"-",
-		],
-		"freeze_detect",
-		{ timeoutMs: 120000 },
-	);
+  const res = await spawnBin(
+    ffmpegPath,
+    [
+      "-i",
+      videoPath,
+      "-vf",
+      `freezedetect=n=${Number(noise)}:d=${Number(minFreezeSec)}`,
+      "-map",
+      "0:v:0",
+      "-f",
+      "null",
+      "-",
+    ],
+    "freeze_detect",
+    { timeoutMs: 120000 },
+  );
 
-	const lines = String(res?.stderr || "").split(/\r?\n/);
-	const freezes = [];
-	let pending = null;
+  const lines = String(res?.stderr || "").split(/\r?\n/);
+  const freezes = [];
+  let pending = null;
 
-	const maybePushPending = () => {
-		if (!pending) return;
-		const duration =
-			Number(pending.duration) ||
-			(Number.isFinite(pending.start) && Number.isFinite(pending.end)
-				? pending.end - pending.start
-				: 0);
-		if (duration > 0) {
-			const start = Number.isFinite(pending.start)
-				? pending.start
-				: Math.max(0, Number(pending.end) - duration);
-			const end = Number.isFinite(pending.end)
-				? pending.end
-				: Math.min(durationSec, start + duration);
-			freezes.push({ start, end, duration });
-		}
-		pending = null;
-	};
+  const maybePushPending = () => {
+    if (!pending) return;
+    const duration =
+      Number(pending.duration) ||
+      (Number.isFinite(pending.start) && Number.isFinite(pending.end)
+        ? pending.end - pending.start
+        : 0);
+    if (duration > 0) {
+      const start = Number.isFinite(pending.start)
+        ? pending.start
+        : Math.max(0, Number(pending.end) - duration);
+      const end = Number.isFinite(pending.end)
+        ? pending.end
+        : Math.min(durationSec, start + duration);
+      freezes.push({ start, end, duration });
+    }
+    pending = null;
+  };
 
-	for (const line of lines) {
-		const startMatch = line.match(/freeze_start:\s*([0-9.]+)/i);
-		if (startMatch) {
-			maybePushPending();
-			pending = { start: Number(startMatch[1]) };
-		}
-		const endMatch = line.match(/freeze_end:\s*([0-9.]+)/i);
-		if (endMatch) {
-			pending = pending || {};
-			pending.end = Number(endMatch[1]);
-		}
-		const durationMatch = line.match(/freeze_duration:\s*([0-9.]+)/i);
-		if (durationMatch) {
-			pending = pending || {};
-			pending.duration = Number(durationMatch[1]);
-			if (pending.start != null || pending.end != null) maybePushPending();
-		}
-	}
-	maybePushPending();
+  for (const line of lines) {
+    const startMatch = line.match(/freeze_start:\s*([0-9.]+)/i);
+    if (startMatch) {
+      maybePushPending();
+      pending = { start: Number(startMatch[1]) };
+    }
+    const endMatch = line.match(/freeze_end:\s*([0-9.]+)/i);
+    if (endMatch) {
+      pending = pending || {};
+      pending.end = Number(endMatch[1]);
+    }
+    const durationMatch = line.match(/freeze_duration:\s*([0-9.]+)/i);
+    if (durationMatch) {
+      pending = pending || {};
+      pending.duration = Number(durationMatch[1]);
+      if (pending.start != null || pending.end != null) maybePushPending();
+    }
+  }
+  maybePushPending();
 
-	const totalFrozenSec = freezes.reduce(
-		(sum, item) => sum + Math.max(0, Number(item.duration) || 0),
-		0,
-	);
-	const maxFreezeSec = freezes.reduce(
-		(max, item) => Math.max(max, Number(item.duration) || 0),
-		0,
-	);
+  const totalFrozenSec = freezes.reduce(
+    (sum, item) => sum + Math.max(0, Number(item.duration) || 0),
+    0,
+  );
+  const maxFreezeSec = freezes.reduce(
+    (max, item) => Math.max(max, Number(item.duration) || 0),
+    0,
+  );
 
-	return {
-		durationSec,
-		freezes,
-		maxFreezeSec,
-		freezeRatio: durationSec > 0 ? totalFrozenSec / durationSec : 0,
-	};
+  return {
+    durationSec,
+    freezes,
+    maxFreezeSec,
+    freezeRatio: durationSec > 0 ? totalFrozenSec / durationSec : 0,
+  };
 }
 
 async function analyzeLipsyncOutput({
-	videoPath,
-	expectedDurSec,
-	jobId,
-	label,
+  videoPath,
+  expectedDurSec,
+  jobId,
+  label,
 }) {
-	const durationSec = await probeDurationSeconds(videoPath);
-	const result = {
-		pass: true,
-		issues: [],
-		durationSec: Number(durationSec || 0),
-		durationDeltaSec: 0,
-		maxFreezeSec: 0,
-		freezeRatio: 0,
-	};
+  const durationSec = await probeDurationSeconds(videoPath);
+  const result = {
+    pass: true,
+    issues: [],
+    durationSec: Number(durationSec || 0),
+    durationDeltaSec: 0,
+    maxFreezeSec: 0,
+    freezeRatio: 0,
+  };
 
-	if (expectedDurSec && durationSec) {
-		const delta = Math.abs(Number(expectedDurSec) - Number(durationSec));
-		const ratio = Number(durationSec) / Math.max(0.01, Number(expectedDurSec));
-		result.durationDeltaSec = delta;
-		if (
-			Number(expectedDurSec) - Number(durationSec) >
-				SYNC_SO_MAX_SHORTFALL_SEC ||
-			ratio < SYNC_SO_MIN_DURATION_RATIO
-		) {
-			result.issues.push("sync_output_too_short");
-		}
-	}
+  if (expectedDurSec && durationSec) {
+    const delta = Math.abs(Number(expectedDurSec) - Number(durationSec));
+    const ratio = Number(durationSec) / Math.max(0.01, Number(expectedDurSec));
+    result.durationDeltaSec = delta;
+    if (
+      Number(expectedDurSec) - Number(durationSec) >
+        SYNC_SO_MAX_SHORTFALL_SEC ||
+      ratio < SYNC_SO_MIN_DURATION_RATIO
+    ) {
+      result.issues.push("sync_output_too_short");
+    }
+  }
 
-	if (durationSec >= SYNC_SO_FREEZE_CHECK_MIN_SEC) {
-		try {
-			const freezeInfo = await detectFrozenVideo(videoPath);
-			result.maxFreezeSec = Number(freezeInfo.maxFreezeSec || 0);
-			result.freezeRatio = Number(freezeInfo.freezeRatio || 0);
-			if (
-				result.maxFreezeSec >= SYNC_SO_MAX_FREEZE_SEC ||
-				result.freezeRatio >= SYNC_SO_MAX_FREEZE_RATIO
-			) {
-				result.issues.push("sync_output_frozen");
-			}
-		} catch (e) {
-			if (jobId) {
-				logJob(jobId, "lipsync freeze check failed", {
-					label,
-					error: e?.message || String(e),
-				});
-			}
-		}
-	}
+  if (durationSec >= SYNC_SO_FREEZE_CHECK_MIN_SEC) {
+    try {
+      const freezeInfo = await detectFrozenVideo(videoPath);
+      result.maxFreezeSec = Number(freezeInfo.maxFreezeSec || 0);
+      result.freezeRatio = Number(freezeInfo.freezeRatio || 0);
+      if (
+        result.maxFreezeSec >= SYNC_SO_MAX_FREEZE_SEC ||
+        result.freezeRatio >= SYNC_SO_MAX_FREEZE_RATIO
+      ) {
+        result.issues.push("sync_output_frozen");
+      }
+    } catch (e) {
+      if (jobId) {
+        logJob(jobId, "lipsync freeze check failed", {
+          label,
+          error: e?.message || String(e),
+        });
+      }
+    }
+  }
 
-	result.pass = !result.issues.length;
-	return result;
+  result.pass = !result.issues.length;
+  return result;
 }
 
 async function requestSyncSoJob({ videoPath, audioPath, jobId, modelId }) {
-	const endpoint = `${SYNC_SO_BASE}${SYNC_SO_GENERATE_PATH}`;
-	if (!fs.existsSync(videoPath)) throw new Error("Sync input video missing");
-	if (!fs.existsSync(audioPath)) throw new Error("Sync input audio missing");
-	const effectiveModelId =
-		String(modelId || SYNC_SO_MODEL_STANDARD).trim() || SYNC_SO_MODEL_STANDARD;
+  const endpoint = `${SYNC_SO_BASE}${SYNC_SO_GENERATE_PATH}`;
+  if (!fs.existsSync(videoPath)) throw new Error("Sync input video missing");
+  if (!fs.existsSync(audioPath)) throw new Error("Sync input audio missing");
+  const effectiveModelId =
+    String(modelId || SYNC_SO_MODEL_STANDARD).trim() || SYNC_SO_MODEL_STANDARD;
 
-	if (
-		!FormDataNode &&
-		(typeof FormData !== "function" || typeof fetch !== "function")
-	) {
-		throw new Error(
-			"Sync multipart requires Node 18+ (fetch/FormData) or install 'form-data'",
-		);
-	}
+  if (
+    !FormDataNode &&
+    (typeof FormData !== "function" || typeof fetch !== "function")
+  ) {
+    throw new Error(
+      "Sync multipart requires Node 18+ (fetch/FormData) or install 'form-data'",
+    );
+  }
 
-	logJob(jobId, "sync multipart request", {
-		endpoint,
-		modelId: effectiveModelId,
-	});
+  logJob(jobId, "sync multipart request", {
+    endpoint,
+    modelId: effectiveModelId,
+  });
 
-	if (FormDataNode) {
-		const doReq = async () => {
-			const form = new FormDataNode();
-			form.append("model", effectiveModelId);
-			form.append("video", fs.createReadStream(videoPath), {
-				filename: "presenter.mp4",
-				contentType: "video/mp4",
-			});
-			form.append("audio", fs.createReadStream(audioPath), {
-				filename: "segment.wav",
-				contentType: "audio/wav",
-			});
-			const res = await axios.post(endpoint, form, {
-				headers: { ...buildSyncSoHeaders(), ...form.getHeaders() },
-				timeout: 90000,
-				validateStatus: () => true,
-			});
-			const data = res.data;
-			const id = extractSyncSoId(data);
-			if (res.status >= 300 || !id) {
-				const err = new Error(
-					`Sync.so generate failed (${res.status}): ${
-						extractSyncSoError(data, "") || "unknown error"
-					}`,
-				);
-				err.response = { status: res.status, data };
-				throw err;
-			}
-			return { id };
-		};
+  if (FormDataNode) {
+    const doReq = async () => {
+      const form = new FormDataNode();
+      form.append("model", effectiveModelId);
+      form.append("video", fs.createReadStream(videoPath), {
+        filename: "presenter.mp4",
+        contentType: "video/mp4",
+      });
+      form.append("audio", fs.createReadStream(audioPath), {
+        filename: "segment.wav",
+        contentType: "audio/wav",
+      });
+      const res = await axios.post(endpoint, form, {
+        headers: { ...buildSyncSoHeaders(), ...form.getHeaders() },
+        timeout: 90000,
+        validateStatus: () => true,
+      });
+      const data = res.data;
+      const id = extractSyncSoId(data);
+      if (res.status >= 300 || !id) {
+        const err = new Error(
+          `Sync.so generate failed (${res.status}): ${
+            extractSyncSoError(data, "") || "unknown error"
+          }`,
+        );
+        err.response = { status: res.status, data };
+        throw err;
+      }
+      return { id };
+    };
 
-		return await withRetries(doReq, {
-			retries: 2,
-			baseDelayMs: 900,
-			label: "sync_generate",
-		});
-	}
+    return await withRetries(doReq, {
+      retries: 2,
+      baseDelayMs: 900,
+      label: "sync_generate",
+    });
+  }
 
-	// Native FormData
-	const form = new FormData();
-	form.append("model", effectiveModelId);
-	form.append(
-		"video",
-		new Blob([fs.readFileSync(videoPath)], { type: "video/mp4" }),
-		"presenter.mp4",
-	);
-	form.append(
-		"audio",
-		new Blob([fs.readFileSync(audioPath)], { type: "audio/wav" }),
-		"segment.wav",
-	);
+  // Native FormData
+  const form = new FormData();
+  form.append("model", effectiveModelId);
+  form.append(
+    "video",
+    new Blob([fs.readFileSync(videoPath)], { type: "video/mp4" }),
+    "presenter.mp4",
+  );
+  form.append(
+    "audio",
+    new Blob([fs.readFileSync(audioPath)], { type: "audio/wav" }),
+    "segment.wav",
+  );
 
-	const { status, ok, data, text } = await fetchJson(
-		endpoint,
-		{ method: "POST", headers: buildSyncSoHeaders(), body: form },
-		90000,
-	);
+  const { status, ok, data, text } = await fetchJson(
+    endpoint,
+    { method: "POST", headers: buildSyncSoHeaders(), body: form },
+    90000,
+  );
 
-	const id = extractSyncSoId(data);
-	if (!ok || !id) {
-		throw new Error(
-			`Sync.so generate failed (${status}): ${
-				extractSyncSoError(data, text) || "unknown error"
-			}`,
-		);
-	}
-	return { id };
+  const id = extractSyncSoId(data);
+  if (!ok || !id) {
+    throw new Error(
+      `Sync.so generate failed (${status}): ${
+        extractSyncSoError(data, text) || "unknown error"
+      }`,
+    );
+  }
+  return { id };
 }
 
 async function pollSyncSoJob({ id, label, jobId }) {
-	const statusUrl = `${SYNC_SO_BASE}${SYNC_SO_GENERATE_PATH}/${id}`;
+  const statusUrl = `${SYNC_SO_BASE}${SYNC_SO_GENERATE_PATH}/${id}`;
 
-	for (let i = 0; i < 160; i++) {
-		await sleep(2000);
+  for (let i = 0; i < 160; i++) {
+    await sleep(2000);
 
-		const { status, ok, data, text } = await fetchJson(
-			statusUrl,
-			{ headers: buildSyncSoHeaders() },
-			25000,
-		);
-		if (!ok) {
-			throw new Error(
-				`${label} status check failed (${status}): ${
-					extractSyncSoError(data, text) || "unknown error"
-				}`,
-			);
-		}
+    const { status, ok, data, text } = await fetchJson(
+      statusUrl,
+      { headers: buildSyncSoHeaders() },
+      25000,
+    );
+    if (!ok) {
+      throw new Error(
+        `${label} status check failed (${status}): ${
+          extractSyncSoError(data, text) || "unknown error"
+        }`,
+      );
+    }
 
-		const st = String(extractSyncSoStatus(data) || "").toLowerCase();
-		const out = extractSyncSoOutputUrl(data);
+    const st = String(extractSyncSoStatus(data) || "").toLowerCase();
+    const out = extractSyncSoOutputUrl(data);
 
-		if ((st === "completed" || st === "succeeded") && out) return out;
-		if (st === "failed" || st === "error" || st === "rejected") {
-			throw new Error(
-				`${label} failed: ${extractSyncSoError(data, text) || "unknown error"}`,
-			);
-		}
+    if ((st === "completed" || st === "succeeded") && out) return out;
+    if (st === "failed" || st === "error" || st === "rejected") {
+      throw new Error(
+        `${label} failed: ${extractSyncSoError(data, text) || "unknown error"}`,
+      );
+    }
 
-		if (jobId && i % 10 === 0)
-			logJob(jobId, "sync polling", { label, status: st || "pending" });
-	}
-	throw new Error(`${label} timed out`);
+    if (jobId && i % 10 === 0)
+      logJob(jobId, "sync polling", { label, status: st || "pending" });
+  }
+  throw new Error(`${label} timed out`);
 }
 
 /* ---------------------------------------------------------------
@@ -10762,932 +10765,1108 @@ async function pollSyncSoJob({ id, label, jobId }) {
  * ------------------------------------------------------------- */
 
 function buildScaleFilter({ w, h, mode }) {
-	const W = makeEven(w);
-	const H = makeEven(h);
-	const m = String(mode || "cover").toLowerCase();
-	if (m === "contain") {
-		return `scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black`;
-	}
-	if (m === "blur") {
-		return `split=2[bg][fg];[bg]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},gblur=sigma=18[bg2];[fg]scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos[fg2];[bg2][fg2]overlay=(W-w)/2:(H-h)/2`;
-	}
-	return `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}`;
+  const W = makeEven(w);
+  const H = makeEven(h);
+  const m = String(mode || "cover").toLowerCase();
+  if (m === "contain") {
+    return `scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black`;
+  }
+  if (m === "blur") {
+    return `split=2[bg][fg];[bg]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},gblur=sigma=18[bg2];[fg]scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos[fg2];[bg2][fg2]overlay=(W-w)/2:(H-h)/2`;
+  }
+  return `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}`;
 }
 
 async function normalizeClip(
-	inPath,
-	outPath,
-	outCfg,
-	{ zoomOut = 1.0, addFades = false, fadeOutOnly = false } = {},
+  inPath,
+  outPath,
+  outCfg,
+  { zoomOut = 1.0, addFades = false, fadeOutOnly = false } = {},
 ) {
-	const w = makeEven(outCfg.w);
-	const h = makeEven(outCfg.h);
-	const fps = Number(outCfg.fps || DEFAULT_OUTPUT_FPS);
-	const scaleMode = outCfg.scaleMode || "cover";
+  const w = makeEven(outCfg.w);
+  const h = makeEven(outCfg.h);
+  const fps = Number(outCfg.fps || DEFAULT_OUTPUT_FPS);
+  const scaleMode = outCfg.scaleMode || "cover";
 
-	let vf =
-		scaleMode === "blur"
-			? `scale=${w}:${h}:force_original_aspect_ratio=increase,boxblur=15:1,crop=${w}:${h}`
-			: `scale=${w}:${h}:force_original_aspect_ratio=${
-					scaleMode === "cover" ? "increase" : "decrease"
-				},crop=${w}:${h}`;
+  let vf =
+    scaleMode === "blur"
+      ? `scale=${w}:${h}:force_original_aspect_ratio=increase,boxblur=15:1,crop=${w}:${h}`
+      : `scale=${w}:${h}:force_original_aspect_ratio=${
+          scaleMode === "cover" ? "increase" : "decrease"
+        },crop=${w}:${h}`;
 
-	if (scaleMode === "contain") {
-		vf = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`;
-	}
+  if (scaleMode === "contain") {
+    vf = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`;
+  }
 
-	vf += `,fps=${fps},format=yuv420p`;
+  vf += `,fps=${fps},format=yuv420p`;
 
-	// Subtle motion: slight zoom-out with blurred padding (no invalid crop).
-	if (zoomOut && zoomOut !== 1.0) {
-		const zw = Math.max(2, makeEven(w * zoomOut));
-		const zh = Math.max(2, makeEven(h * zoomOut));
-		vf =
-			`${vf},split=2[base][z];` +
-			`[base]gblur=sigma=18[bg];` +
-			`[z]scale=${zw}:${zh}:flags=lanczos[fg];` +
-			`[bg][fg]overlay=(W-w)/2:(H-h)/2`;
-	}
+  // Subtle motion: slight zoom-out with blurred padding (no invalid crop).
+  if (zoomOut && zoomOut !== 1.0) {
+    const zw = Math.max(2, makeEven(w * zoomOut));
+    const zh = Math.max(2, makeEven(h * zoomOut));
+    vf =
+      `${vf},split=2[base][z];` +
+      `[base]gblur=sigma=18[bg];` +
+      `[z]scale=${zw}:${zh}:flags=lanczos[fg];` +
+      `[bg][fg]overlay=(W-w)/2:(H-h)/2`;
+  }
 
-	// Stable resample without async drift correction (keeps lipsync timing tight)
-	let af = `aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,volume=1.0`;
+  // Stable resample without async drift correction (keeps lipsync timing tight)
+  let af = `aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,volume=1.0`;
 
-	let fadeIn = Boolean(addFades);
-	let fadeOut = Boolean(addFades);
-	if (fadeOutOnly) {
-		fadeIn = false;
-		fadeOut = true;
-	}
+  let fadeIn = Boolean(addFades);
+  let fadeOut = Boolean(addFades);
+  if (fadeOutOnly) {
+    fadeIn = false;
+    fadeOut = true;
+  }
 
-	if (fadeIn || fadeOut) {
-		const vFadeDur = 0.06;
-		const aFadeDur = 0.04;
+  if (fadeIn || fadeOut) {
+    const vFadeDur = 0.06;
+    const aFadeDur = 0.04;
 
-		let durSec = 0;
-		try {
-			durSec = await probeDurationSeconds(inPath);
-		} catch (_) {
-			durSec = 0;
-		}
+    let durSec = 0;
+    try {
+      durSec = await probeDurationSeconds(inPath);
+    } catch (_) {
+      durSec = 0;
+    }
 
-		// IMPORTANT:
-		// ffmpeg's afade does NOT accept expressions like (D-0.04) for st.
-		// We compute numeric start times instead.
-		if (durSec > 0.15) {
-			const vOutStart = Math.max(0, durSec - vFadeDur);
-			const aOutStart = Math.max(0, durSec - aFadeDur);
+    // IMPORTANT:
+    // ffmpeg's afade does NOT accept expressions like (D-0.04) for st.
+    // We compute numeric start times instead.
+    if (durSec > 0.15) {
+      const vOutStart = Math.max(0, durSec - vFadeDur);
+      const aOutStart = Math.max(0, durSec - aFadeDur);
 
-			if (fadeIn) {
-				vf += `,fade=t=in:st=0:d=${vFadeDur}`;
-				af += `,afade=t=in:st=0:d=${aFadeDur}`;
-			}
-			if (fadeOut) {
-				vf += `,fade=t=out:st=${vOutStart.toFixed(3)}:d=${vFadeDur}`;
-				af += `,afade=t=out:st=${aOutStart.toFixed(3)}:d=${aFadeDur}`;
-			}
-		} else if (fadeIn) {
-			vf += `,fade=t=in:st=0:d=${vFadeDur}`;
-			af += `,afade=t=in:st=0:d=${aFadeDur}`;
-		}
-	}
+      if (fadeIn) {
+        vf += `,fade=t=in:st=0:d=${vFadeDur}`;
+        af += `,afade=t=in:st=0:d=${aFadeDur}`;
+      }
+      if (fadeOut) {
+        vf += `,fade=t=out:st=${vOutStart.toFixed(3)}:d=${vFadeDur}`;
+        af += `,afade=t=out:st=${aOutStart.toFixed(3)}:d=${aFadeDur}`;
+      }
+    } else if (fadeIn) {
+      vf += `,fade=t=in:st=0:d=${vFadeDur}`;
+      af += `,afade=t=in:st=0:d=${aFadeDur}`;
+    }
+  }
 
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-y",
-			"-i",
-			inPath,
-			"-vf",
-			vf,
-			"-af",
-			af,
-			"-r",
-			String(fps),
-			"-c:v",
-			"libx264",
-			"-preset",
-			INTERMEDIATE_PRESET,
-			"-crf",
-			String(INTERMEDIATE_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-c:a",
-			"aac",
-			"-b:a",
-			AUDIO_BITRATE,
-			"-movflags",
-			"+faststart",
-			outPath,
-		],
-		"normalize_clip",
-		{ timeoutMs: 240000 },
-	);
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-y",
+      "-i",
+      inPath,
+      "-vf",
+      vf,
+      "-af",
+      af,
+      "-r",
+      String(fps),
+      "-c:v",
+      "libx264",
+      "-preset",
+      INTERMEDIATE_PRESET,
+      "-crf",
+      String(INTERMEDIATE_VIDEO_CRF),
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      AUDIO_BITRATE,
+      "-movflags",
+      "+faststart",
+      outPath,
+    ],
+    "normalize_clip",
+    { timeoutMs: 240000 },
+  );
 }
 
 async function createSyncFallbackInput(
-	videoPath,
-	tmpDir,
-	jobId,
-	label,
-	variant = 1,
+  videoPath,
+  tmpDir,
+  jobId,
+  label,
+  variant = 1,
 ) {
-	const out = path.join(
-		tmpDir,
-		`${label}_${crypto.randomUUID()}_sync_fallback_${variant}.mp4`,
-	);
-	let vf = `fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`;
-	let crf = Math.max(26, SYNC_SO_INPUT_CRF + 4);
-	let tag = "sync_fallback_reencode";
+  const out = path.join(
+    tmpDir,
+    `${label}_${crypto.randomUUID()}_sync_fallback_${variant}.mp4`,
+  );
+  let vf = `fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`;
+  let crf = Math.max(26, SYNC_SO_INPUT_CRF + 4);
+  let tag = "sync_fallback_reencode";
 
-	if (variant >= 2) {
-		const scaleExpr = `scale='if(gt(iw,ih),${SYNC_SO_FALLBACK_MAX_EDGE},-2)':'if(gt(ih,iw),${SYNC_SO_FALLBACK_MAX_EDGE},-2)'`;
-		vf = `${scaleExpr},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`;
-		crf = Math.max(28, SYNC_SO_INPUT_CRF + 6);
-		tag = "sync_fallback_scale";
-	}
+  if (variant >= 2) {
+    const scaleExpr = `scale='if(gt(iw,ih),${SYNC_SO_FALLBACK_MAX_EDGE},-2)':'if(gt(ih,iw),${SYNC_SO_FALLBACK_MAX_EDGE},-2)'`;
+    vf = `${scaleExpr},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`;
+    crf = Math.max(28, SYNC_SO_INPUT_CRF + 6);
+    tag = "sync_fallback_scale";
+  }
 
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-i",
-			videoPath,
-			"-an",
-			"-vf",
-			vf,
-			"-c:v",
-			"libx264",
-			"-preset",
-			"veryfast",
-			"-crf",
-			String(crf),
-			"-pix_fmt",
-			"yuv420p",
-			"-movflags",
-			"+faststart",
-			"-y",
-			out,
-		],
-		tag,
-		{ timeoutMs: 180000 },
-	);
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-i",
+      videoPath,
+      "-an",
+      "-vf",
+      vf,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      String(crf),
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      "-y",
+      out,
+    ],
+    tag,
+    { timeoutMs: 180000 },
+  );
 
-	return await ensureUnderBytes(out, SYNC_SO_MAX_BYTES, tmpDir, jobId, label);
+  return await ensureUnderBytes(out, SYNC_SO_MAX_BYTES, tmpDir, jobId, label);
 }
 
 async function renderLipsyncedSegment({
-	jobId,
-	tmpDir,
-	output,
-	baselineSource,
-	segDur,
-	audioPath,
-	label,
-	offsetSeed = 0,
-	addFades = false,
-	syncTier = "standard",
+  jobId,
+  tmpDir,
+  output,
+  baselineSource,
+  segDur,
+  audioPath,
+  label,
+  offsetSeed = 0,
+  addFades = false,
+  syncTier = "standard",
 }) {
-	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
-	const dur = Math.max(0.2, Number(segDur) || 0.2);
-	const baselineDur = Math.max(
-		2,
-		(await probeDurationSecondsCached(baselineSource)) || BASELINE_DUR_SEC,
-	);
-	const offset = (Number(offsetSeed) * 1.37) % Math.max(2, baselineDur - 0.5);
-	const baseSeg = path.join(tmpDir, `base_${safeLabel}_${jobId}.mp4`);
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-stream_loop",
-			"-1",
-			"-i",
-			baselineSource,
-			"-ss",
-			offset.toFixed(3),
-			"-t",
-			dur.toFixed(3),
-			"-an",
-			"-vf",
-			`fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-			"-c:v",
-			"libx264",
-			"-preset",
-			"veryfast",
-			"-crf",
-			String(SYNC_SO_INPUT_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-movflags",
-			"+faststart",
-			"-y",
-			baseSeg,
-		],
-		"base_segment",
-		{ timeoutMs: 240000 },
-	);
+  const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
+  const dur = Math.max(0.2, Number(segDur) || 0.2);
+  const baselineDur = Math.max(
+    2,
+    (await probeDurationSecondsCached(baselineSource)) || BASELINE_DUR_SEC,
+  );
+  const offset = (Number(offsetSeed) * 1.37) % Math.max(2, baselineDur - 0.5);
+  const baseSeg = path.join(tmpDir, `base_${safeLabel}_${jobId}.mp4`);
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-stream_loop",
+      "-1",
+      "-i",
+      baselineSource,
+      "-ss",
+      offset.toFixed(3),
+      "-t",
+      dur.toFixed(3),
+      "-an",
+      "-vf",
+      `fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      String(SYNC_SO_INPUT_CRF),
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      "-y",
+      baseSeg,
+    ],
+    "base_segment",
+    { timeoutMs: 240000 },
+  );
 
-	let syncBase = baseSeg;
-	let prescaled = null;
-	let baseSizeBytes = null;
-	if (SYNC_SO_PRE_MAX_EDGE && SYNC_SO_PRE_MAX_EDGE > 0) {
-		try {
-			baseSizeBytes = fs.statSync(baseSeg).size;
-		} catch {}
+  let syncBase = baseSeg;
+  let prescaled = null;
+  let baseSizeBytes = null;
+  if (SYNC_SO_PRE_MAX_EDGE && SYNC_SO_PRE_MAX_EDGE > 0) {
+    try {
+      baseSizeBytes = fs.statSync(baseSeg).size;
+    } catch {}
 
-		const sizeThreshold = Math.floor(
-			SYNC_SO_MAX_BYTES * SYNC_SO_PRESCALE_SIZE_PCT,
-		);
-		const shouldPrescale =
-			SYNC_SO_PRESCALE_ALWAYS ||
-			(Number.isFinite(baseSizeBytes) && baseSizeBytes > sizeThreshold) ||
-			dur >= SYNC_SO_PRESCALE_MIN_SEC;
+    const sizeThreshold = Math.floor(
+      SYNC_SO_MAX_BYTES * SYNC_SO_PRESCALE_SIZE_PCT,
+    );
+    const shouldPrescale =
+      SYNC_SO_PRESCALE_ALWAYS ||
+      (Number.isFinite(baseSizeBytes) && baseSizeBytes > sizeThreshold) ||
+      dur >= SYNC_SO_PRESCALE_MIN_SEC;
 
-		if (shouldPrescale) {
-			prescaled = path.join(tmpDir, `base_${safeLabel}_${jobId}_prescale.mp4`);
-			const scaleExpr = `scale='if(gt(iw,ih),${SYNC_SO_PRE_MAX_EDGE},-2)':'if(gt(ih,iw),${SYNC_SO_PRE_MAX_EDGE},-2)'`;
-			await spawnBin(
-				ffmpegPath,
-				[
-					"-i",
-					baseSeg,
-					"-an",
-					"-vf",
-					`${scaleExpr},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-					"-c:v",
-					"libx264",
-					"-preset",
-					"veryfast",
-					"-crf",
-					String(SYNC_SO_INPUT_CRF),
-					"-pix_fmt",
-					"yuv420p",
-					"-movflags",
-					"+faststart",
-					"-y",
-					prescaled,
-				],
-				"sync_prescale",
-				{ timeoutMs: 180000 },
-			);
-			syncBase = prescaled;
-			logJob(jobId, "sync prescale applied", {
-				label: safeLabel,
-				segDur: Number(dur.toFixed(3)),
-				baseBytes: baseSizeBytes || null,
-				thresholdBytes: sizeThreshold,
-			});
-		}
-	}
+    if (shouldPrescale) {
+      prescaled = path.join(tmpDir, `base_${safeLabel}_${jobId}_prescale.mp4`);
+      const scaleExpr = `scale='if(gt(iw,ih),${SYNC_SO_PRE_MAX_EDGE},-2)':'if(gt(ih,iw),${SYNC_SO_PRE_MAX_EDGE},-2)'`;
+      await spawnBin(
+        ffmpegPath,
+        [
+          "-i",
+          baseSeg,
+          "-an",
+          "-vf",
+          `${scaleExpr},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-crf",
+          String(SYNC_SO_INPUT_CRF),
+          "-pix_fmt",
+          "yuv420p",
+          "-movflags",
+          "+faststart",
+          "-y",
+          prescaled,
+        ],
+        "sync_prescale",
+        { timeoutMs: 180000 },
+      );
+      syncBase = prescaled;
+      logJob(jobId, "sync prescale applied", {
+        label: safeLabel,
+        segDur: Number(dur.toFixed(3)),
+        baseBytes: baseSizeBytes || null,
+        thresholdBytes: sizeThreshold,
+      });
+    }
+  }
 
-	const baseSized = await ensureUnderBytes(
-		syncBase,
-		SYNC_SO_MAX_BYTES,
-		tmpDir,
-		jobId,
-		`base_${safeLabel}`,
-	);
-	if (!LONG_VIDEO_KEEP_TMP) {
-		if (baseSeg && baseSeg !== baseSized) safeUnlink(baseSeg);
-		if (prescaled && prescaled !== baseSized) safeUnlink(prescaled);
-	}
+  const baseSized = await ensureUnderBytes(
+    syncBase,
+    SYNC_SO_MAX_BYTES,
+    tmpDir,
+    jobId,
+    `base_${safeLabel}`,
+  );
+  if (!LONG_VIDEO_KEEP_TMP) {
+    if (baseSeg && baseSeg !== baseSized) safeUnlink(baseSeg);
+    if (prescaled && prescaled !== baseSized) safeUnlink(prescaled);
+  }
 
-	let lipsynced = null;
-	let lastErr = null;
-	for (let attempt = 0; attempt <= SYNC_SO_SEGMENT_MAX_RETRIES; attempt++) {
-		try {
-			if (SYNC_SO_REQUEST_GAP_MS) await sleep(SYNC_SO_REQUEST_GAP_MS);
-			const attemptPlan = resolveSyncAttemptPlan(attempt, syncTier);
-			const syncInput =
-				attemptPlan.inputVariant === 0
-					? baseSized
-					: await createSyncFallbackInput(
-							baseSized,
-							tmpDir,
-							jobId,
-							`sync_${safeLabel}`,
-							attemptPlan.inputVariant,
-						);
+  let lipsynced = null;
+  let lastErr = null;
+  for (let attempt = 0; attempt <= SYNC_SO_SEGMENT_MAX_RETRIES; attempt++) {
+    try {
+      if (SYNC_SO_REQUEST_GAP_MS) await sleep(SYNC_SO_REQUEST_GAP_MS);
+      const attemptPlan = resolveSyncAttemptPlan(attempt, syncTier);
+      const syncInput =
+        attemptPlan.inputVariant === 0
+          ? baseSized
+          : await createSyncFallbackInput(
+              baseSized,
+              tmpDir,
+              jobId,
+              `sync_${safeLabel}`,
+              attemptPlan.inputVariant,
+            );
 
-			const fit = path.join(
-				tmpDir,
-				`base_fit_${jobId}_${safeLabel}_${attempt}.mp4`,
-			);
-			await fitVideoToDuration(syncInput, dur, fit);
-			logJob(jobId, "lipsync attempt start", {
-				label: safeLabel,
-				attempt,
-				syncTier: attemptPlan.tier,
-				modelId: attemptPlan.modelId,
-				inputVariant: attemptPlan.inputVariant,
-			});
+      const fit = path.join(
+        tmpDir,
+        `base_fit_${jobId}_${safeLabel}_${attempt}.mp4`,
+      );
+      await fitVideoToDuration(syncInput, dur, fit);
+      logJob(jobId, "lipsync attempt start", {
+        label: safeLabel,
+        attempt,
+        syncTier: attemptPlan.tier,
+        modelId: attemptPlan.modelId,
+        inputVariant: attemptPlan.inputVariant,
+      });
 
-			const syncJob = await requestSyncSoJob({
-				videoPath: fit,
-				audioPath,
-				jobId,
-				modelId: attemptPlan.modelId,
-			});
-			const outUrl = await pollSyncSoJob({
-				id: syncJob.id,
-				label: `lipsync_${safeLabel}`,
-				jobId,
-			});
+      const syncJob = await requestSyncSoJob({
+        videoPath: fit,
+        audioPath,
+        jobId,
+        modelId: attemptPlan.modelId,
+      });
+      const outUrl = await pollSyncSoJob({
+        id: syncJob.id,
+        label: `lipsync_${safeLabel}`,
+        jobId,
+      });
 
-			const raw = path.join(tmpDir, `lip_${jobId}_${safeLabel}.mp4`);
-			await downloadToFile(outUrl, raw, 120000, 2);
-			const syncQa = await analyzeLipsyncOutput({
-				videoPath: raw,
-				expectedDurSec: dur,
-				jobId,
-				label: safeLabel,
-			});
-			logJob(jobId, "lipsync qa", {
-				label: safeLabel,
-				attempt,
-				syncTier: attemptPlan.tier,
-				modelId: attemptPlan.modelId,
-				pass: syncQa.pass,
-				issues: syncQa.issues,
-				durationSec: Number((syncQa.durationSec || 0).toFixed(3)),
-				durationDeltaSec: Number((syncQa.durationDeltaSec || 0).toFixed(3)),
-				maxFreezeSec: Number((syncQa.maxFreezeSec || 0).toFixed(3)),
-				freezeRatio: Number((syncQa.freezeRatio || 0).toFixed(3)),
-			});
-			if (!syncQa.pass) {
-				safeUnlink(raw);
-				throw new Error(`Lipsync QA failed: ${syncQa.issues.join(", ")}`);
-			}
+      const raw = path.join(tmpDir, `lip_${jobId}_${safeLabel}.mp4`);
+      await downloadToFile(outUrl, raw, 120000, 2);
+      const syncQa = await analyzeLipsyncOutput({
+        videoPath: raw,
+        expectedDurSec: dur,
+        jobId,
+        label: safeLabel,
+      });
+      logJob(jobId, "lipsync qa", {
+        label: safeLabel,
+        attempt,
+        syncTier: attemptPlan.tier,
+        modelId: attemptPlan.modelId,
+        pass: syncQa.pass,
+        issues: syncQa.issues,
+        durationSec: Number((syncQa.durationSec || 0).toFixed(3)),
+        durationDeltaSec: Number((syncQa.durationDeltaSec || 0).toFixed(3)),
+        maxFreezeSec: Number((syncQa.maxFreezeSec || 0).toFixed(3)),
+        freezeRatio: Number((syncQa.freezeRatio || 0).toFixed(3)),
+      });
+      if (!syncQa.pass) {
+        safeUnlink(raw);
+        throw new Error(`Lipsync QA failed: ${syncQa.issues.join(", ")}`);
+      }
 
-			const fit2 = path.join(tmpDir, `lip_fit_${jobId}_${safeLabel}.mp4`);
-			await fitVideoToDuration(raw, dur, fit2, SEGMENT_PAD_SEC);
-			safeUnlink(raw);
-			lipsynced = fit2;
-			lastErr = null;
-			break;
-		} catch (e) {
-			lastErr = e;
-			logJob(jobId, "lipsync attempt failed", {
-				label: safeLabel,
-				attempt,
-				error: e.message,
-			});
-			if (attempt < SYNC_SO_SEGMENT_MAX_RETRIES) {
-				const delay = SYNC_SO_RETRY_DELAY_MS * (attempt + 1);
-				await sleep(delay);
-			}
-		}
-	}
+      const fit2 = path.join(tmpDir, `lip_fit_${jobId}_${safeLabel}.mp4`);
+      await fitVideoToDuration(raw, dur, fit2, SEGMENT_PAD_SEC);
+      safeUnlink(raw);
+      lipsynced = fit2;
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      logJob(jobId, "lipsync attempt failed", {
+        label: safeLabel,
+        attempt,
+        error: e.message,
+      });
+      if (attempt < SYNC_SO_SEGMENT_MAX_RETRIES) {
+        const delay = SYNC_SO_RETRY_DELAY_MS * (attempt + 1);
+        await sleep(delay);
+      }
+    }
+  }
 
-	if (!lipsynced) {
-		if (REQUIRE_LIPSYNC) {
-			throw lastErr || new Error("Lipsync failed");
-		}
-		logJob(jobId, "lipsync failed; using base video", {
-			label: safeLabel,
-			error: lastErr?.message || "unknown error",
-		});
-		const fit = path.join(tmpDir, `base_fit_${jobId}_${safeLabel}.mp4`);
-		await fitVideoToDuration(baseSized, dur, fit, SEGMENT_PAD_SEC);
-		lipsynced = fit;
-	}
+  if (!lipsynced) {
+    if (REQUIRE_LIPSYNC) {
+      throw lastErr || new Error("Lipsync failed");
+    }
+    logJob(jobId, "lipsync failed; using base video", {
+      label: safeLabel,
+      error: lastErr?.message || "unknown error",
+    });
+    const fit = path.join(tmpDir, `base_fit_${jobId}_${safeLabel}.mp4`);
+    await fitVideoToDuration(baseSized, dur, fit, SEGMENT_PAD_SEC);
+    lipsynced = fit;
+  }
 
-	const withAudio = path.join(tmpDir, `seg_${jobId}_${safeLabel}_audio.mp4`);
-	await mergeVideoWithAudio(lipsynced, audioPath, withAudio);
+  const withAudio = path.join(tmpDir, `seg_${jobId}_${safeLabel}_audio.mp4`);
+  await mergeVideoWithAudio(lipsynced, audioPath, withAudio);
 
-	const norm = path.join(tmpDir, `seg_${jobId}_${safeLabel}_norm.mp4`);
-	await normalizeClip(withAudio, norm, output, {
-		zoomOut: CAMERA_ZOOM_OUT,
-		addFades,
-	});
-	safeUnlink(withAudio);
+  const norm = path.join(tmpDir, `seg_${jobId}_${safeLabel}_norm.mp4`);
+  await normalizeClip(withAudio, norm, output, {
+    zoomOut: CAMERA_ZOOM_OUT,
+    addFades,
+  });
+  safeUnlink(withAudio);
 
-	return norm;
+  return norm;
 }
 
 async function createImageMontageClip({
-	jobId,
-	tmpDir,
-	output,
-	segDur,
-	imagePaths = [],
-	label,
+  jobId,
+  tmpDir,
+  output,
+  segDur,
+  imagePaths = [],
+  label,
 }) {
-	if (!Array.isArray(imagePaths) || !imagePaths.length)
-		throw new Error("No images for segment");
+  if (!Array.isArray(imagePaths) || !imagePaths.length)
+    throw new Error("No images for segment");
 
-	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
-	const dur = Math.max(0.2, Number(segDur) || 0.2);
-	const w = makeEven(output.w);
-	const h = makeEven(output.h);
-	const fps = Number(output.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
-	const imageScaleMode = String(
-		output.imageScaleMode || DEFAULT_IMAGE_SCALE_MODE,
-	)
-		.trim()
-		.toLowerCase();
-	const perDur = Math.max(0.2, dur / imagePaths.length);
-	const labelNum = Number(label);
-	const useCrossfade =
-		imagePaths.length > 1 &&
-		perDur >= 1.4 &&
-		(!Number.isFinite(labelNum) || labelNum % 2 === 0);
-	const crossfadeDur = useCrossfade ? clampNumber(perDur * 0.2, 0.25, 0.6) : 0;
+  const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
+  const dur = Math.max(0.2, Number(segDur) || 0.2);
+  const w = makeEven(output.w);
+  const h = makeEven(output.h);
+  const fps = Number(output.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+  const imageScaleMode = String(
+    output.imageScaleMode || DEFAULT_IMAGE_SCALE_MODE,
+  )
+    .trim()
+    .toLowerCase();
+  const perDur = Math.max(0.2, dur / imagePaths.length);
+  const labelNum = Number(label);
+  const useCrossfade =
+    imagePaths.length > 1 &&
+    perDur >= 1.4 &&
+    (!Number.isFinite(labelNum) || labelNum % 2 === 0);
+  const crossfadeDur = useCrossfade ? clampNumber(perDur * 0.2, 0.25, 0.6) : 0;
 
-	const inputs = [];
-	const filterParts = [];
-	const vLabels = [];
+  const inputs = [];
+  const filterParts = [];
+  const vLabels = [];
 
-	imagePaths.forEach((imgPath, idx) => {
-		inputs.push("-loop", "1", "-i", imgPath);
-		const outLabel = `v${idx}`;
-		const trim = `trim=0:${perDur.toFixed(3)},setpts=PTS-STARTPTS`;
-		if (imageScaleMode === "blur") {
-			const bg = `bg${idx}`;
-			const fg = `fg${idx}`;
-			const bg2 = `bg2${idx}`;
-			const fg2 = `fg2${idx}`;
-			filterParts.push(`[${idx}:v]split=2[${bg}][${fg}]`);
-			filterParts.push(
-				`[${bg}]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},gblur=sigma=18[${bg2}]`,
-			);
-			filterParts.push(
-				`[${fg}]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos[${fg2}]`,
-			);
-			filterParts.push(
-				`[${bg2}][${fg2}]overlay=(W-w)/2:(H-h)/2,fps=${fps},${trim},setsar=1,format=yuv420p[${outLabel}]`,
-			);
-		} else {
-			const scale =
-				imageScaleMode === "contain"
-					? `scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`
-					: `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}`;
-			const panX = idx % 2 === 0 ? "0" : "iw*0.03";
-			const panY = idx % 3 === 0 ? "0" : "ih*0.02";
-			const motionMode = idx % 3;
-			const motion =
-				imageScaleMode === "cover"
-					? motionMode === 0
-						? `zoompan=z='min(1.08,zoom+0.0007)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps}`
-						: motionMode === 1
-							? `zoompan=z='min(1.06,zoom+0.0006)':x='iw/2-(iw/zoom/2)+${panX}':y='ih/2-(ih/zoom/2)+${panY}':d=1:fps=${fps}`
-							: `fps=${fps}`
-					: `fps=${fps}`;
-			filterParts.push(
-				`[${idx}:v]${scale},${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`,
-			);
-		}
-		vLabels.push(`[${outLabel}]`);
-	});
+  imagePaths.forEach((imgPath, idx) => {
+    inputs.push("-loop", "1", "-i", imgPath);
+    const outLabel = `v${idx}`;
+    const trim = `trim=0:${perDur.toFixed(3)},setpts=PTS-STARTPTS`;
+    if (imageScaleMode === "blur") {
+      const bg = `bg${idx}`;
+      const fg = `fg${idx}`;
+      const bg2 = `bg2${idx}`;
+      const fg2 = `fg2${idx}`;
+      filterParts.push(`[${idx}:v]split=2[${bg}][${fg}]`);
+      filterParts.push(
+        `[${bg}]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},gblur=sigma=18[${bg2}]`,
+      );
+      filterParts.push(
+        `[${fg}]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos[${fg2}]`,
+      );
+      filterParts.push(
+        `[${bg2}][${fg2}]overlay=(W-w)/2:(H-h)/2,fps=${fps},${trim},setsar=1,format=yuv420p[${outLabel}]`,
+      );
+    } else {
+      const scale =
+        imageScaleMode === "contain"
+          ? `scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`
+          : `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}`;
+      const panX = idx % 2 === 0 ? "0" : "iw*0.03";
+      const panY = idx % 3 === 0 ? "0" : "ih*0.02";
+      const motionMode = idx % 3;
+      const motion =
+        imageScaleMode === "cover"
+          ? motionMode === 0
+            ? `zoompan=z='min(1.08,zoom+0.0007)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps}`
+            : motionMode === 1
+              ? `zoompan=z='min(1.06,zoom+0.0006)':x='iw/2-(iw/zoom/2)+${panX}':y='ih/2-(ih/zoom/2)+${panY}':d=1:fps=${fps}`
+              : `fps=${fps}`
+          : `fps=${fps}`;
+      filterParts.push(
+        `[${idx}:v]${scale},${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`,
+      );
+    }
+    vLabels.push(`[${outLabel}]`);
+  });
 
-	if (useCrossfade && imagePaths.length > 1) {
-		let last = "v0";
-		let acc = perDur;
-		for (let i = 1; i < imagePaths.length; i++) {
-			const out = `xf${i}`;
-			const offset = Math.max(0, acc - crossfadeDur);
-			filterParts.push(
-				`[${last}][v${i}]xfade=transition=fade:duration=${crossfadeDur.toFixed(
-					3,
-				)}:offset=${offset.toFixed(3)}[${out}]`,
-			);
-			acc += perDur - crossfadeDur;
-			last = out;
-		}
-		filterParts.push(`[${last}]setsar=1,format=yuv420p[v]`);
-	} else {
-		filterParts.push(
-			`${vLabels.join("")}concat=n=${imagePaths.length}:v=1:a=0[v]`,
-		);
-	}
+  if (useCrossfade && imagePaths.length > 1) {
+    let last = "v0";
+    let acc = perDur;
+    for (let i = 1; i < imagePaths.length; i++) {
+      const out = `xf${i}`;
+      const offset = Math.max(0, acc - crossfadeDur);
+      filterParts.push(
+        `[${last}][v${i}]xfade=transition=fade:duration=${crossfadeDur.toFixed(
+          3,
+        )}:offset=${offset.toFixed(3)}[${out}]`,
+      );
+      acc += perDur - crossfadeDur;
+      last = out;
+    }
+    filterParts.push(`[${last}]setsar=1,format=yuv420p[v]`);
+  } else {
+    filterParts.push(
+      `${vLabels.join("")}concat=n=${imagePaths.length}:v=1:a=0[v]`,
+    );
+  }
 
-	const raw = path.join(tmpDir, `seg_img_${jobId}_${safeLabel}_raw.mp4`);
-	await spawnBin(
-		ffmpegPath,
-		[
-			...inputs,
-			"-filter_complex",
-			filterParts.join(";"),
-			"-map",
-			"[v]",
-			"-r",
-			String(fps),
-			"-c:v",
-			"libx264",
-			"-preset",
-			INTERMEDIATE_PRESET,
-			"-crf",
-			String(INTERMEDIATE_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-movflags",
-			"+faststart",
-			"-y",
-			raw,
-		],
-		"image_montage",
-		{ timeoutMs: 240000 },
-	);
+  const raw = path.join(tmpDir, `seg_img_${jobId}_${safeLabel}_raw.mp4`);
+  await spawnBin(
+    ffmpegPath,
+    [
+      ...inputs,
+      "-filter_complex",
+      filterParts.join(";"),
+      "-map",
+      "[v]",
+      "-r",
+      String(fps),
+      "-c:v",
+      "libx264",
+      "-preset",
+      INTERMEDIATE_PRESET,
+      "-crf",
+      String(INTERMEDIATE_VIDEO_CRF),
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      "-y",
+      raw,
+    ],
+    "image_montage",
+    { timeoutMs: 240000 },
+  );
 
-	const fit = path.join(tmpDir, `seg_img_${jobId}_${safeLabel}_fit.mp4`);
-	await fitVideoToDuration(raw, dur, fit);
-	safeUnlink(raw);
-	return fit;
+  const fit = path.join(tmpDir, `seg_img_${jobId}_${safeLabel}_fit.mp4`);
+  await fitVideoToDuration(raw, dur, fit);
+  safeUnlink(raw);
+  return fit;
 }
 
 async function renderImageSegment({
-	jobId,
-	tmpDir,
-	output,
-	segDur,
-	audioPath,
-	imagePaths = [],
-	label,
-	addFades = false,
+  jobId,
+  tmpDir,
+  output,
+  segDur,
+  audioPath,
+  imagePaths = [],
+  label,
+  addFades = false,
 }) {
-	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
-	const montage = await createImageMontageClip({
-		jobId,
-		tmpDir,
-		output,
-		segDur,
-		imagePaths,
-		label: safeLabel,
-	});
+  const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
+  const montage = await createImageMontageClip({
+    jobId,
+    tmpDir,
+    output,
+    segDur,
+    imagePaths,
+    label: safeLabel,
+  });
 
-	const withAudio = path.join(tmpDir, `img_${jobId}_${safeLabel}_audio.mp4`);
-	await mergeVideoWithAudio(montage, audioPath, withAudio);
-	safeUnlink(montage);
+  const withAudio = path.join(tmpDir, `img_${jobId}_${safeLabel}_audio.mp4`);
+  await mergeVideoWithAudio(montage, audioPath, withAudio);
+  safeUnlink(montage);
 
-	const norm = path.join(tmpDir, `img_${jobId}_${safeLabel}_norm.mp4`);
-	await normalizeClip(withAudio, norm, output, {
-		zoomOut: CAMERA_ZOOM_OUT,
-		addFades,
-	});
-	safeUnlink(withAudio);
-	return norm;
+  const norm = path.join(tmpDir, `img_${jobId}_${safeLabel}_norm.mp4`);
+  await normalizeClip(withAudio, norm, output, {
+    zoomOut: CAMERA_ZOOM_OUT,
+    addFades,
+  });
+  safeUnlink(withAudio);
+  return norm;
 }
 
 async function fitVideoToDuration(inVideo, targetSec, outVideo, padSec = 0) {
-	const pad = Math.max(0, Number(padSec) || 0);
-	const target = Math.max(0.2, Number(targetSec) || 1) + pad;
-	const vf = `setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${target.toFixed(
-		3,
-	)},trim=0:${target.toFixed(3)},setpts=PTS-STARTPTS`;
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-fflags",
-			"+genpts",
-			"-i",
-			inVideo,
-			"-an",
-			"-vf",
-			vf,
-			"-c:v",
-			"libx264",
-			"-preset",
-			INTERMEDIATE_PRESET,
-			"-crf",
-			String(INTERMEDIATE_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-movflags",
-			"+faststart",
-			"-y",
-			outVideo,
-		],
-		"fit_video",
-		{ timeoutMs: 180000 },
-	);
-	return outVideo;
+  const pad = Math.max(0, Number(padSec) || 0);
+  const target = Math.max(0.2, Number(targetSec) || 1) + pad;
+  const vf = `setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${target.toFixed(
+    3,
+  )},trim=0:${target.toFixed(3)},setpts=PTS-STARTPTS`;
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-fflags",
+      "+genpts",
+      "-i",
+      inVideo,
+      "-an",
+      "-vf",
+      vf,
+      "-c:v",
+      "libx264",
+      "-preset",
+      INTERMEDIATE_PRESET,
+      "-crf",
+      String(INTERMEDIATE_VIDEO_CRF),
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      "-y",
+      outVideo,
+    ],
+    "fit_video",
+    { timeoutMs: 180000 },
+  );
+  return outVideo;
 }
 
 async function mergeVideoWithAudio(videoPath, audioPath, outPath) {
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-fflags",
-			"+genpts",
-			"-i",
-			videoPath,
-			"-i",
-			audioPath,
-			"-map",
-			"0:v:0",
-			"-map",
-			"1:a:0",
-			"-c:v",
-			"copy",
-			"-c:a",
-			"aac",
-			"-b:a",
-			AUDIO_BITRATE,
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			"2",
-			"-shortest",
-			"-movflags",
-			"+faststart",
-			"-y",
-			outPath,
-		],
-		"merge_audio",
-		{ timeoutMs: 180000 },
-	);
-	return outPath;
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-fflags",
+      "+genpts",
+      "-i",
+      videoPath,
+      "-i",
+      audioPath,
+      "-map",
+      "0:v:0",
+      "-map",
+      "1:a:0",
+      "-c:v",
+      "copy",
+      "-c:a",
+      "aac",
+      "-b:a",
+      AUDIO_BITRATE,
+      "-ar",
+      String(AUDIO_SR),
+      "-ac",
+      "2",
+      "-shortest",
+      "-movflags",
+      "+faststart",
+      "-y",
+      outPath,
+    ],
+    "merge_audio",
+    { timeoutMs: 180000 },
+  );
+  return outPath;
+}
+
+async function concatAudioClips(audioPaths = [], outPath) {
+  if (!Array.isArray(audioPaths) || !audioPaths.length) {
+    throw new Error("No audio clips to concat");
+  }
+  if (audioPaths.length === 1) {
+    fs.copyFileSync(audioPaths[0], outPath);
+    return outPath;
+  }
+
+  const args = [];
+  audioPaths.forEach((p) => args.push("-i", p));
+
+  const pre = audioPaths
+    .map(
+      (_, i) =>
+        `[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=mono:sample_fmts=s16[a${i}]`,
+    )
+    .join(";");
+  const catInputs = audioPaths.map((_, i) => `[a${i}]`).join("");
+  const filter = `${pre};${catInputs}concat=n=${audioPaths.length}:v=0:a=1[a]`;
+
+  args.push(
+    "-filter_complex",
+    filter,
+    "-map",
+    "[a]",
+    "-c:a",
+    "pcm_s16le",
+    "-ar",
+    String(AUDIO_SR),
+    "-ac",
+    String(AUDIO_CHANNELS),
+    "-y",
+    outPath,
+  );
+
+  await spawnBin(ffmpegPath, args, "concat_audio", { timeoutMs: 180000 });
+  return outPath;
+}
+
+function canMergePresenterRun(currentRun, seg) {
+  if (!ENABLE_PRESENTER_RUN_MERGE) return false;
+  if (!currentRun || !seg) return false;
+  if (seg.visualType !== "presenter") return false;
+  if (currentRun.visualType !== "presenter") return false;
+  if (Number(seg.topicIndex) !== Number(currentRun.topicIndex)) return false;
+  if (
+    String(seg.videoExpression || seg.expression || "neutral") !==
+    String(currentRun.videoExpression || currentRun.expression || "neutral")
+  ) {
+    return false;
+  }
+  if (currentRun.segments.length >= PRESENTER_RUN_MERGE_MAX_SEGMENTS) {
+    return false;
+  }
+  const currentDur = Number(currentRun.segDur || 0);
+  const nextDur = Math.max(
+    0.2,
+    Number(seg.endSec || 0) - Number(seg.startSec || 0),
+  );
+  return currentDur + nextDur <= PRESENTER_RUN_MERGE_MAX_SEC;
+}
+
+async function buildRenderableTimelineUnits({
+  timeline = [],
+  tmpDir,
+  jobId,
+  premiumPresenterSegmentSet = new Set(),
+}) {
+  const units = [];
+  let presenterRun = null;
+
+  const pushSingleUnit = (seg) => {
+    if (!seg) return;
+    const segDur = Math.max(
+      0.2,
+      Number(seg.endSec || 0) - Number(seg.startSec || 0),
+    );
+    units.push({
+      ...seg,
+      renderLabel: String(seg.index),
+      renderSegmentIndices: [seg.index],
+      segDur,
+      syncTier: premiumPresenterSegmentSet.has(seg.index) ? "hero" : "standard",
+      mergedPresenterRun: false,
+    });
+  };
+
+  const flushPresenterRun = async () => {
+    if (!presenterRun) return;
+    if (presenterRun.segments.length <= 1) {
+      pushSingleUnit(presenterRun.segments[0]);
+      presenterRun = null;
+      return;
+    }
+
+    const indices = presenterRun.segments.map((seg) => seg.index);
+    const renderLabel = `${indices[0]}_${indices[indices.length - 1]}`;
+    const mergedAudioPath = path.join(
+      tmpDir,
+      `seg_audio_${jobId}_${renderLabel}_merged.wav`,
+    );
+
+    try {
+      await concatAudioClips(
+        presenterRun.segments.map((seg) => seg.audioPath),
+        mergedAudioPath,
+      );
+      units.push({
+        ...presenterRun.segments[0],
+        endSec: presenterRun.segments[presenterRun.segments.length - 1].endSec,
+        audioPath: mergedAudioPath,
+        renderLabel,
+        renderSegmentIndices: indices,
+        segDur: presenterRun.segDur,
+        syncTier: presenterRun.hasPremium ? "hero" : "standard",
+        mergedPresenterRun: true,
+        mergedPresenterCount: presenterRun.segments.length,
+      });
+    } catch {
+      for (const seg of presenterRun.segments) {
+        pushSingleUnit(seg);
+      }
+    }
+
+    presenterRun = null;
+  };
+
+  for (const seg of timeline || []) {
+    if (seg?.visualType !== "presenter") {
+      await flushPresenterRun();
+      pushSingleUnit(seg);
+      continue;
+    }
+
+    const segDur = Math.max(
+      0.2,
+      Number(seg.endSec || 0) - Number(seg.startSec || 0),
+    );
+    if (!presenterRun) {
+      presenterRun = {
+        visualType: "presenter",
+        topicIndex: seg.topicIndex,
+        videoExpression: seg.videoExpression || seg.expression || "neutral",
+        expression: seg.expression || "neutral",
+        segDur,
+        hasPremium: premiumPresenterSegmentSet.has(seg.index),
+        segments: [seg],
+      };
+      continue;
+    }
+
+    if (canMergePresenterRun(presenterRun, seg)) {
+      presenterRun.segments.push(seg);
+      presenterRun.segDur += segDur;
+      if (premiumPresenterSegmentSet.has(seg.index))
+        presenterRun.hasPremium = true;
+      continue;
+    }
+
+    await flushPresenterRun();
+    presenterRun = {
+      visualType: "presenter",
+      topicIndex: seg.topicIndex,
+      videoExpression: seg.videoExpression || seg.expression || "neutral",
+      expression: seg.expression || "neutral",
+      segDur,
+      hasPremium: premiumPresenterSegmentSet.has(seg.index),
+      segments: [seg],
+    };
+  }
+
+  await flushPresenterRun();
+  return units;
 }
 
 async function ensureUnderBytes(
-	videoPath,
-	maxBytes,
-	tmpDir,
-	jobId,
-	label = "sync_input",
+  videoPath,
+  maxBytes,
+  tmpDir,
+  jobId,
+  label = "sync_input",
 ) {
-	try {
-		const st = fs.statSync(videoPath);
-		if (st.size <= maxBytes) return videoPath;
+  try {
+    const st = fs.statSync(videoPath);
+    if (st.size <= maxBytes) return videoPath;
 
-		const out = path.join(tmpDir, `${label}_${crypto.randomUUID()}_small.mp4`);
-		await spawnBin(
-			ffmpegPath,
-			[
-				"-i",
-				videoPath,
-				"-an",
-				"-vf",
-				`fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-				"-c:v",
-				"libx264",
-				"-preset",
-				"veryfast",
-				"-crf",
-				String(Math.max(28, SYNC_SO_INPUT_CRF + 4)),
-				"-pix_fmt",
-				"yuv420p",
-				"-movflags",
-				"+faststart",
-				"-y",
-				out,
-			],
-			"shrink_sync_input",
-			{ timeoutMs: 180000 },
-		);
+    const out = path.join(tmpDir, `${label}_${crypto.randomUUID()}_small.mp4`);
+    await spawnBin(
+      ffmpegPath,
+      [
+        "-i",
+        videoPath,
+        "-an",
+        "-vf",
+        `fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        String(Math.max(28, SYNC_SO_INPUT_CRF + 4)),
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-y",
+        out,
+      ],
+      "shrink_sync_input",
+      { timeoutMs: 180000 },
+    );
 
-		const st2 = fs.statSync(out);
-		logJob(jobId, "sync input shrunk", {
-			label,
-			beforeBytes: st.size,
-			afterBytes: st2.size,
-		});
-		if (st2.size <= maxBytes) return out;
+    const st2 = fs.statSync(out);
+    logJob(jobId, "sync input shrunk", {
+      label,
+      beforeBytes: st.size,
+      afterBytes: st2.size,
+    });
+    if (st2.size <= maxBytes) return out;
 
-		const out2 = path.join(tmpDir, `${label}_${crypto.randomUUID()}_down.mp4`);
-		const scaleExpr = `scale='if(gt(iw,ih),${SYNC_SO_FALLBACK_MAX_EDGE},-2)':'if(gt(ih,iw),${SYNC_SO_FALLBACK_MAX_EDGE},-2)'`;
-		await spawnBin(
-			ffmpegPath,
-			[
-				"-i",
-				out,
-				"-an",
-				"-vf",
-				`${scaleExpr},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-				"-c:v",
-				"libx264",
-				"-preset",
-				"veryfast",
-				"-crf",
-				String(Math.max(26, SYNC_SO_INPUT_CRF + 4)),
-				"-pix_fmt",
-				"yuv420p",
-				"-movflags",
-				"+faststart",
-				"-y",
-				out2,
-			],
-			"shrink_sync_input_scale",
-			{ timeoutMs: 180000 },
-		);
-		const st3 = fs.statSync(out2);
-		logJob(jobId, "sync input scaled down", {
-			label,
-			afterBytes: st3.size,
-		});
-		return out2;
-	} catch (e) {
-		logJob(jobId, "sync input size check failed (ignored)", {
-			error: e.message,
-		});
-		return videoPath;
-	}
+    const out2 = path.join(tmpDir, `${label}_${crypto.randomUUID()}_down.mp4`);
+    const scaleExpr = `scale='if(gt(iw,ih),${SYNC_SO_FALLBACK_MAX_EDGE},-2)':'if(gt(ih,iw),${SYNC_SO_FALLBACK_MAX_EDGE},-2)'`;
+    await spawnBin(
+      ffmpegPath,
+      [
+        "-i",
+        out,
+        "-an",
+        "-vf",
+        `${scaleExpr},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        String(Math.max(26, SYNC_SO_INPUT_CRF + 4)),
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-y",
+        out2,
+      ],
+      "shrink_sync_input_scale",
+      { timeoutMs: 180000 },
+    );
+    const st3 = fs.statSync(out2);
+    logJob(jobId, "sync input scaled down", {
+      label,
+      afterBytes: st3.size,
+    });
+    return out2;
+  } catch (e) {
+    logJob(jobId, "sync input size check failed (ignored)", {
+      error: e.message,
+    });
+    return videoPath;
+  }
 }
 
 async function concatClips(clips, outPath, outCfg) {
-	if (!Array.isArray(clips) || !clips.length)
-		throw new Error("No clips to concat");
-	if (clips.length === 1) {
-		fs.copyFileSync(clips[0], outPath);
-		return outPath;
-	}
+  if (!Array.isArray(clips) || !clips.length)
+    throw new Error("No clips to concat");
+  if (clips.length === 1) {
+    fs.copyFileSync(clips[0], outPath);
+    return outPath;
+  }
 
-	const w = outCfg?.w ? makeEven(outCfg.w) : null;
-	const h = outCfg?.h ? makeEven(outCfg.h) : null;
-	const fps = Number(outCfg?.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
-	const scaleFilter =
-		w && h
-			? `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},`
-			: "";
+  const w = outCfg?.w ? makeEven(outCfg.w) : null;
+  const h = outCfg?.h ? makeEven(outCfg.h) : null;
+  const fps = Number(outCfg?.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+  const scaleFilter =
+    w && h
+      ? `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},`
+      : "";
 
-	const runPlainConcat = async () => {
-		const args = [];
-		clips.forEach((p) => args.push("-i", p));
+  const runPlainConcat = async () => {
+    const args = [];
+    clips.forEach((p) => args.push("-i", p));
 
-		const pre = clips
-			.map(
-				(_, i) =>
-					`[${i}:v:0]${scaleFilter}setpts=PTS-STARTPTS,format=yuv420p,setsar=1[v${i}];` +
-					`[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp[a${i}]`,
-			)
-			.join(";");
+    const pre = clips
+      .map(
+        (_, i) =>
+          `[${i}:v:0]${scaleFilter}setpts=PTS-STARTPTS,format=yuv420p,setsar=1[v${i}];` +
+          `[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp[a${i}]`,
+      )
+      .join(";");
 
-		const catInputs = clips.map((_, i) => `[v${i}][a${i}]`).join("");
-		const filter = `${pre};${catInputs}concat=n=${clips.length}:v=1:a=1[v][a]`;
+    const catInputs = clips.map((_, i) => `[v${i}][a${i}]`).join("");
+    const filter = `${pre};${catInputs}concat=n=${clips.length}:v=1:a=1[v][a]`;
 
-		args.push(
-			"-filter_complex",
-			filter,
-			"-map",
-			"[v]",
-			"-map",
-			"[a]",
-			"-c:v",
-			"libx264",
-			"-preset",
-			INTERMEDIATE_PRESET,
-			"-crf",
-			String(INTERMEDIATE_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-c:a",
-			"aac",
-			"-b:a",
-			AUDIO_BITRATE,
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			"2",
-			"-movflags",
-			"+faststart",
-			"-y",
-			outPath,
-		);
+    args.push(
+      "-filter_complex",
+      filter,
+      "-map",
+      "[v]",
+      "-map",
+      "[a]",
+      "-c:v",
+      "libx264",
+      "-preset",
+      INTERMEDIATE_PRESET,
+      "-crf",
+      String(INTERMEDIATE_VIDEO_CRF),
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      AUDIO_BITRATE,
+      "-ar",
+      String(AUDIO_SR),
+      "-ac",
+      "2",
+      "-movflags",
+      "+faststart",
+      "-y",
+      outPath,
+    );
 
-		await spawnBin(ffmpegPath, args, "concat", { timeoutMs: 420000 });
-		return outPath;
-	};
+    await spawnBin(ffmpegPath, args, "concat", { timeoutMs: 420000 });
+    return outPath;
+  };
 
-	const useSoftTransitions =
-		ENABLE_SOFT_SEGMENT_TRANSITIONS &&
-		clips.length > 1 &&
-		outCfg?.softTransitions !== false;
-	if (!useSoftTransitions) {
-		return await runPlainConcat();
-	}
+  const useSoftTransitions =
+    ENABLE_SOFT_SEGMENT_TRANSITIONS &&
+    clips.length > 1 &&
+    outCfg?.softTransitions !== false;
+  if (!useSoftTransitions) {
+    return await runPlainConcat();
+  }
 
-	const requestedTransitionSec = clampNumber(
-		Number(outCfg?.transitionSec || SEGMENT_TRANSITION_SEC),
-		0,
-		0.5,
-	);
-	const requestedPadSec = clampNumber(
-		Number(outCfg?.transitionPadSec || SEGMENT_TRANSITION_PAD_SEC),
-		0,
-		0.5,
-	);
-	const minClipSec = clampNumber(
-		Number(outCfg?.transitionMinClipSec || SEGMENT_TRANSITION_MIN_CLIP_SEC),
-		0.25,
-		12,
-	);
-	if (requestedTransitionSec <= 0) {
-		return await runPlainConcat();
-	}
+  const requestedTransitionSec = clampNumber(
+    Number(outCfg?.transitionSec || SEGMENT_TRANSITION_SEC),
+    0,
+    0.5,
+  );
+  const requestedPadSec = clampNumber(
+    Number(outCfg?.transitionPadSec || SEGMENT_TRANSITION_PAD_SEC),
+    0,
+    0.5,
+  );
+  const minClipSec = clampNumber(
+    Number(outCfg?.transitionMinClipSec || SEGMENT_TRANSITION_MIN_CLIP_SEC),
+    0.25,
+    12,
+  );
+  if (requestedTransitionSec <= 0) {
+    return await runPlainConcat();
+  }
 
-	const formatFilterNum = (value) => {
-		const num = Number(value) || 0;
-		return Number(num.toFixed(3)).toString();
-	};
+  const formatFilterNum = (value) => {
+    const num = Number(value) || 0;
+    return Number(num.toFixed(3)).toString();
+  };
 
-	try {
-		const durations = await Promise.all(
-			clips.map((clipPath) => probeDurationSecondsCached(clipPath)),
-		);
-		if (
-			durations.some(
-				(dur) => !Number.isFinite(dur) || dur <= Math.max(minClipSec, 0.35),
-			)
-		) {
-			return await runPlainConcat();
-		}
+  try {
+    const durations = await Promise.all(
+      clips.map((clipPath) => probeDurationSecondsCached(clipPath)),
+    );
+    if (
+      durations.some(
+        (dur) => !Number.isFinite(dur) || dur <= Math.max(minClipSec, 0.35),
+      )
+    ) {
+      return await runPlainConcat();
+    }
 
-		const args = [];
-		clips.forEach((p) => args.push("-i", p));
+    const args = [];
+    clips.forEach((p) => args.push("-i", p));
 
-		const preparedDurations = durations.map(
-			(dur, i) =>
-				Math.max(0, dur) + (i < clips.length - 1 ? requestedPadSec : 0),
-		);
+    const preparedDurations = durations.map(
+      (dur, i) =>
+        Math.max(0, dur) + (i < clips.length - 1 ? requestedPadSec : 0),
+    );
 
-		const pre = clips
-			.map((_, i) => {
-				const addPad = i < clips.length - 1 && requestedPadSec > 0;
-				const videoPad = addPad
-					? `,tpad=stop_mode=clone:stop_duration=${formatFilterNum(
-							requestedPadSec,
-						)}`
-					: "";
-				const audioPad = addPad
-					? `,apad=pad_dur=${formatFilterNum(requestedPadSec)}`
-					: "";
-				return (
-					`[${i}:v:0]${scaleFilter}settb=AVTB,setpts=PTS-STARTPTS${videoPad},fps=${fps},format=yuv420p,setsar=1[v${i}]` +
-					`;[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp${audioPad}[a${i}]`
-				);
-			})
-			.join(";");
+    const pre = clips
+      .map((_, i) => {
+        const addPad = i < clips.length - 1 && requestedPadSec > 0;
+        const videoPad = addPad
+          ? `,tpad=stop_mode=clone:stop_duration=${formatFilterNum(
+              requestedPadSec,
+            )}`
+          : "";
+        const audioPad = addPad
+          ? `,apad=pad_dur=${formatFilterNum(requestedPadSec)}`
+          : "";
+        return (
+          `[${i}:v:0]${scaleFilter}settb=AVTB,setpts=PTS-STARTPTS${videoPad},fps=${fps},format=yuv420p,setsar=1[v${i}]` +
+          `;[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp${audioPad}[a${i}]`
+        );
+      })
+      .join(";");
 
-		const chain = [pre];
-		let currentVideo = "v0";
-		let currentAudio = "a0";
-		let currentDuration = preparedDurations[0];
+    const chain = [pre];
+    let currentVideo = "v0";
+    let currentAudio = "a0";
+    let currentDuration = preparedDurations[0];
 
-		for (let i = 1; i < clips.length; i++) {
-			const maxTransition = Math.min(
-				requestedTransitionSec,
-				Math.max(0, currentDuration - 0.05),
-				Math.max(0, preparedDurations[i] - 0.05),
-			);
-			if (!Number.isFinite(maxTransition) || maxTransition < 0.05) {
-				return await runPlainConcat();
-			}
+    for (let i = 1; i < clips.length; i++) {
+      const maxTransition = Math.min(
+        requestedTransitionSec,
+        Math.max(0, currentDuration - 0.05),
+        Math.max(0, preparedDurations[i] - 0.05),
+      );
+      if (!Number.isFinite(maxTransition) || maxTransition < 0.05) {
+        return await runPlainConcat();
+      }
 
-			const nextVideo = i === clips.length - 1 ? "v" : `vx${i}`;
-			const nextAudio = i === clips.length - 1 ? "a" : `ax${i}`;
-			const offset = Math.max(0, currentDuration - maxTransition);
+      const nextVideo = i === clips.length - 1 ? "v" : `vx${i}`;
+      const nextAudio = i === clips.length - 1 ? "a" : `ax${i}`;
+      const offset = Math.max(0, currentDuration - maxTransition);
 
-			chain.push(
-				`[${currentVideo}][v${i}]xfade=transition=fade:duration=${formatFilterNum(
-					maxTransition,
-				)}:offset=${formatFilterNum(offset)}[${nextVideo}]`,
-			);
-			chain.push(
-				`[${currentAudio}][a${i}]acrossfade=d=${formatFilterNum(
-					maxTransition,
-				)}:c1=tri:c2=tri[${nextAudio}]`,
-			);
+      chain.push(
+        `[${currentVideo}][v${i}]xfade=transition=fade:duration=${formatFilterNum(
+          maxTransition,
+        )}:offset=${formatFilterNum(offset)}[${nextVideo}]`,
+      );
+      chain.push(
+        `[${currentAudio}][a${i}]acrossfade=d=${formatFilterNum(
+          maxTransition,
+        )}:c1=tri:c2=tri[${nextAudio}]`,
+      );
 
-			currentVideo = nextVideo;
-			currentAudio = nextAudio;
-			currentDuration += preparedDurations[i] - maxTransition;
-		}
+      currentVideo = nextVideo;
+      currentAudio = nextAudio;
+      currentDuration += preparedDurations[i] - maxTransition;
+    }
 
-		args.push(
-			"-filter_complex",
-			chain.join(";"),
-			"-map",
-			"[v]",
-			"-map",
-			"[a]",
-			"-c:v",
-			"libx264",
-			"-preset",
-			INTERMEDIATE_PRESET,
-			"-crf",
-			String(INTERMEDIATE_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-c:a",
-			"aac",
-			"-b:a",
-			AUDIO_BITRATE,
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			"2",
-			"-movflags",
-			"+faststart",
-			"-y",
-			outPath,
-		);
+    args.push(
+      "-filter_complex",
+      chain.join(";"),
+      "-map",
+      "[v]",
+      "-map",
+      "[a]",
+      "-c:v",
+      "libx264",
+      "-preset",
+      INTERMEDIATE_PRESET,
+      "-crf",
+      String(INTERMEDIATE_VIDEO_CRF),
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      AUDIO_BITRATE,
+      "-ar",
+      String(AUDIO_SR),
+      "-ac",
+      "2",
+      "-movflags",
+      "+faststart",
+      "-y",
+      outPath,
+    );
 
-		await spawnBin(ffmpegPath, args, "concat_soft", { timeoutMs: 420000 });
-		return outPath;
-	} catch (err) {
-		console.warn(
-			`[LongVideo] soft concat fallback: ${err?.message || "unknown error"}`,
-		);
-		return await runPlainConcat();
-	}
+    await spawnBin(ffmpegPath, args, "concat_soft", { timeoutMs: 420000 });
+    return outPath;
+  } catch (err) {
+    console.warn(
+      `[LongVideo] soft concat fallback: ${err?.message || "unknown error"}`,
+    );
+    return await runPlainConcat();
+  }
 }
 
 /* ---------------------------------------------------------------
@@ -11695,35 +11874,35 @@ async function concatClips(clips, outPath, outCfg) {
  * ------------------------------------------------------------- */
 
 async function createPresenterIntroMotion({
-	jobId,
-	presenterImagePath,
-	outputRatio,
-	durationSec,
-	motionRefVideo,
+  jobId,
+  presenterImagePath,
+  outputRatio,
+  durationSec,
+  motionRefVideo,
 }) {
-	if (!RUNWAY_API_KEY)
-		throw new Error("RUNWAY_API_KEY missing (required for intro motion)");
+  if (!RUNWAY_API_KEY)
+    throw new Error("RUNWAY_API_KEY missing (required for intro motion)");
 
-	const runwayUri = await runwayCreateEphemeralUpload({
-		filePath: presenterImagePath,
-		filename: "presenter_intro.png",
-	});
+  const runwayUri = await runwayCreateEphemeralUpload({
+    filePath: presenterImagePath,
+    filename: "presenter_intro.png",
+  });
 
-	const dur = clampNumber(
-		Number(durationSec) || DEFAULT_INTRO_SEC,
-		INTRO_MIN_SEC,
-		INTRO_MAX_SEC,
-	);
+  const dur = clampNumber(
+    Number(durationSec) || DEFAULT_INTRO_SEC,
+    INTRO_MIN_SEC,
+    INTRO_MAX_SEC,
+  );
 
-	const motionHint = motionRefVideo
-		? buildPresenterReferenceMotionHint({ intro: true })
-		: "Calm broadcast intro motion: head mostly steady with tiny neck-driven corrections, soft chin dips, a natural blink cadence, subtle breathing, and one restrained emphasis gesture at most; do not let the presenter feel frozen.";
-	const introFace = pickIntroExpression(jobId);
-	const titleTarget = `${Math.round(
-		INTRO_TEXT_X_PCT * 100,
-	)}% from the left edge and ${Math.round(INTRO_TEXT_Y_PCT * 100)}% down`;
+  const motionHint = motionRefVideo
+    ? buildPresenterReferenceMotionHint({ intro: true })
+    : "Calm broadcast intro motion: head mostly steady with tiny neck-driven corrections, soft chin dips, a natural blink cadence, subtle breathing, and one restrained emphasis gesture at most; do not let the presenter feel frozen.";
+  const introFace = pickIntroExpression(jobId);
+  const titleTarget = `${Math.round(
+    INTRO_TEXT_X_PCT * 100,
+  )}% from the left edge and ${Math.round(INTRO_TEXT_Y_PCT * 100)}% down`;
 
-	const prompt = `
+  const prompt = `
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
@@ -11739,7 +11918,7 @@ ${motionHint}
 Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except those already present in the reference.
 `.trim();
 
-	const fallbackPrompt = `
+  const fallbackPrompt = `
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
@@ -11755,395 +11934,395 @@ ${motionHint}
 Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except those already present in the reference.
 `.trim();
 
-	const introModelOrder = [];
-	if (RUNWAY_VIDEO_MODEL) introModelOrder.push(RUNWAY_VIDEO_MODEL);
-	if (
-		RUNWAY_VIDEO_MODEL_FALLBACK &&
-		!introModelOrder.includes(RUNWAY_VIDEO_MODEL_FALLBACK)
-	)
-		introModelOrder.push(RUNWAY_VIDEO_MODEL_FALLBACK);
+  const introModelOrder = [];
+  if (RUNWAY_VIDEO_MODEL) introModelOrder.push(RUNWAY_VIDEO_MODEL);
+  if (
+    RUNWAY_VIDEO_MODEL_FALLBACK &&
+    !introModelOrder.includes(RUNWAY_VIDEO_MODEL_FALLBACK)
+  )
+    introModelOrder.push(RUNWAY_VIDEO_MODEL_FALLBACK);
 
-	const runIntroPrompt = async (promptText, label) => {
-		logJob(jobId, "intro motion prompt", {
-			label,
-			duration: dur,
-			ratio: outputRatio,
-		});
-		return await runwayImageToVideo({
-			runwayImageUri: runwayUri,
-			promptText,
-			durationSec: dur,
-			ratio: outputRatio,
-			modelOrder: introModelOrder.length ? introModelOrder : undefined,
-		});
-	};
+  const runIntroPrompt = async (promptText, label) => {
+    logJob(jobId, "intro motion prompt", {
+      label,
+      duration: dur,
+      ratio: outputRatio,
+    });
+    return await runwayImageToVideo({
+      runwayImageUri: runwayUri,
+      promptText,
+      durationSec: dur,
+      ratio: outputRatio,
+      modelOrder: introModelOrder.length ? introModelOrder : undefined,
+    });
+  };
 
-	let outUrl;
-	try {
-		outUrl = await runIntroPrompt(prompt, "primary");
-	} catch (e) {
-		logJob(jobId, "intro motion failed (primary)", { error: e.message });
-		try {
-			outUrl = await runIntroPrompt(fallbackPrompt, "fallback");
-		} catch (e2) {
-			logJob(jobId, "intro motion failed (fallback)", { error: e2.message });
+  let outUrl;
+  try {
+    outUrl = await runIntroPrompt(prompt, "primary");
+  } catch (e) {
+    logJob(jobId, "intro motion failed (primary)", { error: e.message });
+    try {
+      outUrl = await runIntroPrompt(fallbackPrompt, "fallback");
+    } catch (e2) {
+      logJob(jobId, "intro motion failed (fallback)", { error: e2.message });
 
-			const outCfg = parseRatio(outputRatio);
-			const outMp4Fallback = path.join(
-				path.dirname(presenterImagePath),
-				`intro_motion_fallback_${jobId}.mp4`,
-			);
-			await spawnBin(
-				ffmpegPath,
-				[
-					"-loop",
-					"1",
-					"-i",
-					presenterImagePath,
-					"-t",
-					dur.toFixed(3),
-					"-an",
-					"-vf",
-					`scale=${makeEven(outCfg.w)}:${makeEven(
-						outCfg.h,
-					)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-						outCfg.w,
-					)}:${makeEven(outCfg.h)},fps=${DEFAULT_OUTPUT_FPS},format=yuv420p`,
-					"-c:v",
-					"libx264",
-					"-preset",
-					INTERMEDIATE_PRESET,
-					"-crf",
-					String(INTERMEDIATE_VIDEO_CRF),
-					"-pix_fmt",
-					"yuv420p",
-					"-movflags",
-					"+faststart",
-					"-y",
-					outMp4Fallback,
-				],
-				"intro_fallback",
-				{ timeoutMs: 180000 },
-			);
-			logJob(jobId, "intro motion fallback created", {
-				path: path.basename(outMp4Fallback),
-			});
-			return outMp4Fallback;
-		}
-	}
+      const outCfg = parseRatio(outputRatio);
+      const outMp4Fallback = path.join(
+        path.dirname(presenterImagePath),
+        `intro_motion_fallback_${jobId}.mp4`,
+      );
+      await spawnBin(
+        ffmpegPath,
+        [
+          "-loop",
+          "1",
+          "-i",
+          presenterImagePath,
+          "-t",
+          dur.toFixed(3),
+          "-an",
+          "-vf",
+          `scale=${makeEven(outCfg.w)}:${makeEven(
+            outCfg.h,
+          )}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
+            outCfg.w,
+          )}:${makeEven(outCfg.h)},fps=${DEFAULT_OUTPUT_FPS},format=yuv420p`,
+          "-c:v",
+          "libx264",
+          "-preset",
+          INTERMEDIATE_PRESET,
+          "-crf",
+          String(INTERMEDIATE_VIDEO_CRF),
+          "-pix_fmt",
+          "yuv420p",
+          "-movflags",
+          "+faststart",
+          "-y",
+          outMp4Fallback,
+        ],
+        "intro_fallback",
+        { timeoutMs: 180000 },
+      );
+      logJob(jobId, "intro motion fallback created", {
+        path: path.basename(outMp4Fallback),
+      });
+      return outMp4Fallback;
+    }
+  }
 
-	const outMp4 = path.join(
-		path.dirname(presenterImagePath),
-		`intro_motion_${jobId}.mp4`,
-	);
-	await downloadToFile(outUrl, outMp4, 120000, 2);
-	return outMp4;
+  const outMp4 = path.join(
+    path.dirname(presenterImagePath),
+    `intro_motion_${jobId}.mp4`,
+  );
+  await downloadToFile(outUrl, outMp4, 120000, 2);
+  return outMp4;
 }
 
 function resolveFontFile() {
-	const candidates = [
-		"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-		"/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-		"/Library/Fonts/Arial.ttf",
-		"C:/Windows/Fonts/arialbd.ttf",
-		"C:/Windows/Fonts/arial.ttf",
-	];
-	for (const p of candidates) {
-		try {
-			if (p && fs.existsSync(p)) return p;
-		} catch {}
-	}
-	return null;
+  const candidates = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+  ];
+  for (const p of candidates) {
+    try {
+      if (p && fs.existsSync(p)) return p;
+    } catch {}
+  }
+  return null;
 }
 
 function escapeDrawtext(s = "") {
-	// escape characters used by drawtext
-	const placeholder = "__NL__";
-	return String(s || "")
-		.replace(/\r\n|\r|\n/g, placeholder)
-		.replace(/\\/g, "\\\\")
-		.replace(/,/g, "\\,")
-		.replace(/:/g, "\\:")
-		.replace(/'/g, "\\'")
-		.replace(/%/g, "\\%")
-		.replace(/\[/g, "\\[")
-		.replace(/\]/g, "\\]")
-		.replace(new RegExp(placeholder, "g"), "\\n")
-		.trim();
+  // escape characters used by drawtext
+  const placeholder = "__NL__";
+  return String(s || "")
+    .replace(/\r\n|\r|\n/g, placeholder)
+    .replace(/\\/g, "\\\\")
+    .replace(/,/g, "\\,")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\\'")
+    .replace(/%/g, "\\%")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(new RegExp(placeholder, "g"), "\\n")
+    .trim();
 }
 
 function escapeFilterExpr(expr = "") {
-	return String(expr || "")
-		.replace(/\\/g, "\\\\")
-		.replace(/,/g, "\\,")
-		.trim();
+  return String(expr || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/,/g, "\\,")
+    .trim();
 }
 
 function resolveWatermarkFontFile() {
-	const candidates = [
-		"C:/Windows/Fonts/segoesc.ttf",
-		"C:/Windows/Fonts/segoepr.ttf",
-		"C:/Windows/Fonts/segoeprb.ttf",
-		"C:/Windows/Fonts/BRUSHSCI.TTF",
-		"C:/Windows/Fonts/ITCEDSCR.TTF",
-		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-		"/Library/Fonts/Arial.ttf",
-	];
-	for (const p of candidates) {
-		try {
-			if (p && fs.existsSync(p)) return p;
-		} catch {}
-	}
-	return resolveFontFile();
+  const candidates = [
+    "C:/Windows/Fonts/segoesc.ttf",
+    "C:/Windows/Fonts/segoepr.ttf",
+    "C:/Windows/Fonts/segoeprb.ttf",
+    "C:/Windows/Fonts/BRUSHSCI.TTF",
+    "C:/Windows/Fonts/ITCEDSCR.TTF",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/Library/Fonts/Arial.ttf",
+  ];
+  for (const p of candidates) {
+    try {
+      if (p && fs.existsSync(p)) return p;
+    } catch {}
+  }
+  return resolveFontFile();
 }
 
 const WATERMARK_FONT_FILE = resolveWatermarkFontFile();
 if (!WATERMARK_FONT_FILE) {
-	console.warn(
-		"[LongVideo] WARN - Watermark font not found. Falling back to default drawtext font.",
-	);
+  console.warn(
+    "[LongVideo] WARN - Watermark font not found. Falling back to default drawtext font.",
+  );
 }
 
 function buildWatermarkFilter() {
-	const text = escapeDrawtext(WATERMARK_TEXT);
-	const fontFile = WATERMARK_FONT_FILE
-		? `:fontfile='${escapeDrawtext(WATERMARK_FONT_FILE)}'`
-		: "";
-	return (
-		`drawtext=text='${text}'` +
-		`${fontFile}` +
-		`:fontsize=h*${WATERMARK_FONT_SIZE_PCT}` +
-		`:fontcolor=white@${WATERMARK_OPACITY.toFixed(2)}` +
-		`:shadowcolor=black@${WATERMARK_SHADOW_OPACITY.toFixed(2)}` +
-		`:shadowx=${WATERMARK_SHADOW_PX}` +
-		`:shadowy=${WATERMARK_SHADOW_PX}` +
-		`:x=w*${WATERMARK_MARGIN_PCT}` +
-		`:y=h-th-h*${WATERMARK_MARGIN_PCT}`
-	);
+  const text = escapeDrawtext(WATERMARK_TEXT);
+  const fontFile = WATERMARK_FONT_FILE
+    ? `:fontfile='${escapeDrawtext(WATERMARK_FONT_FILE)}'`
+    : "";
+  return (
+    `drawtext=text='${text}'` +
+    `${fontFile}` +
+    `:fontsize=h*${WATERMARK_FONT_SIZE_PCT}` +
+    `:fontcolor=white@${WATERMARK_OPACITY.toFixed(2)}` +
+    `:shadowcolor=black@${WATERMARK_SHADOW_OPACITY.toFixed(2)}` +
+    `:shadowx=${WATERMARK_SHADOW_PX}` +
+    `:shadowy=${WATERMARK_SHADOW_PX}` +
+    `:x=w*${WATERMARK_MARGIN_PCT}` +
+    `:y=h-th-h*${WATERMARK_MARGIN_PCT}`
+  );
 }
 
 function computeFinalMasterSize(outCfg = {}) {
-	const baseW = Number(outCfg?.w || 0) || 1280;
-	const baseH = Number(outCfg?.h || 0) || 720;
-	const ratio = baseW > 0 && baseH > 0 ? baseW / baseH : 16 / 9;
-	let targetH =
-		baseH >= FINAL_MASTER_MAX_HEIGHT ? baseH : FINAL_MASTER_MAX_HEIGHT;
-	if (targetH < FINAL_MASTER_MIN_HEIGHT) targetH = FINAL_MASTER_MIN_HEIGHT;
-	const targetW = makeEven(targetH * ratio);
-	return { w: makeEven(targetW), h: makeEven(targetH) };
+  const baseW = Number(outCfg?.w || 0) || 1280;
+  const baseH = Number(outCfg?.h || 0) || 720;
+  const ratio = baseW > 0 && baseH > 0 ? baseW / baseH : 16 / 9;
+  let targetH =
+    baseH >= FINAL_MASTER_MAX_HEIGHT ? baseH : FINAL_MASTER_MAX_HEIGHT;
+  if (targetH < FINAL_MASTER_MIN_HEIGHT) targetH = FINAL_MASTER_MIN_HEIGHT;
+  const targetW = makeEven(targetH * ratio);
+  return { w: makeEven(targetW), h: makeEven(targetH) };
 }
 
 function hardTruncateText(text = "", maxChars = 40) {
-	const t = String(text || "").trim();
-	if (t.length <= maxChars) return t;
-	return t.slice(0, Math.max(0, maxChars)).trimEnd();
+  const t = String(text || "").trim();
+  if (t.length <= maxChars) return t;
+  return t.slice(0, Math.max(0, maxChars)).trimEnd();
 }
 
 function wrapIntroText(text = "", maxCharsPerLine = 36, maxLines = 2) {
-	const words = String(text || "")
-		.trim()
-		.split(/\s+/)
-		.filter(Boolean);
-	if (!words.length)
-		return { text: "", lines: 0, maxLineLen: 0, overflow: false };
+  const words = String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length)
+    return { text: "", lines: 0, maxLineLen: 0, overflow: false };
 
-	const lines = [];
-	let line = "";
+  const lines = [];
+  let line = "";
 
-	for (let i = 0; i < words.length; i++) {
-		const word = words[i];
-		const next = line ? `${line} ${word}` : word;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    const next = line ? `${line} ${word}` : word;
 
-		if (next.length <= maxCharsPerLine) {
-			line = next;
-			continue;
-		}
+    if (next.length <= maxCharsPerLine) {
+      line = next;
+      continue;
+    }
 
-		if (lines.length < maxLines - 1) {
-			if (line) lines.push(line);
-			line = word;
-			continue;
-		}
+    if (lines.length < maxLines - 1) {
+      if (line) lines.push(line);
+      line = word;
+      continue;
+    }
 
-		// No more lines left: keep full text and let font-size handle overflow.
-		line = line ? `${line} ${word}` : word;
-	}
+    // No more lines left: keep full text and let font-size handle overflow.
+    line = line ? `${line} ${word}` : word;
+  }
 
-	if (line) lines.push(line);
-	const maxLineLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
-	return {
-		text: lines.join("\n").trim(),
-		lines: lines.length,
-		maxLineLen,
-		overflow: maxLineLen > maxCharsPerLine,
-	};
+  if (line) lines.push(line);
+  const maxLineLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
+  return {
+    text: lines.join("\n").trim(),
+    lines: lines.length,
+    maxLineLen,
+    overflow: maxLineLen > maxCharsPerLine,
+  };
 }
 
 function fitIntroText(
-	text = "",
-	{ baseMaxChars = 36, preferLines = 2, maxLines = 3 } = {},
+  text = "",
+  { baseMaxChars = 36, preferLines = 2, maxLines = 3 } = {},
 ) {
-	const clean = String(text || "").trim();
-	if (!clean) return { text: "", fontScale: 1, lines: 0, truncated: false };
+  const clean = String(text || "").trim();
+  if (!clean) return { text: "", fontScale: 1, lines: 0, truncated: false };
 
-	let fontScale = 1.0;
-	let maxChars = baseMaxChars;
-	let wrap = wrapIntroText(clean, maxChars, preferLines);
+  let fontScale = 1.0;
+  let maxChars = baseMaxChars;
+  let wrap = wrapIntroText(clean, maxChars, preferLines);
 
-	if (wrap.overflow || wrap.lines > preferLines) {
-		wrap = wrapIntroText(clean, maxChars, maxLines);
-	}
+  if (wrap.overflow || wrap.lines > preferLines) {
+    wrap = wrapIntroText(clean, maxChars, maxLines);
+  }
 
-	if (wrap.overflow) {
-		// Reduce font size before truncation to preserve full text.
-		const scales = [0.94, 0.9, 0.86];
-		for (const scale of scales) {
-			fontScale = scale;
-			maxChars = Math.round(baseMaxChars / scale);
-			wrap = wrapIntroText(clean, maxChars, maxLines);
-			if (!wrap.overflow) break;
-		}
-	}
+  if (wrap.overflow) {
+    // Reduce font size before truncation to preserve full text.
+    const scales = [0.94, 0.9, 0.86];
+    for (const scale of scales) {
+      fontScale = scale;
+      maxChars = Math.round(baseMaxChars / scale);
+      wrap = wrapIntroText(clean, maxChars, maxLines);
+      if (!wrap.overflow) break;
+    }
+  }
 
-	let truncated = false;
-	if (wrap.overflow) {
-		// Last resort: hard truncate without ellipsis.
-		const maxTotal = maxChars * maxLines;
-		const cut = hardTruncateText(clean, maxTotal);
-		wrap = wrapIntroText(cut, maxChars, maxLines);
-		truncated = cut.length < clean.length;
-	}
+  let truncated = false;
+  if (wrap.overflow) {
+    // Last resort: hard truncate without ellipsis.
+    const maxTotal = maxChars * maxLines;
+    const cut = hardTruncateText(clean, maxTotal);
+    wrap = wrapIntroText(cut, maxChars, maxLines);
+    truncated = cut.length < clean.length;
+  }
 
-	return { text: wrap.text, fontScale, lines: wrap.lines, truncated };
+  return { text: wrap.text, fontScale, lines: wrap.lines, truncated };
 }
 
 async function createIntroClip({
-	title,
-	subtitle,
-	bgImagePath,
-	durationSec,
-	outCfg,
-	outPath,
-	disableVideoBlur = false,
+  title,
+  subtitle,
+  bgImagePath,
+  durationSec,
+  outCfg,
+  outPath,
+  disableVideoBlur = false,
 }) {
-	const W = makeEven(outCfg.w);
-	const H = makeEven(outCfg.h);
-	const fps = Number(outCfg.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
-	const minDur = Math.min(INTRO_MIN_SEC, OUTRO_MIN_SEC);
-	const maxDur = Math.max(INTRO_MAX_SEC, OUTRO_MAX_SEC);
-	const dur = clampNumber(
-		Number(durationSec) || DEFAULT_INTRO_SEC,
-		minDur,
-		maxDur,
-	);
+  const W = makeEven(outCfg.w);
+  const H = makeEven(outCfg.h);
+  const fps = Number(outCfg.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+  const minDur = Math.min(INTRO_MIN_SEC, OUTRO_MIN_SEC);
+  const maxDur = Math.max(INTRO_MAX_SEC, OUTRO_MAX_SEC);
+  const dur = clampNumber(
+    Number(durationSec) || DEFAULT_INTRO_SEC,
+    minDur,
+    maxDur,
+  );
 
-	const fontFile = resolveFontFile();
-	const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
+  const fontFile = resolveFontFile();
+  const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
 
-	const titleMaxChars = Math.max(18, Math.round(W / 64));
-	const subMaxChars = Math.max(22, Math.round(W / 52));
-	// Keep intro text brief and easy to scan.
-	const titleFit = fitIntroText(title || "", {
-		baseMaxChars: titleMaxChars,
-		preferLines: 1,
-		maxLines: 2,
-	});
-	const subFit = fitIntroText(subtitle || "", {
-		baseMaxChars: subMaxChars,
-		preferLines: 1,
-		maxLines: 1,
-	});
-	const safeTitle = escapeDrawtext(titleFit.text);
-	const safeSub = escapeDrawtext(subFit.text);
-	const titleFontSize = Math.max(
-		16,
-		Math.round(H * 0.048 * titleFit.fontScale),
-	);
-	const subFontSize = Math.max(12, Math.round(H * 0.032 * subFit.fontScale));
-	const titleX = Math.round(W * INTRO_TEXT_X_PCT);
-	const titleY = Math.round(H * INTRO_TEXT_Y_PCT);
-	const subY = Math.round(H * INTRO_SUBTITLE_Y_PCT);
-	const textInStart = INTRO_TEXT_FADE_IN_START;
-	const textInDur = INTRO_TEXT_FADE_IN_DUR;
-	const textInEnd = textInStart + textInDur;
-	const alphaExprRaw = `if(lt(t,${textInStart.toFixed(
-		2,
-	)}),0, if(lt(t,${textInEnd.toFixed(2)}),(t-${textInStart.toFixed(
-		2,
-	)})/${textInDur.toFixed(2)}, 1))`;
-	const alphaExpr = escapeFilterExpr(alphaExprRaw);
+  const titleMaxChars = Math.max(18, Math.round(W / 64));
+  const subMaxChars = Math.max(22, Math.round(W / 52));
+  // Keep intro text brief and easy to scan.
+  const titleFit = fitIntroText(title || "", {
+    baseMaxChars: titleMaxChars,
+    preferLines: 1,
+    maxLines: 2,
+  });
+  const subFit = fitIntroText(subtitle || "", {
+    baseMaxChars: subMaxChars,
+    preferLines: 1,
+    maxLines: 1,
+  });
+  const safeTitle = escapeDrawtext(titleFit.text);
+  const safeSub = escapeDrawtext(subFit.text);
+  const titleFontSize = Math.max(
+    16,
+    Math.round(H * 0.048 * titleFit.fontScale),
+  );
+  const subFontSize = Math.max(12, Math.round(H * 0.032 * subFit.fontScale));
+  const titleX = Math.round(W * INTRO_TEXT_X_PCT);
+  const titleY = Math.round(H * INTRO_TEXT_Y_PCT);
+  const subY = Math.round(H * INTRO_SUBTITLE_Y_PCT);
+  const textInStart = INTRO_TEXT_FADE_IN_START;
+  const textInDur = INTRO_TEXT_FADE_IN_DUR;
+  const textInEnd = textInStart + textInDur;
+  const alphaExprRaw = `if(lt(t,${textInStart.toFixed(
+    2,
+  )}),0, if(lt(t,${textInEnd.toFixed(2)}),(t-${textInStart.toFixed(
+    2,
+  )})/${textInDur.toFixed(2)}, 1))`;
+  const alphaExpr = escapeFilterExpr(alphaExprRaw);
 
-	const bgKind = detectFileType(bgImagePath)?.kind;
-	const isVideoBg = bgKind === "video";
-	const bgInfo = isVideoBg ? await probeMedia(bgImagePath) : null;
-	const needsSilentAudio = !bgInfo?.hasAudio;
-	// A subtle motion background + title fade in
-	const blurSigma = disableVideoBlur ? 0 : INTRO_VIDEO_BLUR_SIGMA;
-	const videoBlur = blurSigma > 0 ? `,gblur=sigma=${blurSigma.toFixed(2)}` : "";
-	const base = isVideoBg
-		? `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}${videoBlur},fps=${fps},format=yuv420p`
-		: `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},gblur=sigma=18,` +
-			`zoompan=z='min(1.12,zoom+0.0025)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps},format=yuv420p`;
-	const filters = [
-		base,
-		`drawtext=text='${safeTitle}'${fontOpt}:fontsize=${titleFontSize}:fontcolor=white:x=${titleX}:y=${titleY}-(text_h/2):shadowcolor=black:shadowx=2:shadowy=2:alpha='${alphaExpr}'`,
-	];
-	if (safeSub) {
-		filters.push(
-			`drawtext=text='${safeSub}'${fontOpt}:fontsize=${subFontSize}:fontcolor=white:x=${titleX}:y=${subY}-(text_h/2):shadowcolor=black:shadowx=2:shadowy=2:alpha='${alphaExpr}'`,
-		);
-	}
-	const vf = filters.join(",");
+  const bgKind = detectFileType(bgImagePath)?.kind;
+  const isVideoBg = bgKind === "video";
+  const bgInfo = isVideoBg ? await probeMedia(bgImagePath) : null;
+  const needsSilentAudio = !bgInfo?.hasAudio;
+  // A subtle motion background + title fade in
+  const blurSigma = disableVideoBlur ? 0 : INTRO_VIDEO_BLUR_SIGMA;
+  const videoBlur = blurSigma > 0 ? `,gblur=sigma=${blurSigma.toFixed(2)}` : "";
+  const base = isVideoBg
+    ? `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}${videoBlur},fps=${fps},format=yuv420p`
+    : `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},gblur=sigma=18,` +
+      `zoompan=z='min(1.12,zoom+0.0025)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps},format=yuv420p`;
+  const filters = [
+    base,
+    `drawtext=text='${safeTitle}'${fontOpt}:fontsize=${titleFontSize}:fontcolor=white:x=${titleX}:y=${titleY}-(text_h/2):shadowcolor=black:shadowx=2:shadowy=2:alpha='${alphaExpr}'`,
+  ];
+  if (safeSub) {
+    filters.push(
+      `drawtext=text='${safeSub}'${fontOpt}:fontsize=${subFontSize}:fontcolor=white:x=${titleX}:y=${subY}-(text_h/2):shadowcolor=black:shadowx=2:shadowy=2:alpha='${alphaExpr}'`,
+    );
+  }
+  const vf = filters.join(",");
 
-	const inputArgs = isVideoBg
-		? needsSilentAudio
-			? ["-stream_loop", "-1", "-i", bgImagePath]
-			: ["-i", bgImagePath]
-		: ["-loop", "1", "-i", bgImagePath];
-	const audioArgs = needsSilentAudio
-		? ["-f", "lavfi", "-i", `anullsrc=r=${AUDIO_SR}:cl=stereo`]
-		: [];
-	const audioMap = needsSilentAudio ? "1:a:0" : "0:a:0";
+  const inputArgs = isVideoBg
+    ? needsSilentAudio
+      ? ["-stream_loop", "-1", "-i", bgImagePath]
+      : ["-i", bgImagePath]
+    : ["-loop", "1", "-i", bgImagePath];
+  const audioArgs = needsSilentAudio
+    ? ["-f", "lavfi", "-i", `anullsrc=r=${AUDIO_SR}:cl=stereo`]
+    : [];
+  const audioMap = needsSilentAudio ? "1:a:0" : "0:a:0";
 
-	await spawnBin(
-		ffmpegPath,
-		[
-			...inputArgs,
-			...audioArgs,
-			"-t",
-			dur.toFixed(3),
-			"-vf",
-			vf,
-			"-map",
-			"0:v:0",
-			"-map",
-			audioMap,
-			"-r",
-			String(fps),
-			"-c:v",
-			"libx264",
-			"-preset",
-			INTERMEDIATE_PRESET,
-			"-crf",
-			String(INTERMEDIATE_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-c:a",
-			"aac",
-			"-b:a",
-			AUDIO_BITRATE,
-			"-shortest",
-			"-movflags",
-			"+faststart",
-			"-y",
-			outPath,
-		],
-		"intro_clip",
-		{ timeoutMs: 180000 },
-	);
+  await spawnBin(
+    ffmpegPath,
+    [
+      ...inputArgs,
+      ...audioArgs,
+      "-t",
+      dur.toFixed(3),
+      "-vf",
+      vf,
+      "-map",
+      "0:v:0",
+      "-map",
+      audioMap,
+      "-r",
+      String(fps),
+      "-c:v",
+      "libx264",
+      "-preset",
+      INTERMEDIATE_PRESET,
+      "-crf",
+      String(INTERMEDIATE_VIDEO_CRF),
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      AUDIO_BITRATE,
+      "-shortest",
+      "-movflags",
+      "+faststart",
+      "-y",
+      outPath,
+    ],
+    "intro_clip",
+    { timeoutMs: 180000 },
+  );
 
-	return outPath;
+  return outPath;
 }
 
 /* ---------------------------------------------------------------
@@ -12151,204 +12330,204 @@ async function createIntroClip({
  * ------------------------------------------------------------- */
 
 function positionToExpr(position = "topRight") {
-	switch (position) {
-		case "topLeft":
-			return { x: String(OVERLAY_MARGIN_PX), y: String(OVERLAY_MARGIN_PX) };
-		case "bottomLeft":
-			return {
-				x: String(OVERLAY_MARGIN_PX),
-				y: `main_h-overlay_h-${OVERLAY_MARGIN_PX}`,
-			};
-		case "bottomRight":
-			return {
-				x: `main_w-overlay_w-${OVERLAY_MARGIN_PX}`,
-				y: `main_h-overlay_h-${OVERLAY_MARGIN_PX}`,
-			};
-		case "center":
-			return { x: "(main_w-overlay_w)/2", y: "(main_h-overlay_h)/2" };
-		case "topRight":
-		default:
-			return {
-				x: `main_w-overlay_w-${OVERLAY_MARGIN_PX}`,
-				y: String(OVERLAY_MARGIN_PX),
-			};
-	}
+  switch (position) {
+    case "topLeft":
+      return { x: String(OVERLAY_MARGIN_PX), y: String(OVERLAY_MARGIN_PX) };
+    case "bottomLeft":
+      return {
+        x: String(OVERLAY_MARGIN_PX),
+        y: `main_h-overlay_h-${OVERLAY_MARGIN_PX}`,
+      };
+    case "bottomRight":
+      return {
+        x: `main_w-overlay_w-${OVERLAY_MARGIN_PX}`,
+        y: `main_h-overlay_h-${OVERLAY_MARGIN_PX}`,
+      };
+    case "center":
+      return { x: "(main_w-overlay_w)/2", y: "(main_h-overlay_h)/2" };
+    case "topRight":
+    default:
+      return {
+        x: `main_w-overlay_w-${OVERLAY_MARGIN_PX}`,
+        y: String(OVERLAY_MARGIN_PX),
+      };
+  }
 }
 
 function normalizeOverlayAssets(list = [], totalDurationSec) {
-	if (!Array.isArray(list)) return [];
-	const out = [];
-	for (const raw of list) {
-		if (!raw || typeof raw !== "object") continue;
-		const startSec = Number(raw.startSec);
-		const endSec = Number(raw.endSec);
-		if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) continue;
-		if (endSec <= startSec) continue;
-		const url = String(raw.url || "").trim();
-		if (!url) continue;
-		out.push({
-			type: raw.type === "video" ? "video" : "image",
-			url,
-			startSec: clampNumber(startSec, 0, Math.max(1, totalDurationSec)),
-			endSec: clampNumber(endSec, 0, Math.max(1, totalDurationSec)),
-			position: String(raw.position || OVERLAY_DEFAULT_POSITION),
-			scale: clampNumber(Number(raw.scale || OVERLAY_SCALE), 0.14, 0.6),
-		});
-	}
-	return out;
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== "object") continue;
+    const startSec = Number(raw.startSec);
+    const endSec = Number(raw.endSec);
+    if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) continue;
+    if (endSec <= startSec) continue;
+    const url = String(raw.url || "").trim();
+    if (!url) continue;
+    out.push({
+      type: raw.type === "video" ? "video" : "image",
+      url,
+      startSec: clampNumber(startSec, 0, Math.max(1, totalDurationSec)),
+      endSec: clampNumber(endSec, 0, Math.max(1, totalDurationSec)),
+      position: String(raw.position || OVERLAY_DEFAULT_POSITION),
+      scale: clampNumber(Number(raw.scale || OVERLAY_SCALE), 0.14, 0.6),
+    });
+  }
+  return out;
 }
 
 function buildAutoOverlaysFromTimeline({
-	timeline = [],
-	images = [],
-	introSec = 0,
-	totalDurationSec = 0,
+  timeline = [],
+  images = [],
+  introSec = 0,
+  totalDurationSec = 0,
 }) {
-	const urls = Array.isArray(images) ? images.filter(Boolean) : [];
-	if (!urls.length) return [];
+  const urls = Array.isArray(images) ? images.filter(Boolean) : [];
+  if (!urls.length) return [];
 
-	const count = Math.min(Math.max(3, Math.min(urls.length, 5)), urls.length);
-	const segments = Array.isArray(timeline)
-		? timeline.filter(
-				(s) =>
-					Number.isFinite(Number(s.startSec)) &&
-					Number.isFinite(Number(s.endSec)) &&
-					Number(s.endSec) > Number(s.startSec),
-			)
-		: [];
+  const count = Math.min(Math.max(3, Math.min(urls.length, 5)), urls.length);
+  const segments = Array.isArray(timeline)
+    ? timeline.filter(
+        (s) =>
+          Number.isFinite(Number(s.startSec)) &&
+          Number.isFinite(Number(s.endSec)) &&
+          Number(s.endSec) > Number(s.startSec),
+      )
+    : [];
 
-	const positions = [OVERLAY_DEFAULT_POSITION];
-	const n = Math.min(count, segments.length || count);
-	const overlays = [];
+  const positions = [OVERLAY_DEFAULT_POSITION];
+  const n = Math.min(count, segments.length || count);
+  const overlays = [];
 
-	for (let i = 0; i < n; i++) {
-		let startSec = 0;
-		let endSec = 0;
+  for (let i = 0; i < n; i++) {
+    let startSec = 0;
+    let endSec = 0;
 
-		if (segments.length) {
-			const idx = Math.min(
-				segments.length - 1,
-				Math.floor(((i + 0.5) * segments.length) / n),
-			);
-			const seg = segments[idx];
-			const segDur = Math.max(0.6, Number(seg.endSec) - Number(seg.startSec));
-			const win = clampNumber(segDur * 0.5, 2.2, 4.2);
-			startSec = Number(seg.startSec) + Math.max(0.2, segDur * 0.2);
-			endSec = Math.min(Number(seg.endSec) - 0.2, startSec + win);
-		} else {
-			const available = Math.max(
-				1,
-				Number(totalDurationSec || 0) - Number(introSec || 0),
-			);
-			const slotCenter =
-				Number(introSec || 0) + (available / (n + 1)) * (i + 1);
-			startSec = Math.max(Number(introSec || 0) + 0.2, slotCenter - 1.6);
-			endSec = Math.min(Number(totalDurationSec || 0) - 0.2, startSec + 3.2);
-		}
+    if (segments.length) {
+      const idx = Math.min(
+        segments.length - 1,
+        Math.floor(((i + 0.5) * segments.length) / n),
+      );
+      const seg = segments[idx];
+      const segDur = Math.max(0.6, Number(seg.endSec) - Number(seg.startSec));
+      const win = clampNumber(segDur * 0.5, 2.2, 4.2);
+      startSec = Number(seg.startSec) + Math.max(0.2, segDur * 0.2);
+      endSec = Math.min(Number(seg.endSec) - 0.2, startSec + win);
+    } else {
+      const available = Math.max(
+        1,
+        Number(totalDurationSec || 0) - Number(introSec || 0),
+      );
+      const slotCenter =
+        Number(introSec || 0) + (available / (n + 1)) * (i + 1);
+      startSec = Math.max(Number(introSec || 0) + 0.2, slotCenter - 1.6);
+      endSec = Math.min(Number(totalDurationSec || 0) - 0.2, startSec + 3.2);
+    }
 
-		if (endSec <= startSec) continue;
-		overlays.push({
-			type: "image",
-			url: urls[i],
-			startSec,
-			endSec,
-			position: positions[i % positions.length],
-			scale: OVERLAY_SCALE,
-		});
-	}
+    if (endSec <= startSec) continue;
+    overlays.push({
+      type: "image",
+      url: urls[i],
+      startSec,
+      endSec,
+      position: positions[i % positions.length],
+      scale: OVERLAY_SCALE,
+    });
+  }
 
-	return overlays;
+  return overlays;
 }
 
 async function applyOverlays(baseVideoPath, overlays, outPath) {
-	if (!overlays.length) {
-		fs.copyFileSync(baseVideoPath, outPath);
-		return outPath;
-	}
+  if (!overlays.length) {
+    fs.copyFileSync(baseVideoPath, outPath);
+    return outPath;
+  }
 
-	const inputs = ["-i", baseVideoPath];
-	const filterParts = ["[0:v]format=yuv420p[base]"]; // base video
-	let last = "base";
+  const inputs = ["-i", baseVideoPath];
+  const filterParts = ["[0:v]format=yuv420p[base]"]; // base video
+  let last = "base";
 
-	overlays.forEach((ov, idx) => {
-		if (ov.type === "image") inputs.push("-loop", "1");
-		inputs.push("-i", ov.localPath);
+  overlays.forEach((ov, idx) => {
+    if (ov.type === "image") inputs.push("-loop", "1");
+    inputs.push("-i", ov.localPath);
 
-		const inV = `${idx + 1}:v`;
-		const prep = `ovp${idx}`;
-		const scaled = `ovs${idx}`;
-		const timed = OVERLAY_BORDER_PX > 0 ? `ovb${idx}` : scaled;
-		const baseRef = `base${idx}`;
-		const out = `v${idx}`;
+    const inV = `${idx + 1}:v`;
+    const prep = `ovp${idx}`;
+    const scaled = `ovs${idx}`;
+    const timed = OVERLAY_BORDER_PX > 0 ? `ovb${idx}` : scaled;
+    const baseRef = `base${idx}`;
+    const out = `v${idx}`;
 
-		const dur = Math.max(0.1, ov.endSec - ov.startSec);
-		const pos = positionToExpr(ov.position);
+    const dur = Math.max(0.1, ov.endSec - ov.startSec);
+    const pos = positionToExpr(ov.position);
 
-		filterParts.push(
-			`[${inV}]format=rgba,trim=0:${dur.toFixed(3)},setpts=PTS-STARTPTS+${
-				ov.startSec
-			}/TB[${prep}]`,
-		);
+    filterParts.push(
+      `[${inV}]format=rgba,trim=0:${dur.toFixed(3)},setpts=PTS-STARTPTS+${
+        ov.startSec
+      }/TB[${prep}]`,
+    );
 
-		// Scale with a hard cap to avoid covering the presenter.
-		filterParts.push(
-			`[${prep}][${last}]scale2ref=w='min(iw*${ov.scale},main_w*${OVERLAY_MAX_WIDTH_PCT})':h='-1'[${scaled}][${baseRef}]`,
-		);
+    // Scale with a hard cap to avoid covering the presenter.
+    filterParts.push(
+      `[${prep}][${last}]scale2ref=w='min(iw*${ov.scale},main_w*${OVERLAY_MAX_WIDTH_PCT})':h='-1'[${scaled}][${baseRef}]`,
+    );
 
-		if (OVERLAY_BORDER_PX > 0) {
-			filterParts.push(
-				`[${scaled}]pad=iw+${OVERLAY_BORDER_PX * 2}:ih+${
-					OVERLAY_BORDER_PX * 2
-				}:${OVERLAY_BORDER_PX}:${OVERLAY_BORDER_PX}:color=black@0.25[${timed}]`,
-			);
-		}
+    if (OVERLAY_BORDER_PX > 0) {
+      filterParts.push(
+        `[${scaled}]pad=iw+${OVERLAY_BORDER_PX * 2}:ih+${
+          OVERLAY_BORDER_PX * 2
+        }:${OVERLAY_BORDER_PX}:${OVERLAY_BORDER_PX}:color=black@0.25[${timed}]`,
+      );
+    }
 
-		filterParts.push(
-			`[${baseRef}][${timed}]overlay=${pos.x}:${
-				pos.y
-			}:enable='between(t,${ov.startSec.toFixed(3)},${ov.endSec.toFixed(
-				3,
-			)})'[${out}]`,
-		);
+    filterParts.push(
+      `[${baseRef}][${timed}]overlay=${pos.x}:${
+        pos.y
+      }:enable='between(t,${ov.startSec.toFixed(3)},${ov.endSec.toFixed(
+        3,
+      )})'[${out}]`,
+    );
 
-		last = out;
-	});
+    last = out;
+  });
 
-	filterParts.push(`[${last}]format=yuv420p[vout]`);
+  filterParts.push(`[${last}]format=yuv420p[vout]`);
 
-	await spawnBin(
-		ffmpegPath,
-		[
-			...inputs,
-			"-filter_complex",
-			filterParts.join(";"),
-			"-map",
-			"[vout]",
-			"-map",
-			"0:a?",
-			"-c:v",
-			"libx264",
-			"-preset",
-			INTERMEDIATE_PRESET,
-			"-crf",
-			String(INTERMEDIATE_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-c:a",
-			"aac",
-			"-b:a",
-			AUDIO_BITRATE,
-			"-shortest",
-			"-movflags",
-			"+faststart",
-			"-y",
-			outPath,
-		],
-		"overlay",
-		{ timeoutMs: 360000 },
-	);
+  await spawnBin(
+    ffmpegPath,
+    [
+      ...inputs,
+      "-filter_complex",
+      filterParts.join(";"),
+      "-map",
+      "[vout]",
+      "-map",
+      "0:a?",
+      "-c:v",
+      "libx264",
+      "-preset",
+      INTERMEDIATE_PRESET,
+      "-crf",
+      String(INTERMEDIATE_VIDEO_CRF),
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      AUDIO_BITRATE,
+      "-shortest",
+      "-movflags",
+      "+faststart",
+      "-y",
+      outPath,
+    ],
+    "overlay",
+    { timeoutMs: 360000 },
+  );
 
-	return outPath;
+  return outPath;
 }
 
 /* ---------------------------------------------------------------
@@ -12356,282 +12535,282 @@ async function applyOverlays(baseVideoPath, overlays, outPath) {
  * ------------------------------------------------------------- */
 
 async function jamendoSearchTracks({
-	fuzzytags,
-	speed,
-	instrumentalOnly = true,
+  fuzzytags,
+  speed,
+  instrumentalOnly = true,
 }) {
-	if (!JAMENDO_CLIENT_ID) return [];
+  if (!JAMENDO_CLIENT_ID) return [];
 
-	const params = {
-		client_id: JAMENDO_CLIENT_ID,
-		format: "json",
-		limit: 20,
-		fuzzytags: String(fuzzytags || "cinematic, trailer, energetic").replace(
-			/\s+/g,
-			"+",
-		),
-		include: "licenses",
-		audioformat: "mp32",
-		speed: Array.isArray(speed) && speed.length ? speed.join("+") : "medium",
-		order: "popularity_total",
-		...(instrumentalOnly ? { vocalinstrumental: "instrumental" } : {}),
-	};
+  const params = {
+    client_id: JAMENDO_CLIENT_ID,
+    format: "json",
+    limit: 20,
+    fuzzytags: String(fuzzytags || "cinematic, trailer, energetic").replace(
+      /\s+/g,
+      "+",
+    ),
+    include: "licenses",
+    audioformat: "mp32",
+    speed: Array.isArray(speed) && speed.length ? speed.join("+") : "medium",
+    order: "popularity_total",
+    ...(instrumentalOnly ? { vocalinstrumental: "instrumental" } : {}),
+  };
 
-	const url = `${JAMENDO_BASE}/tracks/`;
-	const res = await axios.get(url, {
-		params,
-		timeout: 15000,
-		validateStatus: (s) => s < 500,
-	});
-	if (res.status >= 300) return [];
+  const url = `${JAMENDO_BASE}/tracks/`;
+  const res = await axios.get(url, {
+    params,
+    timeout: 15000,
+    validateStatus: (s) => s < 500,
+  });
+  if (res.status >= 300) return [];
 
-	const results = Array.isArray(res.data?.results) ? res.data.results : [];
-	return results
-		.map((t) => ({
-			id: t.id,
-			name: t.name,
-			artist: t.artist_name,
-			audio: t.audio,
-			shareurl: t.shareurl,
-			duration: Number(t.duration || 0),
-		}))
-		.filter((t) => t.audio && t.duration >= 30)
-		.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+  const results = Array.isArray(res.data?.results) ? res.data.results : [];
+  return results
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      artist: t.artist_name,
+      audio: t.audio,
+      shareurl: t.shareurl,
+      duration: Number(t.duration || 0),
+    }))
+    .filter((t) => t.audio && t.duration >= 30)
+    .sort((a, b) => (b.duration || 0) - (a.duration || 0));
 }
 
 async function validateMusicFile(filePath) {
-	if (!filePath || !fs.existsSync(filePath)) return false;
-	const info = await probeMedia(filePath);
-	if (!info.hasAudio) return false;
-	if (!info.duration || info.duration < 10) return false;
-	return true;
+  if (!filePath || !fs.existsSync(filePath)) return false;
+  const info = await probeMedia(filePath);
+  if (!info.hasAudio) return false;
+  if (!info.duration || info.duration < 10) return false;
+  return true;
 }
 
 async function resolveBackgroundMusic({
-	jobId,
-	topic,
-	disableMusic,
-	requestedMusicUrl,
+  jobId,
+  topic,
+  disableMusic,
+  requestedMusicUrl,
 }) {
-	if (disableMusic) return null;
+  if (disableMusic) return null;
 
-	// 1) explicit musicUrl
-	const musicUrl = String(requestedMusicUrl || "").trim();
-	if (musicUrl) {
-		const out = path.join(TMP_ROOT, `music_req_${jobId}.mp3`);
-		await downloadToFile(musicUrl, out, 35000, 2);
-		if (await validateMusicFile(out)) {
-			logJob(jobId, "music ready (requested)", { path: path.basename(out) });
-			return out;
-		}
-		safeUnlink(out);
-		throw new Error("Requested musicUrl downloaded but is not valid audio");
-	}
+  // 1) explicit musicUrl
+  const musicUrl = String(requestedMusicUrl || "").trim();
+  if (musicUrl) {
+    const out = path.join(TMP_ROOT, `music_req_${jobId}.mp3`);
+    await downloadToFile(musicUrl, out, 35000, 2);
+    if (await validateMusicFile(out)) {
+      logJob(jobId, "music ready (requested)", { path: path.basename(out) });
+      return out;
+    }
+    safeUnlink(out);
+    throw new Error("Requested musicUrl downloaded but is not valid audio");
+  }
 
-	// 2) Default env fallback (preferred)
-	if (DEFAULT_MUSIC_PATH && fs.existsSync(DEFAULT_MUSIC_PATH)) {
-		if (await validateMusicFile(DEFAULT_MUSIC_PATH)) {
-			logJob(jobId, "music ready (default path)", { path: DEFAULT_MUSIC_PATH });
-			return DEFAULT_MUSIC_PATH;
-		}
-	}
-	if (DEFAULT_MUSIC_URL) {
-		const out = path.join(TMP_ROOT, `music_default_${jobId}.mp3`);
-		await downloadToFile(DEFAULT_MUSIC_URL, out, 35000, 2);
-		if (await validateMusicFile(out)) {
-			logJob(jobId, "music ready (default url)", { path: path.basename(out) });
-			return out;
-		}
-		safeUnlink(out);
-	}
+  // 2) Default env fallback (preferred)
+  if (DEFAULT_MUSIC_PATH && fs.existsSync(DEFAULT_MUSIC_PATH)) {
+    if (await validateMusicFile(DEFAULT_MUSIC_PATH)) {
+      logJob(jobId, "music ready (default path)", { path: DEFAULT_MUSIC_PATH });
+      return DEFAULT_MUSIC_PATH;
+    }
+  }
+  if (DEFAULT_MUSIC_URL) {
+    const out = path.join(TMP_ROOT, `music_default_${jobId}.mp3`);
+    await downloadToFile(DEFAULT_MUSIC_URL, out, 35000, 2);
+    if (await validateMusicFile(out)) {
+      logJob(jobId, "music ready (default url)", { path: path.basename(out) });
+      return out;
+    }
+    safeUnlink(out);
+  }
 
-	// 3) Jamendo based on topic (fallback)
-	const tags = `cinematic, upbeat, modern, instrumental, ${String(
-		topic || "",
-	).slice(0, 40)}`;
-	const speeds = ["medium", "high"];
-	const candidates = await jamendoSearchTracks({
-		fuzzytags: tags,
-		speed: speeds,
-		instrumentalOnly: true,
-	});
+  // 3) Jamendo based on topic (fallback)
+  const tags = `cinematic, upbeat, modern, instrumental, ${String(
+    topic || "",
+  ).slice(0, 40)}`;
+  const speeds = ["medium", "high"];
+  const candidates = await jamendoSearchTracks({
+    fuzzytags: tags,
+    speed: speeds,
+    instrumentalOnly: true,
+  });
 
-	for (let i = 0; i < Math.min(10, candidates.length); i++) {
-		const c = candidates[i];
-		try {
-			const out = path.join(TMP_ROOT, `music_${jobId}_${c.id}.mp3`);
-			await downloadToFile(c.audio, out, 35000, 1);
-			if (await validateMusicFile(out)) {
-				logJob(jobId, "jamendo picked track", {
-					id: c.id,
-					name: c.name,
-					artist: c.artist,
-					duration: c.duration,
-					shareurl: c.shareurl,
-				});
-				return out;
-			}
-			safeUnlink(out);
-		} catch {
-			// try next
-		}
-	}
+  for (let i = 0; i < Math.min(10, candidates.length); i++) {
+    const c = candidates[i];
+    try {
+      const out = path.join(TMP_ROOT, `music_${jobId}_${c.id}.mp3`);
+      await downloadToFile(c.audio, out, 35000, 1);
+      if (await validateMusicFile(out)) {
+        logJob(jobId, "jamendo picked track", {
+          id: c.id,
+          name: c.name,
+          artist: c.artist,
+          duration: c.duration,
+          shareurl: c.shareurl,
+        });
+        return out;
+      }
+      safeUnlink(out);
+    } catch {
+      // try next
+    }
+  }
 
-	throw new Error(
-		"Background music is required but could not be resolved. Provide JAMENDO_CLIENT_ID or musicUrl or LONG_VIDEO_DEFAULT_MUSIC_URL/PATH.",
-	);
+  throw new Error(
+    "Background music is required but could not be resolved. Provide JAMENDO_CLIENT_ID or musicUrl or LONG_VIDEO_DEFAULT_MUSIC_URL/PATH.",
+  );
 }
 
 async function mixBackgroundMusic(
-	baseVideoPath,
-	musicPath,
-	outPath,
-	{ jobId },
+  baseVideoPath,
+  musicPath,
+  outPath,
+  { jobId },
 ) {
-	const dur = await probeDurationSeconds(baseVideoPath);
-	const duration = dur && dur > 1 ? dur : null;
+  const dur = await probeDurationSeconds(baseVideoPath);
+  const duration = dur && dur > 1 ? dur : null;
 
-	const vol = MUSIC_VOLUME;
-	const threshold = MUSIC_DUCK_THRESHOLD;
-	const ratio = MUSIC_DUCK_RATIO;
-	const attack = MUSIC_DUCK_ATTACK;
-	const release = MUSIC_DUCK_RELEASE;
-	const makeup = MUSIC_DUCK_MAKEUP;
+  const vol = MUSIC_VOLUME;
+  const threshold = MUSIC_DUCK_THRESHOLD;
+  const ratio = MUSIC_DUCK_RATIO;
+  const attack = MUSIC_DUCK_ATTACK;
+  const release = MUSIC_DUCK_RELEASE;
+  const makeup = MUSIC_DUCK_MAKEUP;
 
-	const args = ["-i", baseVideoPath, "-stream_loop", "-1", "-i", musicPath];
-	const filter =
-		`[0:a]aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,asplit=2[vox][vox_sc];` +
-		`[1:a]aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,volume=${vol.toFixed(
-			3,
-		)},atrim=0:${duration ? duration.toFixed(2) : "9999"}[music];` +
-		`[music][vox_sc]sidechaincompress=threshold=${threshold.toFixed(
-			3,
-		)}:ratio=${ratio.toFixed(2)}:attack=${attack.toFixed(
-			0,
-		)}:release=${release.toFixed(0)}:makeup=${makeup.toFixed(2)}[ducked];` +
-		`[vox][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`;
+  const args = ["-i", baseVideoPath, "-stream_loop", "-1", "-i", musicPath];
+  const filter =
+    `[0:a]aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,asplit=2[vox][vox_sc];` +
+    `[1:a]aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,volume=${vol.toFixed(
+      3,
+    )},atrim=0:${duration ? duration.toFixed(2) : "9999"}[music];` +
+    `[music][vox_sc]sidechaincompress=threshold=${threshold.toFixed(
+      3,
+    )}:ratio=${ratio.toFixed(2)}:attack=${attack.toFixed(
+      0,
+    )}:release=${release.toFixed(0)}:makeup=${makeup.toFixed(2)}[ducked];` +
+    `[vox][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`;
 
-	logJob(jobId, "music mix params", {
-		volume: vol,
-		duck: { threshold, ratio, attack, release, makeup },
-		duration,
-	});
+  logJob(jobId, "music mix params", {
+    volume: vol,
+    duck: { threshold, ratio, attack, release, makeup },
+    duration,
+  });
 
-	args.push(
-		"-filter_complex",
-		filter,
-		"-map",
-		"0:v",
-		"-map",
-		"[aout]",
-		"-c:v",
-		"copy",
-		"-c:a",
-		"aac",
-		"-b:a",
-		AUDIO_BITRATE,
-		"-shortest",
-		"-movflags",
-		"+faststart",
-		"-y",
-		outPath,
-	);
+  args.push(
+    "-filter_complex",
+    filter,
+    "-map",
+    "0:v",
+    "-map",
+    "[aout]",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-b:a",
+    AUDIO_BITRATE,
+    "-shortest",
+    "-movflags",
+    "+faststart",
+    "-y",
+    outPath,
+  );
 
-	await spawnBin(ffmpegPath, args, "music_mix", { timeoutMs: 240000 });
-	return outPath;
+  await spawnBin(ffmpegPath, args, "music_mix", { timeoutMs: 240000 });
+  return outPath;
 }
 
 async function finalizeVideoWithFadeOut({
-	inputPath,
-	outputPath,
-	fadeOutSec,
-	outCfg = {},
+  inputPath,
+  outputPath,
+  fadeOutSec,
+  outCfg = {},
 }) {
-	const dur = await probeDurationSeconds(inputPath);
-	const safeFade =
-		Number.isFinite(fadeOutSec) && fadeOutSec > 0 ? fadeOutSec : 0;
-	const fadeDur = clampNumber(
-		safeFade,
-		0,
-		dur > 0 ? Math.min(1.2, dur / 2) : 0,
-	);
-	const shouldFade = Boolean(fadeDur && dur && dur >= 0.4);
-	const start = shouldFade ? Math.max(0, dur - fadeDur) : 0;
+  const dur = await probeDurationSeconds(inputPath);
+  const safeFade =
+    Number.isFinite(fadeOutSec) && fadeOutSec > 0 ? fadeOutSec : 0;
+  const fadeDur = clampNumber(
+    safeFade,
+    0,
+    dur > 0 ? Math.min(1.2, dur / 2) : 0,
+  );
+  const shouldFade = Boolean(fadeDur && dur && dur >= 0.4);
+  const start = shouldFade ? Math.max(0, dur - fadeDur) : 0;
 
-	const { w: outW, h: outH } = computeFinalMasterSize(outCfg);
-	const fps = Number(outCfg?.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
-	const gop = Math.max(12, Math.round(fps * FINAL_GOP_SECONDS));
+  const { w: outW, h: outH } = computeFinalMasterSize(outCfg);
+  const fps = Number(outCfg?.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+  const gop = Math.max(12, Math.round(fps * FINAL_GOP_SECONDS));
 
-	const videoFilters = [
-		`scale=${outW}:${outH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${outW}:${outH}`,
-		`fps=${fps}`,
-		buildWatermarkFilter(),
-	];
-	if (shouldFade) {
-		videoFilters.push(
-			`fade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
-		);
-	}
-	videoFilters.push("format=yuv420p");
+  const videoFilters = [
+    `scale=${outW}:${outH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${outW}:${outH}`,
+    `fps=${fps}`,
+    buildWatermarkFilter(),
+  ];
+  if (shouldFade) {
+    videoFilters.push(
+      `fade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
+    );
+  }
+  videoFilters.push("format=yuv420p");
 
-	const audioFilters = [
-		`aresample=${AUDIO_SR}`,
-		"aformat=channel_layouts=stereo:sample_fmts=fltp",
-	];
-	if (shouldFade) {
-		audioFilters.push(
-			`afade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
-		);
-	}
-	audioFilters.push(FINAL_LOUDNORM_FILTER);
+  const audioFilters = [
+    `aresample=${AUDIO_SR}`,
+    "aformat=channel_layouts=stereo:sample_fmts=fltp",
+  ];
+  if (shouldFade) {
+    audioFilters.push(
+      `afade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
+    );
+  }
+  audioFilters.push(FINAL_LOUDNORM_FILTER);
 
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-i",
-			inputPath,
-			"-vf",
-			videoFilters.join(","),
-			"-af",
-			audioFilters.join(","),
-			"-c:v",
-			"libx264",
-			"-preset",
-			FINAL_PRESET,
-			"-crf",
-			String(FINAL_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-g",
-			String(gop),
-			"-keyint_min",
-			String(gop),
-			"-sc_threshold",
-			"0",
-			"-c:a",
-			"aac",
-			"-b:a",
-			AUDIO_BITRATE,
-			"-ar",
-			String(AUDIO_SR),
-			"-ac",
-			"2",
-			"-movflags",
-			"+faststart",
-			"-colorspace",
-			FINAL_COLOR_SPACE,
-			"-color_primaries",
-			FINAL_COLOR_SPACE,
-			"-color_trc",
-			FINAL_COLOR_SPACE,
-			"-color_range",
-			FINAL_COLOR_RANGE,
-			"-y",
-			outputPath,
-		],
-		"final_master",
-		{ timeoutMs: FINAL_MASTER_TIMEOUT_MS },
-	);
+  await spawnBin(
+    ffmpegPath,
+    [
+      "-i",
+      inputPath,
+      "-vf",
+      videoFilters.join(","),
+      "-af",
+      audioFilters.join(","),
+      "-c:v",
+      "libx264",
+      "-preset",
+      FINAL_PRESET,
+      "-crf",
+      String(FINAL_VIDEO_CRF),
+      "-pix_fmt",
+      "yuv420p",
+      "-g",
+      String(gop),
+      "-keyint_min",
+      String(gop),
+      "-sc_threshold",
+      "0",
+      "-c:a",
+      "aac",
+      "-b:a",
+      AUDIO_BITRATE,
+      "-ar",
+      String(AUDIO_SR),
+      "-ac",
+      "2",
+      "-movflags",
+      "+faststart",
+      "-colorspace",
+      FINAL_COLOR_SPACE,
+      "-color_primaries",
+      FINAL_COLOR_SPACE,
+      "-color_trc",
+      FINAL_COLOR_SPACE,
+      "-color_range",
+      FINAL_COLOR_RANGE,
+      "-y",
+      outputPath,
+    ],
+    "final_master",
+    { timeoutMs: FINAL_MASTER_TIMEOUT_MS },
+  );
 }
 
 /* ---------------------------------------------------------------
@@ -12639,26 +12818,26 @@ async function finalizeVideoWithFadeOut({
  * ------------------------------------------------------------- */
 
 function parseTimeOfDay(timeOfDay) {
-	const raw = String(timeOfDay || "").trim();
-	const m = raw.match(/^(\d{1,2}):(\d{2})$/);
-	if (!m) return null;
-	const hh = Number(m[1]);
-	const mm = Number(m[2]);
-	if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
-	if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
-	return { hh, mm };
+  const raw = String(timeOfDay || "").trim();
+  const m = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return { hh, mm };
 }
 
 function computeNextRun({ scheduleType, timeOfDay, startDate }) {
-	const t = parseTimeOfDay(timeOfDay);
-	if (!t) return null;
-	let next = dayjs(startDate).hour(t.hh).minute(t.mm).second(0);
-	if (next.isBefore(dayjs())) {
-		if (scheduleType === "daily") next = next.add(1, "day");
-		else if (scheduleType === "weekly") next = next.add(1, "week");
-		else if (scheduleType === "monthly") next = next.add(1, "month");
-	}
-	return next.toDate();
+  const t = parseTimeOfDay(timeOfDay);
+  if (!t) return null;
+  let next = dayjs(startDate).hour(t.hh).minute(t.mm).second(0);
+  if (next.isBefore(dayjs())) {
+    if (scheduleType === "daily") next = next.add(1, "day");
+    else if (scheduleType === "weekly") next = next.add(1, "week");
+    else if (scheduleType === "monthly") next = next.add(1, "month");
+  }
+  return next.toDate();
 }
 
 /* ---------------------------------------------------------------
@@ -12666,1257 +12845,1257 @@ function computeNextRun({ scheduleType, timeOfDay, startDate }) {
  * ------------------------------------------------------------- */
 
 async function runLongVideoJob(
-	jobId,
-	payload,
-	baseUrl,
-	user = null,
-	controllerConfig = {},
+  jobId,
+  payload,
+  baseUrl,
+  user = null,
+  controllerConfig = {},
 ) {
-	const controllerOptions =
-		normalizeLongVideoControllerConfig(controllerConfig);
-	const tmpDir = path.join(TMP_ROOT, `job_${jobId}`);
-	ensureDir(tmpDir);
+  const controllerOptions =
+    normalizeLongVideoControllerConfig(controllerConfig);
+  const tmpDir = path.join(TMP_ROOT, `job_${jobId}`);
+  ensureDir(tmpDir);
 
-	try {
-		updateJob(jobId, { status: "running", progressPct: 1 });
+  try {
+    updateJob(jobId, { status: "running", progressPct: 1 });
 
-		const {
-			preferredTopicHint,
-			category,
-			language,
-			targetDurationSec,
-			output,
-			presenterAssetUrl,
-			voiceoverUrl,
-			musicUrl,
-			disableMusic,
-			dryRun,
-			overlayAssets,
-			youtubeAccessToken,
-			youtubeRefreshToken,
-			youtubeTokenExpiresAt,
-			youtubeCategory,
-		} = payload;
-		const hasProvidedVoiceoverUrl = Boolean(voiceoverUrl);
-		const voiceoverUrlLocked = String(voiceoverUrl || "").trim();
-		const enableRunwayPresenterMotion = Boolean(
-			payload.enableRunwayPresenterMotion ??
-			controllerOptions.enableRunwayPresenterMotion,
-		);
-		const enableWardrobeEdit = Boolean(
-			payload.enableWardrobeEdit ?? controllerOptions.enableWardrobeEdit,
-		);
-		const effectiveVoiceId = String(ELEVEN_FIXED_VOICE_ID || "").trim();
-		const contentTargetSec = Number(targetDurationSec || 0);
-		const categoryLabel =
-			normalizeCategoryLabel(category) || LONG_VIDEO_TRENDS_CATEGORY;
-		let introDurationSec = clampNumber(
-			DEFAULT_INTRO_SEC,
-			INTRO_MIN_SEC,
-			INTRO_MAX_SEC,
-		);
-		let outroDurationSec = clampNumber(
-			DEFAULT_OUTRO_SEC,
-			OUTRO_MIN_SEC,
-			OUTRO_MAX_SEC,
-		);
-		const totalTargetSec =
-			introDurationSec + contentTargetSec + outroDurationSec;
-		const youtubeUploadEnabled = !controllerOptions.disableYouTubeUpload;
-		const hasYouTubeTokens =
-			youtubeUploadEnabled &&
-			Boolean(
-				youtubeRefreshToken || youtubeAccessToken || user?.youtubeRefreshToken,
-			);
-		let thumbnailPath = "";
-		let thumbnailUrl = "";
-		let thumbnailPublicId = "";
-		let topicSourceSummary = [];
+    const {
+      preferredTopicHint,
+      category,
+      language,
+      targetDurationSec,
+      output,
+      presenterAssetUrl,
+      voiceoverUrl,
+      musicUrl,
+      disableMusic,
+      dryRun,
+      overlayAssets,
+      youtubeAccessToken,
+      youtubeRefreshToken,
+      youtubeTokenExpiresAt,
+      youtubeCategory,
+    } = payload;
+    const hasProvidedVoiceoverUrl = Boolean(voiceoverUrl);
+    const voiceoverUrlLocked = String(voiceoverUrl || "").trim();
+    const enableRunwayPresenterMotion = Boolean(
+      payload.enableRunwayPresenterMotion ??
+      controllerOptions.enableRunwayPresenterMotion,
+    );
+    const enableWardrobeEdit = Boolean(
+      payload.enableWardrobeEdit ?? controllerOptions.enableWardrobeEdit,
+    );
+    const effectiveVoiceId = String(ELEVEN_FIXED_VOICE_ID || "").trim();
+    const contentTargetSec = Number(targetDurationSec || 0);
+    const categoryLabel =
+      normalizeCategoryLabel(category) || LONG_VIDEO_TRENDS_CATEGORY;
+    let introDurationSec = clampNumber(
+      DEFAULT_INTRO_SEC,
+      INTRO_MIN_SEC,
+      INTRO_MAX_SEC,
+    );
+    let outroDurationSec = clampNumber(
+      DEFAULT_OUTRO_SEC,
+      OUTRO_MIN_SEC,
+      OUTRO_MAX_SEC,
+    );
+    const totalTargetSec =
+      introDurationSec + contentTargetSec + outroDurationSec;
+    const youtubeUploadEnabled = !controllerOptions.disableYouTubeUpload;
+    const hasYouTubeTokens =
+      youtubeUploadEnabled &&
+      Boolean(
+        youtubeRefreshToken || youtubeAccessToken || user?.youtubeRefreshToken,
+      );
+    let thumbnailPath = "";
+    let thumbnailUrl = "";
+    let thumbnailPublicId = "";
+    let topicSourceSummary = [];
 
-		logJob(jobId, "job started", {
-			controller: controllerOptions.controllerLabel,
-			dryRun,
-			requestedTargetSec: Number(targetDurationSec || 0),
-			contentTargetSec,
-			category: categoryLabel,
-			introSec: introDurationSec,
-			outroSec: outroDurationSec,
-			totalTargetSec,
-			output,
-			presenterAssetUrl: presenterAssetUrl ? "(provided)" : "(none)",
-			hasVoiceoverUrl: Boolean(voiceoverUrlLocked),
-			voiceoverLocked: Boolean(voiceoverUrlLocked),
-			hasMusicUrl: Boolean(musicUrl),
-			hasCseKeys: Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY),
-			hasRunway: Boolean(RUNWAY_API_KEY),
-			enableRunwayPresenterMotion: Boolean(enableRunwayPresenterMotion),
-			enableWardrobeEdit: Boolean(enableWardrobeEdit),
-			disableYouTubeUpload: Boolean(controllerOptions.disableYouTubeUpload),
-			voiceIdLocked: effectiveVoiceId,
-			hasYouTubeTokens,
-		});
-		if (hasProvidedVoiceoverUrl) {
-			logJob(jobId, "external narration locked", {
-				mode: "content_voiceover_url",
-			});
-		}
+    logJob(jobId, "job started", {
+      controller: controllerOptions.controllerLabel,
+      dryRun,
+      requestedTargetSec: Number(targetDurationSec || 0),
+      contentTargetSec,
+      category: categoryLabel,
+      introSec: introDurationSec,
+      outroSec: outroDurationSec,
+      totalTargetSec,
+      output,
+      presenterAssetUrl: presenterAssetUrl ? "(provided)" : "(none)",
+      hasVoiceoverUrl: Boolean(voiceoverUrlLocked),
+      voiceoverLocked: Boolean(voiceoverUrlLocked),
+      hasMusicUrl: Boolean(musicUrl),
+      hasCseKeys: Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY),
+      hasRunway: Boolean(RUNWAY_API_KEY),
+      enableRunwayPresenterMotion: Boolean(enableRunwayPresenterMotion),
+      enableWardrobeEdit: Boolean(enableWardrobeEdit),
+      disableYouTubeUpload: Boolean(controllerOptions.disableYouTubeUpload),
+      voiceIdLocked: effectiveVoiceId,
+      hasYouTubeTokens,
+    });
+    if (hasProvidedVoiceoverUrl) {
+      logJob(jobId, "external narration locked", {
+        mode: "content_voiceover_url",
+      });
+    }
 
-		if (dryRun) {
-			const dummyUrl = SHOULD_PERSIST_LONG_VIDEO
-				? `${baseUrl}/uploads/videos/long_${jobId}_dryrun.mp4`
-				: "";
-			updateJob(jobId, {
-				status: "completed",
-				progressPct: 100,
-				finalVideoUrl: dummyUrl || null,
-			});
-			logJob(jobId, "dry run completed", {
-				finalVideoUrl: dummyUrl || null,
-			});
-			return;
-		}
+    if (dryRun) {
+      const dummyUrl = SHOULD_PERSIST_LONG_VIDEO
+        ? `${baseUrl}/uploads/videos/long_${jobId}_dryrun.mp4`
+        : "";
+      updateJob(jobId, {
+        status: "completed",
+        progressPct: 100,
+        finalVideoUrl: dummyUrl || null,
+      });
+      logJob(jobId, "dry run completed", {
+        finalVideoUrl: dummyUrl || null,
+      });
+      return;
+    }
 
-		if (!ffmpegPath)
-			throw new Error("FFmpeg not found. Install ffmpeg or set FFMPEG_PATH.");
-		if (!SYNC_SO_API_KEY) throw new Error("SYNC_SO_API_KEY missing.");
-		if (!RUNWAY_API_KEY)
-			throw new Error(
-				"RUNWAY_API_KEY missing (required for presenter pipeline).",
-			);
-		if (!process.env.CHATGPT_API_TOKEN)
-			throw new Error("CHATGPT_API_TOKEN missing.");
-		if (!ELEVEN_API_KEY)
-			throw new Error(
-				"ELEVENLABS_API_KEY missing (required for intro/outro voice).",
-			);
-		if (!effectiveVoiceId) throw new Error("ELEVENLABS voiceId missing.");
+    if (!ffmpegPath)
+      throw new Error("FFmpeg not found. Install ffmpeg or set FFMPEG_PATH.");
+    if (!SYNC_SO_API_KEY) throw new Error("SYNC_SO_API_KEY missing.");
+    if (!RUNWAY_API_KEY)
+      throw new Error(
+        "RUNWAY_API_KEY missing (required for presenter pipeline).",
+      );
+    if (!process.env.CHATGPT_API_TOKEN)
+      throw new Error("CHATGPT_API_TOKEN missing.");
+    if (!ELEVEN_API_KEY)
+      throw new Error(
+        "ELEVENLABS_API_KEY missing (required for intro/outro voice).",
+      );
+    if (!effectiveVoiceId) throw new Error("ELEVENLABS voiceId missing.");
 
-		updateJob(jobId, { progressPct: 4 });
+    updateJob(jobId, { progressPct: 4 });
 
-		// 1) Topics (Google Trends driven, count based on duration)
-		const languageLabel = normalizeLanguageLabel(language || "English");
-		const topicCount = topicCountForDuration(contentTargetSec);
-		const usedTopics = await loadRecentLongVideoTopics({
-			userId: user?._id,
-			categoryLabel,
-		});
-		const recentOutfits = await loadRecentPresenterOutfits({
-			userId: user?._id,
-			limit: 10,
-		});
-		const topicPicks = await selectTopics({
-			preferredTopicHint,
-			dryRun,
-			topicCount,
-			language: languageLabel,
-			categoryLabel,
-			usedTopics,
-			baseUrl,
-		});
-		const topicTitles = topicPicks
-			.map((t) => t.displayTopic || t.topic)
-			.filter(Boolean);
-		const topicSummary = topicTitles.join(" / ");
-		const contentMode = topicPicks.some(
-			(t) => String(t?.source || "").toLowerCase() === "user_prompt",
-		)
-			? "prompt"
-			: "trends";
-		logJob(jobId, "topics selected", {
-			count: topicPicks.length,
-			topicCount,
-			topics: topicTitles,
-			reasons: topicPicks.map((t) => t.reason || "").filter(Boolean),
-			category: categoryLabel,
-			usedTopicsCount: usedTopics.size,
-		});
-		const topicChoiceDetails = topicPicks.map((t, idx) => {
-			const story = t.trendStory || {};
-			const related = normalizeRelatedQueries(story.relatedQueries);
-			const interest = normalizeInterestOverTime(story.interestOverTime);
-			const articleUrls = uniqueStrings(
-				(Array.isArray(story.articles) ? story.articles : [])
-					.map((a) => a?.url)
-					.filter((u) => isHttpUrl(u)),
-				{ limit: 6 },
-			);
-			const articleHosts = uniqueStrings(
-				articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
-				{ limit: 6 },
-			);
-			return {
-				index: idx,
-				topic: t.topic,
-				displayTopic: t.displayTopic || t.topic,
-				reason: t.reason || "",
-				angle: t.angle || "",
-				trendScore: Number(story.trendScore) || 0,
-				interestOverTime: interest,
-				relatedQueries: {
-					topCount: related.top.length,
-					risingCount: related.rising.length,
-					topSample: related.top.slice(0, 5),
-					risingSample: related.rising.slice(0, 5),
-				},
-				articleHosts,
-				articleUrls,
-				keywords: Array.isArray(t.keywords) ? t.keywords.slice(0, 10) : [],
-			};
-		});
-		logJob(jobId, "topics chosen (detail)", { topics: topicChoiceDetails });
-		updateJob(jobId, {
-			progressPct: 8,
-			topic: topicSummary,
-			meta: {
-				topics: topicPicks.map((t) => ({
-					topic: t.topic,
-					displayTopic: t.displayTopic || t.topic,
-					reason: t.reason || "",
-					angle: t.angle || "",
-				})),
-				category: categoryLabel,
-			},
-		});
+    // 1) Topics (Google Trends driven, count based on duration)
+    const languageLabel = normalizeLanguageLabel(language || "English");
+    const topicCount = topicCountForDuration(contentTargetSec);
+    const usedTopics = await loadRecentLongVideoTopics({
+      userId: user?._id,
+      categoryLabel,
+    });
+    const recentOutfits = await loadRecentPresenterOutfits({
+      userId: user?._id,
+      limit: 10,
+    });
+    const topicPicks = await selectTopics({
+      preferredTopicHint,
+      dryRun,
+      topicCount,
+      language: languageLabel,
+      categoryLabel,
+      usedTopics,
+      baseUrl,
+    });
+    const topicTitles = topicPicks
+      .map((t) => t.displayTopic || t.topic)
+      .filter(Boolean);
+    const topicSummary = topicTitles.join(" / ");
+    const contentMode = topicPicks.some(
+      (t) => String(t?.source || "").toLowerCase() === "user_prompt",
+    )
+      ? "prompt"
+      : "trends";
+    logJob(jobId, "topics selected", {
+      count: topicPicks.length,
+      topicCount,
+      topics: topicTitles,
+      reasons: topicPicks.map((t) => t.reason || "").filter(Boolean),
+      category: categoryLabel,
+      usedTopicsCount: usedTopics.size,
+    });
+    const topicChoiceDetails = topicPicks.map((t, idx) => {
+      const story = t.trendStory || {};
+      const related = normalizeRelatedQueries(story.relatedQueries);
+      const interest = normalizeInterestOverTime(story.interestOverTime);
+      const articleUrls = uniqueStrings(
+        (Array.isArray(story.articles) ? story.articles : [])
+          .map((a) => a?.url)
+          .filter((u) => isHttpUrl(u)),
+        { limit: 6 },
+      );
+      const articleHosts = uniqueStrings(
+        articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
+        { limit: 6 },
+      );
+      return {
+        index: idx,
+        topic: t.topic,
+        displayTopic: t.displayTopic || t.topic,
+        reason: t.reason || "",
+        angle: t.angle || "",
+        trendScore: Number(story.trendScore) || 0,
+        interestOverTime: interest,
+        relatedQueries: {
+          topCount: related.top.length,
+          risingCount: related.rising.length,
+          topSample: related.top.slice(0, 5),
+          risingSample: related.rising.slice(0, 5),
+        },
+        articleHosts,
+        articleUrls,
+        keywords: Array.isArray(t.keywords) ? t.keywords.slice(0, 10) : [],
+      };
+    });
+    logJob(jobId, "topics chosen (detail)", { topics: topicChoiceDetails });
+    updateJob(jobId, {
+      progressPct: 8,
+      topic: topicSummary,
+      meta: {
+        topics: topicPicks.map((t) => ({
+          topic: t.topic,
+          displayTopic: t.displayTopic || t.topic,
+          reason: t.reason || "",
+          angle: t.angle || "",
+        })),
+        category: categoryLabel,
+      },
+    });
 
-		// 2) Presenter (forced default image + motion reference)
-		let presenterLocal = await ensureLocalPresenterAsset(
-			presenterAssetUrl,
-			tmpDir,
-			jobId,
-			{
-				defaultAssetUrl: controllerOptions.presenterAssetUrl,
-				allowOverride: controllerOptions.allowPresenterAssetOverride,
-			},
-		);
-		let presenterThumbnailLocal = presenterLocal;
-		let presenterOutfit = "";
-		let presenterOutfitStyle = "";
-		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
-		const detected = detectFileType(presenterLocal);
-		let presenterIsVideo = detected?.kind === "video";
-		let presenterIsImage = detected?.kind === "image";
-		if (!presenterIsImage) {
-			throw new Error("Presenter asset must be a valid image");
-		}
+    // 2) Presenter (forced default image + motion reference)
+    let presenterLocal = await ensureLocalPresenterAsset(
+      presenterAssetUrl,
+      tmpDir,
+      jobId,
+      {
+        defaultAssetUrl: controllerOptions.presenterAssetUrl,
+        allowOverride: controllerOptions.allowPresenterAssetOverride,
+      },
+    );
+    let presenterThumbnailLocal = presenterLocal;
+    let presenterOutfit = "";
+    let presenterOutfitStyle = "";
+    const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
+    const detected = detectFileType(presenterLocal);
+    let presenterIsVideo = detected?.kind === "video";
+    let presenterIsImage = detected?.kind === "image";
+    if (!presenterIsImage) {
+      throw new Error("Presenter asset must be a valid image");
+    }
 
-		logJob(jobId, "presenter asset ready", {
-			path: path.basename(presenterLocal),
-			detected: detected?.kind || "unknown",
-			hasMotionRef: Boolean(motionRefVideo),
-			thumbnailSource: presenterThumbnailLocal
-				? path.basename(presenterThumbnailLocal)
-				: null,
-		});
+    logJob(jobId, "presenter asset ready", {
+      path: path.basename(presenterLocal),
+      detected: detected?.kind || "unknown",
+      hasMotionRef: Boolean(motionRefVideo),
+      thumbnailSource: presenterThumbnailLocal
+        ? path.basename(presenterThumbnailLocal)
+        : null,
+    });
 
-		updateJob(jobId, { progressPct: 12 });
+    updateJob(jobId, { progressPct: 12 });
 
-		// 4) Context + images (optional)
-		const topicContexts = [];
-		let liveContext = [];
-		for (const t of topicPicks) {
-			const extraTokens = Array.isArray(t.keywords) ? t.keywords : [];
-			const ctx = await fetchCseContext(t.topic, extraTokens);
-			const trendContext = uniqueStrings(
-				[
-					...(Array.isArray(t.trendStory?.searchPhrases)
-						? t.trendStory.searchPhrases
-						: []),
-					...(Array.isArray(t.trendStory?.entityNames)
-						? t.trendStory.entityNames
-						: []),
-					...(Array.isArray(t.trendStory?.relatedQueries?.rising)
-						? t.trendStory.relatedQueries.rising
-						: []),
-					...(Array.isArray(t.trendStory?.relatedQueries?.top)
-						? t.trendStory.relatedQueries.top
-						: []),
-					...(Array.isArray(t.trendStory?.articles)
-						? t.trendStory.articles.map((a) => a?.title)
-						: []),
-					t.trendStory?.imageComment,
-				].filter(Boolean),
-				{ limit: 8 },
-			);
-			const mergedContext = Array.isArray(ctx)
-				? ctx.concat(trendContext)
-				: trendContext;
-			topicContexts.push({ topic: t.topic, context: mergedContext });
-			liveContext = liveContext.concat(mergedContext || []);
-		}
-		const cseImages = [];
-		logJob(jobId, "cse context", {
-			count: liveContext.length,
-			byTopic: topicContexts.map((tc) => ({
-				topic: tc.topic,
-				count: Array.isArray(tc.context) ? tc.context.length : 0,
-			})),
-		});
-		logJob(jobId, "cse images", { count: cseImages.length });
-		topicSourceSummary = topicContexts.map((tc, idx) => {
-			const contextItems = Array.isArray(tc.context) ? tc.context : [];
-			const cseLinks = uniqueStrings(
-				contextItems.map((c) => c?.link).filter((u) => isHttpUrl(u)),
-				{ limit: 6 },
-			);
-			const cseHosts = uniqueStrings(
-				cseLinks.map((u) => getUrlHost(u)).filter(Boolean),
-				{ limit: 6 },
-			);
-			const story = topicPicks[idx]?.trendStory || {};
-			const articleUrls = uniqueStrings(
-				(Array.isArray(story.articles) ? story.articles : [])
-					.map((a) => a?.url)
-					.filter((u) => isHttpUrl(u)),
-				{ limit: 6 },
-			);
-			const articleHosts = uniqueStrings(
-				articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
-				{ limit: 6 },
-			);
-			const related = normalizeRelatedQueries(story.relatedQueries);
-			const interest = normalizeInterestOverTime(story.interestOverTime);
-			return {
-				topic: tc.topic,
-				contextCount: contextItems.length,
-				cseHosts,
-				cseLinks,
-				articleHosts,
-				articleUrls,
-				relatedQueries: {
-					topSample: related.top.slice(0, 5),
-					risingSample: related.rising.slice(0, 5),
-				},
-				interestOverTime: interest,
-			};
-		});
-		logJob(jobId, "topic sources", { topics: topicSourceSummary });
-		const topicContextFlags = topicContexts.map((tc, idx) => {
-			const items = Array.isArray(tc.context) ? tc.context : [];
-			const topicObj = Array.isArray(topicPicks) ? topicPicks[idx] : null;
-			const contextStrings = buildTopicContextStrings(topicObj || tc, items);
-			const contextText = contextStrings.join(" ");
-			return {
-				topic: tc.topic,
-				isFictional: detectFictionalContext(contextText),
-			};
-		});
-		const hasFictionalTopic = topicContextFlags.some((t) => t.isFictional);
-		const allFictionalTopics =
-			topicContextFlags.length && topicContextFlags.every((t) => t.isFictional);
-		const contentType = allFictionalTopics
-			? "fictional"
-			: hasFictionalTopic
-				? "mixed"
-				: "real";
-		const tonePlan = inferTonePlan({
-			topics: topicPicks,
-			liveContext,
-		});
-		if (contentType === "fictional" && tonePlan.mood === "serious") {
-			tonePlan.mood = "neutral";
-		}
-		tonePlan.contentType = contentType;
-		tonePlan.topicContextFlags = topicContextFlags;
-		const voiceTonePlan = FORCE_NEUTRAL_VOICEOVER
-			? { ...tonePlan, mood: "neutral" }
-			: tonePlan;
-		if (FORCE_NEUTRAL_VOICEOVER && tonePlan.mood !== "neutral") {
-			logJob(jobId, "voice tone forced to neutral", {
-				originalMood: tonePlan.mood,
-			});
-		}
-		logJob(jobId, "topic context flags", {
-			contentType,
-			topics: topicContextFlags.map((t) => ({
-				topic: t.topic,
-				isFictional: t.isFictional,
-			})),
-		});
+    // 4) Context + images (optional)
+    const topicContexts = [];
+    let liveContext = [];
+    for (const t of topicPicks) {
+      const extraTokens = Array.isArray(t.keywords) ? t.keywords : [];
+      const ctx = await fetchCseContext(t.topic, extraTokens);
+      const trendContext = uniqueStrings(
+        [
+          ...(Array.isArray(t.trendStory?.searchPhrases)
+            ? t.trendStory.searchPhrases
+            : []),
+          ...(Array.isArray(t.trendStory?.entityNames)
+            ? t.trendStory.entityNames
+            : []),
+          ...(Array.isArray(t.trendStory?.relatedQueries?.rising)
+            ? t.trendStory.relatedQueries.rising
+            : []),
+          ...(Array.isArray(t.trendStory?.relatedQueries?.top)
+            ? t.trendStory.relatedQueries.top
+            : []),
+          ...(Array.isArray(t.trendStory?.articles)
+            ? t.trendStory.articles.map((a) => a?.title)
+            : []),
+          t.trendStory?.imageComment,
+        ].filter(Boolean),
+        { limit: 8 },
+      );
+      const mergedContext = Array.isArray(ctx)
+        ? ctx.concat(trendContext)
+        : trendContext;
+      topicContexts.push({ topic: t.topic, context: mergedContext });
+      liveContext = liveContext.concat(mergedContext || []);
+    }
+    const cseImages = [];
+    logJob(jobId, "cse context", {
+      count: liveContext.length,
+      byTopic: topicContexts.map((tc) => ({
+        topic: tc.topic,
+        count: Array.isArray(tc.context) ? tc.context.length : 0,
+      })),
+    });
+    logJob(jobId, "cse images", { count: cseImages.length });
+    topicSourceSummary = topicContexts.map((tc, idx) => {
+      const contextItems = Array.isArray(tc.context) ? tc.context : [];
+      const cseLinks = uniqueStrings(
+        contextItems.map((c) => c?.link).filter((u) => isHttpUrl(u)),
+        { limit: 6 },
+      );
+      const cseHosts = uniqueStrings(
+        cseLinks.map((u) => getUrlHost(u)).filter(Boolean),
+        { limit: 6 },
+      );
+      const story = topicPicks[idx]?.trendStory || {};
+      const articleUrls = uniqueStrings(
+        (Array.isArray(story.articles) ? story.articles : [])
+          .map((a) => a?.url)
+          .filter((u) => isHttpUrl(u)),
+        { limit: 6 },
+      );
+      const articleHosts = uniqueStrings(
+        articleUrls.map((u) => getUrlHost(u)).filter(Boolean),
+        { limit: 6 },
+      );
+      const related = normalizeRelatedQueries(story.relatedQueries);
+      const interest = normalizeInterestOverTime(story.interestOverTime);
+      return {
+        topic: tc.topic,
+        contextCount: contextItems.length,
+        cseHosts,
+        cseLinks,
+        articleHosts,
+        articleUrls,
+        relatedQueries: {
+          topSample: related.top.slice(0, 5),
+          risingSample: related.rising.slice(0, 5),
+        },
+        interestOverTime: interest,
+      };
+    });
+    logJob(jobId, "topic sources", { topics: topicSourceSummary });
+    const topicContextFlags = topicContexts.map((tc, idx) => {
+      const items = Array.isArray(tc.context) ? tc.context : [];
+      const topicObj = Array.isArray(topicPicks) ? topicPicks[idx] : null;
+      const contextStrings = buildTopicContextStrings(topicObj || tc, items);
+      const contextText = contextStrings.join(" ");
+      return {
+        topic: tc.topic,
+        isFictional: detectFictionalContext(contextText),
+      };
+    });
+    const hasFictionalTopic = topicContextFlags.some((t) => t.isFictional);
+    const allFictionalTopics =
+      topicContextFlags.length && topicContextFlags.every((t) => t.isFictional);
+    const contentType = allFictionalTopics
+      ? "fictional"
+      : hasFictionalTopic
+        ? "mixed"
+        : "real";
+    const tonePlan = inferTonePlan({
+      topics: topicPicks,
+      liveContext,
+    });
+    if (contentType === "fictional" && tonePlan.mood === "serious") {
+      tonePlan.mood = "neutral";
+    }
+    tonePlan.contentType = contentType;
+    tonePlan.topicContextFlags = topicContextFlags;
+    const voiceTonePlan = FORCE_NEUTRAL_VOICEOVER
+      ? { ...tonePlan, mood: "neutral" }
+      : tonePlan;
+    if (FORCE_NEUTRAL_VOICEOVER && tonePlan.mood !== "neutral") {
+      logJob(jobId, "voice tone forced to neutral", {
+        originalMood: tonePlan.mood,
+      });
+    }
+    logJob(jobId, "topic context flags", {
+      contentType,
+      topics: topicContextFlags.map((t) => ({
+        topic: t.topic,
+        isFictional: t.isFictional,
+      })),
+    });
 
-		// 5) Script (content duration excludes intro/outro)
-		const lang = languageLabel || String(language || "en");
-		const narrationPlan = computeFlexibleNarrationTargetSec({
-			requestedSec: contentTargetSec,
-			topics: topicPicks,
-			topicContexts,
-		});
-		const narrationTargetSec = Math.max(
-			18,
-			Number(narrationPlan?.targetSec || contentTargetSec) || 0,
-		);
-		const segmentCount = computeSegmentCount(narrationTargetSec);
-		const wordCaps = buildWordCaps(segmentCount, narrationTargetSec);
-		logJob(jobId, "narration target planned", {
-			requestedSec: Number(contentTargetSec || 0),
-			targetSec: Number(narrationTargetSec || 0),
-			minSec: narrationPlan?.minSec,
-			maxSec: narrationPlan?.maxSec,
-			mode: narrationPlan?.mode,
-			signal: narrationPlan?.signal,
-		});
+    // 5) Script (content duration excludes intro/outro)
+    const lang = languageLabel || String(language || "en");
+    const narrationPlan = computeFlexibleNarrationTargetSec({
+      requestedSec: contentTargetSec,
+      topics: topicPicks,
+      topicContexts,
+    });
+    const narrationTargetSec = Math.max(
+      18,
+      Number(narrationPlan?.targetSec || contentTargetSec) || 0,
+    );
+    const segmentCount = computeSegmentCount(narrationTargetSec);
+    const wordCaps = buildWordCaps(segmentCount, narrationTargetSec);
+    logJob(jobId, "narration target planned", {
+      requestedSec: Number(contentTargetSec || 0),
+      targetSec: Number(narrationTargetSec || 0),
+      minSec: narrationPlan?.minSec,
+      maxSec: narrationPlan?.maxSec,
+      mode: narrationPlan?.mode,
+      signal: narrationPlan?.signal,
+    });
 
-		let script = await generateScript({
-			jobId,
-			topics: topicPicks,
-			languageLabel: lang,
-			narrationTargetSec,
-			segmentCount,
-			wordCaps,
-			topicContexts,
-			tonePlan: voiceTonePlan,
-			topicContextFlags,
-			categoryLabel,
-			includeOutro: true,
-			contentMode,
-		});
+    let script = await generateScript({
+      jobId,
+      topics: topicPicks,
+      languageLabel: lang,
+      narrationTargetSec,
+      segmentCount,
+      wordCaps,
+      topicContexts,
+      tonePlan: voiceTonePlan,
+      topicContextFlags,
+      categoryLabel,
+      includeOutro: true,
+      contentMode,
+    });
 
-		let qaResult = analyzeScriptQuality({
-			script,
-			topics: topicPicks,
-			topicContexts,
-			wordCaps,
-			categoryLabel,
-		});
-		let shortsGuardrails = analyzeShortsGuardrails(script);
-		if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
-		logJob(jobId, "script qa", {
-			pass: qaResult.pass,
-			needsRewrite: qaResult.needsRewrite,
-			issues: qaResult.issues,
-			warnings: qaResult.warnings,
-			stats: qaResult.stats,
-		});
-		logJob(jobId, "shorts guardrails", shortsGuardrails);
+    let qaResult = analyzeScriptQuality({
+      script,
+      topics: topicPicks,
+      topicContexts,
+      wordCaps,
+      categoryLabel,
+    });
+    let shortsGuardrails = analyzeShortsGuardrails(script);
+    if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
+    logJob(jobId, "script qa", {
+      pass: qaResult.pass,
+      needsRewrite: qaResult.needsRewrite,
+      issues: qaResult.issues,
+      warnings: qaResult.warnings,
+      stats: qaResult.stats,
+    });
+    logJob(jobId, "shorts guardrails", shortsGuardrails);
 
-		for (let qaAttempt = 0; qaAttempt < MAX_QA_REWRITES; qaAttempt++) {
-			if (!qaResult.needsRewrite) break;
-			logJob(jobId, "script qa rewrite start", { attempt: qaAttempt + 1 });
-			try {
-				script = await rewriteSegmentsForQuality({
-					jobId,
-					script,
-					topics: topicPicks,
-					topicContexts,
-					topicContextFlags,
-					wordCaps,
-					tonePlan: voiceTonePlan,
-					narrationTargetSec,
-					categoryLabel,
-					includeOutro: true,
-					contentMode,
-				});
-			} catch (e) {
-				logJob(jobId, "script qa rewrite failed", {
-					attempt: qaAttempt + 1,
-					error: e.message,
-				});
-				break;
-			}
-			qaResult = analyzeScriptQuality({
-				script,
-				topics: topicPicks,
-				topicContexts,
-				wordCaps,
-				categoryLabel,
-			});
-			shortsGuardrails = analyzeShortsGuardrails(script);
-			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
-			logJob(jobId, "script qa rewrite result", {
-				attempt: qaAttempt + 1,
-				pass: qaResult.pass,
-				needsRewrite: qaResult.needsRewrite,
-				issues: qaResult.issues,
-				warnings: qaResult.warnings,
-				stats: qaResult.stats,
-			});
-			logJob(jobId, "shorts guardrails rewrite result", {
-				attempt: qaAttempt + 1,
-				...shortsGuardrails,
-			});
-		}
-		if (!qaResult.pass) {
-			throw new Error(
-				`script_qa_failed:${qaResult.issues.join("|") || "unknown"}`,
-			);
-		}
+    for (let qaAttempt = 0; qaAttempt < MAX_QA_REWRITES; qaAttempt++) {
+      if (!qaResult.needsRewrite) break;
+      logJob(jobId, "script qa rewrite start", { attempt: qaAttempt + 1 });
+      try {
+        script = await rewriteSegmentsForQuality({
+          jobId,
+          script,
+          topics: topicPicks,
+          topicContexts,
+          topicContextFlags,
+          wordCaps,
+          tonePlan: voiceTonePlan,
+          narrationTargetSec,
+          categoryLabel,
+          includeOutro: true,
+          contentMode,
+        });
+      } catch (e) {
+        logJob(jobId, "script qa rewrite failed", {
+          attempt: qaAttempt + 1,
+          error: e.message,
+        });
+        break;
+      }
+      qaResult = analyzeScriptQuality({
+        script,
+        topics: topicPicks,
+        topicContexts,
+        wordCaps,
+        categoryLabel,
+      });
+      shortsGuardrails = analyzeShortsGuardrails(script);
+      if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
+      logJob(jobId, "script qa rewrite result", {
+        attempt: qaAttempt + 1,
+        pass: qaResult.pass,
+        needsRewrite: qaResult.needsRewrite,
+        issues: qaResult.issues,
+        warnings: qaResult.warnings,
+        stats: qaResult.stats,
+      });
+      logJob(jobId, "shorts guardrails rewrite result", {
+        attempt: qaAttempt + 1,
+        ...shortsGuardrails,
+      });
+    }
+    if (!qaResult.pass) {
+      throw new Error(
+        `script_qa_failed:${qaResult.issues.join("|") || "unknown"}`,
+      );
+    }
 
-		const attributionFix = ensureTopicAttributions({
-			script,
-			topics: topicPicks,
-			topicContexts,
-			topicContextFlags,
-			wordCaps,
-			log: (message, payload) => logJob(jobId, message, payload),
-		});
-		if (attributionFix.didInsert) {
-			qaResult = analyzeScriptQuality({
-				script,
-				topics: topicPicks,
-				topicContexts,
-				wordCaps,
-				categoryLabel,
-			});
-			shortsGuardrails = analyzeShortsGuardrails(script);
-			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
-			logJob(jobId, "script qa attribution fix", {
-				inserted: attributionFix.inserted,
-				qa: qaResult,
-			});
-		}
+    const attributionFix = ensureTopicAttributions({
+      script,
+      topics: topicPicks,
+      topicContexts,
+      topicContextFlags,
+      wordCaps,
+      log: (message, payload) => logJob(jobId, message, payload),
+    });
+    if (attributionFix.didInsert) {
+      qaResult = analyzeScriptQuality({
+        script,
+        topics: topicPicks,
+        topicContexts,
+        wordCaps,
+        categoryLabel,
+      });
+      shortsGuardrails = analyzeShortsGuardrails(script);
+      if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
+      logJob(jobId, "script qa attribution fix", {
+        inserted: attributionFix.inserted,
+        qa: qaResult,
+      });
+    }
 
-		const shortsDetailsRaw = await ensureShortsDetails({
-			jobId,
-			script,
-			topics: topicPicks,
-		});
-		const shortsDetails =
-			shortsDetailsRaw && typeof shortsDetailsRaw === "object"
-				? {
-						...shortsDetailsRaw,
-						status: shortsDetailsRaw.status || "planned",
-						plannedAt: shortsDetailsRaw.plannedAt || nowIso(),
-					}
-				: null;
-		script.shortsDetails = shortsDetails;
+    const shortsDetailsRaw = await ensureShortsDetails({
+      jobId,
+      script,
+      topics: topicPicks,
+    });
+    const shortsDetails =
+      shortsDetailsRaw && typeof shortsDetailsRaw === "object"
+        ? {
+            ...shortsDetailsRaw,
+            status: shortsDetailsRaw.status || "planned",
+            plannedAt: shortsDetailsRaw.plannedAt || nowIso(),
+          }
+        : null;
+    script.shortsDetails = shortsDetails;
 
-		const scriptEngagement = summarizeScriptEngagement(script);
-		logJob(jobId, "script qa summary", {
-			qa: qaResult,
-			shortsGuardrails,
-			engagement: scriptEngagement,
-			sources: topicSourceSummary,
-		});
-		logJob(jobId, `script text (post QA)\n${buildScriptLogText(script)}`);
+    const scriptEngagement = summarizeScriptEngagement(script);
+    logJob(jobId, "script qa summary", {
+      qa: qaResult,
+      shortsGuardrails,
+      engagement: scriptEngagement,
+      sources: topicSourceSummary,
+    });
+    logJob(jobId, `script text (post QA)\n${buildScriptLogText(script)}`);
 
-		updateJob(jobId, {
-			progressPct: 18,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				title: script.title,
-				shortTitle: script.shortTitle,
-				narrationPlan: {
-					requestedSec: Number(contentTargetSec || 0),
-					targetSec: Number(narrationTargetSec || 0),
-					minSec: narrationPlan?.minSec,
-					maxSec: narrationPlan?.maxSec,
-					mode: narrationPlan?.mode,
-					signal: narrationPlan?.signal,
-				},
-				scriptQa: {
-					pass: qaResult.pass,
-					issues: qaResult.issues,
-					warnings: qaResult.warnings,
-					stats: qaResult.stats,
-				},
-				shortsGuardrails,
-				shortsDetails,
-				script: { title: script.title, segments: script.segments },
-			},
-		});
+    updateJob(jobId, {
+      progressPct: 18,
+      meta: {
+        ...JOBS.get(jobId)?.meta,
+        title: script.title,
+        shortTitle: script.shortTitle,
+        narrationPlan: {
+          requestedSec: Number(contentTargetSec || 0),
+          targetSec: Number(narrationTargetSec || 0),
+          minSec: narrationPlan?.minSec,
+          maxSec: narrationPlan?.maxSec,
+          mode: narrationPlan?.mode,
+          signal: narrationPlan?.signal,
+        },
+        scriptQa: {
+          pass: qaResult.pass,
+          issues: qaResult.issues,
+          warnings: qaResult.warnings,
+          stats: qaResult.stats,
+        },
+        shortsGuardrails,
+        shortsDetails,
+        script: { title: script.title, segments: script.segments },
+      },
+    });
 
-		// 5.5) Presenter wardrobe adjustment (post-script)
-		if (enableWardrobeEdit && presenterIsImage) {
-			try {
-				const presenterTitle = String(
-					script.title || topicSummary || topicTitles[0] || "",
-				).trim();
-				const presenterResult = await generatePresenterAdjustedImage({
-					jobId,
-					tmpDir,
-					presenterLocalPath: presenterLocal,
-					title: presenterTitle,
-					topics: topicPicks,
-					categoryLabel,
-					recentOutfits,
-					log: (message, payload) => logJob(jobId, message, payload),
-				});
-				if (
-					presenterResult?.localPath &&
-					fs.existsSync(presenterResult.localPath)
-				) {
-					const adjustedDetected = detectFileType(presenterResult.localPath);
-					if (adjustedDetected?.kind === "image") {
-						presenterLocal = presenterResult.localPath;
-						presenterIsVideo = false;
-						presenterIsImage = true;
-						presenterOutfit = String(
-							presenterResult.presenterOutfit || "",
-						).trim();
-						presenterOutfitStyle = String(
-							presenterResult.presenterOutfitStyle || "",
-						).trim();
-						logJob(jobId, "presenter adjustments ready", {
-							path: path.basename(presenterLocal),
-							method: presenterResult.method || "runway",
-							cloudinary: Boolean(presenterResult.url),
-							style: presenterOutfitStyle || "",
-						});
-						updateJob(jobId, {
-							meta: {
-								...JOBS.get(jobId)?.meta,
-								presenterImageUrl: presenterResult.url || "",
-								presenterOutfit,
-								presenterOutfitStyle,
-							},
-						});
-						presenterThumbnailLocal = presenterLocal;
-					} else {
-						logJob(jobId, "presenter adjustments invalid; using original", {
-							detected: adjustedDetected?.kind || "unknown",
-						});
-					}
-				}
-			} catch (e) {
-				logJob(jobId, "presenter adjustments failed; using original", {
-					error: e.message,
-				});
-			}
-		} else if (enableWardrobeEdit && !presenterIsImage) {
-			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
-				detected: presenterIsVideo ? "video" : "unknown",
-			});
-		}
+    // 5.5) Presenter wardrobe adjustment (post-script)
+    if (enableWardrobeEdit && presenterIsImage) {
+      try {
+        const presenterTitle = String(
+          script.title || topicSummary || topicTitles[0] || "",
+        ).trim();
+        const presenterResult = await generatePresenterAdjustedImage({
+          jobId,
+          tmpDir,
+          presenterLocalPath: presenterLocal,
+          title: presenterTitle,
+          topics: topicPicks,
+          categoryLabel,
+          recentOutfits,
+          log: (message, payload) => logJob(jobId, message, payload),
+        });
+        if (
+          presenterResult?.localPath &&
+          fs.existsSync(presenterResult.localPath)
+        ) {
+          const adjustedDetected = detectFileType(presenterResult.localPath);
+          if (adjustedDetected?.kind === "image") {
+            presenterLocal = presenterResult.localPath;
+            presenterIsVideo = false;
+            presenterIsImage = true;
+            presenterOutfit = String(
+              presenterResult.presenterOutfit || "",
+            ).trim();
+            presenterOutfitStyle = String(
+              presenterResult.presenterOutfitStyle || "",
+            ).trim();
+            logJob(jobId, "presenter adjustments ready", {
+              path: path.basename(presenterLocal),
+              method: presenterResult.method || "runway",
+              cloudinary: Boolean(presenterResult.url),
+              style: presenterOutfitStyle || "",
+            });
+            updateJob(jobId, {
+              meta: {
+                ...JOBS.get(jobId)?.meta,
+                presenterImageUrl: presenterResult.url || "",
+                presenterOutfit,
+                presenterOutfitStyle,
+              },
+            });
+            presenterThumbnailLocal = presenterLocal;
+          } else {
+            logJob(jobId, "presenter adjustments invalid; using original", {
+              detected: adjustedDetected?.kind || "unknown",
+            });
+          }
+        }
+      } catch (e) {
+        logJob(jobId, "presenter adjustments failed; using original", {
+          error: e.message,
+        });
+      }
+    } else if (enableWardrobeEdit && !presenterIsImage) {
+      logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
+        detected: presenterIsVideo ? "video" : "unknown",
+      });
+    }
 
-		// 5.6) Thumbnail (script-aligned, uses adjusted presenter when available)
-		try {
-			const fallbackTitle = topicTitles[0] || topicSummary || "Quick Update";
-			const thumbTitle = String(script.title || fallbackTitle).trim();
-			const thumbShortTitle = String(
-				script.shortTitle || shortTitleFromText(thumbTitle),
-			).trim();
-			const thumbLog = (message, payload) => logJob(jobId, message, payload);
-			await ensureThumbnailSeedImages({
-				topics: topicPicks,
-				tmpDir,
-				jobId,
-				output,
-				log: thumbLog,
-			});
-			const hookPlan = buildThumbnailHookPlan({
-				title: thumbTitle,
-				topicPicks,
-			});
-			if (hookPlan) thumbLog("thumbnail hook plan (computed)", hookPlan);
-			let thumbExpression =
-				script?.segments?.[0]?.expression || voiceTonePlan?.mood || "neutral";
-			const hookHeadline = String(hookPlan?.headline || "").trim();
-			const resolvedShortTitle = hookHeadline || thumbShortTitle;
-			const thumbResult = await generateThumbnailPackage({
-				jobId,
-				tmpDir,
-				presenterLocalPath: presenterThumbnailLocal,
-				title: thumbTitle,
-				shortTitle: resolvedShortTitle,
-				seoTitle: "",
-				topics: topicPicks,
-				expression: thumbExpression,
-				openai,
-				log: thumbLog,
-				requireTopicImages: true,
-				overrideHeadline: hookHeadline,
-				overrideBadgeText: hookPlan?.badgeText,
-				overrideIntent: hookPlan?.intent,
-				overrideTopicImageQueries: hookPlan?.imageQueries,
-			});
-			const thumbLocalPath = thumbResult?.localPath || "";
-			const thumbCloudUrl = thumbResult?.url || "";
-			const thumbPublicId = thumbResult?.publicId || "";
-			const thumbVariants = Array.isArray(thumbResult?.variants)
-				? thumbResult.variants
-				: [];
-			thumbnailUrl = thumbCloudUrl;
-			thumbnailPublicId = thumbPublicId;
-			if (thumbLocalPath && fs.existsSync(thumbLocalPath)) {
-				thumbnailPath = thumbLocalPath;
-				if (SHOULD_PERSIST_LONG_VIDEO) {
-					const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
-					fs.copyFileSync(thumbLocalPath, finalThumb);
-					thumbnailPath = finalThumb;
-				}
-			}
+    // 5.6) Thumbnail (script-aligned, uses adjusted presenter when available)
+    try {
+      const fallbackTitle = topicTitles[0] || topicSummary || "Quick Update";
+      const thumbTitle = String(script.title || fallbackTitle).trim();
+      const thumbShortTitle = String(
+        script.shortTitle || shortTitleFromText(thumbTitle),
+      ).trim();
+      const thumbLog = (message, payload) => logJob(jobId, message, payload);
+      await ensureThumbnailSeedImages({
+        topics: topicPicks,
+        tmpDir,
+        jobId,
+        output,
+        log: thumbLog,
+      });
+      const hookPlan = buildThumbnailHookPlan({
+        title: thumbTitle,
+        topicPicks,
+      });
+      if (hookPlan) thumbLog("thumbnail hook plan (computed)", hookPlan);
+      let thumbExpression =
+        script?.segments?.[0]?.expression || voiceTonePlan?.mood || "neutral";
+      const hookHeadline = String(hookPlan?.headline || "").trim();
+      const resolvedShortTitle = hookHeadline || thumbShortTitle;
+      const thumbResult = await generateThumbnailPackage({
+        jobId,
+        tmpDir,
+        presenterLocalPath: presenterThumbnailLocal,
+        title: thumbTitle,
+        shortTitle: resolvedShortTitle,
+        seoTitle: "",
+        topics: topicPicks,
+        expression: thumbExpression,
+        openai,
+        log: thumbLog,
+        requireTopicImages: true,
+        overrideHeadline: hookHeadline,
+        overrideBadgeText: hookPlan?.badgeText,
+        overrideIntent: hookPlan?.intent,
+        overrideTopicImageQueries: hookPlan?.imageQueries,
+      });
+      const thumbLocalPath = thumbResult?.localPath || "";
+      const thumbCloudUrl = thumbResult?.url || "";
+      const thumbPublicId = thumbResult?.publicId || "";
+      const thumbVariants = Array.isArray(thumbResult?.variants)
+        ? thumbResult.variants
+        : [];
+      thumbnailUrl = thumbCloudUrl;
+      thumbnailPublicId = thumbPublicId;
+      if (thumbLocalPath && fs.existsSync(thumbLocalPath)) {
+        thumbnailPath = thumbLocalPath;
+        if (SHOULD_PERSIST_LONG_VIDEO) {
+          const finalThumb = path.join(THUMBNAIL_DIR, `thumb_${jobId}.jpg`);
+          fs.copyFileSync(thumbLocalPath, finalThumb);
+          thumbnailPath = finalThumb;
+        }
+      }
 
-			updateJob(jobId, {
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					thumbnailPath: SHOULD_PERSIST_LONG_VIDEO ? thumbnailPath : "",
-					thumbnailUrl: thumbnailUrl || "",
-					thumbnailPublicId: thumbnailPublicId || "",
-					thumbnailVariants: thumbVariants,
-				},
-			});
-			logJob(jobId, "thumbnail ready", {
-				path: thumbnailPath ? path.basename(thumbnailPath) : null,
-				cloudinary: Boolean(thumbnailUrl),
-				pose: thumbResult?.pose || null,
-				accent: thumbResult?.accent || null,
-				variants: thumbVariants.map((v) => v.variant).filter(Boolean),
-			});
-		} catch (e) {
-			logJob(jobId, "thumbnail generation failed (hard stop)", {
-				error: e.message,
-			});
-			throw e;
-		}
+      updateJob(jobId, {
+        meta: {
+          ...JOBS.get(jobId)?.meta,
+          thumbnailPath: SHOULD_PERSIST_LONG_VIDEO ? thumbnailPath : "",
+          thumbnailUrl: thumbnailUrl || "",
+          thumbnailPublicId: thumbnailPublicId || "",
+          thumbnailVariants: thumbVariants,
+        },
+      });
+      logJob(jobId, "thumbnail ready", {
+        path: thumbnailPath ? path.basename(thumbnailPath) : null,
+        cloudinary: Boolean(thumbnailUrl),
+        pose: thumbResult?.pose || null,
+        accent: thumbResult?.accent || null,
+        variants: thumbVariants.map((v) => v.variant).filter(Boolean),
+      });
+    } catch (e) {
+      logJob(jobId, "thumbnail generation failed (hard stop)", {
+        error: e.message,
+      });
+      throw e;
+    }
 
-		const seoMeta = await buildSeoMetadata({
-			topics: topicPicks,
-			scriptTitle: script.title,
-			languageLabel: lang,
-		});
-		const youtubeCategoryFinal = YT_CATEGORY_MAP[youtubeCategory]
-			? youtubeCategory
-			: LONG_VIDEO_YT_CATEGORY;
-		updateJob(jobId, {
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				seoTitle: seoMeta.seoTitle,
-				seoDescription: seoMeta.seoDescription,
-				tags: seoMeta.tags,
-				youtubeCategory: youtubeCategoryFinal,
-			},
-		});
+    const seoMeta = await buildSeoMetadata({
+      topics: topicPicks,
+      scriptTitle: script.title,
+      languageLabel: lang,
+    });
+    const youtubeCategoryFinal = YT_CATEGORY_MAP[youtubeCategory]
+      ? youtubeCategory
+      : LONG_VIDEO_YT_CATEGORY;
+    updateJob(jobId, {
+      meta: {
+        ...JOBS.get(jobId)?.meta,
+        seoTitle: seoMeta.seoTitle,
+        seoDescription: seoMeta.seoDescription,
+        tags: seoMeta.tags,
+        youtubeCategory: youtubeCategoryFinal,
+      },
+    });
 
-		// 6) Orchestrator plan (intro/outro) + voice prep
-		const introOutroMood = voiceTonePlan?.mood || "neutral";
-		const lastSegmentText =
-			script?.segments && script.segments.length
-				? script.segments[script.segments.length - 1].text || ""
-				: "";
-		const lastSegmentHasQuestion = /\?/.test(String(lastSegmentText || ""));
-		const includeOutroQuestion = !(
-			topicPicks.length === 1 && lastSegmentHasQuestion
-		);
-		const introLine = buildIntroLine({
-			topics: topicPicks,
-			shortTitle: script.shortTitle || script.title,
-			mood: introOutroMood,
-			jobId,
-		});
-		const outroLine = buildOutroLine({
-			topics: topicPicks,
-			shortTitle: script.shortTitle || script.title,
-			mood: introOutroMood,
-			includeQuestion: includeOutroQuestion,
-		});
-		const introText =
-			sanitizeIntroOutroLine(introLine) || String(introLine || "").trim();
-		const outroText =
-			sanitizeIntroOutroLine(outroLine) || String(outroLine || "").trim();
-		let introTextFinal = introText;
-		let outroTextFinal = outroText;
-		const introExpression = "neutral";
-		const outroExpression = "neutral";
+    // 6) Orchestrator plan (intro/outro) + voice prep
+    const introOutroMood = voiceTonePlan?.mood || "neutral";
+    const lastSegmentText =
+      script?.segments && script.segments.length
+        ? script.segments[script.segments.length - 1].text || ""
+        : "";
+    const lastSegmentHasQuestion = /\?/.test(String(lastSegmentText || ""));
+    const includeOutroQuestion = !(
+      topicPicks.length === 1 && lastSegmentHasQuestion
+    );
+    const introLine = buildIntroLine({
+      topics: topicPicks,
+      shortTitle: script.shortTitle || script.title,
+      mood: introOutroMood,
+      jobId,
+    });
+    const outroLine = buildOutroLine({
+      topics: topicPicks,
+      shortTitle: script.shortTitle || script.title,
+      mood: introOutroMood,
+      includeQuestion: includeOutroQuestion,
+    });
+    const introText =
+      sanitizeIntroOutroLine(introLine) || String(introLine || "").trim();
+    const outroText =
+      sanitizeIntroOutroLine(outroLine) || String(outroLine || "").trim();
+    let introTextFinal = introText;
+    let outroTextFinal = outroText;
+    const introExpression = "neutral";
+    const outroExpression = "neutral";
 
-		logJob(jobId, "orchestrator plan", {
-			mood: introOutroMood,
-			contentTargetSec,
-			intro: {
-				text: introText,
-				targetSec: introDurationSec,
-				expression: introExpression,
-			},
-			outro: {
-				text: outroText,
-				targetSec: outroDurationSec,
-				expression: outroExpression,
-			},
-		});
+    logJob(jobId, "orchestrator plan", {
+      mood: introOutroMood,
+      contentTargetSec,
+      intro: {
+        text: introText,
+        targetSec: introDurationSec,
+        expression: introExpression,
+      },
+      outro: {
+        text: outroText,
+        targetSec: outroDurationSec,
+        expression: outroExpression,
+      },
+    });
 
-		updateJob(jobId, {
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				intro: { text: introText, targetSec: introDurationSec },
-				outro: { text: outroText, targetSec: outroDurationSec },
-			},
-		});
+    updateJob(jobId, {
+      meta: {
+        ...JOBS.get(jobId)?.meta,
+        intro: { text: introText, targetSec: introDurationSec },
+        outro: { text: outroText, targetSec: outroDurationSec },
+      },
+    });
 
-		const lockedVoiceSettings = UNIFORM_TTS_VOICE_SETTINGS
-			? buildVoiceSettingsForExpression("neutral", "neutral", "", {
-					uniform: true,
-					forceNeutral: FORCE_NEUTRAL_VOICEOVER,
-				})
-			: null;
-		const resolveVoiceSettings = (expression, text) =>
-			lockedVoiceSettings ||
-			buildVoiceSettingsForExpression(expression, voiceTonePlan?.mood, text, {
-				forceNeutral: FORCE_NEUTRAL_VOICEOVER,
-			});
-		const ttsModelOrder = [
-			ELEVEN_TTS_MODEL,
-			...ELEVEN_TTS_MODEL_FALLBACKS,
-		].filter(Boolean);
-		let ttsModelId = "";
+    const lockedVoiceSettings = UNIFORM_TTS_VOICE_SETTINGS
+      ? buildVoiceSettingsForExpression("neutral", "neutral", "", {
+          uniform: true,
+          forceNeutral: FORCE_NEUTRAL_VOICEOVER,
+        })
+      : null;
+    const resolveVoiceSettings = (expression, text) =>
+      lockedVoiceSettings ||
+      buildVoiceSettingsForExpression(expression, voiceTonePlan?.mood, text, {
+        forceNeutral: FORCE_NEUTRAL_VOICEOVER,
+      });
+    const ttsModelOrder = [
+      ELEVEN_TTS_MODEL,
+      ...ELEVEN_TTS_MODEL_FALLBACKS,
+    ].filter(Boolean);
+    let ttsModelId = "";
 
-		const introVoiceSettings = resolveVoiceSettings(introExpression, introText);
-		logJob(jobId, "intro tts request", {
-			text: introText,
-			words: countWords(introText),
-			expression: introExpression,
-			mood: introOutroMood,
-			voiceId: effectiveVoiceId,
-			voiceSettings: introVoiceSettings,
-			modelOrder: ttsModelOrder,
-		});
-		const introTts = await synthesizeTtsWav({
-			text: introText,
-			tmpDir,
-			jobId,
-			label: "intro",
-			voiceId: effectiveVoiceId,
-			voiceSettings: introVoiceSettings,
-			modelId: ttsModelId || undefined,
-			modelOrder: ttsModelOrder,
-		});
-		if (introTts?.modelId) ttsModelId = introTts.modelId;
-		introTextFinal = introTts?.text || introText;
-		if (!introTts.durationSec)
-			throw new Error("Intro voice generation failed (empty duration)");
-		let introAudioPath = introTts.wavPath;
-		introDurationSec = introTts.durationSec || introDurationSec;
-		let introAtempo = 1;
-		let introRawAtempo = 1;
-		if (introDurationSec < INTRO_MIN_SEC || introDurationSec > INTRO_MAX_SEC) {
-			const introTargetSec = clampNumber(
-				introDurationSec,
-				INTRO_MIN_SEC,
-				INTRO_MAX_SEC,
-			);
-			const introFit = await fitWavToTargetDuration({
-				wavPath: introAudioPath,
-				targetSec: introTargetSec,
-				minAtempo: INTRO_ATEMPO_MIN,
-				maxAtempo: INTRO_ATEMPO_MAX,
-				tmpDir,
-				jobId,
-				label: "intro",
-			});
-			if (introFit.durationSec) {
-				introAudioPath = introFit.wavPath;
-				introDurationSec = introFit.durationSec || introDurationSec;
-				introAtempo = introFit.atempo || 1;
-				introRawAtempo = introFit.rawAtempo || 1;
-			}
-		}
-		if (introDurationSec < INTRO_MIN_SEC || introDurationSec > INTRO_MAX_SEC) {
-			logJob(jobId, "intro duration outside target range", {
-				introDurationSec: Number(introDurationSec.toFixed(3)),
-				targetMin: INTRO_MIN_SEC,
-				targetMax: INTRO_MAX_SEC,
-			});
-		}
-		logJob(jobId, "intro voice ready", {
-			durationSec: Number((introDurationSec || 0).toFixed(3)),
-			atempo: Number(introAtempo.toFixed(3)),
-			rawAtempo: Number(introRawAtempo.toFixed(3)),
-			text: introTextFinal,
-			words: countWords(introTextFinal),
-			voiceSettings: introVoiceSettings,
-			modelId: ttsModelId || "auto",
-		});
+    const introVoiceSettings = resolveVoiceSettings(introExpression, introText);
+    logJob(jobId, "intro tts request", {
+      text: introText,
+      words: countWords(introText),
+      expression: introExpression,
+      mood: introOutroMood,
+      voiceId: effectiveVoiceId,
+      voiceSettings: introVoiceSettings,
+      modelOrder: ttsModelOrder,
+    });
+    const introTts = await synthesizeTtsWav({
+      text: introText,
+      tmpDir,
+      jobId,
+      label: "intro",
+      voiceId: effectiveVoiceId,
+      voiceSettings: introVoiceSettings,
+      modelId: ttsModelId || undefined,
+      modelOrder: ttsModelOrder,
+    });
+    if (introTts?.modelId) ttsModelId = introTts.modelId;
+    introTextFinal = introTts?.text || introText;
+    if (!introTts.durationSec)
+      throw new Error("Intro voice generation failed (empty duration)");
+    let introAudioPath = introTts.wavPath;
+    introDurationSec = introTts.durationSec || introDurationSec;
+    let introAtempo = 1;
+    let introRawAtempo = 1;
+    if (introDurationSec < INTRO_MIN_SEC || introDurationSec > INTRO_MAX_SEC) {
+      const introTargetSec = clampNumber(
+        introDurationSec,
+        INTRO_MIN_SEC,
+        INTRO_MAX_SEC,
+      );
+      const introFit = await fitWavToTargetDuration({
+        wavPath: introAudioPath,
+        targetSec: introTargetSec,
+        minAtempo: INTRO_ATEMPO_MIN,
+        maxAtempo: INTRO_ATEMPO_MAX,
+        tmpDir,
+        jobId,
+        label: "intro",
+      });
+      if (introFit.durationSec) {
+        introAudioPath = introFit.wavPath;
+        introDurationSec = introFit.durationSec || introDurationSec;
+        introAtempo = introFit.atempo || 1;
+        introRawAtempo = introFit.rawAtempo || 1;
+      }
+    }
+    if (introDurationSec < INTRO_MIN_SEC || introDurationSec > INTRO_MAX_SEC) {
+      logJob(jobId, "intro duration outside target range", {
+        introDurationSec: Number(introDurationSec.toFixed(3)),
+        targetMin: INTRO_MIN_SEC,
+        targetMax: INTRO_MAX_SEC,
+      });
+    }
+    logJob(jobId, "intro voice ready", {
+      durationSec: Number((introDurationSec || 0).toFixed(3)),
+      atempo: Number(introAtempo.toFixed(3)),
+      rawAtempo: Number(introRawAtempo.toFixed(3)),
+      text: introTextFinal,
+      words: countWords(introTextFinal),
+      voiceSettings: introVoiceSettings,
+      modelId: ttsModelId || "auto",
+    });
 
-		const outroVoiceSettings = resolveVoiceSettings(outroExpression, outroText);
-		logJob(jobId, "outro tts request", {
-			text: outroText,
-			words: countWords(outroText),
-			expression: outroExpression,
-			mood: introOutroMood,
-			voiceId: effectiveVoiceId,
-			voiceSettings: outroVoiceSettings,
-			modelOrder: ttsModelOrder,
-		});
-		const outroTts = await synthesizeTtsWav({
-			text: outroText,
-			tmpDir,
-			jobId,
-			label: "outro",
-			voiceId: effectiveVoiceId,
-			voiceSettings: outroVoiceSettings,
-			modelId: ttsModelId || undefined,
-			modelOrder: ttsModelOrder,
-		});
-		if (outroTts?.modelId) ttsModelId = outroTts.modelId;
-		outroTextFinal = outroTts?.text || outroText;
-		if (!outroTts.durationSec)
-			throw new Error("Outro voice generation failed (empty duration)");
-		let outroAudioPath = outroTts.wavPath;
-		outroDurationSec = outroTts.durationSec || outroDurationSec;
-		let outroAtempo = 1;
-		let outroRawAtempo = 1;
-		if (outroDurationSec < OUTRO_MIN_SEC || outroDurationSec > OUTRO_MAX_SEC) {
-			const outroTargetSec = clampNumber(
-				outroDurationSec,
-				OUTRO_MIN_SEC,
-				OUTRO_MAX_SEC,
-			);
-			const outroFit = await fitWavToTargetDuration({
-				wavPath: outroAudioPath,
-				targetSec: outroTargetSec,
-				minAtempo: OUTRO_ATEMPO_MIN,
-				maxAtempo: OUTRO_ATEMPO_MAX,
-				tmpDir,
-				jobId,
-				label: "outro",
-			});
-			if (outroFit.durationSec) {
-				outroAudioPath = outroFit.wavPath;
-				outroDurationSec = outroFit.durationSec || outroDurationSec;
-				outroAtempo = outroFit.atempo || 1;
-				outroRawAtempo = outroFit.rawAtempo || 1;
-			}
-		}
-		if (outroDurationSec < OUTRO_MIN_SEC || outroDurationSec > OUTRO_MAX_SEC) {
-			logJob(jobId, "outro duration outside target range", {
-				outroDurationSec: Number(outroDurationSec.toFixed(3)),
-				targetMin: OUTRO_MIN_SEC,
-				targetMax: OUTRO_MAX_SEC,
-			});
-		}
-		logJob(jobId, "outro voice ready", {
-			durationSec: Number((outroDurationSec || 0).toFixed(3)),
-			atempo: Number(outroAtempo.toFixed(3)),
-			rawAtempo: Number(outroRawAtempo.toFixed(3)),
-			text: outroTextFinal,
-			words: countWords(outroTextFinal),
-			voiceSettings: outroVoiceSettings,
-			modelId: ttsModelId || "auto",
-		});
+    const outroVoiceSettings = resolveVoiceSettings(outroExpression, outroText);
+    logJob(jobId, "outro tts request", {
+      text: outroText,
+      words: countWords(outroText),
+      expression: outroExpression,
+      mood: introOutroMood,
+      voiceId: effectiveVoiceId,
+      voiceSettings: outroVoiceSettings,
+      modelOrder: ttsModelOrder,
+    });
+    const outroTts = await synthesizeTtsWav({
+      text: outroText,
+      tmpDir,
+      jobId,
+      label: "outro",
+      voiceId: effectiveVoiceId,
+      voiceSettings: outroVoiceSettings,
+      modelId: ttsModelId || undefined,
+      modelOrder: ttsModelOrder,
+    });
+    if (outroTts?.modelId) ttsModelId = outroTts.modelId;
+    outroTextFinal = outroTts?.text || outroText;
+    if (!outroTts.durationSec)
+      throw new Error("Outro voice generation failed (empty duration)");
+    let outroAudioPath = outroTts.wavPath;
+    outroDurationSec = outroTts.durationSec || outroDurationSec;
+    let outroAtempo = 1;
+    let outroRawAtempo = 1;
+    if (outroDurationSec < OUTRO_MIN_SEC || outroDurationSec > OUTRO_MAX_SEC) {
+      const outroTargetSec = clampNumber(
+        outroDurationSec,
+        OUTRO_MIN_SEC,
+        OUTRO_MAX_SEC,
+      );
+      const outroFit = await fitWavToTargetDuration({
+        wavPath: outroAudioPath,
+        targetSec: outroTargetSec,
+        minAtempo: OUTRO_ATEMPO_MIN,
+        maxAtempo: OUTRO_ATEMPO_MAX,
+        tmpDir,
+        jobId,
+        label: "outro",
+      });
+      if (outroFit.durationSec) {
+        outroAudioPath = outroFit.wavPath;
+        outroDurationSec = outroFit.durationSec || outroDurationSec;
+        outroAtempo = outroFit.atempo || 1;
+        outroRawAtempo = outroFit.rawAtempo || 1;
+      }
+    }
+    if (outroDurationSec < OUTRO_MIN_SEC || outroDurationSec > OUTRO_MAX_SEC) {
+      logJob(jobId, "outro duration outside target range", {
+        outroDurationSec: Number(outroDurationSec.toFixed(3)),
+        targetMin: OUTRO_MIN_SEC,
+        targetMax: OUTRO_MAX_SEC,
+      });
+    }
+    logJob(jobId, "outro voice ready", {
+      durationSec: Number((outroDurationSec || 0).toFixed(3)),
+      atempo: Number(outroAtempo.toFixed(3)),
+      rawAtempo: Number(outroRawAtempo.toFixed(3)),
+      text: outroTextFinal,
+      words: countWords(outroTextFinal),
+      voiceSettings: outroVoiceSettings,
+      modelId: ttsModelId || "auto",
+    });
 
-		updateJob(jobId, {
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				intro: { text: introTextFinal, targetSec: introDurationSec },
-				outro: { text: outroTextFinal, targetSec: outroDurationSec },
-			},
-		});
+    updateJob(jobId, {
+      meta: {
+        ...JOBS.get(jobId)?.meta,
+        intro: { text: introTextFinal, targetSec: introDurationSec },
+        outro: { text: outroTextFinal, targetSec: outroDurationSec },
+      },
+    });
 
-		updateJob(jobId, { progressPct: 22 });
+    updateJob(jobId, { progressPct: 22 });
 
-		// 7) Resolve background music (MUST unless disabled)
-		const musicLocalPath = await resolveBackgroundMusic({
-			jobId,
-			topic: topicTitles[0] || topicSummary,
-			disableMusic,
-			requestedMusicUrl: musicUrl,
-		});
+    // 7) Resolve background music (MUST unless disabled)
+    const musicLocalPath = await resolveBackgroundMusic({
+      jobId,
+      topic: topicTitles[0] || topicSummary,
+      disableMusic,
+      requestedMusicUrl: musicUrl,
+    });
 
-		updateJob(jobId, { progressPct: 26 });
+    updateJob(jobId, { progressPct: 26 });
 
-		// 8) Build narration audio segments
-		let segments = script.segments.map((s, idx) => ({
-			index: idx,
-			text: s.text,
-			topicIndex: Number.isFinite(Number(s.topicIndex))
-				? Number(s.topicIndex)
-				: 0,
-			topicLabel: String(s.topicLabel || "").trim(),
-			expression: coerceExpressionForNaturalness(
-				normalizeExpression(s.expression, voiceTonePlan?.mood),
-				s.text,
-				voiceTonePlan?.mood,
-				s.topicLabel,
-			),
-			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
-		}));
-		const smoothedExpressions = smoothExpressionPlan(
-			segments.map((s) => s.expression),
-			voiceTonePlan?.mood,
-		);
-		let segmentsWithExpressions = segments.map((s, i) => ({
-			...s,
-			expression: smoothedExpressions[i] || s.expression,
-		}));
-		if (FORCE_NEUTRAL_VOICEOVER) {
-			segmentsWithExpressions = segmentsWithExpressions.map((s) =>
-				s.expression === "excited" ? { ...s, expression: "warm" } : s,
-			);
-		}
-		const videoExpressionPlan = buildSubtleVideoExpressionPlan(
-			segmentsWithExpressions,
-			voiceTonePlan?.mood,
-			jobId,
-		);
-		segments = segmentsWithExpressions.map((s, i) => ({
-			...s,
-			videoExpression: videoExpressionPlan[i] || "neutral",
-			topicIndex:
-				Number.isFinite(Number(s.topicIndex)) && Number(s.topicIndex) >= 0
-					? Number(s.topicIndex)
-					: 0,
-			topicLabel:
-				String(s.topicLabel || "").trim() ||
-				String(
-					topicPicks?.[Number(s.topicIndex)]?.displayTopic ||
-						topicPicks?.[Number(s.topicIndex)]?.topic ||
-						"",
-				).trim() ||
-				String(topicTitles[0] || "").trim(),
-		}));
+    // 8) Build narration audio segments
+    let segments = script.segments.map((s, idx) => ({
+      index: idx,
+      text: s.text,
+      topicIndex: Number.isFinite(Number(s.topicIndex))
+        ? Number(s.topicIndex)
+        : 0,
+      topicLabel: String(s.topicLabel || "").trim(),
+      expression: coerceExpressionForNaturalness(
+        normalizeExpression(s.expression, voiceTonePlan?.mood),
+        s.text,
+        voiceTonePlan?.mood,
+        s.topicLabel,
+      ),
+      overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
+    }));
+    const smoothedExpressions = smoothExpressionPlan(
+      segments.map((s) => s.expression),
+      voiceTonePlan?.mood,
+    );
+    let segmentsWithExpressions = segments.map((s, i) => ({
+      ...s,
+      expression: smoothedExpressions[i] || s.expression,
+    }));
+    if (FORCE_NEUTRAL_VOICEOVER) {
+      segmentsWithExpressions = segmentsWithExpressions.map((s) =>
+        s.expression === "excited" ? { ...s, expression: "warm" } : s,
+      );
+    }
+    const videoExpressionPlan = buildSubtleVideoExpressionPlan(
+      segmentsWithExpressions,
+      voiceTonePlan?.mood,
+      jobId,
+    );
+    segments = segmentsWithExpressions.map((s, i) => ({
+      ...s,
+      videoExpression: videoExpressionPlan[i] || "neutral",
+      topicIndex:
+        Number.isFinite(Number(s.topicIndex)) && Number(s.topicIndex) >= 0
+          ? Number(s.topicIndex)
+          : 0,
+      topicLabel:
+        String(s.topicLabel || "").trim() ||
+        String(
+          topicPicks?.[Number(s.topicIndex)]?.displayTopic ||
+            topicPicks?.[Number(s.topicIndex)]?.topic ||
+            "",
+        ).trim() ||
+        String(topicTitles[0] || "").trim(),
+    }));
 
-		let cleanedWavs = [];
-		let sumCleanDur = 0;
-		let globalAtempo = 1;
-		let driftSec = 0;
-		let autoOverlayAssets = [];
-		let segmentImagePaths = new Map();
-		const maxRewriteAttempts = voiceoverUrlLocked ? 0 : MAX_SCRIPT_REWRITES;
+    let cleanedWavs = [];
+    let sumCleanDur = 0;
+    let globalAtempo = 1;
+    let driftSec = 0;
+    let autoOverlayAssets = [];
+    let segmentImagePaths = new Map();
+    const maxRewriteAttempts = voiceoverUrlLocked ? 0 : MAX_SCRIPT_REWRITES;
 
-		for (let attempt = 0; attempt <= maxRewriteAttempts; attempt++) {
-			cleanedWavs = [];
-			sumCleanDur = 0;
+    for (let attempt = 0; attempt <= maxRewriteAttempts; attempt++) {
+      cleanedWavs = [];
+      sumCleanDur = 0;
 
-			if (voiceoverUrlLocked) {
-				// If you provide a full voiceoverUrl, we keep your narration as the source
-				// and split it proportionally to the actual script instead of forcing TTS.
-				const voicePath = path.join(tmpDir, `voice_${jobId}.wav`);
-				await downloadToFile(voiceoverUrlLocked, voicePath, 45000, 2);
+      if (voiceoverUrlLocked) {
+        // If you provide a full voiceoverUrl, we keep your narration as the source
+        // and split it proportionally to the actual script instead of forcing TTS.
+        const voicePath = path.join(tmpDir, `voice_${jobId}.wav`);
+        await downloadToFile(voiceoverUrlLocked, voicePath, 45000, 2);
 
-				// Convert to wav if needed
-				const voiceWav = path.join(tmpDir, `voice_${jobId}_pcm.wav`);
-				await spawnBin(
-					ffmpegPath,
-					[
-						"-i",
-						voicePath,
-						"-vn",
-						"-acodec",
-						"pcm_s16le",
-						"-ar",
-						String(AUDIO_SR),
-						"-ac",
-						String(AUDIO_CHANNELS),
-						"-y",
-						voiceWav,
-					],
-					"voiceover_to_wav",
-					{ timeoutMs: 180000 },
-				);
-				safeUnlink(voicePath);
+        // Convert to wav if needed
+        const voiceWav = path.join(tmpDir, `voice_${jobId}_pcm.wav`);
+        await spawnBin(
+          ffmpegPath,
+          [
+            "-i",
+            voicePath,
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            String(AUDIO_SR),
+            "-ac",
+            String(AUDIO_CHANNELS),
+            "-y",
+            voiceWav,
+          ],
+          "voiceover_to_wav",
+          { timeoutMs: 180000 },
+        );
+        safeUnlink(voicePath);
 
-				// Split narration proportionally to the actual script, not into equal chunks.
-				const totalVoiceDur = await probeDurationSeconds(voiceWav);
-				const sliceDurations = buildVoiceoverSliceDurations(
-					segments,
-					totalVoiceDur,
-				);
-				let cursor = 0;
-				logJob(jobId, "external narration slicing", {
-					totalVoiceDur: Number((totalVoiceDur || 0).toFixed(3)),
-					sliceDurations: sliceDurations.map((dur) =>
-						Number((dur || 0).toFixed(3)),
-					),
-				});
-				for (let i = 0; i < segments.length; i++) {
-					const start = cursor;
-					const dur =
-						i === segments.length - 1
-							? Math.max(0.15, totalVoiceDur - cursor)
-							: Math.max(0.15, Number(sliceDurations[i] || 0.15));
-					const out = path.join(tmpDir, `vo_clean_${jobId}_${i}.wav`);
-					await spawnBin(
-						ffmpegPath,
-						[
-							"-i",
-							voiceWav,
-							"-ss",
-							start.toFixed(3),
-							"-t",
-							dur.toFixed(3),
-							"-vn",
-							"-acodec",
-							"pcm_s16le",
-							"-ar",
-							String(AUDIO_SR),
-							"-ac",
-							String(AUDIO_CHANNELS),
-							"-y",
-							out,
-						],
-						"split_voiceover",
-						{ timeoutMs: 120000 },
-					);
-					const d = await probeDurationSeconds(out);
-					cleanedWavs.push({ index: i, wav: out, cleanDur: d });
-					sumCleanDur += d;
-					cursor += dur;
-				}
-				safeUnlink(voiceWav);
-			} else {
-				logJob(jobId, "eleven voice locked", {
-					voiceId: effectiveVoiceId,
-					attempt,
-					modelId: ttsModelId || "auto",
-				});
+        // Split narration proportionally to the actual script, not into equal chunks.
+        const totalVoiceDur = await probeDurationSeconds(voiceWav);
+        const sliceDurations = buildVoiceoverSliceDurations(
+          segments,
+          totalVoiceDur,
+        );
+        let cursor = 0;
+        logJob(jobId, "external narration slicing", {
+          totalVoiceDur: Number((totalVoiceDur || 0).toFixed(3)),
+          sliceDurations: sliceDurations.map((dur) =>
+            Number((dur || 0).toFixed(3)),
+          ),
+        });
+        for (let i = 0; i < segments.length; i++) {
+          const start = cursor;
+          const dur =
+            i === segments.length - 1
+              ? Math.max(0.15, totalVoiceDur - cursor)
+              : Math.max(0.15, Number(sliceDurations[i] || 0.15));
+          const out = path.join(tmpDir, `vo_clean_${jobId}_${i}.wav`);
+          await spawnBin(
+            ffmpegPath,
+            [
+              "-i",
+              voiceWav,
+              "-ss",
+              start.toFixed(3),
+              "-t",
+              dur.toFixed(3),
+              "-vn",
+              "-acodec",
+              "pcm_s16le",
+              "-ar",
+              String(AUDIO_SR),
+              "-ac",
+              String(AUDIO_CHANNELS),
+              "-y",
+              out,
+            ],
+            "split_voiceover",
+            { timeoutMs: 120000 },
+          );
+          const d = await probeDurationSeconds(out);
+          cleanedWavs.push({ index: i, wav: out, cleanDur: d });
+          sumCleanDur += d;
+          cursor += dur;
+        }
+        safeUnlink(voiceWav);
+      } else {
+        logJob(jobId, "eleven voice locked", {
+          voiceId: effectiveVoiceId,
+          attempt,
+          modelId: ttsModelId || "auto",
+        });
 
-				const breathState = { used: 0 };
-				for (const seg of segments) {
-					const rawText = seg.text;
-					const cleanText = sanitizeSegmentText(rawText);
-					const breathedText = injectMicroBreath(cleanText, breathState);
-					const textChanged =
-						String(rawText || "").trim() !== String(breathedText || "").trim();
-					seg.text = breathedText;
-					const voiceSettings = resolveVoiceSettings(
-						seg.expression,
-						breathedText,
-					);
-					logJob(jobId, "tts segment start", {
-						segment: seg.index,
-						attempt,
-						words: countWords(breathedText),
-						text: breathedText,
-						expression: seg.expression,
-						voiceSettings,
-						voiceId: effectiveVoiceId,
-						modelId: ttsModelId || "auto",
-						textChanged,
-					});
-					const tts = await synthesizeTtsWav({
-						text: breathedText,
-						tmpDir,
-						jobId,
-						label: `seg_${seg.index}`,
-						voiceId: effectiveVoiceId,
-						voiceSettings,
-						modelId: ttsModelId || undefined,
-						modelOrder: ttsModelOrder,
-					});
-					if (!ttsModelId && tts?.modelId) ttsModelId = tts.modelId;
-					if (!tts?.wavPath)
-						throw new Error("Voice audio generation failed (empty segment)");
-					const d =
-						Number(tts.durationSec) ||
-						(await probeDurationSeconds(tts.wavPath));
-					logJob(jobId, "tts segment ready", {
-						segment: seg.index,
-						attempt,
-						cleanDur: Number(d.toFixed(3)),
-						modelId: tts?.modelId || ttsModelId || "auto",
-						qaPass: tts?.qa?.pass ?? null,
-						qaIssues: Array.isArray(tts?.qa?.issues) ? tts.qa.issues : [],
-					});
-					cleanedWavs.push({ index: seg.index, wav: tts.wavPath, cleanDur: d });
-					sumCleanDur += d;
-				}
-			}
+        const breathState = { used: 0 };
+        for (const seg of segments) {
+          const rawText = seg.text;
+          const cleanText = sanitizeSegmentText(rawText);
+          const breathedText = injectMicroBreath(cleanText, breathState);
+          const textChanged =
+            String(rawText || "").trim() !== String(breathedText || "").trim();
+          seg.text = breathedText;
+          const voiceSettings = resolveVoiceSettings(
+            seg.expression,
+            breathedText,
+          );
+          logJob(jobId, "tts segment start", {
+            segment: seg.index,
+            attempt,
+            words: countWords(breathedText),
+            text: breathedText,
+            expression: seg.expression,
+            voiceSettings,
+            voiceId: effectiveVoiceId,
+            modelId: ttsModelId || "auto",
+            textChanged,
+          });
+          const tts = await synthesizeTtsWav({
+            text: breathedText,
+            tmpDir,
+            jobId,
+            label: `seg_${seg.index}`,
+            voiceId: effectiveVoiceId,
+            voiceSettings,
+            modelId: ttsModelId || undefined,
+            modelOrder: ttsModelOrder,
+          });
+          if (!ttsModelId && tts?.modelId) ttsModelId = tts.modelId;
+          if (!tts?.wavPath)
+            throw new Error("Voice audio generation failed (empty segment)");
+          const d =
+            Number(tts.durationSec) ||
+            (await probeDurationSeconds(tts.wavPath));
+          logJob(jobId, "tts segment ready", {
+            segment: seg.index,
+            attempt,
+            cleanDur: Number(d.toFixed(3)),
+            modelId: tts?.modelId || ttsModelId || "auto",
+            qaPass: tts?.qa?.pass ?? null,
+            qaIssues: Array.isArray(tts?.qa?.issues) ? tts.qa.issues : [],
+          });
+          cleanedWavs.push({ index: seg.index, wav: tts.wavPath, cleanDur: d });
+          sumCleanDur += d;
+        }
+      }
 
-			if (sumCleanDur < 3)
-				throw new Error("Voice audio generation failed (empty duration)");
+      if (sumCleanDur < 3)
+        throw new Error("Voice audio generation failed (empty duration)");
 
-			if (cleanedWavs.length) {
-				const durList = cleanedWavs
-					.map((a) => Number(a.cleanDur || 0))
-					.filter((d) => Number.isFinite(d) && d > 0);
-				const minDur = durList.length ? Math.min(...durList) : 0;
-				const maxDur = durList.length ? Math.max(...durList) : 0;
-				const avgDur =
-					durList.length > 0
-						? durList.reduce((a, b) => a + b, 0) / durList.length
-						: 0;
-				logJob(jobId, "tts qa summary", {
-					segments: cleanedWavs.length,
-					minDur: Number(minDur.toFixed(3)),
-					maxDur: Number(maxDur.toFixed(3)),
-					avgDur: Number(avgDur.toFixed(3)),
-					sumCleanDur: Number(sumCleanDur.toFixed(3)),
-				});
-			}
+      if (cleanedWavs.length) {
+        const durList = cleanedWavs
+          .map((a) => Number(a.cleanDur || 0))
+          .filter((d) => Number.isFinite(d) && d > 0);
+        const minDur = durList.length ? Math.min(...durList) : 0;
+        const maxDur = durList.length ? Math.max(...durList) : 0;
+        const avgDur =
+          durList.length > 0
+            ? durList.reduce((a, b) => a + b, 0) / durList.length
+            : 0;
+        logJob(jobId, "tts qa summary", {
+          segments: cleanedWavs.length,
+          minDur: Number(minDur.toFixed(3)),
+          maxDur: Number(maxDur.toFixed(3)),
+          avgDur: Number(avgDur.toFixed(3)),
+          sumCleanDur: Number(sumCleanDur.toFixed(3)),
+        });
+      }
 
-			const rawAtempo = sumCleanDur / narrationTargetSec;
-			driftSec = Math.abs(sumCleanDur - narrationTargetSec);
-			const toleranceSec = Math.min(
-				SCRIPT_TOLERANCE_SEC,
-				Math.max(1, narrationTargetSec * 0.07),
-			);
-			const ratioDelta = Math.abs(1 - rawAtempo);
-			const overageSec = sumCleanDur - narrationTargetSec;
-			const maxOverageSec = Math.max(
-				0,
-				Math.min(
-					MAX_NARRATION_OVERAGE_SEC,
-					narrationTargetSec * (MAX_NARRATION_OVERAGE_RATIO - 1),
-				),
-			);
-			const allowOverage =
-				ALLOW_NARRATION_OVERRUN &&
-				overageSec > 0 &&
-				overageSec <= maxOverageSec;
-			const withinTolerance = driftSec <= toleranceSec || allowOverage;
-			const closeEnough =
-				allowOverage ||
-				ratioDelta <= REWRITE_CLOSE_RATIO_DELTA ||
-				driftSec <= toleranceSec * REWRITE_CLOSE_DRIFT_MULT;
-			const shouldTimeStretch =
-				!voiceoverUrlLocked && (ratioDelta >= 0.04 || driftSec > toleranceSec);
-			globalAtempo = shouldTimeStretch
-				? clampNumber(rawAtempo, GLOBAL_ATEMPO_MIN, GLOBAL_ATEMPO_MAX)
-				: 1;
-			if (!voiceoverUrlLocked && VOICE_SPEED_BOOST && VOICE_SPEED_BOOST !== 1) {
-				globalAtempo = clampNumber(
-					globalAtempo * VOICE_SPEED_BOOST,
-					GLOBAL_ATEMPO_MIN,
-					GLOBAL_ATEMPO_MAX,
-				);
-			}
-			logJob(jobId, "global atempo computed", {
-				sumCleanDur: Number(sumCleanDur.toFixed(3)),
-				narrationTargetSec: Number(narrationTargetSec.toFixed(3)),
-				atempo: Number(globalAtempo.toFixed(4)),
-				rawAtempo: Number(rawAtempo.toFixed(4)),
-				driftSec: Number(driftSec.toFixed(3)),
-				withinTolerance,
-				toleranceSec: Number(toleranceSec.toFixed(3)),
-				ratioDelta: Number(ratioDelta.toFixed(3)),
-				closeEnough,
-				shouldTimeStretch,
-				allowOverage,
-				overageSec: Number(overageSec.toFixed(3)),
-				maxOverageSec: Number(maxOverageSec.toFixed(3)),
-				attempt,
-				voiceSpeedBoost: VOICE_SPEED_BOOST,
-			});
+      const rawAtempo = sumCleanDur / narrationTargetSec;
+      driftSec = Math.abs(sumCleanDur - narrationTargetSec);
+      const toleranceSec = Math.min(
+        SCRIPT_TOLERANCE_SEC,
+        Math.max(1, narrationTargetSec * 0.07),
+      );
+      const ratioDelta = Math.abs(1 - rawAtempo);
+      const overageSec = sumCleanDur - narrationTargetSec;
+      const maxOverageSec = Math.max(
+        0,
+        Math.min(
+          MAX_NARRATION_OVERAGE_SEC,
+          narrationTargetSec * (MAX_NARRATION_OVERAGE_RATIO - 1),
+        ),
+      );
+      const allowOverage =
+        ALLOW_NARRATION_OVERRUN &&
+        overageSec > 0 &&
+        overageSec <= maxOverageSec;
+      const withinTolerance = driftSec <= toleranceSec || allowOverage;
+      const closeEnough =
+        allowOverage ||
+        ratioDelta <= REWRITE_CLOSE_RATIO_DELTA ||
+        driftSec <= toleranceSec * REWRITE_CLOSE_DRIFT_MULT;
+      const shouldTimeStretch =
+        !voiceoverUrlLocked && (ratioDelta >= 0.04 || driftSec > toleranceSec);
+      globalAtempo = shouldTimeStretch
+        ? clampNumber(rawAtempo, GLOBAL_ATEMPO_MIN, GLOBAL_ATEMPO_MAX)
+        : 1;
+      if (!voiceoverUrlLocked && VOICE_SPEED_BOOST && VOICE_SPEED_BOOST !== 1) {
+        globalAtempo = clampNumber(
+          globalAtempo * VOICE_SPEED_BOOST,
+          GLOBAL_ATEMPO_MIN,
+          GLOBAL_ATEMPO_MAX,
+        );
+      }
+      logJob(jobId, "global atempo computed", {
+        sumCleanDur: Number(sumCleanDur.toFixed(3)),
+        narrationTargetSec: Number(narrationTargetSec.toFixed(3)),
+        atempo: Number(globalAtempo.toFixed(4)),
+        rawAtempo: Number(rawAtempo.toFixed(4)),
+        driftSec: Number(driftSec.toFixed(3)),
+        withinTolerance,
+        toleranceSec: Number(toleranceSec.toFixed(3)),
+        ratioDelta: Number(ratioDelta.toFixed(3)),
+        closeEnough,
+        shouldTimeStretch,
+        allowOverage,
+        overageSec: Number(overageSec.toFixed(3)),
+        maxOverageSec: Number(maxOverageSec.toFixed(3)),
+        attempt,
+        voiceSpeedBoost: VOICE_SPEED_BOOST,
+      });
 
-			const needsRewrite =
-				!voiceoverUrlLocked &&
-				!allowOverage &&
-				!closeEnough &&
-				(!withinTolerance ||
-					rawAtempo < GLOBAL_ATEMPO_MIN ||
-					rawAtempo > GLOBAL_ATEMPO_MAX);
-			if (!needsRewrite || attempt >= maxRewriteAttempts) break;
+      const needsRewrite =
+        !voiceoverUrlLocked &&
+        !allowOverage &&
+        !closeEnough &&
+        (!withinTolerance ||
+          rawAtempo < GLOBAL_ATEMPO_MIN ||
+          rawAtempo > GLOBAL_ATEMPO_MAX);
+      if (!needsRewrite || attempt >= maxRewriteAttempts) break;
 
-			// cleanup current audio before rewrite
-			for (const a of cleanedWavs) safeUnlink(a.wav);
+      // cleanup current audio before rewrite
+      for (const a of cleanedWavs) safeUnlink(a.wav);
 
-			const ratio = narrationTargetSec / sumCleanDur;
-			const dampedRatio = 1 + (ratio - 1) * REWRITE_RATIO_DAMPING;
-			const adjustPct = clampNumber(
-				Math.round(Math.abs(1 - dampedRatio) * 100 + 3),
-				REWRITE_ADJUST_MIN,
-				REWRITE_ADJUST_MAX,
-			);
-			const direction = ratio > 1 ? "LONGER" : "SHORTER";
-			const adjustedCaps = wordCaps.map((c) =>
-				Math.max(12, Math.round(c * dampedRatio)),
-			);
-			const capsLine2 = adjustedCaps
-				.map((c, i) => `#${i}: <= ${c} words`)
-				.join(", ");
-			const expressionsLine = segments
-				.map((s) => `#${s.index}: ${s.expression}`)
-				.join(", ");
-			const topicsLine = segments
-				.map(
-					(s) =>
-						`#${s.index}: topic ${s.topicIndex} (${
-							s.topicLabel || topicTitles?.[s.topicIndex] || ""
-						})`,
-				)
-				.join(", ");
+      const ratio = narrationTargetSec / sumCleanDur;
+      const dampedRatio = 1 + (ratio - 1) * REWRITE_RATIO_DAMPING;
+      const adjustPct = clampNumber(
+        Math.round(Math.abs(1 - dampedRatio) * 100 + 3),
+        REWRITE_ADJUST_MIN,
+        REWRITE_ADJUST_MAX,
+      );
+      const direction = ratio > 1 ? "LONGER" : "SHORTER";
+      const adjustedCaps = wordCaps.map((c) =>
+        Math.max(12, Math.round(c * dampedRatio)),
+      );
+      const capsLine2 = adjustedCaps
+        .map((c, i) => `#${i}: <= ${c} words`)
+        .join(", ");
+      const expressionsLine = segments
+        .map((s) => `#${s.index}: ${s.expression}`)
+        .join(", ");
+      const topicsLine = segments
+        .map(
+          (s) =>
+            `#${s.index}: topic ${s.topicIndex} (${
+              s.topicLabel || topicTitles?.[s.topicIndex] || ""
+            })`,
+        )
+        .join(", ");
 
-			const rewritePrompt = `
+      const rewritePrompt = `
 Rewrite this script to better fit ~${narrationTargetSec.toFixed(
-				1,
-			)}s of spoken narration.
+        1,
+      )}s of spoken narration.
 Make the script about ${adjustPct}% ${direction} while keeping the same vibe.
 Quality first: do not remove key details or clarity just to hit the target.
 Per-segment word caps (updated): ${capsLine2}
@@ -13961,1002 +14140,1020 @@ Script:
 ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 `.trim();
 
-			const resp2 = await openai.chat.completions.create({
-				model: CHAT_MODEL,
-				messages: [{ role: "user", content: rewritePrompt }],
-			});
-			const parsed2 = parseJsonFlexible(
-				resp2?.choices?.[0]?.message?.content || "",
-			);
-			if (!parsed2 || !Array.isArray(parsed2.segments))
-				throw new Error("Rewrite parse failed");
+      const resp2 = await openai.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: [{ role: "user", content: rewritePrompt }],
+      });
+      const parsed2 = parseJsonFlexible(
+        resp2?.choices?.[0]?.message?.content || "",
+      );
+      if (!parsed2 || !Array.isArray(parsed2.segments))
+        throw new Error("Rewrite parse failed");
 
-			// apply rewrite
-			const byIdx = new Map();
-			for (const s of parsed2.segments) {
-				const idx = Number(s.index);
-				const txt = String(s.text || "").trim();
-				if (Number.isFinite(idx) && txt) byIdx.set(idx, txt);
-			}
-			for (const seg of segments) {
-				if (byIdx.has(seg.index)) seg.text = byIdx.get(seg.index);
-			}
-			// Re-apply segment completion rules after rewrite.
-			const fixedSegments = enforceSegmentCompleteness(
-				segments,
-				voiceTonePlan?.mood,
-				{ includeCta: false },
-			);
-			const withTransitions = ensureTopicTransitions(fixedSegments, topicPicks);
-			const withQuestions = ensureTopicEngagementQuestions(
-				withTransitions,
-				topicPicks,
-				voiceTonePlan?.mood,
-				adjustedCaps,
-			);
-			const fillerLimited = limitFillerAndEmotesAcrossSegments(withQuestions, {
-				maxFillers: MAX_FILLER_WORDS_PER_VIDEO,
-				maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
-				maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
-				maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
-				noFillerSegmentIndices: [0, 1, 2],
-			});
-			segments.splice(0, segments.length, ...fillerLimited);
-			segments = segments.map((s) => ({
-				...s,
-				text: sanitizeSegmentText(s.text),
-			}));
-		}
+      // apply rewrite
+      const byIdx = new Map();
+      for (const s of parsed2.segments) {
+        const idx = Number(s.index);
+        const txt = String(s.text || "").trim();
+        if (Number.isFinite(idx) && txt) byIdx.set(idx, txt);
+      }
+      for (const seg of segments) {
+        if (byIdx.has(seg.index)) seg.text = byIdx.get(seg.index);
+      }
+      // Re-apply segment completion rules after rewrite.
+      const fixedSegments = enforceSegmentCompleteness(
+        segments,
+        voiceTonePlan?.mood,
+        { includeCta: false },
+      );
+      const withTransitions = ensureTopicTransitions(fixedSegments, topicPicks);
+      const withQuestions = ensureTopicEngagementQuestions(
+        withTransitions,
+        topicPicks,
+        voiceTonePlan?.mood,
+        adjustedCaps,
+      );
+      const fillerLimited = limitFillerAndEmotesAcrossSegments(withQuestions, {
+        maxFillers: MAX_FILLER_WORDS_PER_VIDEO,
+        maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
+        maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
+        maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
+        noFillerSegmentIndices: [0, 1, 2],
+      });
+      segments.splice(0, segments.length, ...fillerLimited);
+      segments = segments.map((s) => ({
+        ...s,
+        text: sanitizeSegmentText(s.text),
+      }));
+    }
 
-		if (
-			ALIGN_INTRO_OUTRO_ATEMPO &&
-			Number.isFinite(globalAtempo) &&
-			Math.abs(globalAtempo - 1) >= 0.005
-		) {
-			const introAligned = path.join(tmpDir, `intro_aligned_${jobId}.wav`);
-			await applyGlobalAtempoToWav(introAudioPath, introAligned, globalAtempo);
-			safeUnlink(introAudioPath);
-			introAudioPath = introAligned;
-			introDurationSec = await probeDurationSeconds(introAudioPath);
+    if (
+      ALIGN_INTRO_OUTRO_ATEMPO &&
+      Number.isFinite(globalAtempo) &&
+      Math.abs(globalAtempo - 1) >= 0.005
+    ) {
+      const introAligned = path.join(tmpDir, `intro_aligned_${jobId}.wav`);
+      await applyGlobalAtempoToWav(introAudioPath, introAligned, globalAtempo);
+      safeUnlink(introAudioPath);
+      introAudioPath = introAligned;
+      introDurationSec = await probeDurationSeconds(introAudioPath);
 
-			const outroAligned = path.join(tmpDir, `outro_aligned_${jobId}.wav`);
-			await applyGlobalAtempoToWav(outroAudioPath, outroAligned, globalAtempo);
-			safeUnlink(outroAudioPath);
-			outroAudioPath = outroAligned;
-			outroDurationSec = await probeDurationSeconds(outroAudioPath);
+      const outroAligned = path.join(tmpDir, `outro_aligned_${jobId}.wav`);
+      await applyGlobalAtempoToWav(outroAudioPath, outroAligned, globalAtempo);
+      safeUnlink(outroAudioPath);
+      outroAudioPath = outroAligned;
+      outroDurationSec = await probeDurationSeconds(outroAudioPath);
 
-			logJob(jobId, "intro/outro atempo aligned", {
-				atempo: Number(globalAtempo.toFixed(4)),
-				introDurationSec: Number(introDurationSec.toFixed(3)),
-				outroDurationSec: Number(outroDurationSec.toFixed(3)),
-			});
-			updateJob(jobId, {
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					intro: { text: introTextFinal, targetSec: introDurationSec },
-					outro: { text: outroTextFinal, targetSec: outroDurationSec },
-				},
-			});
-		}
+      logJob(jobId, "intro/outro atempo aligned", {
+        atempo: Number(globalAtempo.toFixed(4)),
+        introDurationSec: Number(introDurationSec.toFixed(3)),
+        outroDurationSec: Number(outroDurationSec.toFixed(3)),
+      });
+      updateJob(jobId, {
+        meta: {
+          ...JOBS.get(jobId)?.meta,
+          intro: { text: introTextFinal, targetSec: introDurationSec },
+          outro: { text: outroTextFinal, targetSec: outroDurationSec },
+        },
+      });
+    }
 
-		if (TRIM_LEADING_SILENCE) {
-			const introTight = path.join(tmpDir, `intro_tight_${jobId}.wav`);
-			await trimLeadingSilenceWav(introAudioPath, introTight);
-			safeUnlink(introAudioPath);
-			introAudioPath = introTight;
-			introDurationSec = await probeDurationSeconds(introAudioPath);
+    if (TRIM_LEADING_SILENCE) {
+      const introTight = path.join(tmpDir, `intro_tight_${jobId}.wav`);
+      await trimLeadingSilenceWav(introAudioPath, introTight);
+      safeUnlink(introAudioPath);
+      introAudioPath = introTight;
+      introDurationSec = await probeDurationSeconds(introAudioPath);
 
-			const outroTight = path.join(tmpDir, `outro_tight_${jobId}.wav`);
-			await trimLeadingSilenceWav(outroAudioPath, outroTight);
-			safeUnlink(outroAudioPath);
-			outroAudioPath = outroTight;
-			outroDurationSec = await probeDurationSeconds(outroAudioPath);
+      const outroTight = path.join(tmpDir, `outro_tight_${jobId}.wav`);
+      await trimLeadingSilenceWav(outroAudioPath, outroTight);
+      safeUnlink(outroAudioPath);
+      outroAudioPath = outroTight;
+      outroDurationSec = await probeDurationSeconds(outroAudioPath);
 
-			logJob(jobId, "intro/outro leading silence trimmed", {
-				introDurationSec: Number(introDurationSec.toFixed(3)),
-				outroDurationSec: Number(outroDurationSec.toFixed(3)),
-			});
-			updateJob(jobId, {
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					intro: { text: introTextFinal, targetSec: introDurationSec },
-					outro: { text: outroTextFinal, targetSec: outroDurationSec },
-				},
-			});
-		}
+      logJob(jobId, "intro/outro leading silence trimmed", {
+        introDurationSec: Number(introDurationSec.toFixed(3)),
+        outroDurationSec: Number(outroDurationSec.toFixed(3)),
+      });
+      updateJob(jobId, {
+        meta: {
+          ...JOBS.get(jobId)?.meta,
+          intro: { text: introTextFinal, targetSec: introDurationSec },
+          outro: { text: outroTextFinal, targetSec: outroDurationSec },
+        },
+      });
+    }
 
-		const finalScriptSegments = segments.map((s) => ({
-			index: s.index,
-			topicIndex: s.topicIndex,
-			topicLabel: s.topicLabel,
-			text: s.text,
-			expression: s.expression,
-			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
-		}));
-		script.segments = finalScriptSegments;
-		const finalQa = analyzeScriptQuality({
-			script,
-			topics: topicPicks,
-			topicContexts,
-			wordCaps,
-			categoryLabel,
-		});
-		const finalEngagement = summarizeScriptEngagement(script);
-		logJob(jobId, "final script summary", {
-			qa: finalQa,
-			engagement: finalEngagement,
-			narrationTargetSec: Number(narrationTargetSec || 0),
-			segmentCount: finalScriptSegments.length,
-		});
-		logJob(jobId, `final script text\n${buildScriptLogText(script)}`);
-		updateJob(jobId, {
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				script: { title: script.title, segments: finalScriptSegments },
-			},
-		});
+    const finalScriptSegments = segments.map((s) => ({
+      index: s.index,
+      topicIndex: s.topicIndex,
+      topicLabel: s.topicLabel,
+      text: s.text,
+      expression: s.expression,
+      overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
+    }));
+    script.segments = finalScriptSegments;
+    const finalQa = analyzeScriptQuality({
+      script,
+      topics: topicPicks,
+      topicContexts,
+      wordCaps,
+      categoryLabel,
+    });
+    const finalEngagement = summarizeScriptEngagement(script);
+    logJob(jobId, "final script summary", {
+      qa: finalQa,
+      engagement: finalEngagement,
+      narrationTargetSec: Number(narrationTargetSec || 0),
+      segmentCount: finalScriptSegments.length,
+    });
+    logJob(jobId, `final script text\n${buildScriptLogText(script)}`);
+    updateJob(jobId, {
+      meta: {
+        ...JOBS.get(jobId)?.meta,
+        script: { title: script.title, segments: finalScriptSegments },
+      },
+    });
 
-		// Apply global atempo to each segment (may be 1.0 within tolerance)
-		const segmentAudio = [];
-		for (const a of cleanedWavs.sort((x, y) => x.index - y.index)) {
-			const out = path.join(tmpDir, `seg_audio_${jobId}_${a.index}.wav`);
-			await applyGlobalAtempoToWav(a.wav, out, globalAtempo);
-			let finalWav = out;
-			if (TRIM_LEADING_SILENCE && !voiceoverUrlLocked) {
-				const trimmed = path.join(
-					tmpDir,
-					`seg_audio_${jobId}_${a.index}_tight.wav`,
-				);
-				await trimLeadingSilenceWav(out, trimmed);
-				safeUnlink(out);
-				finalWav = trimmed;
-			}
-			const d2 = await probeDurationSeconds(finalWav);
-			logJob(jobId, "tts segment atempo applied", {
-				segment: a.index,
-				atempo: Number(globalAtempo.toFixed(4)),
-				cleanDur: Number((a.cleanDur || 0).toFixed(3)),
-				finalDur: Number((d2 || 0).toFixed(3)),
-			});
-			segmentAudio.push({ index: a.index, wav: finalWav, dur: d2 });
-			safeUnlink(a.wav);
-		}
+    // Apply global atempo to each segment (may be 1.0 within tolerance)
+    const segmentAudio = [];
+    for (const a of cleanedWavs.sort((x, y) => x.index - y.index)) {
+      const out = path.join(tmpDir, `seg_audio_${jobId}_${a.index}.wav`);
+      await applyGlobalAtempoToWav(a.wav, out, globalAtempo);
+      let finalWav = out;
+      if (TRIM_LEADING_SILENCE && !voiceoverUrlLocked) {
+        const trimmed = path.join(
+          tmpDir,
+          `seg_audio_${jobId}_${a.index}_tight.wav`,
+        );
+        await trimLeadingSilenceWav(out, trimmed);
+        safeUnlink(out);
+        finalWav = trimmed;
+      }
+      const d2 = await probeDurationSeconds(finalWav);
+      logJob(jobId, "tts segment atempo applied", {
+        segment: a.index,
+        atempo: Number(globalAtempo.toFixed(4)),
+        cleanDur: Number((a.cleanDur || 0).toFixed(3)),
+        finalDur: Number((d2 || 0).toFixed(3)),
+      });
+      segmentAudio.push({ index: a.index, wav: finalWav, dur: d2 });
+      safeUnlink(a.wav);
+    }
 
-		// Build timeline from actual audio durations
-		let t = 0;
-		let timeline = segmentAudio.map((a) => {
-			const startSec = Number((introDurationSec + t).toFixed(3));
-			t += a.dur;
-			const endSec = Number((introDurationSec + t).toFixed(3));
-			const seg = segments[a.index];
-			return {
-				index: a.index,
-				text: seg.text,
-				overlayCues: seg.overlayCues,
-				topicIndex: seg.topicIndex,
-				topicLabel: seg.topicLabel,
-				startSec,
-				endSec,
-				audioPath: a.wav,
-			};
-		});
+    // Build timeline from actual audio durations
+    let t = 0;
+    let timeline = segmentAudio.map((a) => {
+      const startSec = Number((introDurationSec + t).toFixed(3));
+      t += a.dur;
+      const endSec = Number((introDurationSec + t).toFixed(3));
+      const seg = segments[a.index];
+      return {
+        index: a.index,
+        text: seg.text,
+        overlayCues: seg.overlayCues,
+        topicIndex: seg.topicIndex,
+        topicLabel: seg.topicLabel,
+        startSec,
+        endSec,
+        audioPath: a.wav,
+      };
+    });
 
-		// sanity: trim tiny rounding error
-		if (timeline.length) {
-			const finalEnd = timeline[timeline.length - 1].endSec;
-			const desired = Number(
-				(introDurationSec + narrationTargetSec).toFixed(3),
-			);
-			if (Math.abs(finalEnd - desired) > 0.08) {
-				logJob(jobId, "timeline end differs from target (small drift)", {
-					finalEnd,
-					desired,
-				});
-			}
-		}
+    // sanity: trim tiny rounding error
+    if (timeline.length) {
+      const finalEnd = timeline[timeline.length - 1].endSec;
+      const desired = Number(
+        (introDurationSec + narrationTargetSec).toFixed(3),
+      );
+      if (Math.abs(finalEnd - desired) > 0.08) {
+        logJob(jobId, "timeline end differs from target (small drift)", {
+          finalEnd,
+          desired,
+        });
+      }
+    }
 
-		const narrationActualSec = segmentAudio.reduce(
-			(sum, a) => sum + (Number(a.dur) || 0),
-			0,
-		);
-		const totalPlannedSec =
-			Number(introDurationSec || 0) +
-			Number(narrationTargetSec || 0) +
-			Number(outroDurationSec || 0);
-		const totalActualSec =
-			Number(introDurationSec || 0) +
-			Number(narrationActualSec || 0) +
-			Number(outroDurationSec || 0);
-		logJob(jobId, "final narration timing", {
-			requestedTargetSec: Number(contentTargetSec || 0),
-			plannedNarrationSec: Number(narrationTargetSec || 0),
-			narrationActualSec: Number(narrationActualSec.toFixed(3)),
-			introSec: Number((introDurationSec || 0).toFixed(3)),
-			outroSec: Number((outroDurationSec || 0).toFixed(3)),
-			totalPlannedSec: Number(totalPlannedSec.toFixed(3)),
-			totalActualSec: Number(totalActualSec.toFixed(3)),
-			outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC || 0),
-		});
-		logJob(jobId, "final segment durations", {
-			segments: timeline.map((seg) => ({
-				index: seg.index,
-				topicLabel: seg.topicLabel,
-				startSec: seg.startSec,
-				endSec: seg.endSec,
-				durationSec: Number(
-					Math.max(0, Number(seg.endSec) - Number(seg.startSec)).toFixed(3),
-				),
-			})),
-		});
+    const narrationActualSec = segmentAudio.reduce(
+      (sum, a) => sum + (Number(a.dur) || 0),
+      0,
+    );
+    const totalPlannedSec =
+      Number(introDurationSec || 0) +
+      Number(narrationTargetSec || 0) +
+      Number(outroDurationSec || 0);
+    const totalActualSec =
+      Number(introDurationSec || 0) +
+      Number(narrationActualSec || 0) +
+      Number(outroDurationSec || 0);
+    logJob(jobId, "final narration timing", {
+      requestedTargetSec: Number(contentTargetSec || 0),
+      plannedNarrationSec: Number(narrationTargetSec || 0),
+      narrationActualSec: Number(narrationActualSec.toFixed(3)),
+      introSec: Number((introDurationSec || 0).toFixed(3)),
+      outroSec: Number((outroDurationSec || 0).toFixed(3)),
+      totalPlannedSec: Number(totalPlannedSec.toFixed(3)),
+      totalActualSec: Number(totalActualSec.toFixed(3)),
+      outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC || 0),
+    });
+    logJob(jobId, "final segment durations", {
+      segments: timeline.map((seg) => ({
+        index: seg.index,
+        topicLabel: seg.topicLabel,
+        startSec: seg.startSec,
+        endSec: seg.endSec,
+        durationSec: Number(
+          Math.max(0, Number(seg.endSec) - Number(seg.startSec)).toFixed(3),
+        ),
+      })),
+    });
 
-		updateJob(jobId, {
-			progressPct: 40,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				timeline,
-			},
-		});
+    updateJob(jobId, {
+      progressPct: 40,
+      meta: {
+        ...JOBS.get(jobId)?.meta,
+        timeline,
+      },
+    });
 
-		// 8.5) Visual plan: 50/50 presenter vs static image segments (content only)
-		const totalSegments = timeline.length;
-		let presenterCount = Math.floor(totalSegments * CONTENT_PRESENTER_RATIO);
-		if (totalSegments >= 2) {
-			presenterCount = clampNumber(presenterCount, 1, totalSegments - 1);
-		} else {
-			presenterCount = totalSegments;
-		}
-		const presenterPositions = pickEvenlySpacedIndices(
-			totalSegments,
-			presenterCount,
-		);
-		const presenterPosSet = new Set(presenterPositions);
-		const presenterSegments = [];
-		const imageSegments = [];
-		timeline = timeline.map((seg, idx) => {
-			const visualType = presenterPosSet.has(idx) ? "presenter" : "image";
-			if (visualType === "presenter") presenterSegments.push(seg.index);
-			else imageSegments.push(seg.index);
-			return { ...seg, visualType };
-		});
-		logJob(jobId, "segment visual plan", {
-			totalSegments,
-			presenterSegments,
-			imageSegments,
-		});
+    // 8.5) Visual plan: 50/50 presenter vs static image segments (content only)
+    const totalSegments = timeline.length;
+    let presenterCount = Math.floor(totalSegments * CONTENT_PRESENTER_RATIO);
+    if (totalSegments >= 2) {
+      presenterCount = clampNumber(presenterCount, 1, totalSegments - 1);
+    } else {
+      presenterCount = totalSegments;
+    }
+    const presenterPositions = pickEvenlySpacedIndices(
+      totalSegments,
+      presenterCount,
+    );
+    const presenterPosSet = new Set(presenterPositions);
+    const presenterSegments = [];
+    const imageSegments = [];
+    timeline = timeline.map((seg, idx) => {
+      const visualType = presenterPosSet.has(idx) ? "presenter" : "image";
+      if (visualType === "presenter") presenterSegments.push(seg.index);
+      else imageSegments.push(seg.index);
+      return { ...seg, visualType };
+    });
+    logJob(jobId, "segment visual plan", {
+      totalSegments,
+      presenterSegments,
+      imageSegments,
+    });
 
-		const imagePrep = await prepareImageSegments({
-			timeline,
-			topics: topicPicks,
-			tmpDir,
-			jobId,
-			baseUrl,
-			output,
-		});
-		timeline = imagePrep.timeline;
-		segmentImagePaths = imagePrep.segmentImagePaths || new Map();
-		const imagePlanSummary = imagePrep.imagePlanSummary || [];
+    const imagePrep = await prepareImageSegments({
+      timeline,
+      topics: topicPicks,
+      tmpDir,
+      jobId,
+      baseUrl,
+      output,
+    });
+    timeline = imagePrep.timeline;
+    segmentImagePaths = imagePrep.segmentImagePaths || new Map();
+    const imagePlanSummary = imagePrep.imagePlanSummary || [];
 
-		const finalPresenterSegments = [];
-		const finalImageSegments = [];
-		for (const seg of timeline) {
-			if (seg.visualType === "image") finalImageSegments.push(seg.index);
-			else finalPresenterSegments.push(seg.index);
-		}
-		const premiumPresenterSegments = [];
-		if (finalPresenterSegments.length) {
-			premiumPresenterSegments.push(finalPresenterSegments[0]);
-			if (finalPresenterSegments.length > 1) {
-				premiumPresenterSegments.push(
-					finalPresenterSegments[finalPresenterSegments.length - 1],
-				);
-			}
-		}
-		const premiumPresenterSegmentSet = new Set(premiumPresenterSegments);
-		const allImageUrls = [];
-		for (const seg of timeline) {
-			if (Array.isArray(seg.imageUrls)) allImageUrls.push(...seg.imageUrls);
-		}
-		const uniqueImageUrls = new Set(
-			allImageUrls.map((u) => normalizeImageUrlKey(u)),
-		);
-		const duplicateImageCount = Math.max(
-			0,
-			allImageUrls.length - uniqueImageUrls.size,
-		);
-		logJob(jobId, "segment image qa", {
-			totalImages: allImageUrls.length,
-			uniqueImages: uniqueImageUrls.size,
-			duplicates: duplicateImageCount,
-		});
-		const imageDiversity = await evaluateImageSegmentDiversity({
-			timeline,
-			segmentImagePaths,
-			jobId,
-		});
-		logJob(jobId, "segment image diversity", imageDiversity);
-		if (imagePlanSummary.length) {
-			logJob(jobId, "segment image plan", {
-				count: imagePlanSummary.length,
-				segments: imagePlanSummary,
-			});
-		}
-		updateJob(jobId, {
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				timeline,
-				visualPlan: {
-					presenterSegments: finalPresenterSegments,
-					imageSegments: finalImageSegments,
-				},
-				imageQa: {
-					total: allImageUrls.length,
-					unique: uniqueImageUrls.size,
-					duplicates: duplicateImageCount,
-				},
-				imageDiversity,
-			},
-		});
-		logJob(jobId, "sync model strategy", {
-			introPrimary: SYNC_SO_MODEL_STANDARD,
-			standardPrimary: SYNC_SO_MODEL_STANDARD,
-			premiumPrimary: SYNC_SO_MODEL_HERO,
-			fallbackPrimary: SYNC_SO_MODEL_FALLBACK,
-			premiumPresenterSegments,
-			outroPrimary: SYNC_SO_MODEL_HERO,
-		});
-		if (!imageDiversity.ok) {
-			const failingTopics = (imageDiversity.perTopic || []).filter(
-				(t) => t.unique < t.minUnique,
-			);
-			const failText = failingTopics
-				.map(
-					(t) =>
-						`${t.topicLabel || `topic_${t.topicIndex}`}: ${t.unique}/${
-							t.segmentCount
-						} (min ${t.minUnique})`,
-				)
-				.join("; ");
-			const message = `Not enough unique feed images per topic: ${failText || `${imageDiversity.unique}/${imageDiversity.segmentCount} unique (min ${imageDiversity.minUnique})`}.`;
-			logJob(jobId, "segment image diversity failed", {
-				...imageDiversity,
-				message,
-			});
-			throw new Error(message);
-		}
+    const finalPresenterSegments = [];
+    const finalImageSegments = [];
+    for (const seg of timeline) {
+      if (seg.visualType === "image") finalImageSegments.push(seg.index);
+      else finalPresenterSegments.push(seg.index);
+    }
+    const premiumPresenterSegments = [];
+    if (finalPresenterSegments.length) {
+      premiumPresenterSegments.push(finalPresenterSegments[0]);
+      if (finalPresenterSegments.length > 1) {
+        premiumPresenterSegments.push(
+          finalPresenterSegments[finalPresenterSegments.length - 1],
+        );
+      }
+    }
+    const premiumPresenterSegmentSet = new Set(premiumPresenterSegments);
+    const allImageUrls = [];
+    for (const seg of timeline) {
+      if (Array.isArray(seg.imageUrls)) allImageUrls.push(...seg.imageUrls);
+    }
+    const uniqueImageUrls = new Set(
+      allImageUrls.map((u) => normalizeImageUrlKey(u)),
+    );
+    const duplicateImageCount = Math.max(
+      0,
+      allImageUrls.length - uniqueImageUrls.size,
+    );
+    logJob(jobId, "segment image qa", {
+      totalImages: allImageUrls.length,
+      uniqueImages: uniqueImageUrls.size,
+      duplicates: duplicateImageCount,
+    });
+    const imageDiversity = await evaluateImageSegmentDiversity({
+      timeline,
+      segmentImagePaths,
+      jobId,
+    });
+    logJob(jobId, "segment image diversity", imageDiversity);
+    if (imagePlanSummary.length) {
+      logJob(jobId, "segment image plan", {
+        count: imagePlanSummary.length,
+        segments: imagePlanSummary,
+      });
+    }
+    updateJob(jobId, {
+      meta: {
+        ...JOBS.get(jobId)?.meta,
+        timeline,
+        visualPlan: {
+          presenterSegments: finalPresenterSegments,
+          imageSegments: finalImageSegments,
+        },
+        imageQa: {
+          total: allImageUrls.length,
+          unique: uniqueImageUrls.size,
+          duplicates: duplicateImageCount,
+        },
+        imageDiversity,
+      },
+    });
+    logJob(jobId, "sync model strategy", {
+      introPrimary: SYNC_SO_MODEL_STANDARD,
+      standardPrimary: SYNC_SO_MODEL_STANDARD,
+      premiumPrimary: SYNC_SO_MODEL_HERO,
+      fallbackPrimary: SYNC_SO_MODEL_FALLBACK,
+      premiumPresenterSegments,
+      outroPrimary: SYNC_SO_MODEL_HERO,
+    });
+    if (!imageDiversity.ok) {
+      const failingTopics = (imageDiversity.perTopic || []).filter(
+        (t) => t.unique < t.minUnique,
+      );
+      const failText = failingTopics
+        .map(
+          (t) =>
+            `${t.topicLabel || `topic_${t.topicIndex}`}: ${t.unique}/${
+              t.segmentCount
+            } (min ${t.minUnique})`,
+        )
+        .join("; ");
+      const message = `Not enough unique feed images per topic: ${failText || `${imageDiversity.unique}/${imageDiversity.segmentCount} unique (min ${imageDiversity.minUnique})`}.`;
+      logJob(jobId, "segment image diversity failed", {
+        ...imageDiversity,
+        message,
+      });
+      throw new Error(message);
+    }
 
-		const presenterSegSet = new Set(finalPresenterSegments);
-		const presenterOnlySegments = segments.filter((s) =>
-			presenterSegSet.has(s.index),
-		);
-		const presenterVideoPlan = buildSubtleVideoExpressionPlan(
-			presenterOnlySegments,
-			voiceTonePlan?.mood,
-			jobId,
-		);
-		const presenterPlanByIndex = new Map();
-		presenterOnlySegments.forEach((seg, idx) => {
-			presenterPlanByIndex.set(seg.index, presenterVideoPlan[idx] || "neutral");
-		});
-		segments = segments.map((s) => ({
-			...s,
-			videoExpression: presenterPlanByIndex.get(s.index) || "neutral",
-		}));
+    const presenterSegSet = new Set(finalPresenterSegments);
+    const presenterOnlySegments = segments.filter((s) =>
+      presenterSegSet.has(s.index),
+    );
+    const presenterVideoPlan = buildSubtleVideoExpressionPlan(
+      presenterOnlySegments,
+      voiceTonePlan?.mood,
+      jobId,
+    );
+    const presenterPlanByIndex = new Map();
+    presenterOnlySegments.forEach((seg, idx) => {
+      presenterPlanByIndex.set(seg.index, presenterVideoPlan[idx] || "neutral");
+    });
+    segments = segments.map((s) => ({
+      ...s,
+      videoExpression: presenterPlanByIndex.get(s.index) || "neutral",
+    }));
 
-		// Build topic-aligned overlays from segment cues (if no custom overlays provided)
-		if (
-			ENABLE_LONG_VIDEO_OVERLAYS &&
-			(!overlayAssets || !overlayAssets.length)
-		) {
-			autoOverlayAssets = await buildOverlayAssetsFromSegments({
-				segments,
-				timeline,
-				topics: topicPicks,
-				maxOverlays: MAX_AUTO_OVERLAYS,
-			});
-			logJob(jobId, "auto overlays prepared", {
-				count: autoOverlayAssets.length,
-			});
-		}
+    // Build topic-aligned overlays from segment cues (if no custom overlays provided)
+    if (
+      ENABLE_LONG_VIDEO_OVERLAYS &&
+      (!overlayAssets || !overlayAssets.length)
+    ) {
+      autoOverlayAssets = await buildOverlayAssetsFromSegments({
+        segments,
+        timeline,
+        topics: topicPicks,
+        maxOverlays: MAX_AUTO_OVERLAYS,
+      });
+      logJob(jobId, "auto overlays prepared", {
+        count: autoOverlayAssets.length,
+      });
+    }
 
-		// 9) Create baseline presenter videos (expression-aware)
-		const baselinePresenterVideos = new Map();
-		const pushBaselineVariant = (expr, clipPath) => {
-			if (!clipPath) return;
-			const list = baselinePresenterVideos.get(expr) || [];
-			list.push(clipPath);
-			baselinePresenterVideos.set(expr, list);
-		};
-		const pickBaselineVariant = (expr, seed = 0) => {
-			const list =
-				baselinePresenterVideos.get(expr) ||
-				baselinePresenterVideos.get("neutral") ||
-				[];
-			if (!list.length) return null;
-			const idx = Math.abs(Number(seed) || 0) % list.length;
-			return list[idx];
-		};
-		const pickBaselineDefault = () => {
-			const neutralList = baselinePresenterVideos.get("neutral") || [];
-			if (neutralList.length) return neutralList[0];
-			const first = baselinePresenterVideos.values().next().value;
-			return Array.isArray(first) ? first[0] : first || null;
-		};
-		const expressionsNeeded = Array.from(
-			new Set(
-				[
-					...segments.map((s) => s.videoExpression || s.expression),
-					introExpression,
-					outroExpression,
-				].filter(Boolean),
-			),
-		);
-		if (!expressionsNeeded.includes("neutral"))
-			expressionsNeeded.unshift("neutral");
+    // 9) Create baseline presenter videos (expression-aware)
+    const baselinePresenterVideos = new Map();
+    const pushBaselineVariant = (expr, clipPath) => {
+      if (!clipPath) return;
+      const list = baselinePresenterVideos.get(expr) || [];
+      list.push(clipPath);
+      baselinePresenterVideos.set(expr, list);
+    };
+    const pickBaselineVariant = (expr, seed = 0) => {
+      const list =
+        baselinePresenterVideos.get(expr) ||
+        baselinePresenterVideos.get("neutral") ||
+        [];
+      if (!list.length) return null;
+      const idx = Math.abs(Number(seed) || 0) % list.length;
+      return list[idx];
+    };
+    const pickBaselineDefault = () => {
+      const neutralList = baselinePresenterVideos.get("neutral") || [];
+      if (neutralList.length) return neutralList[0];
+      const first = baselinePresenterVideos.values().next().value;
+      return Array.isArray(first) ? first[0] : first || null;
+    };
+    const expressionsNeeded = Array.from(
+      new Set(
+        [
+          ...segments.map((s) => s.videoExpression || s.expression),
+          introExpression,
+          outroExpression,
+        ].filter(Boolean),
+      ),
+    );
+    if (!expressionsNeeded.includes("neutral"))
+      expressionsNeeded.unshift("neutral");
 
-		if (presenterIsVideo) {
-			pushBaselineVariant("neutral", presenterLocal);
-			logJob(jobId, "presenter is video; baseline uses provided video");
-		} else if (
-			enableRunwayPresenterMotion &&
-			ENABLE_RUNWAY_BASELINE &&
-			RUNWAY_API_KEY
-		) {
-			for (const expr of expressionsNeeded) {
-				for (let v = 0; v < BASELINE_VARIANTS; v++) {
-					try {
-						const runwayUri = await runwayCreateEphemeralUpload({
-							filePath: presenterLocal,
-							filename: `presenter_${expr}.png`,
-						});
-						const prompt = buildBaselinePrompt(expr, motionRefVideo, v);
+    if (presenterIsVideo) {
+      pushBaselineVariant("neutral", presenterLocal);
+      logJob(jobId, "presenter is video; baseline uses provided video");
+    } else if (
+      enableRunwayPresenterMotion &&
+      ENABLE_RUNWAY_BASELINE &&
+      RUNWAY_API_KEY
+    ) {
+      for (const expr of expressionsNeeded) {
+        for (let v = 0; v < BASELINE_VARIANTS; v++) {
+          try {
+            const runwayUri = await runwayCreateEphemeralUpload({
+              filePath: presenterLocal,
+              filename: `presenter_${expr}.png`,
+            });
+            const prompt = buildBaselinePrompt(expr, motionRefVideo, v);
 
-						logJob(jobId, "runway baseline prompt", {
-							expression: expr,
-							variant: v + 1,
-							duration: BASELINE_DUR_SEC,
-							ratio: output.ratio,
-						});
+            logJob(jobId, "runway baseline prompt", {
+              expression: expr,
+              variant: v + 1,
+              duration: BASELINE_DUR_SEC,
+              ratio: output.ratio,
+            });
 
-						const outUrl = await runwayImageToVideo({
-							runwayImageUri: runwayUri,
-							promptText: prompt,
-							durationSec: BASELINE_DUR_SEC,
-							ratio: output.ratio,
-						});
+            const outUrl = await runwayImageToVideo({
+              runwayImageUri: runwayUri,
+              promptText: prompt,
+              durationSec: BASELINE_DUR_SEC,
+              ratio: output.ratio,
+            });
 
-						const outMp4 = path.join(
-							tmpDir,
-							`baseline_${jobId}_${expr}_v${v + 1}.mp4`,
-						);
-						await downloadToFile(outUrl, outMp4, 120000, 2);
+            const outMp4 = path.join(
+              tmpDir,
+              `baseline_${jobId}_${expr}_v${v + 1}.mp4`,
+            );
+            await downloadToFile(outUrl, outMp4, 120000, 2);
 
-						// Prep baseline for sync input
-						const prep = path.join(
-							tmpDir,
-							`baseline_sync_${jobId}_${expr}_v${v + 1}.mp4`,
-						);
-						await spawnBin(
-							ffmpegPath,
-							[
-								"-i",
-								outMp4,
-								"-t",
-								BASELINE_DUR_SEC.toFixed(3),
-								"-an",
-								"-vf",
-								`scale=${makeEven(output.w)}:${makeEven(
-									output.h,
-								)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-									output.w,
-								)}:${makeEven(
-									output.h,
-								)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-								"-c:v",
-								"libx264",
-								"-preset",
-								"veryfast",
-								"-crf",
-								String(SYNC_SO_INPUT_CRF),
-								"-pix_fmt",
-								"yuv420p",
-								"-movflags",
-								"+faststart",
-								"-y",
-								prep,
-							],
-							"prepare_baseline",
-							{ timeoutMs: 240000 },
-						);
+            // Prep baseline for sync input
+            const prep = path.join(
+              tmpDir,
+              `baseline_sync_${jobId}_${expr}_v${v + 1}.mp4`,
+            );
+            await spawnBin(
+              ffmpegPath,
+              [
+                "-i",
+                outMp4,
+                "-t",
+                BASELINE_DUR_SEC.toFixed(3),
+                "-an",
+                "-vf",
+                `scale=${makeEven(output.w)}:${makeEven(
+                  output.h,
+                )}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
+                  output.w,
+                )}:${makeEven(
+                  output.h,
+                )},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                String(SYNC_SO_INPUT_CRF),
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-y",
+                prep,
+              ],
+              "prepare_baseline",
+              { timeoutMs: 240000 },
+            );
 
-						const syncReady = await ensureUnderBytes(
-							prep,
-							SYNC_SO_MAX_BYTES,
-							tmpDir,
-							jobId,
-							`baseline_sync_${expr}_v${v + 1}`,
-						);
-						pushBaselineVariant(expr, syncReady);
-						logJob(jobId, "baseline presenter ready", {
-							expression: expr,
-							variant: v + 1,
-							path: path.basename(syncReady),
-						});
-					} catch (e) {
-						logJob(jobId, "runway baseline failed (expression)", {
-							expression: expr,
-							variant: v + 1,
-							error: e.message,
-						});
-					}
-				}
-			}
-		}
-		if (!baselinePresenterVideos.size) {
-			// Fallback: convert image to a simple still video
-			const still = path.join(tmpDir, `baseline_still_${jobId}.mp4`);
-			await spawnBin(
-				ffmpegPath,
-				[
-					"-loop",
-					"1",
-					"-i",
-					presenterLocal,
-					"-t",
-					BASELINE_DUR_SEC.toFixed(3),
-					"-an",
-					"-vf",
-					`scale=${makeEven(output.w)}:${makeEven(
-						output.h,
-					)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-						output.w,
-					)}:${makeEven(output.h)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p`,
-					"-c:v",
-					"libx264",
-					"-preset",
-					"veryfast",
-					"-crf",
-					String(SYNC_SO_INPUT_CRF),
-					"-pix_fmt",
-					"yuv420p",
-					"-movflags",
-					"+faststart",
-					"-y",
-					still,
-				],
-				"baseline_still",
-				{ timeoutMs: 180000 },
-			);
-			pushBaselineVariant("neutral", still);
-		}
+            const syncReady = await ensureUnderBytes(
+              prep,
+              SYNC_SO_MAX_BYTES,
+              tmpDir,
+              jobId,
+              `baseline_sync_${expr}_v${v + 1}`,
+            );
+            pushBaselineVariant(expr, syncReady);
+            logJob(jobId, "baseline presenter ready", {
+              expression: expr,
+              variant: v + 1,
+              path: path.basename(syncReady),
+            });
+          } catch (e) {
+            logJob(jobId, "runway baseline failed (expression)", {
+              expression: expr,
+              variant: v + 1,
+              error: e.message,
+            });
+          }
+        }
+      }
+    }
+    if (!baselinePresenterVideos.size) {
+      // Fallback: convert image to a simple still video
+      const still = path.join(tmpDir, `baseline_still_${jobId}.mp4`);
+      await spawnBin(
+        ffmpegPath,
+        [
+          "-loop",
+          "1",
+          "-i",
+          presenterLocal,
+          "-t",
+          BASELINE_DUR_SEC.toFixed(3),
+          "-an",
+          "-vf",
+          `scale=${makeEven(output.w)}:${makeEven(
+            output.h,
+          )}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
+            output.w,
+          )}:${makeEven(output.h)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p`,
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-crf",
+          String(SYNC_SO_INPUT_CRF),
+          "-pix_fmt",
+          "yuv420p",
+          "-movflags",
+          "+faststart",
+          "-y",
+          still,
+        ],
+        "baseline_still",
+        { timeoutMs: 180000 },
+      );
+      pushBaselineVariant("neutral", still);
+    }
 
-		const baselineDefault = pickBaselineDefault();
+    const baselineDefault = pickBaselineDefault();
 
-		updateJob(jobId, { progressPct: 50 });
+    updateJob(jobId, { progressPct: 50 });
 
-		// 10) Intro (lipsync + title overlay)
-		const introOffsetSeed = seedFromJobId(jobId) % 29;
-		const introBaseline =
-			pickBaselineVariant(introExpression, 0) || baselineDefault;
-		const introBase = await renderLipsyncedSegment({
-			jobId,
-			tmpDir,
-			output,
-			baselineSource: introBaseline,
-			segDur: introDurationSec,
-			audioPath: introAudioPath,
-			label: "intro",
-			offsetSeed: introOffsetSeed,
-			addFades: true,
-		});
-		const introPath = path.join(tmpDir, `intro_${jobId}.mp4`);
-		const introTitle = buildIntroCardTitle({
-			title: seoMeta?.seoTitle || script.title,
-			shortTitle: script.shortTitle || "",
-		});
-		const introSubtitle = buildIntroCardSubtitle({
-			topics: topicPicks,
-			shortTitle: script.shortTitle || script.title,
-		});
-		await createIntroClip({
-			title: introTitle,
-			subtitle: introSubtitle,
-			bgImagePath: introBase,
-			durationSec: introDurationSec,
-			outCfg: output,
-			outPath: introPath,
-			disableVideoBlur: true,
-		});
-		safeUnlink(introBase);
+    // 10) Intro (lipsync + title overlay)
+    const introOffsetSeed = seedFromJobId(jobId) % 29;
+    const introBaseline =
+      pickBaselineVariant(introExpression, 0) || baselineDefault;
+    const introBase = await renderLipsyncedSegment({
+      jobId,
+      tmpDir,
+      output,
+      baselineSource: introBaseline,
+      segDur: introDurationSec,
+      audioPath: introAudioPath,
+      label: "intro",
+      offsetSeed: introOffsetSeed,
+      addFades: true,
+    });
+    const introPath = path.join(tmpDir, `intro_${jobId}.mp4`);
+    const introTitle = buildIntroCardTitle({
+      title: seoMeta?.seoTitle || script.title,
+      shortTitle: script.shortTitle || "",
+    });
+    const introSubtitle = buildIntroCardSubtitle({
+      topics: topicPicks,
+      shortTitle: script.shortTitle || script.title,
+    });
+    await createIntroClip({
+      title: introTitle,
+      subtitle: introSubtitle,
+      bgImagePath: introBase,
+      durationSec: introDurationSec,
+      outCfg: output,
+      outPath: introPath,
+      disableVideoBlur: true,
+    });
+    safeUnlink(introBase);
 
-		// 11) Content segment pipeline
-		const segmentVideos = [introPath];
-		for (const seg of timeline) {
-			const segDur = Math.max(0.2, seg.endSec - seg.startSec);
-			logJob(jobId, "segment start", {
-				segment: seg.index,
-				segDur: Number(segDur.toFixed(3)),
-				visualType: seg.visualType || "presenter",
-			});
+    // 11) Content segment pipeline
+    const segmentVideos = [introPath];
+    const renderUnits = await buildRenderableTimelineUnits({
+      timeline,
+      tmpDir,
+      jobId,
+      premiumPresenterSegmentSet,
+    });
+    logJob(jobId, "presenter render units", {
+      totalUnits: renderUnits.length,
+      mergedUnits: renderUnits
+        .filter((unit) => unit.mergedPresenterRun)
+        .map((unit) => ({
+          label: unit.renderLabel,
+          segments: unit.renderSegmentIndices,
+          segDur: Number((unit.segDur || 0).toFixed(3)),
+          syncTier: unit.syncTier,
+        })),
+    });
+    for (const seg of renderUnits) {
+      const segDur = Math.max(0.2, Number(seg.segDur || 0));
+      logJob(jobId, "segment start", {
+        segment: seg.index,
+        renderLabel: seg.renderLabel || String(seg.index),
+        renderSegments: seg.renderSegmentIndices || [seg.index],
+        segDur: Number(segDur.toFixed(3)),
+        visualType: seg.visualType || "presenter",
+      });
 
-			const exprKey = seg.videoExpression || seg.expression || "neutral";
-			const baselineSource =
-				pickBaselineVariant(exprKey, seg.index) || baselineDefault;
-			let norm = null;
-			if (seg.visualType === "image") {
-				const imagePaths = segmentImagePaths.get(seg.index) || [];
-				if (imagePaths.length) {
-					try {
-						norm = await renderImageSegment({
-							jobId,
-							tmpDir,
-							output,
-							segDur,
-							audioPath: seg.audioPath,
-							imagePaths,
-							label: String(seg.index),
-							addFades: ENABLE_SEGMENT_FADES,
-						});
-					} catch (e) {
-						logJob(jobId, "image segment failed; fallback to presenter", {
-							segment: seg.index,
-							error: e.message,
-						});
-					}
-				} else {
-					logJob(jobId, "image segment missing assets; fallback to presenter", {
-						segment: seg.index,
-					});
-				}
-			}
+      const exprKey = seg.videoExpression || seg.expression || "neutral";
+      const baselineSource =
+        pickBaselineVariant(exprKey, seg.index) || baselineDefault;
+      let norm = null;
+      if (seg.visualType === "image") {
+        const imagePaths = segmentImagePaths.get(seg.index) || [];
+        if (imagePaths.length) {
+          try {
+            norm = await renderImageSegment({
+              jobId,
+              tmpDir,
+              output,
+              segDur,
+              audioPath: seg.audioPath,
+              imagePaths,
+              label: String(seg.index),
+              addFades: ENABLE_SEGMENT_FADES,
+            });
+          } catch (e) {
+            logJob(jobId, "image segment failed; fallback to presenter", {
+              segment: seg.index,
+              error: e.message,
+            });
+          }
+        } else {
+          logJob(jobId, "image segment missing assets; fallback to presenter", {
+            segment: seg.index,
+          });
+        }
+      }
 
-			if (!norm) {
-				const syncTier = premiumPresenterSegmentSet.has(seg.index)
-					? "hero"
-					: "standard";
-				norm = await renderLipsyncedSegment({
-					jobId,
-					tmpDir,
-					output,
-					baselineSource,
-					segDur,
-					audioPath: seg.audioPath,
-					label: String(seg.index),
-					offsetSeed: seg.index,
-					addFades: ENABLE_SEGMENT_FADES,
-					syncTier,
-				});
-			}
+      if (!norm) {
+        norm = await renderLipsyncedSegment({
+          jobId,
+          tmpDir,
+          output,
+          baselineSource,
+          segDur,
+          audioPath: seg.audioPath,
+          label: seg.renderLabel || String(seg.index),
+          offsetSeed: seg.index,
+          addFades: ENABLE_SEGMENT_FADES,
+          syncTier: seg.syncTier || "standard",
+        });
+      }
 
-			segmentVideos.push(norm);
-			logJob(jobId, "segment ready", {
-				segment: seg.index,
-				visualType: seg.visualType || "presenter",
-			});
-		}
+      segmentVideos.push(norm);
+      logJob(jobId, "segment ready", {
+        segment: seg.index,
+        renderLabel: seg.renderLabel || String(seg.index),
+        renderSegments: seg.renderSegmentIndices || [seg.index],
+        visualType: seg.visualType || "presenter",
+      });
+    }
 
-		// 12) Outro (lipsync + silent smile tail)
-		const outroOffsetSeed = introOffsetSeed + 7;
-		const outroBaseline =
-			pickBaselineVariant(outroExpression, 1) || baselineDefault;
-		const outroTalk = await renderLipsyncedSegment({
-			jobId,
-			tmpDir,
-			output,
-			baselineSource: outroBaseline,
-			segDur: outroDurationSec,
-			audioPath: outroAudioPath,
-			label: "outro",
-			offsetSeed: outroOffsetSeed,
-			addFades: false,
-			syncTier: "hero",
-		});
+    // 12) Outro (lipsync + silent smile tail)
+    const outroOffsetSeed = introOffsetSeed + 7;
+    const outroBaseline =
+      pickBaselineVariant(outroExpression, 1) || baselineDefault;
+    const outroTalk = await renderLipsyncedSegment({
+      jobId,
+      tmpDir,
+      output,
+      baselineSource: outroBaseline,
+      segDur: outroDurationSec,
+      audioPath: outroAudioPath,
+      label: "outro",
+      offsetSeed: outroOffsetSeed,
+      addFades: false,
+      syncTier: "hero",
+    });
 
-		// Calm tail after the outro line (silent + fade-out).
-		const tailBaseline =
-			pickBaselineVariant("neutral", 2) || outroBaseline || baselineDefault;
-		const tailBaselineDur = await probeDurationSeconds(tailBaseline);
-		const tailStart = Math.max(0, tailBaselineDur - OUTRO_SMILE_TAIL_SEC);
-		const tailRaw = path.join(tmpDir, `outro_tail_raw_${jobId}.mp4`);
-		await spawnBin(
-			ffmpegPath,
-			[
-				"-ss",
-				tailStart.toFixed(3),
-				"-i",
-				tailBaseline,
-				"-t",
-				OUTRO_SMILE_TAIL_SEC.toFixed(3),
-				"-an",
-				"-vf",
-				"setpts=PTS-STARTPTS",
-				"-c:v",
-				"libx264",
-				"-preset",
-				INTERMEDIATE_PRESET,
-				"-crf",
-				String(INTERMEDIATE_VIDEO_CRF),
-				"-pix_fmt",
-				"yuv420p",
-				"-movflags",
-				"+faststart",
-				"-y",
-				tailRaw,
-			],
-			"outro_tail_cut",
-			{ timeoutMs: 120000 },
-		);
-		const tailFit = path.join(tmpDir, `outro_tail_fit_${jobId}.mp4`);
-		await fitVideoToDuration(tailRaw, OUTRO_SMILE_TAIL_SEC, tailFit);
-		safeUnlink(tailRaw);
+    // Calm tail after the outro line (silent + fade-out).
+    const tailBaseline =
+      pickBaselineVariant("neutral", 2) || outroBaseline || baselineDefault;
+    const tailBaselineDur = await probeDurationSeconds(tailBaseline);
+    const tailStart = Math.max(0, tailBaselineDur - OUTRO_SMILE_TAIL_SEC);
+    const tailRaw = path.join(tmpDir, `outro_tail_raw_${jobId}.mp4`);
+    await spawnBin(
+      ffmpegPath,
+      [
+        "-ss",
+        tailStart.toFixed(3),
+        "-i",
+        tailBaseline,
+        "-t",
+        OUTRO_SMILE_TAIL_SEC.toFixed(3),
+        "-an",
+        "-vf",
+        "setpts=PTS-STARTPTS",
+        "-c:v",
+        "libx264",
+        "-preset",
+        INTERMEDIATE_PRESET,
+        "-crf",
+        String(INTERMEDIATE_VIDEO_CRF),
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-y",
+        tailRaw,
+      ],
+      "outro_tail_cut",
+      { timeoutMs: 120000 },
+    );
+    const tailFit = path.join(tmpDir, `outro_tail_fit_${jobId}.mp4`);
+    await fitVideoToDuration(tailRaw, OUTRO_SMILE_TAIL_SEC, tailFit);
+    safeUnlink(tailRaw);
 
-		const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
-		await createSilentWav({
-			durationSec: OUTRO_SMILE_TAIL_SEC,
-			outPath: tailSilence,
-		});
-		const tailWithAudio = path.join(tmpDir, `outro_tail_audio_${jobId}.mp4`);
-		await mergeVideoWithAudio(tailFit, tailSilence, tailWithAudio);
-		safeUnlink(tailSilence);
-		safeUnlink(tailFit);
+    const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
+    await createSilentWav({
+      durationSec: OUTRO_SMILE_TAIL_SEC,
+      outPath: tailSilence,
+    });
+    const tailWithAudio = path.join(tmpDir, `outro_tail_audio_${jobId}.mp4`);
+    await mergeVideoWithAudio(tailFit, tailSilence, tailWithAudio);
+    safeUnlink(tailSilence);
+    safeUnlink(tailFit);
 
-		const outroTail = path.join(tmpDir, `outro_tail_${jobId}.mp4`);
-		await normalizeClip(tailWithAudio, outroTail, output, {
-			zoomOut: CAMERA_ZOOM_OUT,
-			fadeOutOnly: true,
-		});
-		safeUnlink(tailWithAudio);
+    const outroTail = path.join(tmpDir, `outro_tail_${jobId}.mp4`);
+    await normalizeClip(tailWithAudio, outroTail, output, {
+      zoomOut: CAMERA_ZOOM_OUT,
+      fadeOutOnly: true,
+    });
+    safeUnlink(tailWithAudio);
 
-		const outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
-		await concatClips([outroTalk, outroTail], outroPath, {
-			...output,
-			softTransitions: false,
-		});
-		segmentVideos.push(outroPath);
+    const outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
+    await concatClips([outroTalk, outroTail], outroPath, {
+      ...output,
+      softTransitions: false,
+    });
+    segmentVideos.push(outroPath);
 
-		updateJob(jobId, { progressPct: 72 });
+    updateJob(jobId, { progressPct: 72 });
 
-		// 13) Concat intro + content + outro
-		const concatPath = path.join(tmpDir, `concat_${jobId}.mp4`);
-		await concatClips(segmentVideos, concatPath, {
-			...output,
-			softTransitions: true,
-		});
-		logJob(jobId, "concat done", { clips: segmentVideos.length });
+    // 13) Concat intro + content + outro
+    const concatPath = path.join(tmpDir, `concat_${jobId}.mp4`);
+    await concatClips(segmentVideos, concatPath, {
+      ...output,
+      softTransitions: true,
+    });
+    logJob(jobId, "concat done", { clips: segmentVideos.length });
 
-		// 14) Overlays (optional; static image segments provide visuals)
-		let overlayedPath = concatPath;
-		if (
-			ENABLE_LONG_VIDEO_OVERLAYS &&
-			((overlayAssets && overlayAssets.length) ||
-				(autoOverlayAssets && autoOverlayAssets.length))
-		) {
-			const totalDurationSec = await probeDurationSeconds(concatPath);
-			const overlaySource =
-				overlayAssets && overlayAssets.length
-					? overlayAssets
-					: autoOverlayAssets;
-			const normalizedOverlays = normalizeOverlayAssets(
-				overlaySource,
-				totalDurationSec,
-			);
-			const overlaysToUse = normalizedOverlays;
+    // 14) Overlays (optional; static image segments provide visuals)
+    let overlayedPath = concatPath;
+    if (
+      ENABLE_LONG_VIDEO_OVERLAYS &&
+      ((overlayAssets && overlayAssets.length) ||
+        (autoOverlayAssets && autoOverlayAssets.length))
+    ) {
+      const totalDurationSec = await probeDurationSeconds(concatPath);
+      const overlaySource =
+        overlayAssets && overlayAssets.length
+          ? overlayAssets
+          : autoOverlayAssets;
+      const normalizedOverlays = normalizeOverlayAssets(
+        overlaySource,
+        totalDurationSec,
+      );
+      const overlaysToUse = normalizedOverlays;
 
-			const overlayLocal = [];
-			for (let i = 0; i < overlaysToUse.length; i++) {
-				const ov = overlaysToUse[i];
-				if (!ov?.url) continue;
-				// Allow download when HEAD fails; only skip on explicit non-media types.
-				const ct = await headContentType(ov.url, 7000);
-				if (ct && !ct.startsWith("image/") && !ct.startsWith("video/"))
-					continue;
+      const overlayLocal = [];
+      for (let i = 0; i < overlaysToUse.length; i++) {
+        const ov = overlaysToUse[i];
+        if (!ov?.url) continue;
+        // Allow download when HEAD fails; only skip on explicit non-media types.
+        const ct = await headContentType(ov.url, 7000);
+        if (ct && !ct.startsWith("image/") && !ct.startsWith("video/"))
+          continue;
 
-				const ext = ov.type === "video" ? "mp4" : "png";
-				const out = path.join(tmpDir, `ov_${jobId}_${i}.${ext}`);
-				try {
-					await downloadToFile(ov.url, out, 25000, 1);
-					const dt = detectFileType(out);
-					if (ov.type === "image" && dt?.kind !== "image") {
-						safeUnlink(out);
-						continue;
-					}
-					if (ov.type === "video" && dt?.kind !== "video") {
-						safeUnlink(out);
-						continue;
-					}
-					overlayLocal.push({ ...ov, localPath: out });
-				} catch {
-					safeUnlink(out);
-				}
-			}
+        const ext = ov.type === "video" ? "mp4" : "png";
+        const out = path.join(tmpDir, `ov_${jobId}_${i}.${ext}`);
+        try {
+          await downloadToFile(ov.url, out, 25000, 1);
+          const dt = detectFileType(out);
+          if (ov.type === "image" && dt?.kind !== "image") {
+            safeUnlink(out);
+            continue;
+          }
+          if (ov.type === "video" && dt?.kind !== "video") {
+            safeUnlink(out);
+            continue;
+          }
+          overlayLocal.push({ ...ov, localPath: out });
+        } catch {
+          safeUnlink(out);
+        }
+      }
 
-			overlayedPath = path.join(tmpDir, `overlay_${jobId}.mp4`);
-			try {
-				overlayedPath = await applyOverlays(
-					concatPath,
-					overlayLocal,
-					overlayedPath,
-				);
-				logJob(jobId, "overlays applied", { count: overlayLocal.length });
-			} catch (e) {
-				logJob(jobId, "overlay failed (continuing without)", {
-					error: e.message,
-				});
-				fs.copyFileSync(concatPath, overlayedPath);
-			}
-		} else {
-			logJob(jobId, "overlays skipped", { reason: "segment visuals enabled" });
-		}
+      overlayedPath = path.join(tmpDir, `overlay_${jobId}.mp4`);
+      try {
+        overlayedPath = await applyOverlays(
+          concatPath,
+          overlayLocal,
+          overlayedPath,
+        );
+        logJob(jobId, "overlays applied", { count: overlayLocal.length });
+      } catch (e) {
+        logJob(jobId, "overlay failed (continuing without)", {
+          error: e.message,
+        });
+        fs.copyFileSync(concatPath, overlayedPath);
+      }
+    } else {
+      logJob(jobId, "overlays skipped", { reason: "segment visuals enabled" });
+    }
 
-		updateJob(jobId, { progressPct: 84 });
+    updateJob(jobId, { progressPct: 84 });
 
-		// 15) Music mix (must)
-		let mixedPath = overlayedPath;
-		if (musicLocalPath) {
-			const out = path.join(tmpDir, `mixed_${jobId}.mp4`);
-			mixedPath = await mixBackgroundMusic(overlayedPath, musicLocalPath, out, {
-				jobId,
-			});
-		}
+    // 15) Music mix (must)
+    let mixedPath = overlayedPath;
+    if (musicLocalPath) {
+      const out = path.join(tmpDir, `mixed_${jobId}.mp4`);
+      mixedPath = await mixBackgroundMusic(overlayedPath, musicLocalPath, out, {
+        jobId,
+      });
+    }
 
-		updateJob(jobId, { progressPct: 92 });
+    updateJob(jobId, { progressPct: 92 });
 
-		// 16) Finalize (with fade-out)
-		const outputSlug =
-			safeSlug(
-				seoMeta?.seoTitle || script.title || topicSummary || "long_video",
-				56,
-			) || "long_video";
-		const outputName = `long_${outputSlug}_${jobId}.mp4`;
-		const outputPath = SHOULD_PERSIST_LONG_VIDEO
-			? path.join(OUTPUT_DIR, outputName)
-			: path.join(tmpDir, outputName);
+    // 16) Finalize (with fade-out)
+    const outputSlug =
+      safeSlug(
+        seoMeta?.seoTitle || script.title || topicSummary || "long_video",
+        56,
+      ) || "long_video";
+    const outputName = `long_${outputSlug}_${jobId}.mp4`;
+    const outputPath = SHOULD_PERSIST_LONG_VIDEO
+      ? path.join(OUTPUT_DIR, outputName)
+      : path.join(tmpDir, outputName);
 
-		await finalizeVideoWithFadeOut({
-			inputPath: mixedPath,
-			outputPath,
-			fadeOutSec: FINAL_FADE_OUT_SEC,
-			outCfg: output,
-		});
+    await finalizeVideoWithFadeOut({
+      inputPath: mixedPath,
+      outputPath,
+      fadeOutSec: FINAL_FADE_OUT_SEC,
+      outCfg: output,
+    });
 
-		// 16.5) YouTube upload (optional)
-		let youtubeLink = "";
-		let youtubeTokens = null;
-		try {
-			if (!youtubeUploadEnabled) {
-				logJob(jobId, "youtube upload skipped (disabled for controller)");
-			} else if (!hasYouTubeTokens) {
-				logJob(jobId, "youtube upload skipped (no tokens)");
-			} else {
-				const youtubePayload = {
-					youtubeAccessToken,
-					youtubeRefreshToken,
-					youtubeTokenExpiresAt,
-				};
-				youtubeTokens = await refreshYouTubeTokensIfNeeded(
-					user,
-					youtubePayload,
-				);
-				if (youtubeTokens?.refresh_token) {
-					youtubeLink = await uploadToYouTube(youtubeTokens, outputPath, {
-						title: seoMeta?.seoTitle || script.title,
-						description: seoMeta?.seoDescription || script.title,
-						tags: seoMeta?.tags || [BRAND_TAG],
-						category: youtubeCategoryFinal || LONG_VIDEO_YT_CATEGORY,
-						thumbnailPath,
-						jobId,
-					});
-					logJob(jobId, "youtube upload complete", { youtubeLink });
-				} else {
-					logJob(jobId, "youtube upload skipped (missing refresh token)");
-				}
-			}
-		} catch (e) {
-			logJob(jobId, "youtube upload skipped", { error: e.message });
-		}
+    // 16.5) YouTube upload (optional)
+    let youtubeLink = "";
+    let youtubeTokens = null;
+    try {
+      if (!youtubeUploadEnabled) {
+        logJob(jobId, "youtube upload skipped (disabled for controller)");
+      } else if (!hasYouTubeTokens) {
+        logJob(jobId, "youtube upload skipped (no tokens)");
+      } else {
+        const youtubePayload = {
+          youtubeAccessToken,
+          youtubeRefreshToken,
+          youtubeTokenExpiresAt,
+        };
+        youtubeTokens = await refreshYouTubeTokensIfNeeded(
+          user,
+          youtubePayload,
+        );
+        if (youtubeTokens?.refresh_token) {
+          youtubeLink = await uploadToYouTube(youtubeTokens, outputPath, {
+            title: seoMeta?.seoTitle || script.title,
+            description: seoMeta?.seoDescription || script.title,
+            tags: seoMeta?.tags || [BRAND_TAG],
+            category: youtubeCategoryFinal || LONG_VIDEO_YT_CATEGORY,
+            thumbnailPath,
+            jobId,
+          });
+          logJob(jobId, "youtube upload complete", { youtubeLink });
+        } else {
+          logJob(jobId, "youtube upload skipped (missing refresh token)");
+        }
+      }
+    } catch (e) {
+      logJob(jobId, "youtube upload skipped", { error: e.message });
+    }
 
-		const finalVideoUrl = SHOULD_PERSIST_LONG_VIDEO
-			? `${baseUrl}/uploads/videos/${outputName}`
-			: youtubeLink || "";
-		const outputUrl = SHOULD_PERSIST_LONG_VIDEO
-			? finalVideoUrl
-			: youtubeLink || "";
-		const localFilePath = SHOULD_PERSIST_LONG_VIDEO ? outputPath : "";
-		let videoDocId = null;
-		try {
-			if (user?._id) {
-				const scriptText = [
-					introTextFinal,
-					...script.segments.map((s) => s.text),
-					outroTextFinal,
-				]
-					.filter(Boolean)
-					.join("\n");
-				const durationValue = Math.round(contentTargetSec || 0);
-				const allowedDurations = new Set([
-					5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90,
-					120, 180, 240, 300, 360, 420,
-				]);
-				const durationForDoc = allowedDurations.has(durationValue)
-					? durationValue
-					: undefined;
-				const timelineForMeta = Array.isArray(timeline)
-					? timeline.map((seg) => ({
-							index: seg.index,
-							topicIndex: seg.topicIndex,
-							topicLabel: seg.topicLabel,
-							text: seg.text,
-							startSec: seg.startSec,
-							endSec: seg.endSec,
-							visualType: seg.visualType || "presenter",
-						}))
-					: [];
-				const shortsDetailsForDoc = script?.shortsDetails || null;
-				const doc = await Video.create({
-					user: user._id,
-					category: categoryLabel,
-					topic: topicSummary,
-					topics: topicTitles,
-					isLongVideo: true,
-					seoTitle: seoMeta?.seoTitle || script.title,
-					seoDescription: seoMeta?.seoDescription || script.title,
-					tags: seoMeta?.tags || [BRAND_TAG],
-					script: scriptText,
-					ratio: output?.ratio,
-					duration: durationForDoc,
-					status: "SUCCEEDED",
-					outputUrl: outputUrl || "",
-					localFilePath: localFilePath || "",
-					youtubeLink,
-					longVideoMeta: {
-						segments: script?.segments || [],
-						timeline: timelineForMeta,
-					},
-					shortsDetails: shortsDetailsForDoc,
-					language: languageLabel,
-					country: LONG_VIDEO_TRENDS_GEO,
-					youtubeEmail: user?.youtubeEmail || "",
-					youtubeAccessToken:
-						youtubeTokens?.access_token || youtubeAccessToken || "",
-					youtubeRefreshToken:
-						youtubeTokens?.refresh_token || youtubeRefreshToken || "",
-					youtubeTokenExpiresAt: youtubeTokens?.expiry_date
-						? new Date(youtubeTokens.expiry_date)
-						: youtubeTokenExpiresAt
-							? new Date(youtubeTokenExpiresAt)
-							: undefined,
-					presenterOutfit: presenterOutfit || "",
-					presenterOutfitStyle: presenterOutfitStyle || "",
-				});
-				videoDocId = doc?._id ? String(doc._id) : null;
-			}
-		} catch (e) {
-			logJob(jobId, "video doc save failed", { error: e.message });
-		}
-		updateJob(jobId, {
-			status: "completed",
-			progressPct: 100,
-			finalVideoUrl: finalVideoUrl || null,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				youtubeLink,
-				videoId: videoDocId,
-			},
-		});
-		logJob(jobId, "job completed", { finalVideoUrl, youtubeLink });
-		if (!SHOULD_PERSIST_LONG_VIDEO) safeUnlink(outputPath);
-	} catch (err) {
-		logJob(jobId, "job failed", {
-			error: err?.message || "Long video job failed",
-			stack: err?.stack || "",
-		});
-		updateJob(jobId, {
-			status: "failed",
-			error: err?.message || "Long video job failed",
-		});
-	} finally {
-		if (!LONG_VIDEO_KEEP_TMP) safeRmRecursive(tmpDir);
-		else logJob(jobId, "tmp kept", { tmpDir });
-	}
+    const finalVideoUrl = SHOULD_PERSIST_LONG_VIDEO
+      ? `${baseUrl}/uploads/videos/${outputName}`
+      : youtubeLink || "";
+    const outputUrl = SHOULD_PERSIST_LONG_VIDEO
+      ? finalVideoUrl
+      : youtubeLink || "";
+    const localFilePath = SHOULD_PERSIST_LONG_VIDEO ? outputPath : "";
+    let videoDocId = null;
+    try {
+      if (user?._id) {
+        const scriptText = [
+          introTextFinal,
+          ...script.segments.map((s) => s.text),
+          outroTextFinal,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        const durationValue = Math.round(contentTargetSec || 0);
+        const allowedDurations = new Set([
+          5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90,
+          120, 180, 240, 300, 360, 420,
+        ]);
+        const durationForDoc = allowedDurations.has(durationValue)
+          ? durationValue
+          : undefined;
+        const timelineForMeta = Array.isArray(timeline)
+          ? timeline.map((seg) => ({
+              index: seg.index,
+              topicIndex: seg.topicIndex,
+              topicLabel: seg.topicLabel,
+              text: seg.text,
+              startSec: seg.startSec,
+              endSec: seg.endSec,
+              visualType: seg.visualType || "presenter",
+            }))
+          : [];
+        const shortsDetailsForDoc = script?.shortsDetails || null;
+        const doc = await Video.create({
+          user: user._id,
+          category: categoryLabel,
+          topic: topicSummary,
+          topics: topicTitles,
+          isLongVideo: true,
+          seoTitle: seoMeta?.seoTitle || script.title,
+          seoDescription: seoMeta?.seoDescription || script.title,
+          tags: seoMeta?.tags || [BRAND_TAG],
+          script: scriptText,
+          ratio: output?.ratio,
+          duration: durationForDoc,
+          status: "SUCCEEDED",
+          outputUrl: outputUrl || "",
+          localFilePath: localFilePath || "",
+          youtubeLink,
+          longVideoMeta: {
+            segments: script?.segments || [],
+            timeline: timelineForMeta,
+          },
+          shortsDetails: shortsDetailsForDoc,
+          language: languageLabel,
+          country: LONG_VIDEO_TRENDS_GEO,
+          youtubeEmail: user?.youtubeEmail || "",
+          youtubeAccessToken:
+            youtubeTokens?.access_token || youtubeAccessToken || "",
+          youtubeRefreshToken:
+            youtubeTokens?.refresh_token || youtubeRefreshToken || "",
+          youtubeTokenExpiresAt: youtubeTokens?.expiry_date
+            ? new Date(youtubeTokens.expiry_date)
+            : youtubeTokenExpiresAt
+              ? new Date(youtubeTokenExpiresAt)
+              : undefined,
+          presenterOutfit: presenterOutfit || "",
+          presenterOutfitStyle: presenterOutfitStyle || "",
+        });
+        videoDocId = doc?._id ? String(doc._id) : null;
+      }
+    } catch (e) {
+      logJob(jobId, "video doc save failed", { error: e.message });
+    }
+    updateJob(jobId, {
+      status: "completed",
+      progressPct: 100,
+      finalVideoUrl: finalVideoUrl || null,
+      meta: {
+        ...JOBS.get(jobId)?.meta,
+        youtubeLink,
+        videoId: videoDocId,
+      },
+    });
+    logJob(jobId, "job completed", { finalVideoUrl, youtubeLink });
+    if (!SHOULD_PERSIST_LONG_VIDEO) safeUnlink(outputPath);
+  } catch (err) {
+    logJob(jobId, "job failed", {
+      error: err?.message || "Long video job failed",
+      stack: err?.stack || "",
+    });
+    updateJob(jobId, {
+      status: "failed",
+      error: err?.message || "Long video job failed",
+    });
+  } finally {
+    if (!LONG_VIDEO_KEEP_TMP) safeRmRecursive(tmpDir);
+    else logJob(jobId, "tmp kept", { tmpDir });
+  }
 }
 
 /* ---------------------------------------------------------------
@@ -14964,92 +15161,92 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
  * ------------------------------------------------------------- */
 
 function createLongVideoController(controllerConfig = {}) {
-	const cfg = normalizeLongVideoControllerConfig(controllerConfig);
-	return async (req, res) => {
-		const { errors, clean } = validateCreateBody(req.body || {}, cfg);
-		if (errors.length)
-			return res.status(400).json({ error: errors.join(", ") });
-		if (!isOwnerOnlyUser(req)) {
-			return res.status(403).json({
-				error: "Long video creation is temporarily restricted to the owner.",
-			});
-		}
+  const cfg = normalizeLongVideoControllerConfig(controllerConfig);
+  return async (req, res) => {
+    const { errors, clean } = validateCreateBody(req.body || {}, cfg);
+    if (errors.length)
+      return res.status(400).json({ error: errors.join(", ") });
+    if (!isOwnerOnlyUser(req)) {
+      return res.status(403).json({
+        error: "Long video creation is temporarily restricted to the owner.",
+      });
+    }
 
-		const jobId = crypto.randomUUID();
-		const baseUrl = buildBaseUrl(req);
+    const jobId = crypto.randomUUID();
+    const baseUrl = buildBaseUrl(req);
 
-		const job = {
-			jobId,
-			status: "queued",
-			progressPct: 0,
-			topic: null,
-			finalVideoUrl: null,
-			error: null,
-			createdAt: nowIso(),
-			updatedAt: nowIso(),
-			meta: {},
-		};
-		JOBS.set(jobId, job);
+    const job = {
+      jobId,
+      status: "queued",
+      progressPct: 0,
+      topic: null,
+      finalVideoUrl: null,
+      error: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      meta: {},
+    };
+    JOBS.set(jobId, job);
 
-		const statusUrl = `${cfg.statusPathBase}/${jobId}`;
-		res.status(202).json({
-			jobId,
-			status: "queued",
-			statusUrl,
-		});
+    const statusUrl = `${cfg.statusPathBase}/${jobId}`;
+    res.status(202).json({
+      jobId,
+      status: "queued",
+      statusUrl,
+    });
 
-		logJob(jobId, "job queued", {
-			controller: cfg.controllerLabel,
-			statusUrl,
-			baseUrl,
-		});
+    logJob(jobId, "job queued", {
+      controller: cfg.controllerLabel,
+      statusUrl,
+      baseUrl,
+    });
 
-		const schedule = req.body?.schedule || null;
-		const scheduleJobMeta =
-			req.scheduleJobMeta || req.body?.scheduleJobMeta || null;
-		const isScheduledJob = Boolean(scheduleJobMeta);
+    const schedule = req.body?.schedule || null;
+    const scheduleJobMeta =
+      req.scheduleJobMeta || req.body?.scheduleJobMeta || null;
+    const isScheduledJob = Boolean(scheduleJobMeta);
 
-		if (schedule && !isScheduledJob && req.user?._id) {
-			const { type, timeOfDay, startDate, endDate } = schedule;
-			if (!["daily", "weekly", "monthly"].includes(String(type || ""))) {
-				console.warn(
-					"[LongVideo] Invalid schedule type; skipping schedule save.",
-				);
-			} else if (!parseTimeOfDay(timeOfDay) || !startDate) {
-				console.warn(
-					"[LongVideo] Invalid schedule timing; skipping schedule save.",
-				);
-			} else {
-				const nextRun = computeNextRun({
-					scheduleType: type,
-					timeOfDay,
-					startDate,
-				});
-				if (nextRun) {
-					try {
-						await Schedule.create({
-							user: req.user._id,
-							category: "LongVideo",
-							scheduleType: type,
-							timeOfDay,
-							startDate: dayjs(startDate).toDate(),
-							endDate: endDate ? dayjs(endDate).toDate() : undefined,
-							nextRun,
-							active: true,
-							videoType: "long",
-							longVideoConfig: { ...clean },
-						});
-					} catch (e) {
-						console.warn("[LongVideo] Schedule creation failed", e.message);
-					}
-				}
-			}
-		}
+    if (schedule && !isScheduledJob && req.user?._id) {
+      const { type, timeOfDay, startDate, endDate } = schedule;
+      if (!["daily", "weekly", "monthly"].includes(String(type || ""))) {
+        console.warn(
+          "[LongVideo] Invalid schedule type; skipping schedule save.",
+        );
+      } else if (!parseTimeOfDay(timeOfDay) || !startDate) {
+        console.warn(
+          "[LongVideo] Invalid schedule timing; skipping schedule save.",
+        );
+      } else {
+        const nextRun = computeNextRun({
+          scheduleType: type,
+          timeOfDay,
+          startDate,
+        });
+        if (nextRun) {
+          try {
+            await Schedule.create({
+              user: req.user._id,
+              category: "LongVideo",
+              scheduleType: type,
+              timeOfDay,
+              startDate: dayjs(startDate).toDate(),
+              endDate: endDate ? dayjs(endDate).toDate() : undefined,
+              nextRun,
+              active: true,
+              videoType: "long",
+              longVideoConfig: { ...clean },
+            });
+          } catch (e) {
+            console.warn("[LongVideo] Schedule creation failed", e.message);
+          }
+        }
+      }
+    }
 
-		setImmediate(() =>
-			runLongVideoJob(jobId, clean, baseUrl, req.user || null, cfg),
-		);
-	};
+    setImmediate(() =>
+      runLongVideoJob(jobId, clean, baseUrl, req.user || null, cfg),
+    );
+  };
 }
 
 exports.createLongVideoController = createLongVideoController;
@@ -15060,17 +15257,17 @@ exports.createLongVideo = createLongVideoController();
  * ------------------------------------------------------------- */
 
 exports.getLongVideoStatus = async (req, res) => {
-	const { jobId } = req.params;
-	const job = JOBS.get(jobId);
-	if (!job) return res.status(404).json({ error: "Job not found" });
+  const { jobId } = req.params;
+  const job = JOBS.get(jobId);
+  if (!job) return res.status(404).json({ error: "Job not found" });
 
-	return res.json({
-		jobId: job.jobId,
-		status: job.status,
-		progressPct: job.progressPct,
-		topic: job.topic || null,
-		finalVideoUrl: job.finalVideoUrl || null,
-		error: job.error || null,
-		meta: job.meta || {},
-	});
+  return res.json({
+    jobId: job.jobId,
+    status: job.status,
+    progressPct: job.progressPct,
+    topic: job.topic || null,
+    finalVideoUrl: job.finalVideoUrl || null,
+    error: job.error || null,
+    meta: job.meta || {},
+  });
 };
