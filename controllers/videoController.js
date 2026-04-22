@@ -233,6 +233,24 @@ const ARTICLE_TEXT_BLOCKLIST_HOSTS = ["washingtonpost.com", "nytimes.com"];
 const OG_FETCH_CACHE = new Map();
 const OG_CACHEABLE_STATUSES = new Set([401, 403, 404]);
 const CSE_IMAGE_CACHE = new Map();
+const GOOGLE_IMAGES_SERVICE_CACHE = new Map();
+const CSE_LAST_RESORT_ONLY = !["0", "false", "no", "off"].includes(
+	String(process.env.CSE_LAST_RESORT_ONLY || "1")
+		.trim()
+		.toLowerCase(),
+);
+const CSE_FREE_POOL_FLOOR = Math.max(
+	1,
+	Math.min(4, Number(process.env.CSE_FREE_POOL_FLOOR || 2) || 2),
+);
+const GOOGLE_IMAGES_CACHE_TTL_MS = Math.max(
+	0,
+	Number(process.env.GOOGLE_IMAGES_CACHE_TTL_MS || 20 * 60 * 1000),
+);
+const GOOGLE_IMAGES_CACHE_MAX_ENTRIES = Math.max(
+	50,
+	Number(process.env.GOOGLE_IMAGES_CACHE_MAX_ENTRIES || 300),
+);
 
 /**
  * WORDS_PER_SEC: cap used when asking GPT for max words.
@@ -593,6 +611,46 @@ function setCseCache(key, items) {
 		const firstKey = CSE_IMAGE_CACHE.keys().next().value;
 		if (!firstKey) break;
 		CSE_IMAGE_CACHE.delete(firstKey);
+	}
+}
+
+function buildGoogleImagesCacheKey(query = "", limit = 0) {
+	const safeQuery = sanitizeImageQuery(query).toLowerCase();
+	const safeLimit = Math.max(6, Number(limit) || 12);
+	return `${safeQuery}::${safeLimit}`;
+}
+
+function getGoogleImagesServiceCache(key) {
+	if (!GOOGLE_IMAGES_CACHE_TTL_MS || GOOGLE_IMAGES_CACHE_TTL_MS <= 0) {
+		return { hit: false, urls: null };
+	}
+	const entry = GOOGLE_IMAGES_SERVICE_CACHE.get(key);
+	if (!entry) return { hit: false, urls: null };
+	if (Date.now() - entry.ts > GOOGLE_IMAGES_CACHE_TTL_MS) {
+		GOOGLE_IMAGES_SERVICE_CACHE.delete(key);
+		return { hit: false, urls: null };
+	}
+	return {
+		hit: true,
+		urls: Array.isArray(entry.urls) ? entry.urls.slice() : [],
+	};
+}
+
+function setGoogleImagesServiceCache(key, urls = []) {
+	if (!GOOGLE_IMAGES_CACHE_TTL_MS || GOOGLE_IMAGES_CACHE_TTL_MS <= 0) return;
+	if (!key) return;
+	GOOGLE_IMAGES_SERVICE_CACHE.set(key, {
+		ts: Date.now(),
+		urls: Array.isArray(urls) ? urls.slice() : [],
+	});
+	if (GOOGLE_IMAGES_SERVICE_CACHE.size <= GOOGLE_IMAGES_CACHE_MAX_ENTRIES)
+		return;
+	const overflow =
+		GOOGLE_IMAGES_SERVICE_CACHE.size - GOOGLE_IMAGES_CACHE_MAX_ENTRIES;
+	for (let i = 0; i < overflow; i += 1) {
+		const firstKey = GOOGLE_IMAGES_SERVICE_CACHE.keys().next().value;
+		if (!firstKey) break;
+		GOOGLE_IMAGES_SERVICE_CACHE.delete(firstKey);
 	}
 }
 
@@ -1435,6 +1493,93 @@ function buildShortsTopicList({
 	return uniqueStrings(list, { limit: 8 });
 }
 
+function looksLikePersonalName(value = "", { allowLowercase = false } = {}) {
+	const raw = String(value || "")
+		.replace(/[|:;,!?()[\]{}]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!raw) return false;
+	const words = raw
+		.split(/\s+/)
+		.map((word) => word.replace(/^[^A-Za-z]+|[^A-Za-z'.-]+$/g, ""))
+		.filter(Boolean);
+	if (words.length < 2 || words.length > 4) return false;
+	if (words.some((word) => /\d/.test(word))) return false;
+	if (
+		words.some((word) => {
+			const lower = word.toLowerCase();
+			return (
+				TOPIC_STOP_WORDS.has(lower) ||
+				GENERIC_TOPIC_TOKENS.has(lower) ||
+				word.length < 2 ||
+				!/^[A-Za-z][A-Za-z'.-]*$/.test(word)
+			);
+		})
+	) {
+		return false;
+	}
+	if (allowLowercase) return true;
+	return words.filter((word) => /^[A-Z][A-Za-z'.-]*$/.test(word)).length >= 2;
+}
+
+function isLikelyPublicFigureTopic({
+	topic = "",
+	category = "",
+	trendStory = null,
+	topicIntent = null,
+} = {}) {
+	if (topicIntent?.domain === "fictional") return false;
+
+	const contextStrings = [
+		topic,
+		trendStory?.title,
+		trendStory?.rawTitle,
+		trendStory?.seoTitle,
+		trendStory?.youtubeShortTitle,
+		...(Array.isArray(trendStory?.articles)
+			? trendStory.articles.map((a) => a.title)
+			: []),
+		...(Array.isArray(trendStory?.entityNames) ? trendStory.entityNames : []),
+	].filter(Boolean);
+	const context = contextStrings.join(" ").toLowerCase();
+
+	if (
+		FICTIONAL_CONTEXT_STRONG_TOKENS.some((token) => context.includes(token)) &&
+		!/\b(actor|actress|singer|rapper|musician|athlete|player|coach|host|star)\b/i.test(
+			context,
+		)
+	) {
+		return false;
+	}
+
+	const directEntityHit = (
+		Array.isArray(trendStory?.entityNames) ? trendStory.entityNames : []
+	).some((name) => looksLikePersonalName(name));
+	if (directEntityHit) return true;
+
+	const candidatePool = uniqueStrings(
+		[
+			topic,
+			...splitTitleSegments(trendStory?.title || ""),
+			...splitTitleSegments(trendStory?.rawTitle || ""),
+		],
+		{ limit: 8 },
+	);
+
+	const personLikeCandidates = candidatePool.filter((value) =>
+		looksLikePersonalName(value, {
+			allowLowercase:
+				String(value || "").toLowerCase() === String(topic || "").toLowerCase(),
+		}),
+	);
+	if (!personLikeCandidates.length) return false;
+
+	if (["Entertainment", "Sports"].includes(category)) return true;
+	return /\b(actor|actress|singer|rapper|musician|athlete|player|coach|host|star|celebrity|celeb|president|senator|mayor|governor)\b/i.test(
+		context,
+	);
+}
+
 function ensureAnchorInShortsSegments(
 	segments = [],
 	anchor = "",
@@ -1999,14 +2144,15 @@ function enforceEngagementOutroText(text, { topic, wordCap, category }) {
 				"like and subscribe",
 			)
 			.replace(/\b(like)\s+and\s+follow\b/gi, "like and subscribe")
-			.replace(/\bcomment\s+down\s+below\b/gi, "comment in the comments")
-			.replace(/\bcomment\s+below\b/gi, "comment in the comments")
-			.replace(/\bcomment\s+in\s+the\b/gi, "comment in the comments")
+			.replace(/\bcomment\s+down\s+below\b/gi, "drop your take in the comments")
+			.replace(/\bcomment\s+below\b/gi, "drop your take in the comments")
+			.replace(/\bcomment\s+in\s+the\b/gi, "share your take in the")
 			.replace(
 				/\b(tell me|let me know|share)\b([^.!?]{0,40})\bin the\b/gi,
 				"$1$2 in the comments",
 			)
 			.replace(/\.\.\.+/g, ".");
+		updated = collapseImmediateRepeatedPhrases(updated);
 		return updated.replace(/\s+/g, " ").trim();
 	};
 	const existing = normalizeOutroCopy(String(text || "").trim());
@@ -2082,8 +2228,8 @@ function enforceEngagementOutroText(text, { topic, wordCap, category }) {
 			combined,
 			`${question} ${cta}`,
 			cta,
-			"Like and subscribe, and comment in the comments.",
-			"Like and subscribe. Comment in the comments.",
+			"Like and subscribe, then drop your take in the comments.",
+			"Like and subscribe. Tell me your take in the comments.",
 		];
 		let picked = "";
 		for (const candidate of candidates) {
@@ -2595,6 +2741,7 @@ function tightenNarrationForTTS(text = "") {
 	const raw = String(text || "").trim();
 	if (!raw) return raw;
 	let updated = pruneRedundantAgeSentences(raw);
+	updated = collapseImmediateRepeatedPhrases(updated);
 	updated = updated.replace(/\s+/g, " ").trim();
 	if (!updated) return raw;
 	return normalizeSegmentCompletion(updated);
@@ -3042,6 +3189,78 @@ function isStopwordToken(token = "") {
 	);
 }
 
+function cleanRepeatComparisonToken(token = "") {
+	return String(token || "")
+		.toLowerCase()
+		.replace(/^[^a-z0-9']+|[^a-z0-9']+$/gi, "")
+		.trim();
+}
+
+function findImmediateRepeatedPhrase(text = "", maxPhraseWords = 4) {
+	const tokens = String(text || "")
+		.trim()
+		.split(/\s+/)
+		.filter(Boolean);
+	if (tokens.length < 2) return "";
+	for (let i = 0; i < tokens.length - 1; i += 1) {
+		const maxLen = Math.min(
+			Math.max(1, Number(maxPhraseWords) || 1),
+			Math.floor((tokens.length - i) / 2),
+		);
+		for (let len = maxLen; len >= 1; len -= 1) {
+			const first = tokens.slice(i, i + len).map(cleanRepeatComparisonToken);
+			const second = tokens
+				.slice(i + len, i + len * 2)
+				.map(cleanRepeatComparisonToken);
+			if (!first.every(Boolean) || !second.every(Boolean)) continue;
+			if (first.join(" ") !== second.join(" ")) continue;
+			if (len === 1 && first[0].length < 2) continue;
+			if (len > 1 && first.every((tok) => isStopwordToken(tok))) continue;
+			return tokens.slice(i, i + len).join(" ");
+		}
+	}
+	return "";
+}
+
+function collapseImmediateRepeatedPhrases(text = "", maxPhraseWords = 4) {
+	const rawTokens = String(text || "")
+		.trim()
+		.split(/\s+/)
+		.filter(Boolean);
+	if (rawTokens.length < 2) return String(text || "").trim();
+
+	const out = [];
+	let i = 0;
+	while (i < rawTokens.length) {
+		let matchedLen = 0;
+		const maxLen = Math.min(
+			Math.max(1, Number(maxPhraseWords) || 1),
+			Math.floor((rawTokens.length - i) / 2),
+		);
+		for (let len = maxLen; len >= 1; len -= 1) {
+			const first = rawTokens.slice(i, i + len).map(cleanRepeatComparisonToken);
+			const second = rawTokens
+				.slice(i + len, i + len * 2)
+				.map(cleanRepeatComparisonToken);
+			if (!first.every(Boolean) || !second.every(Boolean)) continue;
+			if (first.join(" ") !== second.join(" ")) continue;
+			if (len === 1 && first[0].length < 2) continue;
+			if (len > 1 && first.every((tok) => isStopwordToken(tok))) continue;
+			matchedLen = len;
+			break;
+		}
+		if (matchedLen) {
+			out.push(...rawTokens.slice(i, i + matchedLen));
+			i += matchedLen * 2;
+			continue;
+		}
+		out.push(rawTokens[i]);
+		i += 1;
+	}
+
+	return out.join(" ").replace(/\s+/g, " ").trim();
+}
+
 function findRepeatedNgram(text = "", n = SHORTS_REDUNDANT_NGRAM) {
 	const tokens = tokenizeForDedup(text);
 	if (tokens.length < n * 2) return "";
@@ -3143,6 +3362,15 @@ function analyzeShortsScriptQuality(
 		}
 		if (segmentLooksFragmentary(text)) {
 			issues.push({ index: segIndex, type: "fragment" });
+		}
+		const immediateRepeat = findImmediateRepeatedPhrase(text, 4);
+		if (immediateRepeat) {
+			stats.repeatPhrases += 1;
+			issues.push({
+				index: segIndex,
+				type: "immediate_repeat",
+				detail: immediateRepeat,
+			});
 		}
 		const repeated = findRepeatedNgram(text, SHORTS_REDUNDANT_NGRAM);
 		if (repeated) {
@@ -3256,6 +3484,7 @@ Rules:
 - Keep each segment to 1-2 sentences.
 - Respect word caps: ${capsLine || "(not provided)"}.
 - Avoid repeating any 3+ word phrase inside a segment.
+- Do not repeat a word or short phrase back-to-back (example: "comments comments").
 - Do NOT open two consecutive segments with the same 3-word sequence.
 - Each segment must add new info; no re-stating the prior line.
 - Segment 1: hook + why-now in a lively tone; avoid bland filler like "the story is trending."
@@ -4441,19 +4670,24 @@ async function fetchTrendingStory(
 	const safeUserId = mongoose.Types.ObjectId.isValid(rawUserId)
 		? rawUserId
 		: "";
-	const baseUrl =
+	const buildTrendsUrl = ({
+		includePotentialImages = true,
+		potentialImageMode = isLongVideo ? "" : "fast",
+	} = {}) =>
 		`${TRENDS_API_URL}?` +
 		qs.stringify({
 			geo,
 			category: id,
 			hours: 48,
 			language,
-			includePotentialImages: 1,
+			includePotentialImages: includePotentialImages ? 1 : 0,
 			includeImages: 1,
 			topics: safeTopics,
 			long: isLongVideo ? 1 : 0,
+			...(potentialImageMode ? { potentialImageMode } : {}),
 			...(safeUserId ? { userId: safeUserId } : {}),
 		});
+	const baseUrl = buildTrendsUrl();
 
 	const normTitle = (t) =>
 		String(t || "")
@@ -4500,19 +4734,25 @@ async function fetchTrendingStory(
 	try {
 		console.log("[Trending] fetch:", baseUrl);
 
-		const fetchOnce = async (timeoutMs) =>
-			axios.get(baseUrl, {
+		const fetchOnce = async (url, timeoutMs) =>
+			axios.get(url, {
 				timeout: timeoutMs,
 			});
 
 		let data;
 		try {
-			({ data } = await fetchOnce(TRENDS_HTTP_TIMEOUT_MS));
+			({ data } = await fetchOnce(baseUrl, TRENDS_HTTP_TIMEOUT_MS));
 		} catch (e) {
 			const isTimeout = /timeout/i.test(e.message || "");
 			if (!isTimeout) throw e;
-			console.warn("[Trending] timeout, retrying once with extended window");
-			({ data } = await fetchOnce(TRENDS_HTTP_TIMEOUT_MS * 1.5));
+			const retryUrl = isLongVideo
+				? baseUrl
+				: buildTrendsUrl({
+						includePotentialImages: false,
+						potentialImageMode: "",
+					});
+			console.warn("[Trending] timeout, retrying once with lighter image pass");
+			({ data } = await fetchOnce(retryUrl, TRENDS_HTTP_TIMEOUT_MS));
 		}
 
 		const stories = Array.isArray(data?.stories) ? data.stories : [];
@@ -5411,6 +5651,35 @@ function canUseGoogleSearch() {
 	return Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
 }
 
+function resolveCseImageFallbackDecision({
+	allowCse,
+	freeCandidateCount = 0,
+	desiredCount = 0,
+} = {}) {
+	if (!allowCse) return { enabled: false, reason: "disabled" };
+	if (!canUseGoogleSearch()) {
+		return { enabled: false, reason: "missing_credentials" };
+	}
+
+	const target = Math.max(1, Number(desiredCount) || 1);
+	const freeCount = Math.max(0, Number(freeCandidateCount) || 0);
+	if (freeCount >= target) {
+		return { enabled: false, reason: "target_met" };
+	}
+	if (!CSE_LAST_RESORT_ONLY) {
+		return { enabled: true, reason: "enabled" };
+	}
+
+	const floor = Math.max(1, Math.min(CSE_FREE_POOL_FLOOR, target));
+	if (freeCount >= floor) {
+		return { enabled: false, reason: "free_sources_sufficient" };
+	}
+	return {
+		enabled: true,
+		reason: freeCount > 0 ? "free_pool_below_floor" : "no_free_candidates",
+	};
+}
+
 function normalizeTrendsApiUrl(raw) {
 	return String(raw || "")
 		.trim()
@@ -5423,24 +5692,32 @@ function deriveTrendsServiceBase(raw) {
 	return cleaned.replace(/\/api\/google-trends$/i, "");
 }
 
-function buildGoogleImagesApiCandidates() {
-	const list = [];
-	const base = deriveTrendsServiceBase(TRENDS_API_URL);
-	if (base) {
-		const trimmed = base.replace(/\/+$/, "");
-		list.push(`${trimmed}/api/google-images`);
-		if (/localhost/i.test(trimmed)) {
-			list.push(
-				`${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`,
-			);
+function canonicalizeLocalServiceUrl(raw = "") {
+	const cleaned = String(raw || "").trim();
+	if (!cleaned) return "";
+	try {
+		const parsed = new URL(cleaned);
+		if (
+			["localhost", "::1", "[::1]"].includes(
+				String(parsed.hostname || "").toLowerCase(),
+			)
+		) {
+			parsed.hostname = "127.0.0.1";
 		}
-		if (/\[::1\]/.test(trimmed)) {
-			list.push(
-				`${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`,
-			);
-		}
+		return parsed.toString().replace(/\/+$/, "");
+	} catch {
+		return cleaned
+			.replace(/\/+$/, "")
+			.replace(/localhost/gi, "127.0.0.1")
+			.replace(/\[::1\]/gi, "127.0.0.1");
 	}
-	return Array.from(new Set(list));
+}
+
+function buildGoogleImagesApiCandidates() {
+	const base = deriveTrendsServiceBase(TRENDS_API_URL);
+	if (!base) return [];
+	const trimmed = canonicalizeLocalServiceUrl(base);
+	return trimmed ? [`${trimmed}/api/google-images`] : [];
 }
 
 function sanitizeImageQuery(query = "") {
@@ -5467,15 +5744,34 @@ async function fetchGoogleImagesFromService(
 	if (!GOOGLE_IMAGES_SEARCH_ENABLED) return [];
 	const q = sanitizeImageQuery(query);
 	if (!q) return [];
+	const requestedLimit = Math.max(6, Number(limit) || 12);
 	const endpoints = buildGoogleImagesApiCandidates();
 	if (!endpoints.length) return [];
 	const normTokens = filterSpecificTopicTokens(topicTokens);
 	const minMatches = minTopicTokenMatches(normTokens);
+	const orderPool = (urls = []) => {
+		let pool = Array.isArray(urls) ? urls.slice() : [];
+		if (normTokens.length) {
+			const matched = pool.filter(
+				(u) => topicMatchInfo(normTokens, [u]).count >= minMatches,
+			);
+			if (matched.length) {
+				const matchedSet = new Set(matched);
+				pool = matched.concat(pool.filter((u) => !matchedSet.has(u)));
+			}
+		}
+		return dedupeImageUrls(pool, requestedLimit);
+	};
+	const cacheKey = buildGoogleImagesCacheKey(q, requestedLimit);
+	const cached = getGoogleImagesServiceCache(cacheKey);
+	if (cached.hit) {
+		return orderPool(cached.urls || []);
+	}
 
 	for (const endpoint of endpoints) {
 		try {
 			const { data } = await axios.get(endpoint, {
-				params: { q, limit: Math.max(6, Number(limit) || 12) },
+				params: { q, limit: requestedLimit },
 				timeout: 45000,
 				validateStatus: (s) => s < 500,
 			});
@@ -5488,21 +5784,10 @@ async function fetchGoogleImagesFromService(
 				.map((u) => String(u || "").trim())
 				.filter((u) => /^https?:\/\//i.test(u))
 				.filter((u) => !isLikelyThumbnailUrl(u));
+			setGoogleImagesServiceCache(cacheKey, urls);
 			if (!urls.length) continue;
 
-			let pool = urls;
-			if (normTokens.length) {
-				const matched = urls.filter(
-					(u) => topicMatchInfo(normTokens, [u]).count >= minMatches,
-				);
-				if (matched.length) {
-					const matchedSet = new Set(matched);
-					const rest = urls.filter((u) => !matchedSet.has(u));
-					pool = matched.concat(rest);
-				}
-			}
-
-			const deduped = dedupeImageUrls(pool, Math.max(6, Number(limit) || 12));
+			const deduped = orderPool(urls);
 			if (deduped.length) {
 				console.log("[ImageSearch] google images fallback hit", {
 					query: q,
@@ -5520,6 +5805,7 @@ async function fetchGoogleImagesFromService(
 		}
 	}
 
+	setGoogleImagesServiceCache(cacheKey, []);
 	return [];
 }
 
@@ -5742,6 +6028,10 @@ async function fetchTop5LiveContext(outline = [], topic = "", cseMeter = null) {
 		console.warn(
 			"[Top5] Google Custom Search credentials missing - skipping live context",
 		);
+		return [];
+	}
+	if (CSE_LAST_RESORT_ONLY) {
+		console.log("[Top5] Skipping paid live context in last-resort-only mode");
 		return [];
 	}
 	const ctx = [];
@@ -6601,9 +6891,14 @@ async function fetchHighQualityImagesForTopic({
 		}
 	}
 
-	// 2) Google CSE search (last resort)
-	const canUseCse = allowCse && canUseGoogleSearch();
-	if (canUseCse && candidates.length < desiredCount) {
+	// 2) Google CSE search (true last resort)
+	const cseDecision = resolveCseImageFallbackDecision({
+		allowCse,
+		freeCandidateCount: candidates.length,
+		desiredCount,
+	});
+	const canUseCse = cseDecision.enabled;
+	if (canUseCse) {
 		const combinedQueries = uniqueStrings([...queries, ...fallbackQueries], {
 			limit: Math.max(1, Number(cseQueryLimit) || 10),
 		});
@@ -6685,13 +6980,27 @@ async function fetchHighQualityImagesForTopic({
 		}
 	} else if (!allowCse) {
 		console.log("[ImageSearch] CSE disabled for this request", { topic });
-	} else if (!canUseGoogleSearch()) {
-		console.warn("[ImageSearch] Google CSE disabled (missing key/cx)");
-	} else {
-		console.log("[ImageSearch] CSE skipped; enough scrape results", {
+	} else if (cseDecision.reason === "free_sources_sufficient") {
+		console.log("[ImageSearch] CSE skipped; free-source pool sufficient", {
 			topic,
 			candidates: candidates.length,
 			desiredCount,
+			floor: Math.max(1, Math.min(CSE_FREE_POOL_FLOOR, desiredCount || 1)),
+		});
+	} else if (cseDecision.reason === "target_met") {
+		console.log("[ImageSearch] CSE skipped; scrape target already met", {
+			topic,
+			candidates: candidates.length,
+			desiredCount,
+		});
+	} else if (!canUseGoogleSearch()) {
+		console.warn("[ImageSearch] Google CSE disabled (missing key/cx)");
+	} else {
+		console.log("[ImageSearch] CSE skipped", {
+			topic,
+			candidates: candidates.length,
+			desiredCount,
+			reason: cseDecision.reason || "not_needed",
 		});
 	}
 
@@ -7860,9 +8169,10 @@ async function fetchTop5ImagePool(
 	ratio = null,
 	cseMeter = null,
 ) {
-	if (!canUseGoogleSearch()) {
+	const canUseCse = canUseGoogleSearch();
+	if (!canUseCse && !GOOGLE_IMAGES_SEARCH_ENABLED) {
 		console.warn(
-			"[Top5] Google Custom Search credentials missing - skipping live image pool",
+			"[Top5] No image search sources available - skipping live image pool",
 		);
 		return [];
 	}
@@ -7876,6 +8186,36 @@ async function fetchTop5ImagePool(
 
 	for (const item of outline) {
 		if (!item || !item.label) continue;
+		const fallbackUrls = await fetchHighQualityImagesForTopic({
+			topic: `${item.label} ${topic}`,
+			ratio,
+			articleLinks: [],
+			desiredCount: 3,
+			limit: 8,
+			topicTokens: topicTokensFromTitle(`${item.label} ${topic}`),
+			requireAnyToken: true,
+			negativeTitleRe,
+			allowCse: false,
+		});
+		const chosen = fallbackUrls.find((u) => !!u);
+		if (chosen) {
+			try {
+				const host = new URL(chosen).hostname.toLowerCase();
+				if (isSoftBlockedHost(host)) continue;
+			} catch {
+				/* ignore */
+			}
+			results.push({
+				rank: item.rank,
+				label: item.label,
+				url: chosen,
+				source: "",
+				title: item.label,
+			});
+			continue;
+		}
+
+		if (!canUseCse) continue;
 		const q = [
 			item.label,
 			topic,
@@ -7936,34 +8276,6 @@ async function fetchTop5ImagePool(
 				});
 				continue;
 			}
-
-			// Fallback: use broader search per label + topic
-			const fallbackUrls = await fetchHighQualityImagesForTopic({
-				topic: `${item.label} ${topic}`,
-				ratio,
-				articleLinks: [],
-				desiredCount: 3,
-				limit: 8,
-				topicTokens: topicTokensFromTitle(`${item.label} ${topic}`),
-				requireAnyToken: true,
-				negativeTitleRe,
-			});
-			const chosen = fallbackUrls.find((u) => !!u);
-			if (chosen) {
-				try {
-					const host = new URL(chosen).hostname.toLowerCase();
-					if (isSoftBlockedHost(host)) continue;
-				} catch {
-					/* ignore */
-				}
-				results.push({
-					rank: item.rank,
-					label: item.label,
-					url: chosen,
-					source: "",
-					title: item.label,
-				});
-			}
 		} catch (e) {
 			console.warn("[Top5] Image search failed", {
 				label: item.label,
@@ -7996,6 +8308,22 @@ async function fetchTop5ReplacementImage(
 	const requiredTokens = [
 		...new Set([...requiredTokensForLabel(label), ...labelTokens.slice(0, 3)]),
 	];
+
+	const freePool = await fetchHighQualityImagesForTopic({
+		topic: q,
+		ratio,
+		articleLinks: [],
+		desiredCount: 4,
+		limit: 8,
+		topicTokens: combinedTokens,
+		requireAnyToken: true,
+		negativeTitleRe: /(stock|wallpaper|logo|cartoon|illustration)/i,
+		allowCse: false,
+	});
+	const freePick = freePool.find((url) => url && !avoidSet.has(url));
+	if (freePick) {
+		return { link: freePick, source: "google-images", title: label };
+	}
 
 	if (canUseCse) {
 		try {
@@ -11055,12 +11383,33 @@ exports.createVideo = async (req, res) => {
 				trendStory.articles[0].url || null,
 			);
 		}
-		if (category !== "Top5" && topic && canUseGoogleSearch()) {
+		const hasTrendContextSignals = Boolean(
+			trendArticleText ||
+			(trendStory &&
+				((Array.isArray(trendStory.articles) && trendStory.articles.length) ||
+					(Array.isArray(trendStory.searchPhrases) &&
+						trendStory.searchPhrases.length) ||
+					(Array.isArray(trendStory.entityNames) &&
+						trendStory.entityNames.length))),
+		);
+		if (
+			category !== "Top5" &&
+			topic &&
+			canUseGoogleSearch() &&
+			!hasTrendContextSignals
+		) {
 			liveWebContext = await fetchLiveContextForTopic(topic, 3, {
 				category,
 				trendStory,
 				cseMeter,
 			});
+		} else if (category !== "Top5" && topic && canUseGoogleSearch()) {
+			console.log(
+				"[LiveContext] CSE skipped; trend context already sufficient",
+				{
+					topic,
+				},
+			);
 		}
 		const storyAngle = inferShortsStoryAngle({
 			topic,
@@ -11173,6 +11522,18 @@ exports.createVideo = async (req, res) => {
 				normalizeImageCandidates(seedCandidates),
 				24,
 			);
+			const assignableSeedUrls = dedupeImageUrls(
+				filterUploadCandidates(
+					normalizedSeeds.map((cand) => cand?.url).filter(Boolean),
+					Math.max(
+						desiredPoolSize * 3,
+						normalizedSeeds.length || desiredPoolSize,
+					),
+				),
+				desiredPoolSize,
+			);
+			const seedPoolMeetsTarget = assignableSeedUrls.length >= desiredPoolSize;
+			const seedPoolMeetsMinimum = assignableSeedUrls.length >= minFeedImages;
 			let qaSeedCandidates = [];
 			if (normalizedSeeds.length) {
 				qaSeedCandidates = await qaSegmentImageCandidates(normalizedSeeds, {
@@ -11209,9 +11570,10 @@ exports.createVideo = async (req, res) => {
 				return out;
 			};
 
-			let combinedCandidates = qaSeedCandidates;
-			if (!combinedCandidates.length && normalizedSeeds.length) {
-				combinedCandidates = normalizedSeeds;
+			let combinedCandidates = qaSeedCandidates.length
+				? mergeCandidates([qaSeedCandidates, normalizedSeeds])
+				: normalizedSeeds;
+			if (!qaSeedCandidates.length && normalizedSeeds.length) {
 				console.log("[Trending] using raw Trends images (no QA hits)", {
 					count: combinedCandidates.length,
 				});
@@ -11277,7 +11639,7 @@ exports.createVideo = async (req, res) => {
 			let qaStrict = combinedCandidates.length
 				? await runQa(combinedCandidates, true)
 				: [];
-			if (qaStrict.length < desiredPoolSize) {
+			if (qaStrict.length < desiredPoolSize && !seedPoolMeetsTarget) {
 				await topUpCandidates({
 					allowCse: false,
 					phase: "trend_pool_scrape_topup",
@@ -11287,8 +11649,16 @@ exports.createVideo = async (req, res) => {
 				qaStrict = combinedCandidates.length
 					? await runQa(combinedCandidates, true)
 					: [];
+			} else if (qaStrict.length < desiredPoolSize && seedPoolMeetsTarget) {
+				console.log(
+					"[Trending] topup skipped; trend/potential seed pool already meets target",
+					{
+						assignable: assignableSeedUrls.length,
+						target: desiredPoolSize,
+					},
+				);
 			}
-			if (qaStrict.length < minFeedImages) {
+			if (qaStrict.length < minFeedImages && !seedPoolMeetsMinimum) {
 				await topUpCandidates({
 					allowCse: true,
 					phase: "trend_pool_cse_fallback",
@@ -11298,9 +11668,17 @@ exports.createVideo = async (req, res) => {
 				qaStrict = combinedCandidates.length
 					? await runQa(combinedCandidates, true)
 					: [];
+			} else if (qaStrict.length < minFeedImages && seedPoolMeetsMinimum) {
+				console.log(
+					"[Trending] CSE topup skipped; assignable trend/potential pool already sufficient",
+					{
+						assignable: assignableSeedUrls.length,
+						minimum: minFeedImages,
+					},
+				);
 			}
 
-			if (qaStrict.length < minFeedImages) {
+			if (qaStrict.length < minFeedImages && !seedPoolMeetsMinimum) {
 				throw new Error(
 					`Need at least ${minFeedImages} unique, topic-relevant images; found ${qaStrict.length || 0}.`,
 				);
@@ -11320,7 +11698,8 @@ exports.createVideo = async (req, res) => {
 			recordOrigin(combinedCandidates);
 			recordOrigin(normalizedSeeds);
 
-			const rankedSource = qaStrict.length ? qaStrict : combinedCandidates;
+			const rankedSource =
+				qaStrict.length >= minFeedImages ? qaStrict : combinedCandidates;
 			const ranked = rankedSource.slice().sort((a, b) => {
 				const aW = Number(a.width) || 0;
 				const aH = Number(a.height) || 0;
@@ -12185,6 +12564,23 @@ exports.createVideo = async (req, res) => {
 		const staticOnlyImages = new Set(); // images we will use only as static fallback going forward
 		const staticFallbackUsed = new Set(); // track which images already used as static fallback to avoid repeats until all tried
 		const allowRunway = useSora && !forceStaticVisuals;
+		const avoidRunwayForPublicFigure =
+			allowRunway &&
+			isLikelyPublicFigureTopic({
+				topic,
+				category,
+				trendStory,
+				topicIntent,
+			});
+		if (avoidRunwayForPublicFigure) {
+			console.log(
+				"[Runway] public-figure safety mode enabled; using motionized static clips",
+				{
+					topic,
+					category,
+				},
+			);
+		}
 
 		for (let i = 0; i < segCnt; i++) {
 			const d = segLens[i];
@@ -12202,7 +12598,8 @@ exports.createVideo = async (req, res) => {
 				hasTrendImages &&
 				seg.imageIndex !== null &&
 				(category === "Top5" || i < 2) &&
-				!seg.forceStatic;
+				!seg.forceStatic &&
+				!avoidRunwayForPublicFigure;
 
 			console.log(
 				`[Seg ${segIndex}/${segCnt}] targetDuration=${d.toFixed(
@@ -12289,6 +12686,7 @@ exports.createVideo = async (req, res) => {
 							imgUrlCloudinary,
 							ratio,
 							targetDuration: d,
+							zoomPan: true,
 						});
 					} catch (err) {
 						console.warn(
@@ -12334,6 +12732,7 @@ exports.createVideo = async (req, res) => {
 								imgUrlCloudinary,
 								ratio,
 								targetDuration: d,
+								zoomPan: true,
 							});
 						} catch (err) {
 							console.warn(

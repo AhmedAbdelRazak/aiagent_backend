@@ -128,9 +128,13 @@ const RUNWAY_VIDEO_MODEL_FALLBACK = "gen4_turbo";
 
 const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
 const SYNC_SO_BASE = "https://api.sync.so";
-// const SYNC_SO_MODEL = "lipsync-2";
-const SYNC_SO_MODEL = "sync-3";
-const SYNC_SO_MODEL_FALLBACKS = ["lipsync-2"];
+// Cost-aware Sync model policy:
+// - regular presenter beats use the cheaper high-quality tier
+// - premium beats keep the stronger model
+// - retries can fall back to the base tier when needed
+const SYNC_SO_MODEL_STANDARD = "lipsync-2-pro";
+const SYNC_SO_MODEL_HERO = "sync-3";
+const SYNC_SO_MODEL_FALLBACK = "lipsync-2";
 const SYNC_SO_GENERATE_PATH = "/v2/generate";
 
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
@@ -361,7 +365,7 @@ const INTRO_ATEMPO_MAX = clampNumber(1.12, 1.0, 1.2);
 const OUTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
 const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
-const VOICE_SPEED_BOOST = clampNumber(1.0, 0.98, 1.08);
+const VOICE_SPEED_BOOST = clampNumber(1.04, 0.98, 1.08);
 const FORCE_NEUTRAL_VOICEOVER = true;
 const ALIGN_INTRO_OUTRO_ATEMPO = true;
 const ALLOW_NARRATION_OVERRUN = true;
@@ -412,6 +416,10 @@ const BASELINE_DUR_SEC = clampNumber(10, 6, 10);
 const BASELINE_VARIANTS = clampNumber(2, 1, 3);
 const CAMERA_ZOOM_OUT = clampNumber(0.96, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
+const ENABLE_SOFT_SEGMENT_TRANSITIONS = true;
+const SEGMENT_TRANSITION_SEC = clampNumber(0.12, 0, 0.35);
+const SEGMENT_TRANSITION_PAD_SEC = clampNumber(0.12, 0, 0.35);
+const SEGMENT_TRANSITION_MIN_CLIP_SEC = clampNumber(1.6, 0.5, 5);
 
 // Music
 const MUSIC_VOLUME = clampNumber(
@@ -7996,6 +8004,9 @@ const SCRIPT_BETTING_PROMO_PATTERNS = [
 const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
 	/\bvs\.?\b/i,
 	/\b\d{1,3}\s*[\u2013-]\s*\d{1,3}\b/,
+	/^\s*[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+){1,7}\s*:/,
+	/\bloss\s+circle\b/i,
+	/\bthe\s+angle\s+today\s+is\b/i,
 ];
 
 function analyzeScriptSpeakability({
@@ -8040,7 +8051,7 @@ function analyzeScriptSpeakability({
 		platformAttributionSegments.length > 0 ||
 		searchMetaSegments.length >= (isSports ? 1 : 2) ||
 		bettingPromoSegments.length > 0 ||
-		speechAwkwardSegments.length >= 3;
+		speechAwkwardSegments.length > 0;
 
 	return {
 		needsRewrite,
@@ -8292,6 +8303,8 @@ ${topicIntentLines}
 Style rules (IMPORTANT):
 - Keep pacing steady and conversational; no sudden speed-ups.
 - Slightly brisk, natural American delivery; avoid drawn-out phrasing.
+- Write for spoken delivery, not article copy. Never open a segment with a headline-style label followed by a colon.
+- Avoid abstract or unnatural phrases a real host would not say out loud, such as "loss circle" or stiff framing like "the angle today is".
 - Keep the delivery composed and natural, not shouty. The writing should feel sharp, engaging, and lightly provocative when the story supports it, but never reckless, insulting, or overhyped.
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
 - Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic), but stay professional.
@@ -8319,6 +8332,7 @@ Style rules (IMPORTANT):
 - Avoid repeating the topic question or using vague filler phrasing; be specific and helpful.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
 - No redundancy: do not restate the same fact or idea in different words.
+- Do not repeat a word or short phrase back-to-back.
 - Avoid exclamation points unless the script explicitly calls for excitement.
 - Each segment should be 1-2 sentences. Do NOT switch topics mid-sentence.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
@@ -8340,6 +8354,7 @@ Style rules (IMPORTANT):
 - The FIRST segment for every topic should sound like you're unpacking the angle viewers are actively debating, not just reciting background.
 - Each segment should naturally flow into the next with a quick transition phrase.
 - Each segment ends with a complete sentence and strong terminal punctuation. Do NOT end with "and", "but", "so", "because", "with", "to", "for", "that", or an open parenthetical.
+- Let each segment land fully. If a line needs one more clause to sound finished in spoken delivery, use it instead of clipping the thought.
 - Before the engagement question, end with a short tension line; avoid soft wrap-ups or reflective closing phrases.
 - No long lists. If you must list, cap at 3 items.
 - If you are unsure about a detail, say "reports suggest" or "early signs".
@@ -9085,6 +9100,10 @@ Rules:
 - Attribute the outlet or analyst, not the hosting platform. Never use phrases like "According to YouTube" or "According to TikTok".
 - Rewrite keyword-style phrasing into natural spoken language that a presenter and ElevenLabs voice can deliver cleanly.
 - Avoid scoreboard shorthand, symbol-heavy phrasing, and awkward query fragments.
+- Write for spoken delivery, not article subheads. Never start a segment with a headline-style label plus a colon.
+- Avoid abstract or unnatural spoken phrasing such as "loss circle" or stiff setups like "the angle today is".
+- Let each segment land cleanly as a spoken beat; if a thought needs one more clause to feel finished, keep it complete instead of clipping it short.
+- Do not repeat a word or short phrase back-to-back.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
 - Keep it conversational and clear; no filler words.
@@ -10439,12 +10458,38 @@ async function fetchJson(url, options = {}, timeoutMs = 25000) {
 	};
 }
 
-function resolveSyncAttemptPlan(attempt = 0) {
-	const primary = SYNC_SO_MODEL;
-	const secondary = SYNC_SO_MODEL_FALLBACKS[0] || primary;
-	if (attempt <= 0) return { modelId: primary, inputVariant: 0 };
-	if (attempt === 1) return { modelId: primary, inputVariant: 1 };
-	return { modelId: secondary, inputVariant: attempt };
+function resolveSyncModelPlan(syncTier = "standard") {
+	const tier = String(syncTier || "standard")
+		.trim()
+		.toLowerCase();
+	if (tier === "hero") {
+		return {
+			tier: "hero",
+			primary: SYNC_SO_MODEL_HERO,
+			secondary: SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_FALLBACK,
+		};
+	}
+	return {
+		tier: "standard",
+		primary: SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_HERO,
+		secondary:
+			SYNC_SO_MODEL_FALLBACK || SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_HERO,
+	};
+}
+
+function resolveSyncAttemptPlan(attempt = 0, syncTier = "standard") {
+	const modelPlan = resolveSyncModelPlan(syncTier);
+	const primary = modelPlan.primary;
+	const secondary = modelPlan.secondary || primary;
+	if (attempt <= 0)
+		return { modelId: primary, inputVariant: 0, tier: modelPlan.tier };
+	if (attempt === 1)
+		return { modelId: primary, inputVariant: 1, tier: modelPlan.tier };
+	return {
+		modelId: secondary,
+		inputVariant: attempt,
+		tier: modelPlan.tier,
+	};
 }
 
 async function detectFrozenVideo(
@@ -10592,7 +10637,7 @@ async function requestSyncSoJob({ videoPath, audioPath, jobId, modelId }) {
 	if (!fs.existsSync(videoPath)) throw new Error("Sync input video missing");
 	if (!fs.existsSync(audioPath)) throw new Error("Sync input audio missing");
 	const effectiveModelId =
-		String(modelId || SYNC_SO_MODEL).trim() || SYNC_SO_MODEL;
+		String(modelId || SYNC_SO_MODEL_STANDARD).trim() || SYNC_SO_MODEL_STANDARD;
 
 	if (
 		!FormDataNode &&
@@ -10899,6 +10944,7 @@ async function renderLipsyncedSegment({
 	label,
 	offsetSeed = 0,
 	addFades = false,
+	syncTier = "standard",
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	const dur = Math.max(0.2, Number(segDur) || 0.2);
@@ -11009,7 +11055,7 @@ async function renderLipsyncedSegment({
 	for (let attempt = 0; attempt <= SYNC_SO_SEGMENT_MAX_RETRIES; attempt++) {
 		try {
 			if (SYNC_SO_REQUEST_GAP_MS) await sleep(SYNC_SO_REQUEST_GAP_MS);
-			const attemptPlan = resolveSyncAttemptPlan(attempt);
+			const attemptPlan = resolveSyncAttemptPlan(attempt, syncTier);
 			const syncInput =
 				attemptPlan.inputVariant === 0
 					? baseSized
@@ -11029,6 +11075,7 @@ async function renderLipsyncedSegment({
 			logJob(jobId, "lipsync attempt start", {
 				label: safeLabel,
 				attempt,
+				syncTier: attemptPlan.tier,
 				modelId: attemptPlan.modelId,
 				inputVariant: attemptPlan.inputVariant,
 			});
@@ -11056,6 +11103,7 @@ async function renderLipsyncedSegment({
 			logJob(jobId, "lipsync qa", {
 				label: safeLabel,
 				attempt,
+				syncTier: attemptPlan.tier,
 				modelId: attemptPlan.modelId,
 				pass: syncQa.pass,
 				issues: syncQa.issues,
@@ -11444,57 +11492,202 @@ async function concatClips(clips, outPath, outCfg) {
 
 	const w = outCfg?.w ? makeEven(outCfg.w) : null;
 	const h = outCfg?.h ? makeEven(outCfg.h) : null;
+	const fps = Number(outCfg?.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
 	const scaleFilter =
 		w && h
 			? `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},`
 			: "";
 
-	const args = [];
-	clips.forEach((p) => args.push("-i", p));
+	const runPlainConcat = async () => {
+		const args = [];
+		clips.forEach((p) => args.push("-i", p));
 
-	// concat filter
-	const pre = clips
-		.map(
-			(_, i) =>
-				`[${i}:v:0]${scaleFilter}setpts=PTS-STARTPTS,format=yuv420p,setsar=1[v${i}];` +
-				`[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp[a${i}]`,
-		)
-		.join(";");
+		const pre = clips
+			.map(
+				(_, i) =>
+					`[${i}:v:0]${scaleFilter}setpts=PTS-STARTPTS,format=yuv420p,setsar=1[v${i}];` +
+					`[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp[a${i}]`,
+			)
+			.join(";");
 
-	const catInputs = clips.map((_, i) => `[v${i}][a${i}]`).join("");
-	const filter = `${pre};${catInputs}concat=n=${clips.length}:v=1:a=1[v][a]`;
+		const catInputs = clips.map((_, i) => `[v${i}][a${i}]`).join("");
+		const filter = `${pre};${catInputs}concat=n=${clips.length}:v=1:a=1[v][a]`;
 
-	args.push(
-		"-filter_complex",
-		filter,
-		"-map",
-		"[v]",
-		"-map",
-		"[a]",
-		"-c:v",
-		"libx264",
-		"-preset",
-		INTERMEDIATE_PRESET,
-		"-crf",
-		String(INTERMEDIATE_VIDEO_CRF),
-		"-pix_fmt",
-		"yuv420p",
-		"-c:a",
-		"aac",
-		"-b:a",
-		AUDIO_BITRATE,
-		"-ar",
-		String(AUDIO_SR),
-		"-ac",
-		"2",
-		"-movflags",
-		"+faststart",
-		"-y",
-		outPath,
+		args.push(
+			"-filter_complex",
+			filter,
+			"-map",
+			"[v]",
+			"-map",
+			"[a]",
+			"-c:v",
+			"libx264",
+			"-preset",
+			INTERMEDIATE_PRESET,
+			"-crf",
+			String(INTERMEDIATE_VIDEO_CRF),
+			"-pix_fmt",
+			"yuv420p",
+			"-c:a",
+			"aac",
+			"-b:a",
+			AUDIO_BITRATE,
+			"-ar",
+			String(AUDIO_SR),
+			"-ac",
+			"2",
+			"-movflags",
+			"+faststart",
+			"-y",
+			outPath,
+		);
+
+		await spawnBin(ffmpegPath, args, "concat", { timeoutMs: 420000 });
+		return outPath;
+	};
+
+	const useSoftTransitions =
+		ENABLE_SOFT_SEGMENT_TRANSITIONS &&
+		clips.length > 1 &&
+		outCfg?.softTransitions !== false;
+	if (!useSoftTransitions) {
+		return await runPlainConcat();
+	}
+
+	const requestedTransitionSec = clampNumber(
+		Number(outCfg?.transitionSec || SEGMENT_TRANSITION_SEC),
+		0,
+		0.5,
 	);
+	const requestedPadSec = clampNumber(
+		Number(outCfg?.transitionPadSec || SEGMENT_TRANSITION_PAD_SEC),
+		0,
+		0.5,
+	);
+	const minClipSec = clampNumber(
+		Number(outCfg?.transitionMinClipSec || SEGMENT_TRANSITION_MIN_CLIP_SEC),
+		0.25,
+		12,
+	);
+	if (requestedTransitionSec <= 0) {
+		return await runPlainConcat();
+	}
 
-	await spawnBin(ffmpegPath, args, "concat", { timeoutMs: 420000 });
-	return outPath;
+	const formatFilterNum = (value) => {
+		const num = Number(value) || 0;
+		return Number(num.toFixed(3)).toString();
+	};
+
+	try {
+		const durations = await Promise.all(
+			clips.map((clipPath) => probeDurationSecondsCached(clipPath)),
+		);
+		if (
+			durations.some(
+				(dur) => !Number.isFinite(dur) || dur <= Math.max(minClipSec, 0.35),
+			)
+		) {
+			return await runPlainConcat();
+		}
+
+		const args = [];
+		clips.forEach((p) => args.push("-i", p));
+
+		const preparedDurations = durations.map(
+			(dur, i) =>
+				Math.max(0, dur) + (i < clips.length - 1 ? requestedPadSec : 0),
+		);
+
+		const pre = clips
+			.map((_, i) => {
+				const addPad = i < clips.length - 1 && requestedPadSec > 0;
+				const videoPad = addPad
+					? `,tpad=stop_mode=clone:stop_duration=${formatFilterNum(
+							requestedPadSec,
+						)}`
+					: "";
+				const audioPad = addPad
+					? `,apad=pad_dur=${formatFilterNum(requestedPadSec)}`
+					: "";
+				return (
+					`[${i}:v:0]${scaleFilter}settb=AVTB,setpts=PTS-STARTPTS${videoPad},fps=${fps},format=yuv420p,setsar=1[v${i}]` +
+					`;[${i}:a:0]asetpts=PTS-STARTPTS,aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp${audioPad}[a${i}]`
+				);
+			})
+			.join(";");
+
+		const chain = [pre];
+		let currentVideo = "v0";
+		let currentAudio = "a0";
+		let currentDuration = preparedDurations[0];
+
+		for (let i = 1; i < clips.length; i++) {
+			const maxTransition = Math.min(
+				requestedTransitionSec,
+				Math.max(0, currentDuration - 0.05),
+				Math.max(0, preparedDurations[i] - 0.05),
+			);
+			if (!Number.isFinite(maxTransition) || maxTransition < 0.05) {
+				return await runPlainConcat();
+			}
+
+			const nextVideo = i === clips.length - 1 ? "v" : `vx${i}`;
+			const nextAudio = i === clips.length - 1 ? "a" : `ax${i}`;
+			const offset = Math.max(0, currentDuration - maxTransition);
+
+			chain.push(
+				`[${currentVideo}][v${i}]xfade=transition=fade:duration=${formatFilterNum(
+					maxTransition,
+				)}:offset=${formatFilterNum(offset)}[${nextVideo}]`,
+			);
+			chain.push(
+				`[${currentAudio}][a${i}]acrossfade=d=${formatFilterNum(
+					maxTransition,
+				)}:c1=tri:c2=tri[${nextAudio}]`,
+			);
+
+			currentVideo = nextVideo;
+			currentAudio = nextAudio;
+			currentDuration += preparedDurations[i] - maxTransition;
+		}
+
+		args.push(
+			"-filter_complex",
+			chain.join(";"),
+			"-map",
+			"[v]",
+			"-map",
+			"[a]",
+			"-c:v",
+			"libx264",
+			"-preset",
+			INTERMEDIATE_PRESET,
+			"-crf",
+			String(INTERMEDIATE_VIDEO_CRF),
+			"-pix_fmt",
+			"yuv420p",
+			"-c:a",
+			"aac",
+			"-b:a",
+			AUDIO_BITRATE,
+			"-ar",
+			String(AUDIO_SR),
+			"-ac",
+			"2",
+			"-movflags",
+			"+faststart",
+			"-y",
+			outPath,
+		);
+
+		await spawnBin(ffmpegPath, args, "concat_soft", { timeoutMs: 420000 });
+		return outPath;
+	} catch (err) {
+		console.warn(
+			`[LongVideo] soft concat fallback: ${err?.message || "unknown error"}`,
+		);
+		return await runPlainConcat();
+	}
 }
 
 /* ---------------------------------------------------------------
@@ -14049,6 +14242,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			if (seg.visualType === "image") finalImageSegments.push(seg.index);
 			else finalPresenterSegments.push(seg.index);
 		}
+		const premiumPresenterSegments = [];
+		if (finalPresenterSegments.length) {
+			premiumPresenterSegments.push(finalPresenterSegments[0]);
+			if (finalPresenterSegments.length > 1) {
+				premiumPresenterSegments.push(
+					finalPresenterSegments[finalPresenterSegments.length - 1],
+				);
+			}
+		}
+		const premiumPresenterSegmentSet = new Set(premiumPresenterSegments);
 		const allImageUrls = [];
 		for (const seg of timeline) {
 			if (Array.isArray(seg.imageUrls)) allImageUrls.push(...seg.imageUrls);
@@ -14092,6 +14295,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				},
 				imageDiversity,
 			},
+		});
+		logJob(jobId, "sync model strategy", {
+			introPrimary: SYNC_SO_MODEL_STANDARD,
+			standardPrimary: SYNC_SO_MODEL_STANDARD,
+			premiumPrimary: SYNC_SO_MODEL_HERO,
+			fallbackPrimary: SYNC_SO_MODEL_FALLBACK,
+			premiumPresenterSegments,
+			outroPrimary: SYNC_SO_MODEL_HERO,
 		});
 		if (!imageDiversity.ok) {
 			const failingTopics = (imageDiversity.perTopic || []).filter(
@@ -14399,6 +14610,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			}
 
 			if (!norm) {
+				const syncTier = premiumPresenterSegmentSet.has(seg.index)
+					? "hero"
+					: "standard";
 				norm = await renderLipsyncedSegment({
 					jobId,
 					tmpDir,
@@ -14409,6 +14623,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					label: String(seg.index),
 					offsetSeed: seg.index,
 					addFades: ENABLE_SEGMENT_FADES,
+					syncTier,
 				});
 			}
 
@@ -14433,6 +14648,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			label: "outro",
 			offsetSeed: outroOffsetSeed,
 			addFades: false,
+			syncTier: "hero",
 		});
 
 		// Calm tail after the outro line (silent + fade-out).
@@ -14491,14 +14707,20 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		safeUnlink(tailWithAudio);
 
 		const outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
-		await concatClips([outroTalk, outroTail], outroPath, output);
+		await concatClips([outroTalk, outroTail], outroPath, {
+			...output,
+			softTransitions: false,
+		});
 		segmentVideos.push(outroPath);
 
 		updateJob(jobId, { progressPct: 72 });
 
 		// 13) Concat intro + content + outro
 		const concatPath = path.join(tmpDir, `concat_${jobId}.mp4`);
-		await concatClips(segmentVideos, concatPath, output);
+		await concatClips(segmentVideos, concatPath, {
+			...output,
+			softTransitions: true,
+		});
 		logJob(jobId, "concat done", { clips: segmentVideos.length });
 
 		// 14) Overlays (optional; static image segments provide visuals)
