@@ -259,15 +259,17 @@ const SHOULD_PERSIST_LONG_VIDEO =
 const DEFAULT_PRESENTER_ASSET_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767062842/aivideomatic/long_thumbnails/MyPhotoWithASuit_s1xay4.png";
 const DEFAULT_PRESENTER_MOTION_VIDEO_PATHS = [
-	path.join(__dirname, "../uploads/presenter_cache/motion_reference.mp4"),
+	String(process.env.LONG_VIDEO_MOTION_REFERENCE_PATH || "").trim(),
 	path.join(__dirname, "../uploads/presenter_cache/DemoVideo.mp4"),
-];
-const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
-	"https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
+	path.join(__dirname, "../uploads/presenter_cache/motion_reference.mp4"),
+].filter(Boolean);
+const DEFAULT_PRESENTER_MOTION_VIDEO_URL = String(
+	process.env.LONG_VIDEO_MOTION_REFERENCE_URL || "",
+).trim();
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"human, credible seated presenter motion; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
+	"human, credible seated presenter motion modeled on a calm real-person delivery: centered posture, grounded torso, low lightly clasped hands, direct lens contact with only brief natural side glances that quickly return to camera, tiny neck corrections, occasional soft chin dips, one or two light emphasis nods, natural blink cadence, mild brow movement, restrained speech-ready jaw behavior, and only brief subtle smiles when appropriate; avoid broad gestures, forward/back head travel, sway, jerky turns, robotic loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -423,10 +425,9 @@ const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
 const USE_MOTION_REF_BASELINE = true;
-const PREFER_MOTION_REF_BASELINE =
-	String(
-		process.env.LONG_VIDEO_PREFER_MOTION_REF_BASELINE || "true",
-	).toLowerCase() !== "false";
+// Motion reference clips are style-study inputs only. Reusing them as the
+// rendered presenter baseline caused the pipeline to output the wrong person.
+const USE_MOTION_REF_PROMPT_GUIDANCE = true;
 const RUNWAY_AUGMENT_MOTION_REF_BASELINE =
 	String(
 		process.env.LONG_VIDEO_RUNWAY_AUGMENT_BASELINES || "false",
@@ -4980,72 +4981,18 @@ async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
 	return null;
 }
 
-async function prepareMotionReferenceBaseline({
-	motionRefVideo,
-	tmpDir,
-	jobId,
-	output,
-	label = "neutral",
-}) {
-	if (!motionRefVideo) return null;
-	const safeLabel = String(label || "neutral").replace(/[^a-z0-9_-]/gi, "_");
-	const outPath = path.join(
-		tmpDir,
-		`baseline_motion_${jobId}_${safeLabel}.mp4`,
-	);
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-stream_loop",
-			"-1",
-			"-i",
-			motionRefVideo,
-			"-t",
-			BASELINE_DUR_SEC.toFixed(3),
-			"-an",
-			"-vf",
-			`scale=${makeEven(output.w)}:${makeEven(
-				output.h,
-			)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-				output.w,
-			)}:${makeEven(
-				output.h,
-			)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-			"-c:v",
-			"libx264",
-			"-preset",
-			"veryfast",
-			"-crf",
-			String(SYNC_SO_INPUT_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-movflags",
-			"+faststart",
-			"-y",
-			outPath,
-		],
-		"prepare_motion_baseline",
-		{ timeoutMs: 240000 },
-	);
-	return await ensureUnderBytes(
-		outPath,
-		SYNC_SO_MAX_BYTES,
-		tmpDir,
-		jobId,
-		`motion_baseline_${safeLabel}`,
-	);
-}
-
 function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 	const handLine = intro
-		? "Hands stay low on the desk or just below frame, with at most one brief small emphasis gesture before settling again."
-		: "Hands stay low near the torso, usually lightly clasped or relaxed, with only brief small open-palm emphasis gestures before settling again.";
+		? "Hands stay low on the desk or just below frame, lightly clasped or resting, with at most one brief small emphasis gesture before settling again."
+		: "Hands stay low near the torso, usually lightly clasped or resting together, with only brief small open-palm emphasis gestures before settling again.";
 	return [
-		"Match the presenter's real reference behavior from motion_reference.mp4 and DemoVideo.mp4.",
-		"Face behavior: direct eye contact, friendly-neutral expression, natural unhurried blinks, mildly readable brow changes, and natural speech-ready jaw and lip behavior with no over-open vowels or reaction-face peaks.",
-		"Head behavior: mostly upright and centered with tiny neck-driven corrections, soft chin dips on emphasis, and one or two light conversational nods over the shot; no swaying, no forward lunges, no head tilts, and no looped nodding.",
-		`Body behavior: shoulders square and steady but not rigid, torso grounded in the seat with subtle breathing and small posture settling, ${handLine}`,
-		"Keep the emotional read composed and consistent from start to finish, but do not let the presenter feel frozen or statue-like.",
+		"Study the approved motion reference clip only for behavior, pacing, and restraint.",
+		"Copy only the presenter's real motion signature from the reference: seated and centered posture, grounded torso, low clasped hands, subtle head corrections, brief natural side glances with quick return to lens, restrained smiles, quiet shoulders, and economical hand movement.",
+		"Do not copy the reference clip's face, identity, wardrobe, framing, sofa/background, camera movement, or room layout. Keep all identity and appearance locked to the current presenter image.",
+		"Face behavior: calm friendly-neutral delivery with natural unhurried blinks, mild brow readability, restrained speech-ready jaw movement, and occasional small half-smiles only when it feels organic; no exaggerated grin, no reaction-face peaks, and no theatrical emotion.",
+		"Head behavior: mostly upright and centered with tiny neck-driven corrections, soft chin dips on emphasis, one or two light conversational nods, and at most a brief modest turn or glance off-axis before returning to camera; no swaying, no forward lunges, no sharp tilts, and no looped nodding.",
+		`Body behavior: shoulders square and steady but not rigid, torso grounded in the seat with subtle breathing and small posture settling, ${handLine} Keep elbows anchored and avoid broad arm travel.`,
+		"Keep the emotional read composed, credible, and understated from start to finish. The result should feel like the same real presenter speaking naturally, not a generic animated host and not a frozen statue.",
 	].join(" ");
 }
 
@@ -5326,6 +5273,7 @@ function buildBaselinePrompt(
 	return `
 Photorealistic talking-head video of the SAME person as the reference image.
 Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT}
+Primary objective: preserve the current presenter's face and wardrobe exactly from the image while borrowing only the subtle delivery rhythm and body language from the approved motion reference guidance.
 Background must remain locked and static; no movement or people behind the presenter.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
@@ -12367,6 +12315,7 @@ async function createPresenterIntroMotion({
 	const prompt = `
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
+Primary objective: keep the current presenter's identity fully locked to the image and apply only the subtle motion signature from the approved motion reference guidance.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: calm intro delivery with hands resting on the desk; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
@@ -12383,6 +12332,7 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 	const fallbackPrompt = `
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
+Primary objective: keep the current presenter's identity fully locked to the image and apply only the subtle motion signature from the approved motion reference guidance.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: small, natural intro posture with hands resting; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
@@ -13541,7 +13491,7 @@ async function runLongVideoJob(
 			},
 		});
 
-		// 2) Presenter (forced default image + motion reference)
+		// 2) Presenter
 		let presenterLocal = await ensureLocalPresenterAsset(
 			presenterAssetUrl,
 			tmpDir,
@@ -13554,7 +13504,11 @@ async function runLongVideoJob(
 		let presenterThumbnailLocal = presenterLocal;
 		let presenterOutfit = "";
 		let presenterOutfitStyle = "";
-		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
+		const shouldLoadMotionRefVideo =
+			USE_MOTION_REF_BASELINE && USE_MOTION_REF_PROMPT_GUIDANCE;
+		const motionRefVideo = shouldLoadMotionRefVideo
+			? await ensureLocalMotionReferenceVideo(tmpDir, jobId)
+			: null;
 		const detected = detectFileType(presenterLocal);
 		let presenterIsVideo = detected?.kind === "video";
 		let presenterIsImage = detected?.kind === "image";
@@ -13570,6 +13524,12 @@ async function runLongVideoJob(
 				? path.basename(presenterThumbnailLocal)
 				: null,
 		});
+		if (motionRefVideo && USE_MOTION_REF_PROMPT_GUIDANCE) {
+			logJob(jobId, "motion reference guidance enabled", {
+				source: path.basename(motionRefVideo),
+				mode: "prompt_guidance_only",
+			});
+		}
 
 		updateJob(jobId, { progressPct: 12 });
 
@@ -15056,48 +15016,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		if (!expressionsNeeded.includes("neutral"))
 			expressionsNeeded.unshift("neutral");
 
-		let motionReferenceBaseline = null;
 		if (presenterIsVideo) {
 			pushBaselineVariant("neutral", presenterLocal);
 			logJob(jobId, "presenter is video; baseline uses provided video");
-		} else if (
-			motionRefVideo &&
-			USE_MOTION_REF_BASELINE &&
-			PREFER_MOTION_REF_BASELINE
-		) {
-			try {
-				updateJob(jobId, {
-					meta: {
-						...JOBS.get(jobId)?.meta,
-						currentStep: "Preparing reusable presenter motion reference",
-					},
-				});
-				motionReferenceBaseline = await prepareMotionReferenceBaseline({
-					motionRefVideo,
-					tmpDir,
-					jobId,
-					output,
-					label: "neutral",
-				});
-				if (motionReferenceBaseline) {
-					pushBaselineVariant("neutral", motionReferenceBaseline);
-					logJob(jobId, "motion reference baseline ready", {
-						path: path.basename(motionReferenceBaseline),
-					});
-				}
-			} catch (e) {
-				logJob(jobId, "motion reference baseline failed", {
-					error: e.message,
-				});
-			}
 		}
 
 		const shouldAttemptRunwayBaseline =
 			!presenterIsVideo &&
 			enableRunwayPresenterMotion &&
 			ENABLE_RUNWAY_BASELINE &&
-			RUNWAY_API_KEY &&
-			(!motionReferenceBaseline || RUNWAY_AUGMENT_MOTION_REF_BASELINE);
+			RUNWAY_API_KEY;
 
 		if (shouldAttemptRunwayBaseline) {
 			let runwayBaselineFailures = 0;
@@ -15200,18 +15128,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 								maxFailures: RUNWAY_BASELINE_MAX_FAILURES,
 								expression: expr,
 								variant: v + 1,
-								hasMotionReferenceBaseline: Boolean(motionReferenceBaseline),
+								hasMotionReferenceGuidance: Boolean(motionRefVideo),
 							});
 							break runway_baseline_loop;
 						}
 					}
 				}
 			}
-		} else if (motionReferenceBaseline) {
-			logJob(jobId, "runway baseline skipped", {
-				reason: "motion_reference_baseline_available",
-				augmentEnabled: RUNWAY_AUGMENT_MOTION_REF_BASELINE,
-			});
 		}
 		if (!baselinePresenterVideos.size) {
 			// Fallback: convert image to a simple still video
