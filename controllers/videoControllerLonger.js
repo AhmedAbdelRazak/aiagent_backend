@@ -63,6 +63,7 @@ const {
 	editImageToPath,
 } = require("../assets/openaiImageTools");
 const Video = require("../models/Video");
+const LongVideoJob = require("../models/LongVideoJob");
 const Schedule = require("../models/Schedule");
 const {
 	googleTrendingCategoriesId,
@@ -493,6 +494,8 @@ const LONG_VIDEO_KEEP_TMP = false;
 const JOBS = new Map();
 const MAX_JOBS_TO_KEEP = 250;
 const JOB_TTL_MS = 1000 * 60 * 60 * 6;
+const LONG_VIDEO_ORPHAN_GRACE_MS = 1000 * 60 * 30;
+const JOB_PERSIST_QUEUES = new Map();
 
 setInterval(() => {
 	const now = Date.now();
@@ -516,6 +519,172 @@ function nowIso() {
 	return new Date().toISOString();
 }
 
+function toDateOrNull(value) {
+	if (!value) return null;
+	const d = value instanceof Date ? value : new Date(value);
+	return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function sanitizeLongVideoPayloadForJob(payload = {}) {
+	const output =
+		payload?.output && typeof payload.output === "object"
+			? {
+					ratio: payload.output.ratio || "",
+					w: Number(payload.output.w) || 0,
+					h: Number(payload.output.h) || 0,
+					fps: Number(payload.output.fps) || 0,
+				}
+			: null;
+
+	return {
+		preferredTopicHint: String(payload.preferredTopicHint || "").trim(),
+		category:
+			normalizeCategoryLabel(payload.category) ||
+			String(payload.category || "").trim() ||
+			LONG_VIDEO_TRENDS_CATEGORY,
+		language: normalizeLanguageLabel(payload.language || "English"),
+		targetDurationSec: Number(payload.targetDurationSec || 0) || 0,
+		output,
+		hasVoiceoverUrl: Boolean(String(payload.voiceoverUrl || "").trim()),
+		hasMusicUrl: Boolean(String(payload.musicUrl || "").trim()),
+		disableMusic: Boolean(payload.disableMusic),
+		dryRun: Boolean(payload.dryRun),
+		youtubeCategory:
+			String(payload.youtubeCategory || LONG_VIDEO_YT_CATEGORY || "").trim() ||
+			LONG_VIDEO_YT_CATEGORY,
+		hasYouTubeTokens: Boolean(
+			payload.youtubeRefreshToken || payload.youtubeAccessToken,
+		),
+		enableRunwayPresenterMotion: Boolean(payload.enableRunwayPresenterMotion),
+		enableWardrobeEdit: Boolean(payload.enableWardrobeEdit),
+	};
+}
+
+function buildLongVideoJobPersistPayload(job = {}) {
+	const meta = job?.meta && typeof job.meta === "object" ? job.meta : {};
+	return {
+		user: job.userId || null,
+		status: String(job.status || "queued").trim().toLowerCase() || "queued",
+		progressPct: clampNumber(Number(job.progressPct || 0), 0, 100),
+		topic: String(job.topic || "").trim(),
+		finalVideoUrl: String(job.finalVideoUrl || "").trim(),
+		error: String(job.error || "").trim(),
+		controllerLabel: String(job.controllerLabel || "").trim(),
+		statusUrl: String(job.statusUrl || "").trim(),
+		requestSummary: job.requestSummary || null,
+		meta,
+		youtubeLink: String(meta.youtubeLink || job.youtubeLink || "").trim(),
+		videoId: String(meta.videoId || job.videoId || "").trim(),
+		startedAt: toDateOrNull(job.startedAt),
+		completedAt: toDateOrNull(job.completedAt),
+		failedAt: toDateOrNull(job.failedAt),
+		createdAt: toDateOrNull(job.createdAt),
+		updatedAt: toDateOrNull(job.updatedAt),
+	};
+}
+
+function queueLongVideoJobPersist(jobSnapshot) {
+	const snapshot = {
+		...(jobSnapshot || {}),
+		meta:
+			jobSnapshot?.meta && typeof jobSnapshot.meta === "object"
+				? jobSnapshot.meta
+				: {},
+	};
+	const jobId = String(snapshot.jobId || "").trim();
+	if (!jobId) return Promise.resolve(null);
+
+	const previous = JOB_PERSIST_QUEUES.get(jobId) || Promise.resolve();
+	const next = previous
+		.catch(() => null)
+		.then(async () => {
+			const payload = buildLongVideoJobPersistPayload(snapshot);
+			await LongVideoJob.updateOne(
+				{ jobId },
+				{
+					$set: payload,
+					$setOnInsert: { jobId },
+				},
+				{ upsert: true, setDefaultsOnInsert: true },
+			);
+			return jobId;
+		})
+		.catch((err) => {
+			logJob(jobId, "job persist failed", { error: err.message });
+			return null;
+		});
+
+	JOB_PERSIST_QUEUES.set(jobId, next);
+	next.finally(() => {
+		if (JOB_PERSIST_QUEUES.get(jobId) === next) {
+			JOB_PERSIST_QUEUES.delete(jobId);
+		}
+	});
+	return next;
+}
+
+async function findPersistentLongVideoJob(jobId) {
+	const key = String(jobId || "").trim();
+	if (!key) return null;
+	return await LongVideoJob.findOne({ jobId: key }).lean();
+}
+
+async function reconcileOrphanedLongVideoJob(job = null) {
+	if (!job?.jobId) return job;
+	const status = String(job.status || "").trim().toLowerCase();
+	if (status !== "queued" && status !== "running") return job;
+	if (JOBS.has(job.jobId)) return job;
+
+	const updatedAt = toDateOrNull(job.updatedAt || job.createdAt);
+	const updatedMs = updatedAt ? updatedAt.getTime() : 0;
+	if (!updatedMs || Date.now() - updatedMs < LONG_VIDEO_ORPHAN_GRACE_MS) {
+		return job;
+	}
+
+	const failedAt = new Date();
+	const orphanError =
+		String(job.error || "").trim() ||
+		"Long video job was interrupted before completion. The worker is no longer tracking this job.";
+	const patch = {
+		status: "failed",
+		error: orphanError,
+		failedAt,
+		updatedAt: failedAt,
+	};
+
+	try {
+		await LongVideoJob.updateOne(
+			{
+				jobId: job.jobId,
+				status: { $in: ["queued", "running"] },
+			},
+			{ $set: patch },
+		);
+	} catch (err) {
+		logJob(job.jobId, "orphan job reconcile failed", {
+			error: err.message,
+		});
+	}
+
+	return {
+		...job,
+		...patch,
+		meta: job.meta && typeof job.meta === "object" ? job.meta : {},
+	};
+}
+
+function serializeLongVideoJob(job = {}) {
+	return {
+		jobId: String(job.jobId || ""),
+		status: String(job.status || "queued"),
+		progressPct: clampNumber(Number(job.progressPct || 0), 0, 100),
+		topic: job.topic || null,
+		finalVideoUrl: job.finalVideoUrl || null,
+		error: job.error || null,
+		meta: job.meta && typeof job.meta === "object" ? job.meta : {},
+	};
+}
+
 function logJob(jobId, msg, extra) {
 	const prefix = jobId ? `[LongVideo][${jobId}]` : "[LongVideo]";
 	if (extra !== undefined) {
@@ -532,7 +701,19 @@ function logJob(jobId, msg, extra) {
 function updateJob(jobId, patch = {}) {
 	const job = JOBS.get(jobId);
 	if (!job) return;
-	JOBS.set(jobId, { ...job, ...patch, updatedAt: nowIso() });
+	const nextPatch = { ...(patch || {}) };
+	if (nextPatch.status === "running" && !job.startedAt && !nextPatch.startedAt) {
+		nextPatch.startedAt = nowIso();
+	}
+	if (nextPatch.status === "completed" && !nextPatch.completedAt) {
+		nextPatch.completedAt = nowIso();
+	}
+	if (nextPatch.status === "failed" && !nextPatch.failedAt) {
+		nextPatch.failedAt = nowIso();
+	}
+	const nextJob = { ...job, ...nextPatch, updatedAt: nowIso() };
+	JOBS.set(jobId, nextJob);
+	void queueLongVideoJobPersist(nextJob);
 }
 
 function ensureDir(dir) {
@@ -12890,7 +13071,15 @@ async function runLongVideoJob(
 	ensureDir(tmpDir);
 
 	try {
-		updateJob(jobId, { status: "running", progressPct: 1 });
+		updateJob(jobId, {
+			status: "running",
+			progressPct: 1,
+			error: null,
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				currentStep: "Initializing long video pipeline",
+			},
+		});
 
 		const {
 			preferredTopicHint,
@@ -12981,6 +13170,10 @@ async function runLongVideoJob(
 				status: "completed",
 				progressPct: 100,
 				finalVideoUrl: dummyUrl || null,
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					currentStep: "Completed (dry run)",
+				},
 			});
 			logJob(jobId, "dry run completed", {
 				finalVideoUrl: dummyUrl || null,
@@ -13003,7 +13196,13 @@ async function runLongVideoJob(
 			);
 		if (!effectiveVoiceId) throw new Error("ELEVENLABS voiceId missing.");
 
-		updateJob(jobId, { progressPct: 4 });
+		updateJob(jobId, {
+			progressPct: 4,
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				currentStep: "Selecting topic and validating pipeline dependencies",
+			},
+		});
 
 		// 1) Topics (Google Trends driven, count based on duration)
 		const languageLabel = normalizeLanguageLabel(language || "English");
@@ -13080,6 +13279,8 @@ async function runLongVideoJob(
 			progressPct: 8,
 			topic: topicSummary,
 			meta: {
+				...JOBS.get(jobId)?.meta,
+				currentStep: "Topics selected; building script and assets",
 				topics: topicPicks.map((t) => ({
 					topic: t.topic,
 					displayTopic: t.displayTopic || t.topic,
@@ -14743,8 +14944,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		const baselineDefault = pickBaselineDefault();
 
-		updateJob(jobId, { progressPct: 50 });
-
 		// 10) Intro (lipsync + title overlay)
 		const introOffsetSeed = seedFromJobId(jobId) % 29;
 		const introBaseline =
@@ -14799,7 +14998,26 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					syncTier: unit.syncTier,
 				})),
 		});
-		for (const seg of renderUnits) {
+		const visualPlanMeta = JOBS.get(jobId)?.meta?.visualPlan || {};
+		const presenterSegmentCount = Array.isArray(
+			visualPlanMeta.presenterSegments,
+		)
+			? visualPlanMeta.presenterSegments.length
+			: renderUnits.filter((unit) => unit.visualType !== "image").length;
+		const imageSegmentCount = Array.isArray(visualPlanMeta.imageSegments)
+			? visualPlanMeta.imageSegments.length
+			: renderUnits.filter((unit) => unit.visualType === "image").length;
+		const totalRenderUnits = Math.max(1, renderUnits.length);
+		updateJob(jobId, {
+			progressPct: 50,
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				currentStep: `Rendering segments (Presenter ${presenterSegmentCount} / Images ${imageSegmentCount})`,
+			},
+		});
+
+		for (let renderUnitIndex = 0; renderUnitIndex < renderUnits.length; renderUnitIndex++) {
+			const seg = renderUnits[renderUnitIndex];
 			const segDur = Math.max(0.2, Number(seg.segDur || 0));
 			logJob(jobId, "segment start", {
 				segment: seg.index,
@@ -14856,6 +15074,23 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			}
 
 			segmentVideos.push(norm);
+			const completedRenderUnits = renderUnitIndex + 1;
+			const renderProgress = Math.min(
+				71,
+				50 + Math.round((completedRenderUnits / totalRenderUnits) * 21),
+			);
+			updateJob(jobId, {
+				progressPct: renderProgress,
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					currentStep: `Rendering segments (${completedRenderUnits}/${totalRenderUnits})`,
+					lastRenderedSegment: {
+						segment: seg.index,
+						renderLabel: seg.renderLabel || String(seg.index),
+						visualType: seg.visualType || "presenter",
+					},
+				},
+			});
 			logJob(jobId, "segment ready", {
 				segment: seg.index,
 				renderLabel: seg.renderLabel || String(seg.index),
@@ -14943,7 +15178,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		});
 		segmentVideos.push(outroPath);
 
-		updateJob(jobId, { progressPct: 72 });
+		updateJob(jobId, {
+			progressPct: 72,
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				currentStep: "Assembling intro, content, and outro",
+			},
+		});
 
 		// 13) Concat intro + content + outro
 		const concatPath = path.join(tmpDir, `concat_${jobId}.mp4`);
@@ -15017,7 +15258,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			logJob(jobId, "overlays skipped", { reason: "segment visuals enabled" });
 		}
 
-		updateJob(jobId, { progressPct: 84 });
+		updateJob(jobId, {
+			progressPct: 84,
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				currentStep: "Applying overlays and preparing the final audio mix",
+			},
+		});
 
 		// 15) Music mix (must)
 		let mixedPath = overlayedPath;
@@ -15028,7 +15275,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			});
 		}
 
-		updateJob(jobId, { progressPct: 92 });
+		updateJob(jobId, {
+			progressPct: 92,
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				currentStep: "Finalizing the master video file",
+			},
+		});
 
 		// 16) Finalize (with fade-out)
 		const outputSlug =
@@ -15047,16 +15300,37 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			fadeOutSec: FINAL_FADE_OUT_SEC,
 			outCfg: output,
 		});
+		updateJob(jobId, {
+			progressPct: 96,
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				currentStep:
+					youtubeUploadEnabled && hasYouTubeTokens
+						? "Uploading to YouTube"
+						: "Saving final output metadata",
+			},
+		});
 
 		// 16.5) YouTube upload (optional)
 		let youtubeLink = "";
 		let youtubeTokens = null;
+		let youtubeUploadMeta = {
+			enabled: Boolean(youtubeUploadEnabled),
+			hadTokens: Boolean(hasYouTubeTokens),
+			attempted: false,
+			success: false,
+			skippedReason: "",
+			error: "",
+		};
 		try {
 			if (!youtubeUploadEnabled) {
+				youtubeUploadMeta.skippedReason = "disabled_for_controller";
 				logJob(jobId, "youtube upload skipped (disabled for controller)");
 			} else if (!hasYouTubeTokens) {
+				youtubeUploadMeta.skippedReason = "missing_tokens";
 				logJob(jobId, "youtube upload skipped (no tokens)");
 			} else {
+				youtubeUploadMeta.attempted = true;
 				const youtubePayload = {
 					youtubeAccessToken,
 					youtubeRefreshToken,
@@ -15075,12 +15349,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						thumbnailPath,
 						jobId,
 					});
+					youtubeUploadMeta.success = Boolean(youtubeLink);
 					logJob(jobId, "youtube upload complete", { youtubeLink });
 				} else {
+					youtubeUploadMeta.skippedReason = "missing_refresh_token";
 					logJob(jobId, "youtube upload skipped (missing refresh token)");
 				}
 			}
 		} catch (e) {
+			youtubeUploadMeta.attempted = true;
+			youtubeUploadMeta.error = e.message;
 			logJob(jobId, "youtube upload skipped", { error: e.message });
 		}
 
@@ -15168,7 +15446,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			finalVideoUrl: finalVideoUrl || null,
 			meta: {
 				...JOBS.get(jobId)?.meta,
+				currentStep: "Completed",
 				youtubeLink,
+				youtubeUpload: youtubeUploadMeta,
 				videoId: videoDocId,
 			},
 		});
@@ -15182,6 +15462,10 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		updateJob(jobId, {
 			status: "failed",
 			error: err?.message || "Long video job failed",
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				currentStep: "Failed",
+			},
 		});
 	} finally {
 		if (!LONG_VIDEO_KEEP_TMP) safeRmRecursive(tmpDir);
@@ -15207,6 +15491,7 @@ function createLongVideoController(controllerConfig = {}) {
 
 		const jobId = crypto.randomUUID();
 		const baseUrl = buildBaseUrl(req);
+		const statusUrl = `${cfg.statusPathBase}/${jobId}`;
 
 		const job = {
 			jobId,
@@ -15215,13 +15500,19 @@ function createLongVideoController(controllerConfig = {}) {
 			topic: null,
 			finalVideoUrl: null,
 			error: null,
+			userId: req.user?._id ? String(req.user._id) : null,
+			controllerLabel: cfg.controllerLabel,
+			statusUrl,
+			requestSummary: sanitizeLongVideoPayloadForJob(clean),
+			startedAt: null,
+			completedAt: null,
+			failedAt: null,
 			createdAt: nowIso(),
 			updatedAt: nowIso(),
 			meta: {},
 		};
 		JOBS.set(jobId, job);
-
-		const statusUrl = `${cfg.statusPathBase}/${jobId}`;
+		void queueLongVideoJobPersist(job);
 		res.status(202).json({
 			jobId,
 			status: "queued",
@@ -15291,16 +15582,16 @@ exports.createLongVideo = createLongVideoController();
 
 exports.getLongVideoStatus = async (req, res) => {
 	const { jobId } = req.params;
-	const job = JOBS.get(jobId);
-	if (!job) return res.status(404).json({ error: "Job not found" });
+	const liveJob = JOBS.get(jobId);
+	if (liveJob) return res.json(serializeLongVideoJob(liveJob));
 
-	return res.json({
-		jobId: job.jobId,
-		status: job.status,
-		progressPct: job.progressPct,
-		topic: job.topic || null,
-		finalVideoUrl: job.finalVideoUrl || null,
-		error: job.error || null,
-		meta: job.meta || {},
-	});
+	try {
+		const persistedJob = await findPersistentLongVideoJob(jobId);
+		if (!persistedJob) return res.status(404).json({ error: "Job not found" });
+		const reconciledJob = await reconcileOrphanedLongVideoJob(persistedJob);
+		return res.json(serializeLongVideoJob(reconciledJob));
+	} catch (err) {
+		logJob(jobId, "status lookup failed", { error: err.message });
+		return res.status(503).json({ error: "Job status unavailable" });
+	}
 };

@@ -549,6 +549,18 @@ const REQUIRE_TRENDS_FOR_SCHEDULES = toBool(
 );
 const looksLikeAITopic = (t) => AI_TOPIC_RE.test(String(t || ""));
 
+function hasUsableFile(filePath, minBytes = 64) {
+	try {
+		return Boolean(
+			filePath &&
+				fs.existsSync(filePath) &&
+				fs.statSync(filePath).size >= Number(minBytes || 64),
+		);
+	} catch {
+		return false;
+	}
+}
+
 function parseCseSizeList(value) {
 	const raw = String(value || "")
 		.split(",")
@@ -2343,7 +2355,7 @@ const escTxt = (t) =>
 		.replace(/,/g, "\\,");
 
 function tmpFile(tag, ext = "") {
-	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
+	return path.join(TMP_CONTROL_DIR, `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
 function tmpControlFile(tag, ext = "") {
@@ -4113,6 +4125,10 @@ async function exactLen(src, target, out, opts = {}) {
 			)
 			.save(norm(out));
 	});
+
+	if (!hasUsableFile(out)) {
+		throw new Error(`exactLen missing output: ${out} (src: ${src})`);
+	}
 }
 
 async function exactLenAudio(src, target, out, opts = {}) {
@@ -4428,6 +4444,14 @@ async function concatWithTransitions(
 	 */
 
 	if (!clips || !clips.length) throw new Error("No clips to stitch");
+	const missingInputs = clips.filter((p) => !hasUsableFile(p));
+	if (missingInputs.length) {
+		throw new Error(
+			`concatWithTransitions missing input(s): ${missingInputs
+				.slice(0, 3)
+				.join(", ")}`,
+		);
+	}
 
 	const {
 		// Global “where to fade” behaviour
@@ -4479,6 +4503,10 @@ async function concatWithTransitions(
 
 			return cmd.save(norm(normOut));
 		});
+
+		if (!hasUsableFile(normOut)) {
+			throw new Error(`normalize clip missing output: ${normOut}`);
+		}
 
 		normalized.push(normOut);
 	}
@@ -4555,6 +4583,10 @@ async function concatWithTransitions(
 
 			return cmd.save(norm(outFade));
 		});
+
+		if (!hasUsableFile(outFade)) {
+			throw new Error(`fade clip missing output: ${outFade}`);
+		}
 
 		return outFade;
 	}
@@ -12903,6 +12935,11 @@ exports.createVideo = async (req, res) => {
 
 			const fixed = tmpFile(`fx_${segIndex}`, ".mp4");
 			await exactLen(clipPath, d, fixed, { ratio, enhance: true });
+			if (!hasUsableFile(fixed)) {
+				throw new Error(
+					`segment ${segIndex} missing fixed clip after exactLen: ${fixed}`,
+				);
+			}
 			if (category === "Top5" && seg.countdownRank) {
 				const withSlate = tmpFile(`slate_${segIndex}`, ".mp4");
 				try {
