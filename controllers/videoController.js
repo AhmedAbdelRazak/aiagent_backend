@@ -532,6 +532,11 @@ const MERCH_LINK = "https://www.serenejannat.com/custom-gifts";
 const MERCH_FOOTER = `Support the channel & customize your own merch:\n${MERCH_LINK}`;
 const MERCH_INTRO = `${MERCH_FOOTER}\n\n`;
 const PROMPT_CHAR_LIMIT = 220;
+const TMP_CONTROL_DIR = path.join(__dirname, "../uploads/tmp");
+
+try {
+	fs.mkdirSync(TMP_CONTROL_DIR, { recursive: true });
+} catch {}
 
 /* ---------------------------------------------------------------
  *  Small helpers
@@ -2341,6 +2346,27 @@ function tmpFile(tag, ext = "") {
 	return path.join(os.tmpdir(), `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
+function tmpControlFile(tag, ext = "") {
+	return path.join(TMP_CONTROL_DIR, `${tag}_${crypto.randomUUID()}${ext}`);
+}
+
+function writeConcatListFile(paths, tag = "concat_list") {
+	const safePaths = Array.isArray(paths)
+		? paths.map((p) => String(p || "").trim()).filter(Boolean)
+		: [];
+	if (!safePaths.length) {
+		throw new Error(`${tag}: no input files`);
+	}
+
+	const listFile = tmpControlFile(tag, ".txt");
+	fs.writeFileSync(
+		listFile,
+		`${safePaths.map((p) => `file '${norm(p)}'`).join("\n")}\n`,
+		"utf8",
+	);
+	return listFile;
+}
+
 async function downloadImageToTemp(url, ext = ".jpg") {
 	const safeUrl = sanitizeImageUrl(url);
 	const tmp = tmpFile("trend_raw", ext);
@@ -3900,6 +3926,93 @@ function ffmpegPromise(cfg) {
 	});
 }
 
+function spawnBin(binPath, args, label, { timeoutMs } = {}) {
+	return new Promise((resolve, reject) => {
+		if (!binPath) {
+			reject(new Error(`${label}: binary not found`));
+			return;
+		}
+
+		const proc = child_process.spawn(binPath, args, {
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+
+		let stderr = "";
+		let stdout = "";
+		let killedByTimeout = false;
+
+		const killTimer =
+			timeoutMs && Number(timeoutMs) > 0
+				? setTimeout(() => {
+						killedByTimeout = true;
+						try {
+							proc.kill("SIGKILL");
+						} catch {}
+					}, Number(timeoutMs))
+				: null;
+
+		proc.stdout.on("data", (d) => (stdout += d.toString()));
+		proc.stderr.on("data", (d) => (stderr += d.toString()));
+		proc.on("error", (err) => {
+			if (killTimer) clearTimeout(killTimer);
+			reject(err);
+		});
+		proc.on("close", (code) => {
+			if (killTimer) clearTimeout(killTimer);
+			if (code === 0) return resolve({ stdout, stderr });
+			const head = (stderr || stdout || "").slice(0, 4000);
+			const tailHint = killedByTimeout ? " (killed by timeout)" : "";
+			reject(new Error(`${label} failed (code ${code})${tailHint}: ${head}`));
+		});
+	});
+}
+
+async function concatViaDemuxer(
+	inputPaths,
+	outPath,
+	{ tag = "concat", codecArgs = ["-c", "copy"], timeoutMs = 240000 } = {},
+) {
+	const missingInputs = (Array.isArray(inputPaths) ? inputPaths : [])
+		.map((p) => String(p || "").trim())
+		.filter(Boolean)
+		.filter((p) => !fs.existsSync(p));
+	if (missingInputs.length) {
+		throw new Error(
+			`${tag}: missing concat input(s): ${missingInputs.slice(0, 3).join(", ")}`,
+		);
+	}
+
+	const listFile = writeConcatListFile(inputPaths, `${tag}_list`);
+	try {
+		if (!fs.existsSync(listFile)) {
+			throw new Error(`${tag}: concat list file missing: ${listFile}`);
+		}
+
+		await spawnBin(
+			ffmpegPath || "ffmpeg",
+			[
+				"-f",
+				"concat",
+				"-safe",
+				"0",
+				"-i",
+				norm(listFile),
+				...codecArgs,
+				"-y",
+				norm(outPath),
+			],
+			tag,
+			{ timeoutMs },
+		);
+		return outPath;
+	} finally {
+		try {
+			fs.unlinkSync(listFile);
+		} catch {}
+	}
+}
+
 // Create a PCM silence WAV without FFmpeg (for environments missing lavfi).
 function writeSilenceWav(outPath, durationSeconds, opts = {}) {
 	const seconds = Math.max(0, Number(durationSeconds) || 0);
@@ -4455,23 +4568,13 @@ async function concatWithTransitions(
 	}
 
 	// 3) Concat all faded clips using the concat demuxer (no xfade, no complex graph)
-	const listFile = tmpFile("list_concat", ".txt");
-	fs.writeFileSync(
-		listFile,
-		fadedClips.map((p) => `file '${norm(p)}'`).join("\n"),
-	);
-
 	const out = tmpFile("transitioned", ".mp4");
-
-	await ffmpegPromise((cmd) =>
-		cmd
-			.input(norm(listFile))
-			.inputOptions("-f", "concat", "-safe", "0")
-			// All clips are re-encoded the same way above,
-			// so we can safely stream-copy video here.
-			.outputOptions("-c:v", "copy", "-y")
-			.save(norm(out)),
-	);
+	await concatViaDemuxer(fadedClips, out, {
+		tag: "transitioned_concat",
+		// All clips are re-encoded the same way above,
+		// so we can safely stream-copy video here.
+		codecArgs: ["-c:v", "copy"],
+	});
 
 	// 4) Cleanup temp files
 	fadedClips.forEach((p) => {
@@ -4484,9 +4587,6 @@ async function concatWithTransitions(
 			fs.unlinkSync(p);
 		} catch (_) {}
 	});
-	try {
-		fs.unlinkSync(listFile);
-	} catch (_) {}
 
 	return out;
 }
@@ -12860,23 +12960,10 @@ exports.createVideo = async (req, res) => {
 				"[Transitions] Fade pipeline failed, falling back to direct concat:",
 				err && err.stack ? err.stack : err?.message || err,
 			);
-			const listFile = tmpFile("list", ".txt");
-			fs.writeFileSync(
-				listFile,
-				clips.map((p) => `file '${norm(p)}'`).join("\n"),
-			);
-
 			silent = tmpFile("silent", ".mp4");
-			await ffmpegPromise((c) =>
-				c
-					.input(norm(listFile))
-					.inputOptions("-f", "concat", "-safe", "0")
-					.outputOptions("-c", "copy", "-y")
-					.save(norm(silent)),
-			);
-			try {
-				fs.unlinkSync(listFile);
-			} catch {}
+			await concatViaDemuxer(clips, silent, {
+				tag: "silent_concat",
+			});
 		}
 		clips.forEach((p) => {
 			try {
@@ -13067,22 +13154,10 @@ exports.createVideo = async (req, res) => {
 			}
 		}
 
-		const audioConcatList = tmpFile("audio_list", ".txt");
-		fs.writeFileSync(
-			audioConcatList,
-			fixedPieces.map((p) => `file '${norm(p)}'`).join("\n"),
-		);
 		const ttsJoin = tmpFile("tts_join", ".wav");
-		await ffmpegPromise((c) =>
-			c
-				.input(norm(audioConcatList))
-				.inputOptions("-f", "concat", "-safe", "0")
-				.outputOptions("-c", "copy", "-y")
-				.save(norm(ttsJoin)),
-		);
-		try {
-			fs.unlinkSync(audioConcatList);
-		} catch {}
+		await concatViaDemuxer(fixedPieces, ttsJoin, {
+			tag: "tts_audio_concat",
+		});
 		fixedPieces.forEach((p) => {
 			try {
 				fs.unlinkSync(p);
