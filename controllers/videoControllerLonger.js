@@ -400,7 +400,12 @@ const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(1280, 640, 1280);
 const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(2, 0, 5);
 const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
 const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
-const REQUIRE_LIPSYNC = true;
+const REQUIRE_LIPSYNC =
+	String(process.env.LONG_VIDEO_REQUIRE_LIPSYNC || "false").toLowerCase() ===
+	"true";
+const SKIP_LIPSYNC_ON_STILL_BASELINE =
+	String(process.env.LONG_VIDEO_SKIP_LIPSYNC_ON_STILL_BASELINE || "true").toLowerCase() !==
+	"false";
 const SYNC_SO_FREEZE_CHECK_MIN_SEC = clampNumber(2.6, 0.5, 12);
 const SYNC_SO_FREEZE_NOISE = clampNumber(0.0012, 0.0001, 0.01);
 const SYNC_SO_FREEZE_MIN_SEC = clampNumber(0.55, 0.2, 4);
@@ -564,7 +569,10 @@ function buildLongVideoJobPersistPayload(job = {}) {
 	const meta = job?.meta && typeof job.meta === "object" ? job.meta : {};
 	return {
 		user: job.userId || null,
-		status: String(job.status || "queued").trim().toLowerCase() || "queued",
+		status:
+			String(job.status || "queued")
+				.trim()
+				.toLowerCase() || "queued",
 		progressPct: clampNumber(Number(job.progressPct || 0), 0, 100),
 		topic: String(job.topic || "").trim(),
 		finalVideoUrl: String(job.finalVideoUrl || "").trim(),
@@ -631,7 +639,9 @@ async function findPersistentLongVideoJob(jobId) {
 
 async function reconcileOrphanedLongVideoJob(job = null) {
 	if (!job?.jobId) return job;
-	const status = String(job.status || "").trim().toLowerCase();
+	const status = String(job.status || "")
+		.trim()
+		.toLowerCase();
 	if (status !== "queued" && status !== "running") return job;
 	if (JOBS.has(job.jobId)) return job;
 
@@ -702,7 +712,11 @@ function updateJob(jobId, patch = {}) {
 	const job = JOBS.get(jobId);
 	if (!job) return;
 	const nextPatch = { ...(patch || {}) };
-	if (nextPatch.status === "running" && !job.startedAt && !nextPatch.startedAt) {
+	if (
+		nextPatch.status === "running" &&
+		!job.startedAt &&
+		!nextPatch.startedAt
+	) {
 		nextPatch.startedAt = nowIso();
 	}
 	if (nextPatch.status === "completed" && !nextPatch.completedAt) {
@@ -758,6 +772,11 @@ function hasUsableFile(filePath, minBytes = 1) {
 	} catch {
 		return false;
 	}
+}
+
+function isStillBaselineClip(filePath) {
+	const base = path.basename(String(filePath || "")).toLowerCase();
+	return base.startsWith("baseline_still_");
 }
 
 function safeRmRecursive(dir) {
@@ -10961,8 +10980,15 @@ async function pollSyncSoJob({ id, label, jobId }) {
 			);
 		}
 
-		if (jobId && i % 10 === 0)
+		if (jobId && i % 10 === 0) {
 			logJob(jobId, "sync polling", { label, status: st || "pending" });
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					currentStep: `Waiting for lipsync provider (${label})`,
+				},
+			});
+		}
 	}
 	throw new Error(`${label} timed out`);
 }
@@ -11262,7 +11288,19 @@ async function renderLipsyncedSegment({
 
 	let lipsynced = null;
 	let lastErr = null;
+	const baselineIsStill = isStillBaselineClip(baselineSource);
+	if (baselineIsStill && SKIP_LIPSYNC_ON_STILL_BASELINE) {
+		logJob(jobId, "lipsync skipped; static baseline fallback", {
+			label: safeLabel,
+			reason: "still_baseline_source",
+		});
+		const fit = path.join(tmpDir, `base_fit_${jobId}_${safeLabel}.mp4`);
+		await fitVideoToDuration(baseSized, dur, fit, SEGMENT_PAD_SEC);
+		lipsynced = fit;
+	}
+
 	for (let attempt = 0; attempt <= SYNC_SO_SEGMENT_MAX_RETRIES; attempt++) {
+		if (lipsynced) break;
 		try {
 			if (SYNC_SO_REQUEST_GAP_MS) await sleep(SYNC_SO_REQUEST_GAP_MS);
 			const attemptPlan = resolveSyncAttemptPlan(attempt, syncTier);
@@ -11288,6 +11326,12 @@ async function renderLipsyncedSegment({
 				syncTier: attemptPlan.tier,
 				modelId: attemptPlan.modelId,
 				inputVariant: attemptPlan.inputVariant,
+			});
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					currentStep: `Generating lipsync (${safeLabel}, attempt ${attempt + 1}/${SYNC_SO_SEGMENT_MAX_RETRIES + 1})`,
+				},
 			});
 
 			const syncJob = await requestSyncSoJob({
@@ -14817,6 +14861,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			for (const expr of expressionsNeeded) {
 				for (let v = 0; v < BASELINE_VARIANTS; v++) {
 					try {
+						updateJob(jobId, {
+							meta: {
+								...JOBS.get(jobId)?.meta,
+								currentStep: `Generating presenter motion baseline (${expr} ${v + 1}/${BASELINE_VARIANTS})`,
+							},
+						});
 						const runwayUri = await runwayCreateEphemeralUpload({
 							filePath: presenterLocal,
 							filename: `presenter_${expr}.png`,
@@ -14906,6 +14956,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		}
 		if (!baselinePresenterVideos.size) {
 			// Fallback: convert image to a simple still video
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					currentStep:
+						"Presenter motion unavailable; switching to static presenter fallback",
+				},
+			});
 			const still = path.join(tmpDir, `baseline_still_${jobId}.mp4`);
 			await spawnBin(
 				ffmpegPath,
@@ -15016,7 +15073,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			},
 		});
 
-		for (let renderUnitIndex = 0; renderUnitIndex < renderUnits.length; renderUnitIndex++) {
+		for (
+			let renderUnitIndex = 0;
+			renderUnitIndex < renderUnits.length;
+			renderUnitIndex++
+		) {
 			const seg = renderUnits[renderUnitIndex];
 			const segDur = Math.max(0.2, Number(seg.segDur || 0));
 			logJob(jobId, "segment start", {

@@ -553,8 +553,8 @@ function hasUsableFile(filePath, minBytes = 64) {
 	try {
 		return Boolean(
 			filePath &&
-				fs.existsSync(filePath) &&
-				fs.statSync(filePath).size >= Number(minBytes || 64),
+			fs.existsSync(filePath) &&
+			fs.statSync(filePath).size >= Number(minBytes || 64),
 		);
 	} catch {
 		return false;
