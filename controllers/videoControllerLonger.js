@@ -567,6 +567,18 @@ function safeUnlink(file) {
   } catch {}
 }
 
+function hasUsableFile(filePath, minBytes = 1) {
+  try {
+    return Boolean(
+      filePath &&
+        fs.existsSync(filePath) &&
+        fs.statSync(filePath).size >= Number(minBytes || 1),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function safeRmRecursive(dir) {
   try {
     if (dir && fs.existsSync(dir))
@@ -9991,6 +10003,20 @@ async function trimLeadingSilenceWav(inWav, outWav) {
     "trim_lead_silence",
     { timeoutMs: 120000 },
   );
+
+  const outDuration = hasUsableFile(outWav, 64)
+    ? await probeDurationSeconds(outWav)
+    : 0;
+  if (outDuration > 0.01) return outWav;
+
+  safeUnlink(outWav);
+  if (!hasUsableFile(inWav, 64)) {
+    throw new Error(`trim_lead_silence produced no usable output: ${outWav}`);
+  }
+
+  if (path.resolve(inWav) !== path.resolve(outWav)) {
+    fs.copyFileSync(inWav, outWav);
+  }
   return outWav;
 }
 
@@ -11365,6 +11391,13 @@ async function fitVideoToDuration(inVideo, targetSec, outVideo, padSec = 0) {
 }
 
 async function mergeVideoWithAudio(videoPath, audioPath, outPath) {
+  if (!hasUsableFile(videoPath)) {
+    throw new Error(`merge_audio missing video input: ${videoPath}`);
+  }
+  if (!hasUsableFile(audioPath, 64)) {
+    throw new Error(`merge_audio missing audio input: ${audioPath}`);
+  }
+
   await spawnBin(
     ffmpegPath,
     [
