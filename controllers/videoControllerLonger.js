@@ -239,7 +239,12 @@ const MERCH_INTRO =
 const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID || "";
 const JAMENDO_BASE = "https://api.jamendo.com/v3.0";
 
-const TMP_ROOT = path.join(os.tmpdir(), "agentai_long_video");
+const LONG_VIDEO_TMP_ROOT = String(
+	process.env.LONG_VIDEO_TMP_ROOT || "",
+).trim();
+const TMP_ROOT = LONG_VIDEO_TMP_ROOT
+	? path.resolve(LONG_VIDEO_TMP_ROOT)
+	: path.join(__dirname, "../uploads/tmp/agentai_long_video");
 const OUTPUT_DIR = path.join(__dirname, "../uploads/videos");
 const THUMBNAIL_DIR = path.join(__dirname, "../uploads/thumbnails");
 const LONG_VIDEO_PERSIST_OUTPUT =
@@ -9277,6 +9282,7 @@ async function synthesizeTtsWav({
 	modelId,
 	modelOrder,
 }) {
+	ensureDir(tmpDir);
 	const safeLabel = String(label || "tts").replace(/[^a-z0-9_-]/gi, "");
 	const baseText = stripAllFillers(text);
 	const maxAttempts = AUDIO_QA_ENABLED ? AUDIO_QA_MAX_ATTEMPTS : 1;
@@ -9441,6 +9447,7 @@ async function fitWavToTargetDuration({
 	jobId,
 	label,
 }) {
+	ensureDir(tmpDir);
 	const cleanDur = await probeDurationSeconds(wavPath);
 	if (!cleanDur || !Number.isFinite(cleanDur)) {
 		return { wavPath, durationSec: 0, atempo: 1, rawAtempo: 1 };
@@ -9907,6 +9914,8 @@ async function elevenLabsTTS({
 			}
 
 			await new Promise((resolve, reject) => {
+				ensureDir(path.dirname(outMp3Path));
+				safeUnlink(outMp3Path);
 				const ws = fs.createWriteStream(outMp3Path);
 				res.data.pipe(ws);
 				ws.on("finish", resolve);
@@ -9954,6 +9963,7 @@ function buildAtempoFilterChain(factor) {
 }
 
 async function mp3ToCleanWav(mp3Path, wavPath) {
+	ensureDir(path.dirname(wavPath));
 	// IMPORTANT:
 	// - We only trim *leading* and *trailing* silence.
 	// - We do NOT remove internal pauses between words/sentences (those pauses are part of

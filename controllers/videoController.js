@@ -534,8 +534,15 @@ const MERCH_INTRO = `${MERCH_FOOTER}\n\n`;
 const PROMPT_CHAR_LIMIT = 220;
 const TMP_CONTROL_DIR = path.join(__dirname, "../uploads/tmp");
 
+function ensureDir(dir) {
+	if (!dir) return;
+	try {
+		fs.mkdirSync(dir, { recursive: true });
+	} catch {}
+}
+
 try {
-	fs.mkdirSync(TMP_CONTROL_DIR, { recursive: true });
+	ensureDir(TMP_CONTROL_DIR);
 } catch {}
 
 /* ---------------------------------------------------------------
@@ -2355,10 +2362,12 @@ const escTxt = (t) =>
 		.replace(/,/g, "\\,");
 
 function tmpFile(tag, ext = "") {
+	ensureDir(TMP_CONTROL_DIR);
 	return path.join(TMP_CONTROL_DIR, `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
 function tmpControlFile(tag, ext = "") {
+	ensureDir(TMP_CONTROL_DIR);
 	return path.join(TMP_CONTROL_DIR, `${tag}_${crypto.randomUUID()}${ext}`);
 }
 
@@ -10471,6 +10480,7 @@ async function elevenLabsTTS(
 	}
 	if (res.status >= 300)
 		throw new Error(`ElevenLabs TTS failed (${res.status})`);
+	ensureDir(path.dirname(outPath));
 	await new Promise((r, j) =>
 		res.data.pipe(fs.createWriteStream(outPath)).on("finish", r).on("error", j),
 	);
