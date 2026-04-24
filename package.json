@@ -4,7 +4,7 @@
   "description": "agent ai",
   "main": "index.js",
   "scripts": {
-    "start": "nodemon --signal SIGTERM server.js"
+    "start": "nodemon --signal SIGTERM --config nodemon.json server.js"
   },
   "keywords": [
     "agent",

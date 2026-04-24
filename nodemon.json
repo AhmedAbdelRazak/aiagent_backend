@@ -1,0 +1,21 @@
+{
+  "watch": [
+    "server.js",
+    "controllers",
+    "routes",
+    "models",
+    "middlewares",
+    "assets",
+    "utils",
+    ".env",
+    "package.json"
+  ],
+  "ext": "js,json,env",
+  "ignore": [
+    "node_modules/**",
+    "uploads/**",
+    "PhotosForLongerVideos/**",
+    "*.log"
+  ],
+  "delay": "750"
+}

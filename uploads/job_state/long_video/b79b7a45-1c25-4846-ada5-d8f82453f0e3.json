@@ -1,0 +1,471 @@
+{
+  "jobId": "b79b7a45-1c25-4846-ada5-d8f82453f0e3",
+  "status": "running",
+  "progressPct": 26,
+  "topic": "darrell sheets",
+  "finalVideoUrl": null,
+  "error": null,
+  "userId": "683e3a0329b0515ff5f7a1e1",
+  "controllerLabel": "long-video",
+  "statusUrl": "/api/long-video/b79b7a45-1c25-4846-ada5-d8f82453f0e3",
+  "requestSummary": {
+    "preferredTopicHint": "",
+    "category": "Entertainment",
+    "language": "English",
+    "targetDurationSec": 60,
+    "output": {
+      "ratio": "1280:720",
+      "w": 1280,
+      "h": 720,
+      "fps": 30
+    },
+    "hasVoiceoverUrl": false,
+    "hasMusicUrl": false,
+    "disableMusic": false,
+    "dryRun": false,
+    "youtubeCategory": "Entertainment",
+    "hasYouTubeTokens": false,
+    "enableRunwayPresenterMotion": true,
+    "enableWardrobeEdit": true
+  },
+  "startedAt": "2026-04-24T17:25:17.928Z",
+  "completedAt": null,
+  "failedAt": null,
+  "createdAt": "2026-04-24T17:25:17.871Z",
+  "updatedAt": "2026-04-24T17:30:00.208Z",
+  "meta": {
+    "workerPid": 16108,
+    "workerStartedAt": "2026-04-24T17:25:17.928Z",
+    "currentStep": "Topics selected; building script and assets",
+    "topics": [
+      {
+        "topic": "darrell sheets",
+        "displayTopic": "darrell sheets",
+        "reason": "Google Trends (first)",
+        "angle": ""
+      }
+    ],
+    "category": "Entertainment",
+    "title": "Darrell Sheets Dies at 67: What Reporting Says, and What’s Still Unclear",
+    "shortTitle": "Sheets Timeline",
+    "narrationPlan": {
+      "requestedSec": 60,
+      "targetSec": 120,
+      "minSec": 30,
+      "maxSec": 120,
+      "mode": "flex",
+      "signal": {
+        "total": 23.3,
+        "avg": 23.3,
+        "normalized": 1
+      }
+    },
+    "scriptQa": {
+      "pass": true,
+      "issues": [],
+      "warnings": [
+        "tts_awkward_symbol_phrasing_detected"
+      ],
+      "stats": {
+        "segmentCount": 15,
+        "duplicatePairs": [],
+        "shortSegments": [],
+        "missingAttributionTopics": [],
+        "missingTrendSignalTopics": [],
+        "searchMetaSegments": [],
+        "platformAttributionSegments": [],
+        "bettingPromoSegments": [],
+        "speechAwkwardSegments": [
+          0
+        ]
+      }
+    },
+    "shortsGuardrails": {
+      "pass": true,
+      "needsRewrite": false,
+      "issues": [],
+      "stats": {
+        "earlyHasGap": true,
+        "earlyHasResolution": false,
+        "openLoopCount": 3,
+        "endingBlocked": false,
+        "endingForward": true
+      }
+    },
+    "shortsDetails": {
+      "angle": "A clear, sourced timeline of Darrell Sheets’ death reports and what they do and don’t confirm about the cause and aftermath.",
+      "titleCandidates": [
+        "Darrell Sheets Dies at 67: What We Know and What We Don’t",
+        "Darrell Sheets Death: Police Response, Tributes, and Unanswered Questions",
+        "Storage Wars’ Darrell Sheets Has Died: Timeline of Confirmed Reporting",
+        "Darrell Sheets Cause of Death: What’s Confirmed vs Speculation",
+        "Darrell Sheets Remembered: The Gambler’s Legacy on Storage Wars",
+        "Darrell Sheets Dead at 67: How the News Broke and Why Details Are Limited"
+      ],
+      "thumbnailTextCandidates": [
+        "What’s Confirmed",
+        "Timeline Explained",
+        "Cause Still Unclear",
+        "Reports vs Rumors",
+        "A TV Icon",
+        "What We Know"
+      ],
+      "clipCandidates": [
+        {
+          "id": "short_0_0",
+          "type": "hook",
+          "segmentIndex": 0,
+          "line": "A lot of people are searching for a simple cause-of-death answer, but the most credible reporting on Darrell Sheets is more careful than that.",
+          "openLoop": true,
+          "ctaLine": "Full breakdown on the channel.",
+          "targetSeconds": 25,
+          "titleCandidates": [
+            "Darrell Sheets: Why Cause-of-Death Claims Are Getting Ahead of Reporting",
+            "Darrell Sheets Death: What Credible Outlets Actually Confirmed",
+            "Before You Share That Rumor About Darrell Sheets, Hear This"
+          ],
+          "thumbnailTextCandidates": [
+            "Hold Up",
+            "Reporting First",
+            "Rumor Check",
+            "What’s Real"
+          ]
+        },
+        {
+          "id": "short_4_1",
+          "type": "context_needed",
+          "segmentIndex": 4,
+          "line": "The New York Times described him as an auction bidder who specialized in storage unit liquidations, and that specificity matters for why fans connected.",
+          "openLoop": true,
+          "ctaLine": "Full breakdown on the channel.",
+          "targetSeconds": 35,
+          "titleCandidates": [
+            "Why Darrell Sheets Felt Different on Storage Wars",
+            "Darrell Sheets Wasn’t Just a Character, He Had a Real Niche",
+            "The Detail the NYT Highlighted About Darrell Sheets"
+          ],
+          "thumbnailTextCandidates": [
+            "Why He Clicked",
+            "Real Skill",
+            "Not Just TV"
+          ]
+        },
+        {
+          "id": "short_10_2",
+          "type": "twist",
+          "segmentIndex": 10,
+          "line": "Online, there’s also chatter about his wife and family, but most outlets are keeping that private, and that’s a boundary worth respecting.",
+          "openLoop": true,
+          "ctaLine": "Full breakdown on the channel.",
+          "targetSeconds": 25,
+          "titleCandidates": [
+            "Darrell Sheets’ Family: What’s Public and What Should Stay Private",
+            "Why Reports Avoid Personal Details After Darrell Sheets’ Death",
+            "The Line Between Curiosity and Privacy in Celebrity Death News"
+          ],
+          "thumbnailTextCandidates": [
+            "Respect Privacy",
+            "Family First",
+            "Boundaries"
+          ]
+        },
+        {
+          "id": "short_12_3",
+          "type": "controversy",
+          "segmentIndex": 12,
+          "line": "The bigger implication is how fast reality-TV deaths turn into content farms, with confident claims that outrun what police or major outlets have confirmed.",
+          "openLoop": true,
+          "ctaLine": "Full breakdown on the channel.",
+          "targetSeconds": 45,
+          "titleCandidates": [
+            "How Darrell Sheets’ Death Became a Rumor Machine Overnight",
+            "Reality TV Tragedy and the Speed of Misinformation",
+            "When Viral Claims Beat Verified Reporting"
+          ],
+          "thumbnailTextCandidates": [
+            "Rumor Machine",
+            "Viral vs True",
+            "Slow Down"
+          ]
+        }
+      ],
+      "status": "planned",
+      "plannedAt": "2026-04-24T17:28:08.139Z"
+    },
+    "script": {
+      "title": "Darrell Sheets Dies at 67: What Reporting Says, and What’s Still Unclear",
+      "segments": [
+        {
+          "index": 0,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "Storage Wars Star Dave Hester: Searches want a clean “cause of death” for Storage Wars’ Darrell Sheets, but the most credible reports still leave a gap.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Darrell Sheets Storage Wars",
+              "startPct": 0.24,
+              "endPct": 0.74,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "The Los Angeles Times and WCNC reported Sheets died at 67, sending fans hunting for specifics that aren’t confirmed.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Darrell Sheets The Gambler",
+              "startPct": 0.26,
+              "endPct": 0.78,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "The Los Angeles Times noted police responded to his home in Lake Havasu City, Arizona—one line now fueling overconfident takes.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Lake Havasu City police car",
+              "startPct": 0.28,
+              "endPct": 0.76,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "A police response can mean many things, and a public medical cause may never be released if the family seeks privacy.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Storage Wars cast photo",
+              "startPct": 0.27,
+              "endPct": 0.79,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "The New York Times described him as a bidder who made storage-unit liquidations feel like detective work: sorting lives through leftovers.",
+          "expression": "thoughtful",
+          "overlayCues": [
+            {
+              "query": "Darrell Sheets auction storage unit",
+              "startPct": 0.23,
+              "endPct": 0.75,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "On Storage Wars, he played “The Gambler”: fast bids, bold reads, and a refusal to talk himself out of a risky locker.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Darrell Sheets Storage Wars bidding",
+              "startPct": 0.25,
+              "endPct": 0.77,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "That approach made his misses stick, because he didn’t hedge—he committed on camera, even when the numbers looked thin.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Storage Wars A and E logo",
+              "startPct": 0.22,
+              "endPct": 0.72,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "After the reports, an Instagram tribute asked for prayers for his family, a small detail that shows how sudden this felt.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Instagram tribute Darrell Sheets",
+              "startPct": 0.29,
+              "endPct": 0.82,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 8,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "And when official details are scarce, people fill blanks: who found him, what happened last, and what police involvement “must” mean.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Darrell Sheets news screenshot",
+              "startPct": 0.24,
+              "endPct": 0.78,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 9,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "Today.com largely stayed with what can be verified: his age, his long run on the show, and that his death was announced.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Today com Darrell Sheets",
+              "startPct": 0.26,
+              "endPct": 0.81,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 10,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "A lot of the curiosity has shifted to his wife and relatives, but major outlets have avoided personal details for a reason.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Darrell Sheets family photo",
+              "startPct": 0.23,
+              "endPct": 0.74,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 11,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "Reality TV makes grief messy: viewers mourn a persona built for entertainment, while a real family handles logistics and shock.",
+          "expression": "thoughtful",
+          "overlayCues": [
+            {
+              "query": "Storage Wars Darrell Sheets clip",
+              "startPct": 0.25,
+              "endPct": 0.8,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 12,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "The controversy now is speed—unconfirmed “cause” posts are spreading faster than any police statement or reputable reporting can back up.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Storage Wars headline collage",
+              "startPct": 0.22,
+              "endPct": 0.75,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 13,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "So the careful takeaway is narrow: the Los Angeles Times and WCNC report he died, and further specifics remain limited publicly.",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Los Angeles Times Darrell Sheets",
+              "startPct": 0.24,
+              "endPct": 0.78,
+              "position": "topRight"
+            }
+          ]
+        },
+        {
+          "index": 14,
+          "topicIndex": 0,
+          "topicLabel": "darrell sheets",
+          "text": "When you picture Darrell Sheets on Storage Wars, what moment defines him—and what detail do you think should be clarified next?",
+          "expression": "neutral",
+          "overlayCues": [
+            {
+              "query": "Darrell Sheets Storage Wars still",
+              "startPct": 0.3,
+              "endPct": 0.83,
+              "position": "topRight"
+            }
+          ]
+        }
+      ]
+    },
+    "presenterImageUrl": "https://res.cloudinary.com/infiniteapps/image/upload/v1777051770/aivideomatic/long_presenters/presenter_master_b79b7a45-1c25-4846-ada5-d8f82453f0e3_1777051769419.png",
+    "presenterOutfit": "dark suede-style jacket with black crew layer",
+    "presenterOutfitStyle": "entertainment_dark_suede_jacket_black_crew",
+    "thumbnailPath": "C:\\AhmedAbdelrazak\\AgentAIProject\\agentai_backend\\uploads\\thumbnails\\thumb_b79b7a45-1c25-4846-ada5-d8f82453f0e3.jpg",
+    "thumbnailUrl": "https://res.cloudinary.com/infiniteapps/image/upload/v1777051774/aivideomatic/long_thumbnails/long_thumb_b79b7a45-1c25-4846-ada5-d8f82453f0e3_1777051774635.jpg",
+    "thumbnailPublicId": "aivideomatic/long_thumbnails/long_thumb_b79b7a45-1c25-4846-ada5-d8f82453f0e3_1777051774635",
+    "thumbnailVariants": [
+      {
+        "variant": "topic_lead",
+        "localPath": "C:\\Users\\ahmed\\AppData\\Local\\Temp\\agentai_long_video\\job_b79b7a45-1c25-4846-ada5-d8f82453f0e3\\thumb_plate_b79b7a45-1c25-4846-ada5-d8f82453f0e3.jpg",
+        "url": "https://res.cloudinary.com/infiniteapps/image/upload/v1777051774/aivideomatic/long_thumbnails/long_thumb_b79b7a45-1c25-4846-ada5-d8f82453f0e3_1777051774635.jpg",
+        "publicId": "aivideomatic/long_thumbnails/long_thumb_b79b7a45-1c25-4846-ada5-d8f82453f0e3_1777051774635",
+        "width": 1280,
+        "height": 720,
+        "title": "WHAT CHANGED",
+        "method": "local_topic_lead"
+      }
+    ],
+    "seoTitle": "Darrell Sheets Update: Latest News, Career Highlights, and What He’s Doing Now",
+    "seoDescription": "Support the channel & customize your own merch:\nhttps://serenejannat.com/our-products?category=candles/\nhttps://serenejannat.com/custom-gifts\nhttps://serenejannat.com/custom-gifts/67b7fb9c3d0cd90c4fc410e3\n\nDarrell Sheets update with the latest news, career highlights, and what he’s doing now.\nStorage Wars Darrell Sheets 2026 recap, biggest finds, and where he is today.\n\nIn this long-form news brief, we cover the newest Darrell Sheets updates. We look back at his Storage Wars journey. We break down major career moments. And we highlight the biggest auctions and memorable locker finds that made him a fan favorite.\n\nYou’ll also hear what Darrell is focusing on now. Plus any recent public appearances, projects, and headlines worth knowing. Everything is presented in a clear timeline. No fluff. Just the key details.\n\nWhat’s your favorite Darrell Sheets moment on Storage Wars? Drop it in the comments. If you found this helpful, tap like to support the channel.\n\n#DarrellSheets #StorageWars #RealityTVNews #CelebrityUpdates #AuctionFinds #TVRecap #EntertainmentNews\n\nPowered by Serene Jannat",
+    "tags": [
+      "SereneJannat",
+      "news",
+      "entertainment",
+      "longform",
+      "Darrell Sheets",
+      "Storage Wars",
+      "Storage Wars star",
+      "Darrell Sheets update",
+      "Darrell Sheets now",
+      "Storage Wars update",
+      "Storage Wars cast",
+      "Darrell Sheets net worth",
+      "Darrell Sheets today",
+      "Darrell Sheets news"
+    ],
+    "youtubeCategory": "Entertainment",
+    "intro": {
+      "text": "Hi guys, it's Amad, and today we're breaking down darrell sheets. We're breaking down what happened, why people are reacting so strongly, what the key reporting actually supports, and what could happen next, so stay with me.",
+      "targetSec": 12.757813
+    },
+    "outro": {
+      "text": "Thank you for watching and see you next time.",
+      "targetSec": 2.063021
+    }
+  }
+}

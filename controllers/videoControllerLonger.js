@@ -243,6 +243,10 @@ const JAMENDO_BASE = "https://api.jamendo.com/v3.0";
 const TMP_ROOT = path.join(os.tmpdir(), "agentai_long_video");
 const OUTPUT_DIR = path.join(__dirname, "../uploads/videos");
 const THUMBNAIL_DIR = path.join(__dirname, "../uploads/thumbnails");
+const LONG_VIDEO_JOB_STATE_DIR = path.resolve(
+	String(process.env.LONG_VIDEO_JOB_STATE_DIR || "").trim() ||
+		path.join(TMP_ROOT, "job_state"),
+);
 const LONG_VIDEO_PERSIST_OUTPUT =
 	String(process.env.LONG_VIDEO_PERSIST_OUTPUT || "").toLowerCase() === "true";
 const LONG_VIDEO_PERSIST_FOR_SHORTS =
@@ -404,8 +408,9 @@ const REQUIRE_LIPSYNC =
 	String(process.env.LONG_VIDEO_REQUIRE_LIPSYNC || "false").toLowerCase() ===
 	"true";
 const SKIP_LIPSYNC_ON_STILL_BASELINE =
-	String(process.env.LONG_VIDEO_SKIP_LIPSYNC_ON_STILL_BASELINE || "true").toLowerCase() !==
-	"false";
+	String(
+		process.env.LONG_VIDEO_SKIP_LIPSYNC_ON_STILL_BASELINE || "true",
+	).toLowerCase() !== "false";
 const SYNC_SO_FREEZE_CHECK_MIN_SEC = clampNumber(2.6, 0.5, 12);
 const SYNC_SO_FREEZE_NOISE = clampNumber(0.0012, 0.0001, 0.01);
 const SYNC_SO_FREEZE_MIN_SEC = clampNumber(0.55, 0.2, 4);
@@ -418,8 +423,35 @@ const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
 const USE_MOTION_REF_BASELINE = true;
+const PREFER_MOTION_REF_BASELINE =
+	String(
+		process.env.LONG_VIDEO_PREFER_MOTION_REF_BASELINE || "true",
+	).toLowerCase() !== "false";
+const RUNWAY_AUGMENT_MOTION_REF_BASELINE =
+	String(
+		process.env.LONG_VIDEO_RUNWAY_AUGMENT_BASELINES || "false",
+	).toLowerCase() === "true";
 const BASELINE_DUR_SEC = clampNumber(10, 6, 10);
-const BASELINE_VARIANTS = clampNumber(2, 1, 3);
+const BASELINE_VARIANTS = clampNumber(
+	process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 1,
+	1,
+	3,
+);
+const RUNWAY_BASELINE_MAX_FAILURES = clampNumber(
+	process.env.LONG_VIDEO_RUNWAY_MAX_FAILURES ?? 1,
+	1,
+	10,
+);
+const RUNWAY_TASK_POLL_INTERVAL_MS = clampNumber(
+	process.env.LONG_VIDEO_RUNWAY_POLL_INTERVAL_MS ?? 2000,
+	1000,
+	10000,
+);
+const RUNWAY_TASK_MAX_POLLS = clampNumber(
+	process.env.LONG_VIDEO_RUNWAY_MAX_POLLS ?? 45,
+	10,
+	120,
+);
 const CAMERA_ZOOM_OUT = clampNumber(0.96, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 const ENABLE_SOFT_SEGMENT_TRANSITIONS = true;
@@ -500,6 +532,11 @@ const JOBS = new Map();
 const MAX_JOBS_TO_KEEP = 250;
 const JOB_TTL_MS = 1000 * 60 * 60 * 6;
 const LONG_VIDEO_ORPHAN_GRACE_MS = 1000 * 60 * 30;
+const LONG_VIDEO_DEAD_WORKER_GRACE_MS = clampNumber(
+	process.env.LONG_VIDEO_DEAD_WORKER_GRACE_MS ?? 45000,
+	5000,
+	5 * 60 * 1000,
+);
 const JOB_PERSIST_QUEUES = new Map();
 
 setInterval(() => {
@@ -591,6 +628,69 @@ function buildLongVideoJobPersistPayload(job = {}) {
 	};
 }
 
+function longVideoJobStatePath(jobId) {
+	const safeId = String(jobId || "")
+		.trim()
+		.replace(/[^a-z0-9_-]/gi, "_");
+	if (!safeId) return "";
+	return path.join(LONG_VIDEO_JOB_STATE_DIR, `${safeId}.json`);
+}
+
+function writeLongVideoJobState(jobSnapshot) {
+	const jobId = String(jobSnapshot?.jobId || "").trim();
+	if (!jobId) return null;
+	ensureDir(LONG_VIDEO_JOB_STATE_DIR);
+	const finalPath = longVideoJobStatePath(jobId);
+	if (!finalPath) return null;
+	const tmpPath = `${finalPath}.${process.pid}.tmp`;
+	const snapshot = {
+		...(jobSnapshot || {}),
+		meta:
+			jobSnapshot?.meta && typeof jobSnapshot.meta === "object"
+				? jobSnapshot.meta
+				: {},
+	};
+	fs.writeFileSync(tmpPath, JSON.stringify(snapshot, null, 2), "utf8");
+	if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+	fs.renameSync(tmpPath, finalPath);
+	return finalPath;
+}
+
+function readLongVideoJobState(jobId) {
+	const filePath = longVideoJobStatePath(jobId);
+	if (!filePath || !fs.existsSync(filePath)) return null;
+	try {
+		const raw = fs.readFileSync(filePath, "utf8");
+		const parsed = JSON.parse(raw);
+		return parsed && typeof parsed === "object" ? parsed : null;
+	} catch (err) {
+		logJob(jobId, "job state read failed", { error: err.message });
+		return null;
+	}
+}
+
+async function upsertLongVideoJobPersist(jobSnapshot) {
+	const snapshot = {
+		...(jobSnapshot || {}),
+		meta:
+			jobSnapshot?.meta && typeof jobSnapshot.meta === "object"
+				? jobSnapshot.meta
+				: {},
+	};
+	const jobId = String(snapshot.jobId || "").trim();
+	if (!jobId) return null;
+	const payload = buildLongVideoJobPersistPayload(snapshot);
+	await LongVideoJob.updateOne(
+		{ jobId },
+		{
+			$set: payload,
+			$setOnInsert: { jobId },
+		},
+		{ upsert: true, setDefaultsOnInsert: true },
+	);
+	return jobId;
+}
+
 function queueLongVideoJobPersist(jobSnapshot) {
 	const snapshot = {
 		...(jobSnapshot || {}),
@@ -605,18 +705,7 @@ function queueLongVideoJobPersist(jobSnapshot) {
 	const previous = JOB_PERSIST_QUEUES.get(jobId) || Promise.resolve();
 	const next = previous
 		.catch(() => null)
-		.then(async () => {
-			const payload = buildLongVideoJobPersistPayload(snapshot);
-			await LongVideoJob.updateOne(
-				{ jobId },
-				{
-					$set: payload,
-					$setOnInsert: { jobId },
-				},
-				{ upsert: true, setDefaultsOnInsert: true },
-			);
-			return jobId;
-		})
+		.then(async () => await upsertLongVideoJobPersist(snapshot))
 		.catch((err) => {
 			logJob(jobId, "job persist failed", { error: err.message });
 			return null;
@@ -634,7 +723,40 @@ function queueLongVideoJobPersist(jobSnapshot) {
 async function findPersistentLongVideoJob(jobId) {
 	const key = String(jobId || "").trim();
 	if (!key) return null;
-	return await LongVideoJob.findOne({ jobId: key }).lean();
+	const fileJob = readLongVideoJobState(key);
+	try {
+		const mongoJob = await LongVideoJob.findOne({ jobId: key }).lean();
+		if (mongoJob && fileJob) {
+			const mongoUpdated = toDateOrNull(
+				mongoJob.updatedAt || mongoJob.createdAt,
+			);
+			const fileUpdated = toDateOrNull(fileJob.updatedAt || fileJob.createdAt);
+			if (
+				fileUpdated &&
+				(!mongoUpdated || fileUpdated.getTime() > mongoUpdated.getTime())
+			) {
+				return fileJob;
+			}
+		}
+		if (mongoJob) return mongoJob;
+	} catch (err) {
+		logJob(key, "mongo job lookup failed; trying file snapshot", {
+			error: err.message,
+		});
+	}
+	return fileJob;
+}
+
+function isWorkerProcessAlive(pid) {
+	const numericPid = Number(pid || 0);
+	if (!Number.isInteger(numericPid) || numericPid <= 0) return null;
+	try {
+		process.kill(numericPid, 0);
+		return true;
+	} catch (err) {
+		if (err?.code === "ESRCH") return false;
+		return null;
+	}
 }
 
 async function reconcileOrphanedLongVideoJob(job = null) {
@@ -647,14 +769,22 @@ async function reconcileOrphanedLongVideoJob(job = null) {
 
 	const updatedAt = toDateOrNull(job.updatedAt || job.createdAt);
 	const updatedMs = updatedAt ? updatedAt.getTime() : 0;
-	if (!updatedMs || Date.now() - updatedMs < LONG_VIDEO_ORPHAN_GRACE_MS) {
+	const workerPid = Number(job?.meta?.workerPid || 0);
+	const workerAlive = isWorkerProcessAlive(workerPid);
+	const graceMs =
+		workerAlive === false
+			? LONG_VIDEO_DEAD_WORKER_GRACE_MS
+			: LONG_VIDEO_ORPHAN_GRACE_MS;
+	if (!updatedMs || Date.now() - updatedMs < graceMs) {
 		return job;
 	}
 
 	const failedAt = new Date();
 	const orphanError =
 		String(job.error || "").trim() ||
-		"Long video job was interrupted before completion. The worker is no longer tracking this job.";
+		(workerAlive === false && workerPid > 0
+			? `Long video job stopped when worker process ${workerPid} exited.`
+			: "Long video job was interrupted before completion. The worker is no longer tracking this job.");
 	const patch = {
 		status: "failed",
 		error: orphanError,
@@ -676,11 +806,19 @@ async function reconcileOrphanedLongVideoJob(job = null) {
 		});
 	}
 
-	return {
+	const reconciled = {
 		...job,
 		...patch,
 		meta: job.meta && typeof job.meta === "object" ? job.meta : {},
 	};
+	try {
+		writeLongVideoJobState(reconciled);
+	} catch (err) {
+		logJob(job.jobId, "job state reconcile write failed", {
+			error: err.message,
+		});
+	}
+	return reconciled;
 }
 
 function serializeLongVideoJob(job = {}) {
@@ -727,6 +865,11 @@ function updateJob(jobId, patch = {}) {
 	}
 	const nextJob = { ...job, ...nextPatch, updatedAt: nowIso() };
 	JOBS.set(jobId, nextJob);
+	try {
+		writeLongVideoJobState(nextJob);
+	} catch (err) {
+		logJob(jobId, "job state write failed", { error: err.message });
+	}
 	void queueLongVideoJobPersist(nextJob);
 }
 
@@ -736,6 +879,7 @@ function ensureDir(dir) {
 ensureDir(TMP_ROOT);
 if (SHOULD_PERSIST_LONG_VIDEO) ensureDir(OUTPUT_DIR);
 if (SHOULD_PERSIST_LONG_VIDEO) ensureDir(THUMBNAIL_DIR);
+ensureDir(LONG_VIDEO_JOB_STATE_DIR);
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
@@ -4836,6 +4980,62 @@ async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
 	return null;
 }
 
+async function prepareMotionReferenceBaseline({
+	motionRefVideo,
+	tmpDir,
+	jobId,
+	output,
+	label = "neutral",
+}) {
+	if (!motionRefVideo) return null;
+	const safeLabel = String(label || "neutral").replace(/[^a-z0-9_-]/gi, "_");
+	const outPath = path.join(
+		tmpDir,
+		`baseline_motion_${jobId}_${safeLabel}.mp4`,
+	);
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-stream_loop",
+			"-1",
+			"-i",
+			motionRefVideo,
+			"-t",
+			BASELINE_DUR_SEC.toFixed(3),
+			"-an",
+			"-vf",
+			`scale=${makeEven(output.w)}:${makeEven(
+				output.h,
+			)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
+				output.w,
+			)}:${makeEven(
+				output.h,
+			)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
+			"-c:v",
+			"libx264",
+			"-preset",
+			"veryfast",
+			"-crf",
+			String(SYNC_SO_INPUT_CRF),
+			"-pix_fmt",
+			"yuv420p",
+			"-movflags",
+			"+faststart",
+			"-y",
+			outPath,
+		],
+		"prepare_motion_baseline",
+		{ timeoutMs: 240000 },
+	);
+	return await ensureUnderBytes(
+		outPath,
+		SYNC_SO_MAX_BYTES,
+		tmpDir,
+		jobId,
+		`motion_baseline_${safeLabel}`,
+	);
+}
+
 function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 	const handLine = intro
 		? "Hands stay low on the desk or just below frame, with at most one brief small emphasis gesture before settling again."
@@ -4919,8 +5119,8 @@ async function runwayCreateEphemeralUpload({ filePath, filename }) {
 
 async function pollRunwayTask(taskId, label) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${taskId}`;
-	for (let i = 0; i < 120; i++) {
-		await sleep(2000);
+	for (let i = 0; i < RUNWAY_TASK_MAX_POLLS; i++) {
+		await sleep(RUNWAY_TASK_POLL_INTERVAL_MS);
 		const res = await axios.get(url, {
 			headers: {
 				Authorization: `Bearer ${RUNWAY_API_KEY}`,
@@ -4951,7 +5151,11 @@ async function pollRunwayTask(taskId, label) {
 			);
 		}
 	}
-	throw new Error(`${label} timed out`);
+	throw new Error(
+		`${label} timed out after ${Math.round(
+			(RUNWAY_TASK_MAX_POLLS * RUNWAY_TASK_POLL_INTERVAL_MS) / 1000,
+		)}s`,
+	);
 }
 
 function runwayRatio(ratio) {
@@ -13121,6 +13325,8 @@ async function runLongVideoJob(
 			error: null,
 			meta: {
 				...JOBS.get(jobId)?.meta,
+				workerPid: process.pid,
+				workerStartedAt: nowIso(),
 				currentStep: "Initializing long video pipeline",
 			},
 		});
@@ -14850,15 +15056,52 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		if (!expressionsNeeded.includes("neutral"))
 			expressionsNeeded.unshift("neutral");
 
+		let motionReferenceBaseline = null;
 		if (presenterIsVideo) {
 			pushBaselineVariant("neutral", presenterLocal);
 			logJob(jobId, "presenter is video; baseline uses provided video");
 		} else if (
+			motionRefVideo &&
+			USE_MOTION_REF_BASELINE &&
+			PREFER_MOTION_REF_BASELINE
+		) {
+			try {
+				updateJob(jobId, {
+					meta: {
+						...JOBS.get(jobId)?.meta,
+						currentStep: "Preparing reusable presenter motion reference",
+					},
+				});
+				motionReferenceBaseline = await prepareMotionReferenceBaseline({
+					motionRefVideo,
+					tmpDir,
+					jobId,
+					output,
+					label: "neutral",
+				});
+				if (motionReferenceBaseline) {
+					pushBaselineVariant("neutral", motionReferenceBaseline);
+					logJob(jobId, "motion reference baseline ready", {
+						path: path.basename(motionReferenceBaseline),
+					});
+				}
+			} catch (e) {
+				logJob(jobId, "motion reference baseline failed", {
+					error: e.message,
+				});
+			}
+		}
+
+		const shouldAttemptRunwayBaseline =
+			!presenterIsVideo &&
 			enableRunwayPresenterMotion &&
 			ENABLE_RUNWAY_BASELINE &&
-			RUNWAY_API_KEY
-		) {
-			for (const expr of expressionsNeeded) {
+			RUNWAY_API_KEY &&
+			(!motionReferenceBaseline || RUNWAY_AUGMENT_MOTION_REF_BASELINE);
+
+		if (shouldAttemptRunwayBaseline) {
+			let runwayBaselineFailures = 0;
+			runway_baseline_loop: for (const expr of expressionsNeeded) {
 				for (let v = 0; v < BASELINE_VARIANTS; v++) {
 					try {
 						updateJob(jobId, {
@@ -14945,14 +15188,30 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							path: path.basename(syncReady),
 						});
 					} catch (e) {
+						runwayBaselineFailures += 1;
 						logJob(jobId, "runway baseline failed (expression)", {
 							expression: expr,
 							variant: v + 1,
 							error: e.message,
+							failures: runwayBaselineFailures,
 						});
+						if (runwayBaselineFailures >= RUNWAY_BASELINE_MAX_FAILURES) {
+							logJob(jobId, "runway baseline failure budget reached", {
+								maxFailures: RUNWAY_BASELINE_MAX_FAILURES,
+								expression: expr,
+								variant: v + 1,
+								hasMotionReferenceBaseline: Boolean(motionReferenceBaseline),
+							});
+							break runway_baseline_loop;
+						}
 					}
 				}
 			}
+		} else if (motionReferenceBaseline) {
+			logJob(jobId, "runway baseline skipped", {
+				reason: "motion_reference_baseline_available",
+				augmentEnabled: RUNWAY_AUGMENT_MOTION_REF_BASELINE,
+			});
 		}
 		if (!baselinePresenterVideos.size) {
 			// Fallback: convert image to a simple still video
@@ -15573,7 +15832,16 @@ function createLongVideoController(controllerConfig = {}) {
 			meta: {},
 		};
 		JOBS.set(jobId, job);
-		void queueLongVideoJobPersist(job);
+		try {
+			writeLongVideoJobState(job);
+			await upsertLongVideoJobPersist(job);
+		} catch (err) {
+			JOBS.delete(jobId);
+			logJob(jobId, "initial job persist failed", { error: err.message });
+			return res.status(503).json({
+				error: "Unable to start long video job at this time",
+			});
+		}
 		res.status(202).json({
 			jobId,
 			status: "queued",
@@ -15652,6 +15920,8 @@ exports.getLongVideoStatus = async (req, res) => {
 		const reconciledJob = await reconcileOrphanedLongVideoJob(persistedJob);
 		return res.json(serializeLongVideoJob(reconciledJob));
 	} catch (err) {
+		const snapshotJob = readLongVideoJobState(jobId);
+		if (snapshotJob) return res.json(serializeLongVideoJob(snapshotJob));
 		logJob(jobId, "status lookup failed", { error: err.message });
 		return res.status(503).json({ error: "Job status unavailable" });
 	}
