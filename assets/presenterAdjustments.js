@@ -202,6 +202,16 @@ function runFfmpeg(args, label = "presenter_ffmpeg") {
 	}
 }
 
+function sleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isSafetySystemRejection(error) {
+	return /rejected by the safety system/i.test(
+		String(error?.message || error || ""),
+	);
+}
+
 function buildOriginalFallback(presenterLocalPath) {
 	return {
 		localPath: presenterLocalPath,
@@ -498,44 +508,25 @@ function buildWardrobePrompt({
 	categoryLabel,
 	recentOutfits = [],
 }) {
-	const topicLine =
-		(Array.isArray(topics)
-			? topics
-					.map((topic) => topic?.displayTopic || topic?.topic || "")
-					.filter(Boolean)
-					.join(" / ")
-			: "") ||
-		title ||
-		categoryLabel ||
-		"the video topic";
 	const recentHistory = normalizeRecentOutfitHistory(recentOutfits);
 	const recentLabels = recentHistory
 		.slice(0, RECENT_OUTFIT_SOFT_BLOCK_COUNT)
 		.map((item) => item.presenterOutfit || item.presenterOutfitStyle || "")
 		.filter(Boolean);
 	const recentLine = recentLabels.length
-		? `This new outfit must be clearly different from these recently used presenter outfits: ${recentLabels.join("; ")}.`
-		: "This new outfit must feel like a clearly fresh wardrobe change for a new video.";
+		? `Use a clearly different wardrobe look from these recent outfits: ${recentLabels.join("; ")}.`
+		: "Use a clearly fresh wardrobe change.";
 	return [
 		"Edit this exact presenter photo.",
-		"Keep the exact same presenter in the exact same shot.",
-		"Keep the exact same face, beard, glasses, hair, skin tone, neck, shoulders, hands, body proportions, desk, studio background, lighting, shadows, framing, camera angle, and overall realism.",
-		"Keep the presenter in the exact same position and location within the frame.",
-		"Do not zoom in, do not zoom out, do not crop, do not reframe, do not change camera distance, and do not change composition.",
-		"Keep the same head size, eye line, shoulder placement, and torso scale relative to the frame.",
-		"Change only the presenter outfit.",
+		"Keep the same presenter, same face, same glasses, same beard, same hair, same expression, same pose, same framing, same desk, same studio background, and same lighting.",
+		"Change only the visible upper-body clothing.",
 		`Replace the full visible outfit with ${outfitDirection.promptLine}.`,
-		`The outfit must feel classy, dark, polished, photorealistic, and appropriate for ${topicLine}.`,
+		"The new outfit must look dark, classy, polished, and photorealistic.",
 		recentLine,
-		"Do not reuse the same jacket shape, neckline, shirt styling, layering, lapel treatment, or silhouette from the recent outfits.",
-		"Make the outfit fully coherent and continuous from the collar to the bottom of the visible torso.",
-		"Both shoulders, lapels, collar lines, sleeves, and seams must look clean, symmetrical, and believable.",
-		"No straps, harness details, scarves, shoulder drapes, floating fabric pieces, broken lapels, mismatched collars, or unexplained accessories.",
-		"Do not leave any part of the original clothing visible.",
-		"Do not change the dimensions of the image.",
-		"Do not add text, captions, logos, graphics, jewelry, props, extra people, or background changes.",
-		"Do not restyle the face, do not change the expression, and do not alter the identity in any way.",
-		"The result must look like the same real presenter in the same real studio image, with only the outfit changed.",
+		"Make the clothing clean, symmetrical, and believable from collar to lower torso.",
+		"Do not leave parts of the original outfit visible.",
+		"Do not change the face, hands, body, background, camera framing, or image dimensions.",
+		"Do not add text, logos, props, jewelry, extra people, or background changes.",
 	].join(" ");
 }
 

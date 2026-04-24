@@ -63,7 +63,6 @@ const {
 	editImageToPath,
 } = require("../assets/openaiImageTools");
 const Video = require("../models/Video");
-const LongVideoJob = require("../models/LongVideoJob");
 const Schedule = require("../models/Schedule");
 const {
 	googleTrendingCategoriesId,
@@ -202,6 +201,16 @@ function deriveTrendsServiceBase(raw) {
 	return cleaned.replace(/\/api\/google-trends$/i, "");
 }
 
+function canonicalizeLoopbackBase(raw) {
+	const cleaned = String(raw || "")
+		.trim()
+		.replace(/\/+$/, "");
+	if (!cleaned) return "";
+	return cleaned
+		.replace(/:\/\/localhost(?=[:/]|$)/i, "://127.0.0.1")
+		.replace(/:\/\/\[::1\](?=[:/]|$)/i, "://127.0.0.1");
+}
+
 function buildGoogleImagesApiCandidates(baseUrl) {
 	const list = [];
 	const bases = [
@@ -209,18 +218,8 @@ function buildGoogleImagesApiCandidates(baseUrl) {
 		String(baseUrl || "").trim(),
 	].filter(Boolean);
 	for (const base of bases) {
-		const trimmed = base.replace(/\/+$/, "");
-		list.push(`${trimmed}/api/google-images`);
-		if (/localhost/i.test(trimmed)) {
-			list.push(
-				`${trimmed.replace(/localhost/gi, "127.0.0.1")}/api/google-images`,
-			);
-		}
-		if (/\[::1\]/.test(trimmed)) {
-			list.push(
-				`${trimmed.replace(/\[::1\]/g, "127.0.0.1")}/api/google-images`,
-			);
-		}
+		const trimmed = canonicalizeLoopbackBase(base);
+		if (trimmed) list.push(`${trimmed}/api/google-images`);
 	}
 	return Array.from(new Set(list));
 }
@@ -243,10 +242,6 @@ const JAMENDO_BASE = "https://api.jamendo.com/v3.0";
 const TMP_ROOT = path.join(os.tmpdir(), "agentai_long_video");
 const OUTPUT_DIR = path.join(__dirname, "../uploads/videos");
 const THUMBNAIL_DIR = path.join(__dirname, "../uploads/thumbnails");
-const LONG_VIDEO_JOB_STATE_DIR = path.resolve(
-	String(process.env.LONG_VIDEO_JOB_STATE_DIR || "").trim() ||
-		path.join(TMP_ROOT, "job_state"),
-);
 const LONG_VIDEO_PERSIST_OUTPUT =
 	String(process.env.LONG_VIDEO_PERSIST_OUTPUT || "").toLowerCase() === "true";
 const LONG_VIDEO_PERSIST_FOR_SHORTS =
@@ -259,17 +254,15 @@ const SHOULD_PERSIST_LONG_VIDEO =
 const DEFAULT_PRESENTER_ASSET_URL =
 	"https://res.cloudinary.com/infiniteapps/image/upload/v1767062842/aivideomatic/long_thumbnails/MyPhotoWithASuit_s1xay4.png";
 const DEFAULT_PRESENTER_MOTION_VIDEO_PATHS = [
-	String(process.env.LONG_VIDEO_MOTION_REFERENCE_PATH || "").trim(),
-	path.join(__dirname, "../uploads/presenter_cache/DemoVideo.mp4"),
 	path.join(__dirname, "../uploads/presenter_cache/motion_reference.mp4"),
-].filter(Boolean);
-const DEFAULT_PRESENTER_MOTION_VIDEO_URL = String(
-	process.env.LONG_VIDEO_MOTION_REFERENCE_URL || "",
-).trim();
+	path.join(__dirname, "../uploads/presenter_cache/DemoVideo.mp4"),
+];
+const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
+	"https://res.cloudinary.com/infiniteapps/video/upload/v1766438047/aivideomatic/trend_seeds/aivideomatic/trend_seeds/MyVideoToReplicate_qlwrmu.mp4";
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"human, credible seated presenter motion modeled on a calm real-person delivery: centered posture, grounded torso, low lightly clasped hands, direct lens contact with only brief natural side glances that quickly return to camera, tiny neck corrections, occasional soft chin dips, one or two light emphasis nods, natural blink cadence, mild brow movement, restrained speech-ready jaw behavior, and only brief subtle smiles when appropriate; avoid broad gestures, forward/back head travel, sway, jerky turns, robotic loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
+	"human, credible seated presenter motion; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -406,13 +399,7 @@ const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(1280, 640, 1280);
 const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(2, 0, 5);
 const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
 const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
-const REQUIRE_LIPSYNC =
-	String(process.env.LONG_VIDEO_REQUIRE_LIPSYNC || "false").toLowerCase() ===
-	"true";
-const SKIP_LIPSYNC_ON_STILL_BASELINE =
-	String(
-		process.env.LONG_VIDEO_SKIP_LIPSYNC_ON_STILL_BASELINE || "true",
-	).toLowerCase() !== "false";
+const REQUIRE_LIPSYNC = true;
 const SYNC_SO_FREEZE_CHECK_MIN_SEC = clampNumber(2.6, 0.5, 12);
 const SYNC_SO_FREEZE_NOISE = clampNumber(0.0012, 0.0001, 0.01);
 const SYNC_SO_FREEZE_MIN_SEC = clampNumber(0.55, 0.2, 4);
@@ -425,34 +412,8 @@ const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
 const USE_MOTION_REF_BASELINE = true;
-// Motion reference clips are style-study inputs only. Reusing them as the
-// rendered presenter baseline caused the pipeline to output the wrong person.
-const USE_MOTION_REF_PROMPT_GUIDANCE = true;
-const RUNWAY_AUGMENT_MOTION_REF_BASELINE =
-	String(
-		process.env.LONG_VIDEO_RUNWAY_AUGMENT_BASELINES || "false",
-	).toLowerCase() === "true";
-const BASELINE_DUR_SEC = clampNumber(10, 6, 10);
-const BASELINE_VARIANTS = clampNumber(
-	process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 1,
-	1,
-	3,
-);
-const RUNWAY_BASELINE_MAX_FAILURES = clampNumber(
-	process.env.LONG_VIDEO_RUNWAY_MAX_FAILURES ?? 1,
-	1,
-	10,
-);
-const RUNWAY_TASK_POLL_INTERVAL_MS = clampNumber(
-	process.env.LONG_VIDEO_RUNWAY_POLL_INTERVAL_MS ?? 2000,
-	1000,
-	10000,
-);
-const RUNWAY_TASK_MAX_POLLS = clampNumber(
-	process.env.LONG_VIDEO_RUNWAY_MAX_POLLS ?? 45,
-	10,
-	120,
-);
+const BASELINE_DUR_SEC = clampNumber(6, 6, 10);
+const BASELINE_VARIANTS = clampNumber(1, 1, 3);
 const CAMERA_ZOOM_OUT = clampNumber(0.96, 0.84, 1.0);
 const ENABLE_SEGMENT_FADES = false;
 const ENABLE_SOFT_SEGMENT_TRANSITIONS = true;
@@ -525,6 +486,34 @@ const ENABLE_LONG_VIDEO_OVERLAYS = false;
 
 const LONG_VIDEO_KEEP_TMP = false;
 
+const LONG_VIDEO_CONTROLLER_FINGERPRINT = (() => {
+	try {
+		const src = fs.readFileSync(__filename, "utf8");
+		const hash = crypto
+			.createHash("sha1")
+			.update(src)
+			.digest("hex")
+			.slice(0, 12);
+		return `long-video:${hash}`;
+	} catch {
+		return "long-video:unknown";
+	}
+})();
+
+function getLongVideoRuntimeProfile() {
+	return {
+		fingerprint: LONG_VIDEO_CONTROLLER_FINGERPRINT,
+		baselineDurSec: BASELINE_DUR_SEC,
+		baselineVariants: BASELINE_VARIANTS,
+		requireLipsync: REQUIRE_LIPSYNC,
+		enableRunwayBaseline: ENABLE_RUNWAY_BASELINE,
+		useMotionRefBaseline: USE_MOTION_REF_BASELINE,
+		runwayPollMaxSec: 120 * 2,
+	};
+}
+
+console.log("[LongVideo] controller loaded", getLongVideoRuntimeProfile());
+
 /* ---------------------------------------------------------------
  * In-memory job store
  * ------------------------------------------------------------- */
@@ -532,13 +521,6 @@ const LONG_VIDEO_KEEP_TMP = false;
 const JOBS = new Map();
 const MAX_JOBS_TO_KEEP = 250;
 const JOB_TTL_MS = 1000 * 60 * 60 * 6;
-const LONG_VIDEO_ORPHAN_GRACE_MS = 1000 * 60 * 30;
-const LONG_VIDEO_DEAD_WORKER_GRACE_MS = clampNumber(
-	process.env.LONG_VIDEO_DEAD_WORKER_GRACE_MS ?? 45000,
-	5000,
-	5 * 60 * 1000,
-);
-const JOB_PERSIST_QUEUES = new Map();
 
 setInterval(() => {
 	const now = Date.now();
@@ -562,278 +544,6 @@ function nowIso() {
 	return new Date().toISOString();
 }
 
-function toDateOrNull(value) {
-	if (!value) return null;
-	const d = value instanceof Date ? value : new Date(value);
-	return Number.isFinite(d.getTime()) ? d : null;
-}
-
-function sanitizeLongVideoPayloadForJob(payload = {}) {
-	const output =
-		payload?.output && typeof payload.output === "object"
-			? {
-					ratio: payload.output.ratio || "",
-					w: Number(payload.output.w) || 0,
-					h: Number(payload.output.h) || 0,
-					fps: Number(payload.output.fps) || 0,
-				}
-			: null;
-
-	return {
-		preferredTopicHint: String(payload.preferredTopicHint || "").trim(),
-		category:
-			normalizeCategoryLabel(payload.category) ||
-			String(payload.category || "").trim() ||
-			LONG_VIDEO_TRENDS_CATEGORY,
-		language: normalizeLanguageLabel(payload.language || "English"),
-		targetDurationSec: Number(payload.targetDurationSec || 0) || 0,
-		output,
-		hasVoiceoverUrl: Boolean(String(payload.voiceoverUrl || "").trim()),
-		hasMusicUrl: Boolean(String(payload.musicUrl || "").trim()),
-		disableMusic: Boolean(payload.disableMusic),
-		dryRun: Boolean(payload.dryRun),
-		youtubeCategory:
-			String(payload.youtubeCategory || LONG_VIDEO_YT_CATEGORY || "").trim() ||
-			LONG_VIDEO_YT_CATEGORY,
-		hasYouTubeTokens: Boolean(
-			payload.youtubeRefreshToken || payload.youtubeAccessToken,
-		),
-		enableRunwayPresenterMotion: Boolean(payload.enableRunwayPresenterMotion),
-		enableWardrobeEdit: Boolean(payload.enableWardrobeEdit),
-	};
-}
-
-function buildLongVideoJobPersistPayload(job = {}) {
-	const meta = job?.meta && typeof job.meta === "object" ? job.meta : {};
-	return {
-		user: job.userId || null,
-		status:
-			String(job.status || "queued")
-				.trim()
-				.toLowerCase() || "queued",
-		progressPct: clampNumber(Number(job.progressPct || 0), 0, 100),
-		topic: String(job.topic || "").trim(),
-		finalVideoUrl: String(job.finalVideoUrl || "").trim(),
-		error: String(job.error || "").trim(),
-		controllerLabel: String(job.controllerLabel || "").trim(),
-		statusUrl: String(job.statusUrl || "").trim(),
-		requestSummary: job.requestSummary || null,
-		meta,
-		youtubeLink: String(meta.youtubeLink || job.youtubeLink || "").trim(),
-		videoId: String(meta.videoId || job.videoId || "").trim(),
-		startedAt: toDateOrNull(job.startedAt),
-		completedAt: toDateOrNull(job.completedAt),
-		failedAt: toDateOrNull(job.failedAt),
-		createdAt: toDateOrNull(job.createdAt),
-		updatedAt: toDateOrNull(job.updatedAt),
-	};
-}
-
-function longVideoJobStatePath(jobId) {
-	const safeId = String(jobId || "")
-		.trim()
-		.replace(/[^a-z0-9_-]/gi, "_");
-	if (!safeId) return "";
-	return path.join(LONG_VIDEO_JOB_STATE_DIR, `${safeId}.json`);
-}
-
-function writeLongVideoJobState(jobSnapshot) {
-	const jobId = String(jobSnapshot?.jobId || "").trim();
-	if (!jobId) return null;
-	ensureDir(LONG_VIDEO_JOB_STATE_DIR);
-	const finalPath = longVideoJobStatePath(jobId);
-	if (!finalPath) return null;
-	const tmpPath = `${finalPath}.${process.pid}.tmp`;
-	const snapshot = {
-		...(jobSnapshot || {}),
-		meta:
-			jobSnapshot?.meta && typeof jobSnapshot.meta === "object"
-				? jobSnapshot.meta
-				: {},
-	};
-	fs.writeFileSync(tmpPath, JSON.stringify(snapshot, null, 2), "utf8");
-	if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
-	fs.renameSync(tmpPath, finalPath);
-	return finalPath;
-}
-
-function readLongVideoJobState(jobId) {
-	const filePath = longVideoJobStatePath(jobId);
-	if (!filePath || !fs.existsSync(filePath)) return null;
-	try {
-		const raw = fs.readFileSync(filePath, "utf8");
-		const parsed = JSON.parse(raw);
-		return parsed && typeof parsed === "object" ? parsed : null;
-	} catch (err) {
-		logJob(jobId, "job state read failed", { error: err.message });
-		return null;
-	}
-}
-
-async function upsertLongVideoJobPersist(jobSnapshot) {
-	const snapshot = {
-		...(jobSnapshot || {}),
-		meta:
-			jobSnapshot?.meta && typeof jobSnapshot.meta === "object"
-				? jobSnapshot.meta
-				: {},
-	};
-	const jobId = String(snapshot.jobId || "").trim();
-	if (!jobId) return null;
-	const payload = buildLongVideoJobPersistPayload(snapshot);
-	await LongVideoJob.updateOne(
-		{ jobId },
-		{
-			$set: payload,
-			$setOnInsert: { jobId },
-		},
-		{ upsert: true, setDefaultsOnInsert: true },
-	);
-	return jobId;
-}
-
-function queueLongVideoJobPersist(jobSnapshot) {
-	const snapshot = {
-		...(jobSnapshot || {}),
-		meta:
-			jobSnapshot?.meta && typeof jobSnapshot.meta === "object"
-				? jobSnapshot.meta
-				: {},
-	};
-	const jobId = String(snapshot.jobId || "").trim();
-	if (!jobId) return Promise.resolve(null);
-
-	const previous = JOB_PERSIST_QUEUES.get(jobId) || Promise.resolve();
-	const next = previous
-		.catch(() => null)
-		.then(async () => await upsertLongVideoJobPersist(snapshot))
-		.catch((err) => {
-			logJob(jobId, "job persist failed", { error: err.message });
-			return null;
-		});
-
-	JOB_PERSIST_QUEUES.set(jobId, next);
-	next.finally(() => {
-		if (JOB_PERSIST_QUEUES.get(jobId) === next) {
-			JOB_PERSIST_QUEUES.delete(jobId);
-		}
-	});
-	return next;
-}
-
-async function findPersistentLongVideoJob(jobId) {
-	const key = String(jobId || "").trim();
-	if (!key) return null;
-	const fileJob = readLongVideoJobState(key);
-	try {
-		const mongoJob = await LongVideoJob.findOne({ jobId: key }).lean();
-		if (mongoJob && fileJob) {
-			const mongoUpdated = toDateOrNull(
-				mongoJob.updatedAt || mongoJob.createdAt,
-			);
-			const fileUpdated = toDateOrNull(fileJob.updatedAt || fileJob.createdAt);
-			if (
-				fileUpdated &&
-				(!mongoUpdated || fileUpdated.getTime() > mongoUpdated.getTime())
-			) {
-				return fileJob;
-			}
-		}
-		if (mongoJob) return mongoJob;
-	} catch (err) {
-		logJob(key, "mongo job lookup failed; trying file snapshot", {
-			error: err.message,
-		});
-	}
-	return fileJob;
-}
-
-function isWorkerProcessAlive(pid) {
-	const numericPid = Number(pid || 0);
-	if (!Number.isInteger(numericPid) || numericPid <= 0) return null;
-	try {
-		process.kill(numericPid, 0);
-		return true;
-	} catch (err) {
-		if (err?.code === "ESRCH") return false;
-		return null;
-	}
-}
-
-async function reconcileOrphanedLongVideoJob(job = null) {
-	if (!job?.jobId) return job;
-	const status = String(job.status || "")
-		.trim()
-		.toLowerCase();
-	if (status !== "queued" && status !== "running") return job;
-	if (JOBS.has(job.jobId)) return job;
-
-	const updatedAt = toDateOrNull(job.updatedAt || job.createdAt);
-	const updatedMs = updatedAt ? updatedAt.getTime() : 0;
-	const workerPid = Number(job?.meta?.workerPid || 0);
-	const workerAlive = isWorkerProcessAlive(workerPid);
-	const graceMs =
-		workerAlive === false
-			? LONG_VIDEO_DEAD_WORKER_GRACE_MS
-			: LONG_VIDEO_ORPHAN_GRACE_MS;
-	if (!updatedMs || Date.now() - updatedMs < graceMs) {
-		return job;
-	}
-
-	const failedAt = new Date();
-	const orphanError =
-		String(job.error || "").trim() ||
-		(workerAlive === false && workerPid > 0
-			? `Long video job stopped when worker process ${workerPid} exited.`
-			: "Long video job was interrupted before completion. The worker is no longer tracking this job.");
-	const patch = {
-		status: "failed",
-		error: orphanError,
-		failedAt,
-		updatedAt: failedAt,
-	};
-
-	try {
-		await LongVideoJob.updateOne(
-			{
-				jobId: job.jobId,
-				status: { $in: ["queued", "running"] },
-			},
-			{ $set: patch },
-		);
-	} catch (err) {
-		logJob(job.jobId, "orphan job reconcile failed", {
-			error: err.message,
-		});
-	}
-
-	const reconciled = {
-		...job,
-		...patch,
-		meta: job.meta && typeof job.meta === "object" ? job.meta : {},
-	};
-	try {
-		writeLongVideoJobState(reconciled);
-	} catch (err) {
-		logJob(job.jobId, "job state reconcile write failed", {
-			error: err.message,
-		});
-	}
-	return reconciled;
-}
-
-function serializeLongVideoJob(job = {}) {
-	return {
-		jobId: String(job.jobId || ""),
-		status: String(job.status || "queued"),
-		progressPct: clampNumber(Number(job.progressPct || 0), 0, 100),
-		topic: job.topic || null,
-		finalVideoUrl: job.finalVideoUrl || null,
-		error: job.error || null,
-		meta: job.meta && typeof job.meta === "object" ? job.meta : {},
-	};
-}
-
 function logJob(jobId, msg, extra) {
 	const prefix = jobId ? `[LongVideo][${jobId}]` : "[LongVideo]";
 	if (extra !== undefined) {
@@ -850,28 +560,7 @@ function logJob(jobId, msg, extra) {
 function updateJob(jobId, patch = {}) {
 	const job = JOBS.get(jobId);
 	if (!job) return;
-	const nextPatch = { ...(patch || {}) };
-	if (
-		nextPatch.status === "running" &&
-		!job.startedAt &&
-		!nextPatch.startedAt
-	) {
-		nextPatch.startedAt = nowIso();
-	}
-	if (nextPatch.status === "completed" && !nextPatch.completedAt) {
-		nextPatch.completedAt = nowIso();
-	}
-	if (nextPatch.status === "failed" && !nextPatch.failedAt) {
-		nextPatch.failedAt = nowIso();
-	}
-	const nextJob = { ...job, ...nextPatch, updatedAt: nowIso() };
-	JOBS.set(jobId, nextJob);
-	try {
-		writeLongVideoJobState(nextJob);
-	} catch (err) {
-		logJob(jobId, "job state write failed", { error: err.message });
-	}
-	void queueLongVideoJobPersist(nextJob);
+	JOBS.set(jobId, { ...job, ...patch, updatedAt: nowIso() });
 }
 
 function ensureDir(dir) {
@@ -880,7 +569,6 @@ function ensureDir(dir) {
 ensureDir(TMP_ROOT);
 if (SHOULD_PERSIST_LONG_VIDEO) ensureDir(OUTPUT_DIR);
 if (SHOULD_PERSIST_LONG_VIDEO) ensureDir(THUMBNAIL_DIR);
-ensureDir(LONG_VIDEO_JOB_STATE_DIR);
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
@@ -905,23 +593,6 @@ function safeUnlink(file) {
 	try {
 		if (file && fs.existsSync(file)) fs.unlinkSync(file);
 	} catch {}
-}
-
-function hasUsableFile(filePath, minBytes = 1) {
-	try {
-		return Boolean(
-			filePath &&
-			fs.existsSync(filePath) &&
-			fs.statSync(filePath).size >= Number(minBytes || 1),
-		);
-	} catch {
-		return false;
-	}
-}
-
-function isStillBaselineClip(filePath) {
-	const base = path.basename(String(filePath || "")).toLowerCase();
-	return base.startsWith("baseline_still_");
 }
 
 function safeRmRecursive(dir) {
@@ -4388,8 +4059,53 @@ async function prepareImageSegments({
 			const key = normalizeImageUrlKey(url);
 			return !usedUrlsGlobal.has(key);
 		});
+
+		if (
+			GOOGLE_IMAGES_SEARCH_ENABLED &&
+			candidates.length <
+				desiredCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER)
+		) {
+			const googleVariants = queryVariants.slice(
+				0,
+				Math.max(1, GOOGLE_IMAGES_VARIANT_LIMIT),
+			);
+			const googleUrls = [];
+			for (const gQuery of googleVariants) {
+				const cacheKey = `gimg::${gQuery}`;
+				let urls = googleImageCache.get(cacheKey);
+				if (!urls) {
+					urls = await fetchGoogleImagesFromService(gQuery, {
+						limit: Math.max(
+							12,
+							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+							GOOGLE_IMAGES_RESULTS_PER_QUERY,
+						),
+						baseUrl,
+						jobId,
+					});
+					googleImageCache.set(cacheKey, urls);
+				}
+				googleUrls.push(...(urls || []));
+			}
+			if (googleUrls.length) {
+				candidates = dedupeUrlsPreserveOrder([...candidates, ...googleUrls]);
+				logJob(jobId, "segment google images added", {
+					segment: seg.index,
+					query,
+					topicLabel: effectiveTopicLabel,
+					variants: googleVariants.length,
+					added: googleUrls.length,
+					total: candidates.length,
+				});
+			}
+		}
+
+		const availableBeforeCse = candidates.filter((url) => {
+			const key = normalizeImageUrlKey(url);
+			return !usedUrlsGlobal.has(key);
+		});
 		const allowCseTopUp =
-			cseAvailable && plannedAvailable.length < desiredCount;
+			cseAvailable && availableBeforeCse.length < desiredCount;
 
 		let segmentCseQueryCalls = 0;
 		let segmentCseTopicCalls = 0;
@@ -4466,46 +4182,6 @@ async function prepareImageSegments({
 			total: candidates.length,
 			cseTopUp: allowCseTopUp,
 		});
-
-		if (
-			GOOGLE_IMAGES_SEARCH_ENABLED &&
-			candidates.length <
-				desiredCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER)
-		) {
-			const googleVariants = queryVariants.slice(
-				0,
-				Math.max(1, GOOGLE_IMAGES_VARIANT_LIMIT),
-			);
-			const googleUrls = [];
-			for (const gQuery of googleVariants) {
-				const cacheKey = `gimg::${gQuery}`;
-				let urls = googleImageCache.get(cacheKey);
-				if (!urls) {
-					urls = await fetchGoogleImagesFromService(gQuery, {
-						limit: Math.max(
-							12,
-							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
-							GOOGLE_IMAGES_RESULTS_PER_QUERY,
-						),
-						baseUrl,
-						jobId,
-					});
-					googleImageCache.set(cacheKey, urls);
-				}
-				googleUrls.push(...(urls || []));
-			}
-			if (googleUrls.length) {
-				candidates = dedupeUrlsPreserveOrder([...candidates, ...googleUrls]);
-				logJob(jobId, "segment google images added", {
-					segment: seg.index,
-					query,
-					topicLabel: effectiveTopicLabel,
-					variants: googleVariants.length,
-					added: googleUrls.length,
-					total: candidates.length,
-				});
-			}
-		}
 
 		if (candidates.length < desiredCount) {
 			const fallbackKey = `${query}||${effectiveTopicLabel}`;
@@ -4983,16 +4659,14 @@ async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
 
 function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 	const handLine = intro
-		? "Hands stay low on the desk or just below frame, lightly clasped or resting, with at most one brief small emphasis gesture before settling again."
-		: "Hands stay low near the torso, usually lightly clasped or resting together, with only brief small open-palm emphasis gestures before settling again.";
+		? "Hands stay low on the desk or just below frame, with at most one brief small emphasis gesture before settling again."
+		: "Hands stay low near the torso, usually lightly clasped or relaxed, with only brief small open-palm emphasis gestures before settling again.";
 	return [
-		"Study the approved motion reference clip only for behavior, pacing, and restraint.",
-		"Copy only the presenter's real motion signature from the reference: seated and centered posture, grounded torso, low clasped hands, subtle head corrections, brief natural side glances with quick return to lens, restrained smiles, quiet shoulders, and economical hand movement.",
-		"Do not copy the reference clip's face, identity, wardrobe, framing, sofa/background, camera movement, or room layout. Keep all identity and appearance locked to the current presenter image.",
-		"Face behavior: calm friendly-neutral delivery with natural unhurried blinks, mild brow readability, restrained speech-ready jaw movement, and occasional small half-smiles only when it feels organic; no exaggerated grin, no reaction-face peaks, and no theatrical emotion.",
-		"Head behavior: mostly upright and centered with tiny neck-driven corrections, soft chin dips on emphasis, one or two light conversational nods, and at most a brief modest turn or glance off-axis before returning to camera; no swaying, no forward lunges, no sharp tilts, and no looped nodding.",
-		`Body behavior: shoulders square and steady but not rigid, torso grounded in the seat with subtle breathing and small posture settling, ${handLine} Keep elbows anchored and avoid broad arm travel.`,
-		"Keep the emotional read composed, credible, and understated from start to finish. The result should feel like the same real presenter speaking naturally, not a generic animated host and not a frozen statue.",
+		"Match the presenter's real reference behavior from motion_reference.mp4 and DemoVideo.mp4.",
+		"Face behavior: direct eye contact, friendly-neutral expression, natural unhurried blinks, mildly readable brow changes, and natural speech-ready jaw and lip behavior with no over-open vowels or reaction-face peaks.",
+		"Head behavior: mostly upright and centered with tiny neck-driven corrections, soft chin dips on emphasis, and one or two light conversational nods over the shot; no swaying, no forward lunges, no head tilts, and no looped nodding.",
+		`Body behavior: shoulders square and steady but not rigid, torso grounded in the seat with subtle breathing and small posture settling, ${handLine}`,
+		"Keep the emotional read composed and consistent from start to finish, but do not let the presenter feel frozen or statue-like.",
 	].join(" ");
 }
 
@@ -5066,8 +4740,8 @@ async function runwayCreateEphemeralUpload({ filePath, filename }) {
 
 async function pollRunwayTask(taskId, label) {
 	const url = `https://api.dev.runwayml.com/v1/tasks/${taskId}`;
-	for (let i = 0; i < RUNWAY_TASK_MAX_POLLS; i++) {
-		await sleep(RUNWAY_TASK_POLL_INTERVAL_MS);
+	for (let i = 0; i < 120; i++) {
+		await sleep(2000);
 		const res = await axios.get(url, {
 			headers: {
 				Authorization: `Bearer ${RUNWAY_API_KEY}`,
@@ -5098,11 +4772,7 @@ async function pollRunwayTask(taskId, label) {
 			);
 		}
 	}
-	throw new Error(
-		`${label} timed out after ${Math.round(
-			(RUNWAY_TASK_MAX_POLLS * RUNWAY_TASK_POLL_INTERVAL_MS) / 1000,
-		)}s`,
-	);
+	throw new Error(`${label} timed out`);
 }
 
 function runwayRatio(ratio) {
@@ -5273,7 +4943,6 @@ function buildBaselinePrompt(
 	return `
 Photorealistic talking-head video of the SAME person as the reference image.
 Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT}
-Primary objective: preserve the current presenter's face and wardrobe exactly from the image while borrowing only the subtle delivery rhythm and body language from the approved motion reference guidance.
 Background must remain locked and static; no movement or people behind the presenter.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
@@ -10355,20 +10024,6 @@ async function trimLeadingSilenceWav(inWav, outWav) {
 		"trim_lead_silence",
 		{ timeoutMs: 120000 },
 	);
-
-	const outDuration = hasUsableFile(outWav, 64)
-		? await probeDurationSeconds(outWav)
-		: 0;
-	if (outDuration > 0.01) return outWav;
-
-	safeUnlink(outWav);
-	if (!hasUsableFile(inWav, 64)) {
-		throw new Error(`trim_lead_silence produced no usable output: ${outWav}`);
-	}
-
-	if (path.resolve(inWav) !== path.resolve(outWav)) {
-		fs.copyFileSync(inWav, outWav);
-	}
 	return outWav;
 }
 
@@ -11132,15 +10787,8 @@ async function pollSyncSoJob({ id, label, jobId }) {
 			);
 		}
 
-		if (jobId && i % 10 === 0) {
+		if (jobId && i % 10 === 0)
 			logJob(jobId, "sync polling", { label, status: st || "pending" });
-			updateJob(jobId, {
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					currentStep: `Waiting for lipsync provider (${label})`,
-				},
-			});
-		}
 	}
 	throw new Error(`${label} timed out`);
 }
@@ -11440,19 +11088,7 @@ async function renderLipsyncedSegment({
 
 	let lipsynced = null;
 	let lastErr = null;
-	const baselineIsStill = isStillBaselineClip(baselineSource);
-	if (baselineIsStill && SKIP_LIPSYNC_ON_STILL_BASELINE) {
-		logJob(jobId, "lipsync skipped; static baseline fallback", {
-			label: safeLabel,
-			reason: "still_baseline_source",
-		});
-		const fit = path.join(tmpDir, `base_fit_${jobId}_${safeLabel}.mp4`);
-		await fitVideoToDuration(baseSized, dur, fit, SEGMENT_PAD_SEC);
-		lipsynced = fit;
-	}
-
 	for (let attempt = 0; attempt <= SYNC_SO_SEGMENT_MAX_RETRIES; attempt++) {
-		if (lipsynced) break;
 		try {
 			if (SYNC_SO_REQUEST_GAP_MS) await sleep(SYNC_SO_REQUEST_GAP_MS);
 			const attemptPlan = resolveSyncAttemptPlan(attempt, syncTier);
@@ -11478,12 +11114,6 @@ async function renderLipsyncedSegment({
 				syncTier: attemptPlan.tier,
 				modelId: attemptPlan.modelId,
 				inputVariant: attemptPlan.inputVariant,
-			});
-			updateJob(jobId, {
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					currentStep: `Generating lipsync (${safeLabel}, attempt ${attempt + 1}/${SYNC_SO_SEGMENT_MAX_RETRIES + 1})`,
-				},
 			});
 
 			const syncJob = await requestSyncSoJob({
@@ -11768,13 +11398,6 @@ async function fitVideoToDuration(inVideo, targetSec, outVideo, padSec = 0) {
 }
 
 async function mergeVideoWithAudio(videoPath, audioPath, outPath) {
-	if (!hasUsableFile(videoPath)) {
-		throw new Error(`merge_audio missing video input: ${videoPath}`);
-	}
-	if (!hasUsableFile(audioPath, 64)) {
-		throw new Error(`merge_audio missing audio input: ${audioPath}`);
-	}
-
 	await spawnBin(
 		ffmpegPath,
 		[
@@ -12315,7 +11938,6 @@ async function createPresenterIntroMotion({
 	const prompt = `
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
-Primary objective: keep the current presenter's identity fully locked to the image and apply only the subtle motion signature from the approved motion reference guidance.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: calm intro delivery with hands resting on the desk; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
@@ -12332,7 +11954,6 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 	const fallbackPrompt = `
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
-Primary objective: keep the current presenter's identity fully locked to the image and apply only the subtle motion signature from the approved motion reference guidance.
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
 Action: small, natural intro posture with hands resting; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
@@ -13269,17 +12890,7 @@ async function runLongVideoJob(
 	ensureDir(tmpDir);
 
 	try {
-		updateJob(jobId, {
-			status: "running",
-			progressPct: 1,
-			error: null,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				workerPid: process.pid,
-				workerStartedAt: nowIso(),
-				currentStep: "Initializing long video pipeline",
-			},
-		});
+		updateJob(jobId, { status: "running", progressPct: 1 });
 
 		const {
 			preferredTopicHint,
@@ -13336,6 +12947,7 @@ async function runLongVideoJob(
 
 		logJob(jobId, "job started", {
 			controller: controllerOptions.controllerLabel,
+			controllerRuntime: getLongVideoRuntimeProfile(),
 			dryRun,
 			requestedTargetSec: Number(targetDurationSec || 0),
 			contentTargetSec,
@@ -13370,10 +12982,6 @@ async function runLongVideoJob(
 				status: "completed",
 				progressPct: 100,
 				finalVideoUrl: dummyUrl || null,
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					currentStep: "Completed (dry run)",
-				},
 			});
 			logJob(jobId, "dry run completed", {
 				finalVideoUrl: dummyUrl || null,
@@ -13396,13 +13004,7 @@ async function runLongVideoJob(
 			);
 		if (!effectiveVoiceId) throw new Error("ELEVENLABS voiceId missing.");
 
-		updateJob(jobId, {
-			progressPct: 4,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				currentStep: "Selecting topic and validating pipeline dependencies",
-			},
-		});
+		updateJob(jobId, { progressPct: 4 });
 
 		// 1) Topics (Google Trends driven, count based on duration)
 		const languageLabel = normalizeLanguageLabel(language || "English");
@@ -13479,8 +13081,6 @@ async function runLongVideoJob(
 			progressPct: 8,
 			topic: topicSummary,
 			meta: {
-				...JOBS.get(jobId)?.meta,
-				currentStep: "Topics selected; building script and assets",
 				topics: topicPicks.map((t) => ({
 					topic: t.topic,
 					displayTopic: t.displayTopic || t.topic,
@@ -13491,7 +13091,7 @@ async function runLongVideoJob(
 			},
 		});
 
-		// 2) Presenter
+		// 2) Presenter (forced default image + motion reference)
 		let presenterLocal = await ensureLocalPresenterAsset(
 			presenterAssetUrl,
 			tmpDir,
@@ -13504,11 +13104,7 @@ async function runLongVideoJob(
 		let presenterThumbnailLocal = presenterLocal;
 		let presenterOutfit = "";
 		let presenterOutfitStyle = "";
-		const shouldLoadMotionRefVideo =
-			USE_MOTION_REF_BASELINE && USE_MOTION_REF_PROMPT_GUIDANCE;
-		const motionRefVideo = shouldLoadMotionRefVideo
-			? await ensureLocalMotionReferenceVideo(tmpDir, jobId)
-			: null;
+		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
 		const detected = detectFileType(presenterLocal);
 		let presenterIsVideo = detected?.kind === "video";
 		let presenterIsImage = detected?.kind === "image";
@@ -13524,12 +13120,6 @@ async function runLongVideoJob(
 				? path.basename(presenterThumbnailLocal)
 				: null,
 		});
-		if (motionRefVideo && USE_MOTION_REF_PROMPT_GUIDANCE) {
-			logJob(jobId, "motion reference guidance enabled", {
-				source: path.basename(motionRefVideo),
-				mode: "prompt_guidance_only",
-			});
-		}
 
 		updateJob(jobId, { progressPct: 12 });
 
@@ -15019,25 +14609,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		if (presenterIsVideo) {
 			pushBaselineVariant("neutral", presenterLocal);
 			logJob(jobId, "presenter is video; baseline uses provided video");
-		}
-
-		const shouldAttemptRunwayBaseline =
-			!presenterIsVideo &&
+		} else if (
 			enableRunwayPresenterMotion &&
 			ENABLE_RUNWAY_BASELINE &&
-			RUNWAY_API_KEY;
-
-		if (shouldAttemptRunwayBaseline) {
-			let runwayBaselineFailures = 0;
-			runway_baseline_loop: for (const expr of expressionsNeeded) {
+			RUNWAY_API_KEY
+		) {
+			for (const expr of expressionsNeeded) {
 				for (let v = 0; v < BASELINE_VARIANTS; v++) {
 					try {
-						updateJob(jobId, {
-							meta: {
-								...JOBS.get(jobId)?.meta,
-								currentStep: `Generating presenter motion baseline (${expr} ${v + 1}/${BASELINE_VARIANTS})`,
-							},
-						});
 						const runwayUri = await runwayCreateEphemeralUpload({
 							filePath: presenterLocal,
 							filename: `presenter_${expr}.png`,
@@ -15116,35 +14695,17 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							path: path.basename(syncReady),
 						});
 					} catch (e) {
-						runwayBaselineFailures += 1;
 						logJob(jobId, "runway baseline failed (expression)", {
 							expression: expr,
 							variant: v + 1,
 							error: e.message,
-							failures: runwayBaselineFailures,
 						});
-						if (runwayBaselineFailures >= RUNWAY_BASELINE_MAX_FAILURES) {
-							logJob(jobId, "runway baseline failure budget reached", {
-								maxFailures: RUNWAY_BASELINE_MAX_FAILURES,
-								expression: expr,
-								variant: v + 1,
-								hasMotionReferenceGuidance: Boolean(motionRefVideo),
-							});
-							break runway_baseline_loop;
-						}
 					}
 				}
 			}
 		}
 		if (!baselinePresenterVideos.size) {
 			// Fallback: convert image to a simple still video
-			updateJob(jobId, {
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					currentStep:
-						"Presenter motion unavailable; switching to static presenter fallback",
-				},
-			});
 			const still = path.join(tmpDir, `baseline_still_${jobId}.mp4`);
 			await spawnBin(
 				ffmpegPath,
@@ -15182,6 +14743,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		}
 
 		const baselineDefault = pickBaselineDefault();
+
+		updateJob(jobId, { progressPct: 50 });
 
 		// 10) Intro (lipsync + title overlay)
 		const introOffsetSeed = seedFromJobId(jobId) % 29;
@@ -15237,30 +14800,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					syncTier: unit.syncTier,
 				})),
 		});
-		const visualPlanMeta = JOBS.get(jobId)?.meta?.visualPlan || {};
-		const presenterSegmentCount = Array.isArray(
-			visualPlanMeta.presenterSegments,
-		)
-			? visualPlanMeta.presenterSegments.length
-			: renderUnits.filter((unit) => unit.visualType !== "image").length;
-		const imageSegmentCount = Array.isArray(visualPlanMeta.imageSegments)
-			? visualPlanMeta.imageSegments.length
-			: renderUnits.filter((unit) => unit.visualType === "image").length;
-		const totalRenderUnits = Math.max(1, renderUnits.length);
-		updateJob(jobId, {
-			progressPct: 50,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				currentStep: `Rendering segments (Presenter ${presenterSegmentCount} / Images ${imageSegmentCount})`,
-			},
-		});
-
-		for (
-			let renderUnitIndex = 0;
-			renderUnitIndex < renderUnits.length;
-			renderUnitIndex++
-		) {
-			const seg = renderUnits[renderUnitIndex];
+		for (const seg of renderUnits) {
 			const segDur = Math.max(0.2, Number(seg.segDur || 0));
 			logJob(jobId, "segment start", {
 				segment: seg.index,
@@ -15317,23 +14857,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			}
 
 			segmentVideos.push(norm);
-			const completedRenderUnits = renderUnitIndex + 1;
-			const renderProgress = Math.min(
-				71,
-				50 + Math.round((completedRenderUnits / totalRenderUnits) * 21),
-			);
-			updateJob(jobId, {
-				progressPct: renderProgress,
-				meta: {
-					...JOBS.get(jobId)?.meta,
-					currentStep: `Rendering segments (${completedRenderUnits}/${totalRenderUnits})`,
-					lastRenderedSegment: {
-						segment: seg.index,
-						renderLabel: seg.renderLabel || String(seg.index),
-						visualType: seg.visualType || "presenter",
-					},
-				},
-			});
 			logJob(jobId, "segment ready", {
 				segment: seg.index,
 				renderLabel: seg.renderLabel || String(seg.index),
@@ -15421,13 +14944,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		});
 		segmentVideos.push(outroPath);
 
-		updateJob(jobId, {
-			progressPct: 72,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				currentStep: "Assembling intro, content, and outro",
-			},
-		});
+		updateJob(jobId, { progressPct: 72 });
 
 		// 13) Concat intro + content + outro
 		const concatPath = path.join(tmpDir, `concat_${jobId}.mp4`);
@@ -15501,13 +15018,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			logJob(jobId, "overlays skipped", { reason: "segment visuals enabled" });
 		}
 
-		updateJob(jobId, {
-			progressPct: 84,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				currentStep: "Applying overlays and preparing the final audio mix",
-			},
-		});
+		updateJob(jobId, { progressPct: 84 });
 
 		// 15) Music mix (must)
 		let mixedPath = overlayedPath;
@@ -15518,13 +15029,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			});
 		}
 
-		updateJob(jobId, {
-			progressPct: 92,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				currentStep: "Finalizing the master video file",
-			},
-		});
+		updateJob(jobId, { progressPct: 92 });
 
 		// 16) Finalize (with fade-out)
 		const outputSlug =
@@ -15543,37 +15048,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			fadeOutSec: FINAL_FADE_OUT_SEC,
 			outCfg: output,
 		});
-		updateJob(jobId, {
-			progressPct: 96,
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				currentStep:
-					youtubeUploadEnabled && hasYouTubeTokens
-						? "Uploading to YouTube"
-						: "Saving final output metadata",
-			},
-		});
 
 		// 16.5) YouTube upload (optional)
 		let youtubeLink = "";
 		let youtubeTokens = null;
-		let youtubeUploadMeta = {
-			enabled: Boolean(youtubeUploadEnabled),
-			hadTokens: Boolean(hasYouTubeTokens),
-			attempted: false,
-			success: false,
-			skippedReason: "",
-			error: "",
-		};
 		try {
 			if (!youtubeUploadEnabled) {
-				youtubeUploadMeta.skippedReason = "disabled_for_controller";
 				logJob(jobId, "youtube upload skipped (disabled for controller)");
 			} else if (!hasYouTubeTokens) {
-				youtubeUploadMeta.skippedReason = "missing_tokens";
 				logJob(jobId, "youtube upload skipped (no tokens)");
 			} else {
-				youtubeUploadMeta.attempted = true;
 				const youtubePayload = {
 					youtubeAccessToken,
 					youtubeRefreshToken,
@@ -15592,16 +15076,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						thumbnailPath,
 						jobId,
 					});
-					youtubeUploadMeta.success = Boolean(youtubeLink);
 					logJob(jobId, "youtube upload complete", { youtubeLink });
 				} else {
-					youtubeUploadMeta.skippedReason = "missing_refresh_token";
 					logJob(jobId, "youtube upload skipped (missing refresh token)");
 				}
 			}
 		} catch (e) {
-			youtubeUploadMeta.attempted = true;
-			youtubeUploadMeta.error = e.message;
 			logJob(jobId, "youtube upload skipped", { error: e.message });
 		}
 
@@ -15689,9 +15169,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			finalVideoUrl: finalVideoUrl || null,
 			meta: {
 				...JOBS.get(jobId)?.meta,
-				currentStep: "Completed",
 				youtubeLink,
-				youtubeUpload: youtubeUploadMeta,
 				videoId: videoDocId,
 			},
 		});
@@ -15705,10 +15183,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		updateJob(jobId, {
 			status: "failed",
 			error: err?.message || "Long video job failed",
-			meta: {
-				...JOBS.get(jobId)?.meta,
-				currentStep: "Failed",
-			},
 		});
 	} finally {
 		if (!LONG_VIDEO_KEEP_TMP) safeRmRecursive(tmpDir);
@@ -15734,7 +15208,6 @@ function createLongVideoController(controllerConfig = {}) {
 
 		const jobId = crypto.randomUUID();
 		const baseUrl = buildBaseUrl(req);
-		const statusUrl = `${cfg.statusPathBase}/${jobId}`;
 
 		const job = {
 			jobId,
@@ -15743,28 +15216,13 @@ function createLongVideoController(controllerConfig = {}) {
 			topic: null,
 			finalVideoUrl: null,
 			error: null,
-			userId: req.user?._id ? String(req.user._id) : null,
-			controllerLabel: cfg.controllerLabel,
-			statusUrl,
-			requestSummary: sanitizeLongVideoPayloadForJob(clean),
-			startedAt: null,
-			completedAt: null,
-			failedAt: null,
 			createdAt: nowIso(),
 			updatedAt: nowIso(),
 			meta: {},
 		};
 		JOBS.set(jobId, job);
-		try {
-			writeLongVideoJobState(job);
-			await upsertLongVideoJobPersist(job);
-		} catch (err) {
-			JOBS.delete(jobId);
-			logJob(jobId, "initial job persist failed", { error: err.message });
-			return res.status(503).json({
-				error: "Unable to start long video job at this time",
-			});
-		}
+
+		const statusUrl = `${cfg.statusPathBase}/${jobId}`;
 		res.status(202).json({
 			jobId,
 			status: "queued",
@@ -15827,6 +15285,8 @@ function createLongVideoController(controllerConfig = {}) {
 
 exports.createLongVideoController = createLongVideoController;
 exports.createLongVideo = createLongVideoController();
+exports.longVideoControllerFingerprint = LONG_VIDEO_CONTROLLER_FINGERPRINT;
+exports.getLongVideoRuntimeProfile = getLongVideoRuntimeProfile;
 
 /* ---------------------------------------------------------------
  * CONTROLLER: getLongVideoStatus
@@ -15834,18 +15294,16 @@ exports.createLongVideo = createLongVideoController();
 
 exports.getLongVideoStatus = async (req, res) => {
 	const { jobId } = req.params;
-	const liveJob = JOBS.get(jobId);
-	if (liveJob) return res.json(serializeLongVideoJob(liveJob));
+	const job = JOBS.get(jobId);
+	if (!job) return res.status(404).json({ error: "Job not found" });
 
-	try {
-		const persistedJob = await findPersistentLongVideoJob(jobId);
-		if (!persistedJob) return res.status(404).json({ error: "Job not found" });
-		const reconciledJob = await reconcileOrphanedLongVideoJob(persistedJob);
-		return res.json(serializeLongVideoJob(reconciledJob));
-	} catch (err) {
-		const snapshotJob = readLongVideoJobState(jobId);
-		if (snapshotJob) return res.json(serializeLongVideoJob(snapshotJob));
-		logJob(jobId, "status lookup failed", { error: err.message });
-		return res.status(503).json({ error: "Job status unavailable" });
-	}
+	return res.json({
+		jobId: job.jobId,
+		status: job.status,
+		progressPct: job.progressPct,
+		topic: job.topic || null,
+		finalVideoUrl: job.finalVideoUrl || null,
+		error: job.error || null,
+		meta: job.meta || {},
+	});
 };
