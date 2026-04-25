@@ -277,11 +277,28 @@ const DEFAULT_IMAGE_SCALE_MODE = "blur";
 const INTERMEDIATE_VIDEO_CRF = clampNumber(16, 12, 24);
 const FINAL_VIDEO_CRF = clampNumber(15, 10, 20);
 const INTERMEDIATE_PRESET = "fast";
-const FINAL_PRESET = "slow";
+const FINAL_PRESET =
+	String(process.env.FINAL_MASTER_PRESET || "slow").trim() || "slow";
 const AUDIO_BITRATE = "256k";
 const FINAL_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.0:LRA=11";
-const FINAL_MASTER_MAX_HEIGHT = 2160;
-const FINAL_MASTER_MIN_HEIGHT = 1080;
+const FINAL_MASTER_MAX_HEIGHT = clampNumber(
+	process.env.FINAL_MASTER_MAX_HEIGHT ?? 2160,
+	360,
+	4320,
+);
+const FINAL_MASTER_MIN_HEIGHT = clampNumber(
+	process.env.FINAL_MASTER_MIN_HEIGHT ?? 1080,
+	0,
+	FINAL_MASTER_MAX_HEIGHT,
+);
+const FINAL_MASTER_ALLOW_UPSCALE =
+	String(process.env.FINAL_MASTER_ALLOW_UPSCALE || "false").toLowerCase() ===
+	"true";
+const FINAL_MASTER_MAX_UPSCALE_FACTOR = clampNumber(
+	process.env.FINAL_MASTER_MAX_UPSCALE_FACTOR ?? 1.5,
+	1,
+	4,
+);
 // 0 disables the timeout so long 4K encodes can finish without being killed.
 const FINAL_MASTER_TIMEOUT_MS = clampNumber(
 	process.env.FINAL_MASTER_TIMEOUT_MS ?? 0,
@@ -817,12 +834,19 @@ function spawnBin(binPath, args, label, { timeoutMs } = {}) {
 			reject(err);
 		});
 
-		proc.on("close", (code) => {
+		proc.on("close", (code, signal) => {
 			if (killTimer) clearTimeout(killTimer);
 			if (code === 0) return resolve({ stdout, stderr });
-			const head = (stderr || stdout || "").slice(0, 4000);
+			const output = stderr || stdout || "";
+			const excerpt =
+				output.length > 4000 ? `...${output.slice(-4000)}` : output;
 			const tailHint = killedByTimeout ? " (killed by timeout)" : "";
-			reject(new Error(`${label} failed (code ${code})${tailHint}: ${head}`));
+			const signalHint = signal ? `, signal ${signal}` : "";
+			reject(
+				new Error(
+					`${label} failed (code ${code}${signalHint})${tailHint}: ${excerpt}`,
+				),
+			);
 		});
 	});
 }
@@ -12145,15 +12169,41 @@ function buildWatermarkFilter() {
 	);
 }
 
-function computeFinalMasterSize(outCfg = {}) {
+function computeFinalMasterSize(outCfg = {}, sourceCfg = {}) {
 	const baseW = Number(outCfg?.w || 0) || 1280;
 	const baseH = Number(outCfg?.h || 0) || 720;
-	const ratio = baseW > 0 && baseH > 0 ? baseW / baseH : 16 / 9;
-	let targetH =
-		baseH >= FINAL_MASTER_MAX_HEIGHT ? baseH : FINAL_MASTER_MAX_HEIGHT;
-	if (targetH < FINAL_MASTER_MIN_HEIGHT) targetH = FINAL_MASTER_MIN_HEIGHT;
+	const sourceW = makeEven(
+		Number(sourceCfg?.w || sourceCfg?.width || 0) || baseW,
+	);
+	const sourceH = makeEven(
+		Number(sourceCfg?.h || sourceCfg?.height || 0) || baseH,
+	);
+	const fallbackRatio = baseW > 0 && baseH > 0 ? baseW / baseH : 16 / 9;
+	const sourceRatio = sourceW > 0 && sourceH > 0 ? sourceW / sourceH : 0;
+	const ratio =
+		Number.isFinite(sourceRatio) && sourceRatio > 0
+			? sourceRatio
+			: fallbackRatio;
+
+	let targetH = Math.min(sourceH, FINAL_MASTER_MAX_HEIGHT);
+	if (FINAL_MASTER_ALLOW_UPSCALE) {
+		const upscaleCap = makeEven(sourceH * FINAL_MASTER_MAX_UPSCALE_FACTOR);
+		targetH = Math.min(
+			FINAL_MASTER_MAX_HEIGHT,
+			Math.max(sourceH, FINAL_MASTER_MIN_HEIGHT),
+			upscaleCap,
+		);
+	}
+	if (!Number.isFinite(targetH) || targetH <= 0) {
+		targetH = Math.min(baseH, FINAL_MASTER_MAX_HEIGHT);
+	}
 	const targetW = makeEven(targetH * ratio);
-	return { w: makeEven(targetW), h: makeEven(targetH) };
+	return {
+		w: makeEven(targetW),
+		h: makeEven(targetH),
+		sourceW,
+		sourceH,
+	};
 }
 
 function hardTruncateText(text = "", maxChars = 40) {
@@ -12780,21 +12830,25 @@ async function finalizeVideoWithFadeOut({
 	const shouldFade = Boolean(fadeDur && dur && dur >= 0.4);
 	const start = shouldFade ? Math.max(0, dur - fadeDur) : 0;
 
-	const { w: outW, h: outH } = computeFinalMasterSize(outCfg);
+	const inputInfo = await probeMedia(inputPath);
+	const inputVideoStream =
+		(inputInfo?.streams || []).find((s) => s.codec_type === "video") || {};
+	const sourceW = makeEven(
+		Number(inputVideoStream?.width || inputVideoStream?.coded_width || 0) ||
+			Number(outCfg?.w || 0) ||
+			1280,
+	);
+	const sourceH = makeEven(
+		Number(inputVideoStream?.height || inputVideoStream?.coded_height || 0) ||
+			Number(outCfg?.h || 0) ||
+			720,
+	);
+	const { w: outW, h: outH } = computeFinalMasterSize(outCfg, {
+		w: sourceW,
+		h: sourceH,
+	});
 	const fps = Number(outCfg?.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
 	const gop = Math.max(12, Math.round(fps * FINAL_GOP_SECONDS));
-
-	const videoFilters = [
-		`scale=${outW}:${outH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${outW}:${outH}`,
-		`fps=${fps}`,
-		buildWatermarkFilter(),
-	];
-	if (shouldFade) {
-		videoFilters.push(
-			`fade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
-		);
-	}
-	videoFilters.push("format=yuv420p");
 
 	const audioFilters = [
 		`aresample=${AUDIO_SR}`,
@@ -12807,9 +12861,19 @@ async function finalizeVideoWithFadeOut({
 	}
 	audioFilters.push(FINAL_LOUDNORM_FILTER);
 
-	await spawnBin(
-		ffmpegPath,
-		[
+	const buildFinalArgs = ({ width, height, preset, crf }) => {
+		const videoFilters = [
+			`scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height}`,
+			`fps=${fps}`,
+			buildWatermarkFilter(),
+		];
+		if (shouldFade) {
+			videoFilters.push(
+				`fade=t=out:st=${start.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
+			);
+		}
+		videoFilters.push("format=yuv420p");
+		return [
 			"-i",
 			inputPath,
 			"-vf",
@@ -12819,9 +12883,9 @@ async function finalizeVideoWithFadeOut({
 			"-c:v",
 			"libx264",
 			"-preset",
-			FINAL_PRESET,
+			preset,
 			"-crf",
-			String(FINAL_VIDEO_CRF),
+			String(crf),
 			"-pix_fmt",
 			"yuv420p",
 			"-g",
@@ -12850,10 +12914,49 @@ async function finalizeVideoWithFadeOut({
 			FINAL_COLOR_RANGE,
 			"-y",
 			outputPath,
-		],
-		"final_master",
-		{ timeoutMs: FINAL_MASTER_TIMEOUT_MS },
-	);
+		];
+	};
+
+	try {
+		await spawnBin(
+			ffmpegPath,
+			buildFinalArgs({
+				width: outW,
+				height: outH,
+				preset: FINAL_PRESET,
+				crf: FINAL_VIDEO_CRF,
+			}),
+			"final_master",
+			{ timeoutMs: FINAL_MASTER_TIMEOUT_MS },
+		);
+	} catch (err) {
+		const fallbackPreset = FINAL_PRESET === "fast" ? "veryfast" : "fast";
+		const fallbackCrf = clampNumber(FINAL_VIDEO_CRF + 2, 10, 28);
+		const fallbackW = Math.min(outW, sourceW);
+		const fallbackH = Math.min(outH, sourceH);
+		const shouldRetry =
+			fallbackPreset !== FINAL_PRESET ||
+			fallbackCrf !== FINAL_VIDEO_CRF ||
+			fallbackW !== outW ||
+			fallbackH !== outH;
+		if (!shouldRetry) throw err;
+		console.warn(
+			`[LongVideo] final master fallback after primary failure: ${
+				err?.message || "unknown error"
+			}`,
+		);
+		await spawnBin(
+			ffmpegPath,
+			buildFinalArgs({
+				width: fallbackW,
+				height: fallbackH,
+				preset: fallbackPreset,
+				crf: fallbackCrf,
+			}),
+			"final_master_fallback",
+			{ timeoutMs: FINAL_MASTER_TIMEOUT_MS },
+		);
+	}
 }
 
 /* ---------------------------------------------------------------
