@@ -47,11 +47,11 @@ function normalizeRemoteAddress(value = "") {
 }
 
 function isLocalRequest(req) {
-	const candidates = [
-		req.ip,
-		req.socket?.remoteAddress,
-		req.connection?.remoteAddress,
-	].map(normalizeRemoteAddress);
+	const hasForwardedFor = Boolean(String(req.get?.("x-forwarded-for") || "").trim());
+	const candidates = (hasForwardedFor
+		? [req.ip]
+		: [req.ip, req.socket?.remoteAddress, req.connection?.remoteAddress]
+	).map(normalizeRemoteAddress);
 	return candidates.some((addr) => LOOPBACKS.has(addr));
 }
 
