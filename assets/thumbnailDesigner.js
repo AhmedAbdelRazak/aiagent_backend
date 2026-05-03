@@ -302,6 +302,18 @@ async function collectTopicReferenceImages({
 }) {
 	const urls = [];
 	for (const topic of Array.isArray(topics) ? topics : []) {
+		const confidence = normalizeWhitespace(topic?.thumbnailImageConfidence)
+			.toLowerCase()
+			.trim();
+		if (confidence === "weak") {
+			if (typeof log === "function") {
+				log("thumbnail topic reference skipped", {
+					reason: "weak_confidence",
+					topic: topic?.displayTopic || topic?.topic || "",
+				});
+			}
+			continue;
+		}
 		for (const url of uniqueStrings(topic?.thumbnailImageUrls || [])) {
 			if (!isHttpUrl(url)) continue;
 			urls.push(url);
@@ -658,6 +670,7 @@ Use the presenter reference image to preserve the same presenter identity, glass
 The presenter must stay on the right side in the same position, same scale, and same framing established by the seed image, with the upper torso visible, camera-facing, photorealistic, crisp, and premium.
 Do not zoom in on the presenter face, do not crop tighter, do not reframe the presenter, and do not change the presenter scale relative to the frame.
 Allow only a tiny facial reaction: ${buildExpressionPrompt(pose)}.
+The face reaction must be micro-subtle: preserve the same identity, glasses, beard, hairline, facial proportions, and skin texture; do not reshape the face or create a reaction meme.
 Do not damage or redesign the presenter.
 Use the left side for the story setup and typography.
 Topic direction: ${topicFocus || "current trending story"}.
@@ -726,6 +739,15 @@ function shouldPreferTopicLeadThumbnail({
 	if (!Array.isArray(topicReferencePaths) || !topicReferencePaths.length)
 		return false;
 	const primaryTopic = primaryTopicLabel(topics);
+	const confidences = (Array.isArray(topics) ? topics : [])
+		.map((topic) =>
+			normalizeWhitespace(topic?.thumbnailImageConfidence).toLowerCase(),
+		)
+		.filter(Boolean);
+	const weakOnly =
+		confidences.length > 0 &&
+		!confidences.some((item) => item === "high" || item === "medium");
+	if (weakOnly) return false;
 	const text = String(contextText || "").toLowerCase();
 	return (
 		looksLikeLikelyPersonName(primaryTopic) ||
@@ -771,13 +793,22 @@ function renderTopicLeadThumbnailPlate({
 		maxLines: 1,
 		maxChars: 26,
 	});
-	const safeHeadline = escapeDrawtext(headlineFit.text);
 	const safeBadge = escapeDrawtext(
 		normalizeWhitespace(badgeText || "TOP STORY"),
 	);
 	const safeSubline = escapeDrawtext(sublineFit.text);
 	const headlineFontSize = Math.max(54, Math.round(96 * headlineFit.fontScale));
 	const sublineFontSize = Math.max(24, Math.round(34 * sublineFit.fontScale));
+	const headlineLines = String(headlineFit.text || "")
+		.split(/\n+/)
+		.map((line) => normalizeWhitespace(line))
+		.filter(Boolean)
+		.slice(0, 2);
+	const headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
+	const headlineStartY =
+		headlineLines.length > 1
+			? 382
+			: Math.max(404, Math.round(438 - headlineFontSize * 0.25));
 	const filters = [
 		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=0.92:brightness=-0.015,gblur=sigma=18,setsar=1[bg]`,
 		`[1:v]scale=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.08:saturation=1.06:brightness=0.015,unsharp=5:5:0.60:5:5:0.0,setsar=1[topic]`,
@@ -789,8 +820,16 @@ function renderTopicLeadThumbnailPlate({
 	];
 	const textFilters = [
 		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=38:fontcolor=black:x=58:y=72:box=1:boxcolor=${accentColor}@0.98:boxborderw=14:borderw=0:shadowx=0:shadowy=0`,
-		`drawtext=text='${safeHeadline}'${fontOpt}:fontsize=${headlineFontSize}:fontcolor=white:x=54:y=418:line_spacing=10:borderw=5:bordercolor=black@0.75:shadowcolor=black@0.55:shadowx=3:shadowy=3:box=1:boxcolor=black@0.26:boxborderw=20`,
 	];
+	for (let i = 0; i < headlineLines.length; i++) {
+		textFilters.push(
+			`drawtext=text='${escapeDrawtext(
+				headlineLines[i],
+			)}'${fontOpt}:fontsize=${headlineFontSize}:fontcolor=white:x=54:y=${
+				headlineStartY + i * (headlineFontSize + headlineLineGap)
+			}:borderw=5:bordercolor=black@0.75:shadowcolor=black@0.55:shadowx=3:shadowy=3:box=1:boxcolor=black@0.26:boxborderw=20`,
+		);
+	}
 	if (safeSubline) {
 		textFilters.push(
 			`drawtext=text='${safeSubline}'${fontOpt}:fontsize=${sublineFontSize}:fontcolor=white@0.96:x=58:y=642:borderw=2:bordercolor=black@0.55:shadowcolor=black@0.4:shadowx=2:shadowy=2:box=1:boxcolor=black@0.24:boxborderw=10`,
@@ -1177,17 +1216,15 @@ async function generateThumbnailPackage({
 			log,
 		});
 
-	const route = preferTopicLead
-		? [
-				{ name: "topic_lead_local", run: tryTopicLead },
-				{ name: "openai_edit", run: tryOpenAi },
-				{ name: "seed_fallback", run: trySeedFallback },
-			]
-		: [
-				{ name: "openai_edit", run: tryOpenAi },
-				{ name: "topic_lead_local", run: tryTopicLead },
-				{ name: "seed_fallback", run: trySeedFallback },
-			];
+	const topicLeadStep = { name: "topic_lead_local", run: tryTopicLead };
+	const openAiStep = { name: "openai_edit", run: tryOpenAi };
+	const seedStep = { name: "seed_fallback", run: trySeedFallback };
+	const route =
+		preferTopicLead && topicReferencePaths.length
+			? [topicLeadStep, openAiStep, seedStep]
+			: topicReferencePaths.length
+				? [openAiStep, topicLeadStep, seedStep]
+				: [openAiStep, seedStep];
 
 	for (const step of route) {
 		try {

@@ -650,6 +650,30 @@ function buildCbsSearchQueriesForStory(story) {
   return uniqueStrings(candidates, { limit: 4 });
 }
 
+function buildGoogleImagesTopUpQueriesForStory(story) {
+  const candidates = [];
+  const add = (value) => {
+    const normalized = limitQueryLength(normalizeSearchQuery(value), 90);
+    if (normalized) candidates.push(normalized);
+  };
+  const primary =
+    story?.title || story?.rawTitle || story?.trendDialogTitle || "";
+  if (primary) {
+    add(`${primary} portrait`);
+    add(`${primary} press photo`);
+    add(`${primary} news photo`);
+  }
+  add(story?.title);
+  add(story?.rawTitle);
+  add(story?.trendDialogTitle);
+  for (const phrase of Array.isArray(story?.searchPhrases)
+    ? story.searchPhrases.slice(0, 3)
+    : []) {
+    add(`${phrase} photo`);
+  }
+  return uniqueStrings(candidates, { limit: 5 });
+}
+
 function buildCbsSearchUrl(query = "") {
   const params = new URLSearchParams({
     q: query,
@@ -3073,15 +3097,7 @@ async function enrichStoriesWithPotentialImages(
             ? story.articles.map((a) => a?.title).filter(Boolean)
             : []),
         );
-        const queries = uniqueStrings(
-          [
-            story?.title,
-            story?.rawTitle,
-            story?.trendDialogTitle,
-            ...(story?.searchPhrases || []),
-          ].filter(Boolean),
-          { limit: 3 },
-        );
+        const queries = buildGoogleImagesTopUpQueriesForStory(story);
         let remaining = MIN_FEED_IMAGES_PER_STORY - potentialImages.length;
         remaining = minFeedImages - potentialImages.length;
         log("Google images topup start", {
@@ -3127,7 +3143,7 @@ async function enrichStoriesWithPotentialImages(
             // eslint-disable-next-line no-await-in-loop
             urls = await scrapeGoogleImages({
               query,
-              limit: Math.max(12, minFeedImages * 4),
+              limit: Math.max(20, minFeedImages * 6),
             });
           } catch (err) {
             log("Google images topup failed", {
