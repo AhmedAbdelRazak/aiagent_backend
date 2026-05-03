@@ -194,7 +194,7 @@ function fitThumbnailText(
 	text = "",
 	{ baseMaxChars = 14, maxLines = 2, maxChars = 30 } = {},
 ) {
-	const clean = normalizeWhitespace(text).slice(0, maxChars);
+	const clean = trimTextToMaxChars(text, maxChars);
 	if (!clean) return { text: "", fontScale: 1, truncated: false };
 
 	const scales = [1, 0.94, 0.88, 0.82, 0.76];
@@ -219,6 +219,48 @@ function fitThumbnailText(
 		fontScale: 0.76,
 		truncated: wrapped.overflow,
 	};
+}
+
+function trimTextToMaxChars(text = "", maxChars = 30) {
+	const clean = normalizeWhitespace(text);
+	const limit = Number(maxChars) || 0;
+	if (!limit || clean.length <= limit) return clean;
+	const clipped = clean.slice(0, limit).trim();
+	const wordSafe = clipped.replace(/\s+\S*$/, "").trim();
+	return wordSafe || clipped;
+}
+
+function estimateDrawtextWidth(text = "", fontSize = 32) {
+	let units = 0;
+	for (const char of String(text || "")) {
+		if (char === " ") units += 0.34;
+		else if (/[MW]/.test(char)) units += 1;
+		else if (/[A-Z]/.test(char)) units += 0.78;
+		else if (/[a-z]/.test(char)) units += 0.58;
+		else if (/[0-9]/.test(char)) units += 0.64;
+		else units += 0.36;
+	}
+	return units * fontSize;
+}
+
+function fitFontSizeToWidth(
+	lines = [],
+	baseFontSize = 32,
+	{ maxWidth = 640, minFontSize = 20 } = {},
+) {
+	let size = Math.round(Number(baseFontSize) || 32);
+	const floor = Math.max(12, Math.round(Number(minFontSize) || 20));
+	const widthLimit = Math.max(120, Number(maxWidth) || 640);
+	const safeLines = (Array.isArray(lines) ? lines : [lines])
+		.map((line) => normalizeWhitespace(line))
+		.filter(Boolean);
+	while (
+		size > floor &&
+		safeLines.some((line) => estimateDrawtextWidth(line, size) > widthLimit)
+	) {
+		size -= 2;
+	}
+	return Math.max(floor, size);
 }
 
 function detectBufferType(buffer) {
@@ -465,19 +507,73 @@ function buildThumbnailArtDirection(intent = "general") {
 	return "Keep the design simple and highly clickable: one strong presenter on the right, one clear story cue on the left, bold clean typography, premium contrast, and minimal clutter.";
 }
 
+const TOPIC_DISPLAY_ACRONYMS = new Set([
+	"ai",
+	"api",
+	"bbc",
+	"cbs",
+	"cnn",
+	"dc",
+	"espn",
+	"fbi",
+	"mlb",
+	"nba",
+	"nfl",
+	"nhl",
+	"nyc",
+	"snl",
+	"ucla",
+	"ufc",
+	"uk",
+	"us",
+	"usa",
+	"wwe",
+]);
+
+const TOPIC_DISPLAY_LOWERCASE_WORDS = new Set([
+	"a",
+	"an",
+	"and",
+	"as",
+	"at",
+	"but",
+	"by",
+	"for",
+	"from",
+	"in",
+	"of",
+	"on",
+	"or",
+	"the",
+	"to",
+	"vs",
+	"with",
+]);
+
+function formatTopicDisplayWord(word = "", index = 0) {
+	const raw = String(word || "");
+	const leading = raw.match(/^[^A-Za-z0-9]+/)?.[0] || "";
+	const trailing = raw.match(/[^A-Za-z0-9]+$/)?.[0] || "";
+	const core = raw.slice(leading.length, raw.length - trailing.length);
+	if (!core) return raw;
+	const lower = core.toLowerCase();
+	if (/^[A-Z0-9]{2,}$/.test(core) || TOPIC_DISPLAY_ACRONYMS.has(lower)) {
+		return `${leading}${core.toUpperCase()}${trailing}`;
+	}
+	if (index > 0 && TOPIC_DISPLAY_LOWERCASE_WORDS.has(lower)) {
+		return `${leading}${lower}${trailing}`;
+	}
+	return `${leading}${core.charAt(0).toUpperCase()}${core
+		.slice(1)
+		.toLowerCase()}${trailing}`;
+}
+
 function formatTopicDisplay(label = "") {
 	const normalized = normalizeWhitespace(label);
 	if (!normalized) return "";
-	if (/[0-9]/.test(normalized) || normalized.length <= 6) {
-		return normalized.toUpperCase();
-	}
 	return normalized
 		.split(" ")
-		.map((word) =>
-			word.length <= 3
-				? word.toUpperCase()
-				: word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
-		)
+		.map((word, index) => formatTopicDisplayWord(word, index))
 		.join(" ");
 }
 
@@ -660,14 +756,17 @@ function buildThumbnailPrompt({
 			: "Keep the visual tone premium, modern, high-end, clean, bright, and clearly click-worthy for a long-form YouTube thumbnail.";
 	const topicFigureLine =
 		topicReferenceCount > 0
-			? "Use the topic reference image only as contextual inspiration for the left side story cue. Never replace or duplicate the presenter."
+			? "Use any topic reference images only as contextual inspiration for the left side story cue. Never replace or duplicate the presenter."
 			: "Use environmental or symbolic topic cues on the left side and never add extra people.";
 	return normalizeWhitespace(`
-Create one complete 16:9 YouTube thumbnail for a long-form video.
-Use the first input image as the seed composition.
-Respect the existing composition of the seed image instead of inventing a new crop.
+Create one complete premium 16:9 YouTube thumbnail for a long-form video.
+The first input image is the complete draft thumbnail, including layout, topic cue, presenter placement, badge, headline, and subline.
+Use the first input image as the composition and copy reference, then redesign and polish it like a top-performing YouTube editorial thumbnail.
+Improve clarity, contrast, lighting, color separation, depth, polish, and click appeal while preserving the same clear story.
+Use YouTube best practices for a thumbnail meant to attract very high click-through: instantly readable at mobile size, bold hierarchy, clean negative space, strong focal contrast, no clutter, no muddy lighting, and no tiny decorative details.
+Keep all important text and faces inside safe margins so the final 16:9 crop cannot cut anything off.
 Use the presenter reference image to preserve the same presenter identity, glasses, beard, hair, overall facial appearance, shoulders, and current dark outfit.
-The presenter must stay on the right side in the same position, same scale, and same framing established by the seed image, with the upper torso visible, camera-facing, photorealistic, crisp, and premium.
+The presenter must stay on the right side in the same position, same scale, and same framing established by the draft thumbnail, with the upper torso visible, camera-facing, photorealistic, crisp, and premium.
 Do not zoom in on the presenter face, do not crop tighter, do not reframe the presenter, and do not change the presenter scale relative to the frame.
 Allow only a tiny facial reaction: ${buildExpressionPrompt(pose)}.
 The face reaction must be micro-subtle: preserve the same identity, glasses, beard, hairline, facial proportions, and skin texture; do not reshape the face or create a reaction meme.
@@ -680,14 +779,15 @@ ${topicFigureLine}
 Keep the composition clean and uncluttered.
 Use one dominant left-side visual cue only, not a busy collage.
 Make the thumbnail instantly understandable at a glance on mobile.
-Render large, bold, clean, readable headline text exactly as: "${headline || "BIG UPDATE"}".
-Render a smaller badge exactly as: "${badgeText || "TOP STORY"}".
-${sublineText ? `Render a smaller supporting subline exactly as: "${sublineText}".` : ""}
+Render the large headline text exactly as: "${headline || "BIG UPDATE"}".
+Render the badge text exactly as: "${badgeText || "TOP STORY"}".
+${sublineText ? `Render the supporting subline exactly as: "${sublineText}".` : ""}
+Preserve the exact wording and spelling of all requested text. Do not invent, abbreviate, misspell, translate, duplicate, or crop any text.
 Typography must look deliberate, sharp, high-contrast, premium, and readable on YouTube.
 Use a clean visual hierarchy: headline first, badge second, supporting cue third.
 Do not add any extra readable text beyond those exact phrases.
 Do not add logos, watermarks, extra people, extra hands, deformed anatomy, broken glasses, damaged facial features, or muddy lighting.
-The final thumbnail should already look polished, bright, and production-ready with no post-processing required.
+The final thumbnail should look like a finished production thumbnail, not a rough draft.
 	`);
 }
 
@@ -789,21 +889,32 @@ function renderTopicLeadThumbnailPlate({
 		maxChars: 30,
 	});
 	const sublineFit = fitThumbnailText(sublineText || "", {
-		baseMaxChars: 18,
+		baseMaxChars: 28,
 		maxLines: 1,
-		maxChars: 26,
+		maxChars: 42,
 	});
 	const safeBadge = escapeDrawtext(
 		normalizeWhitespace(badgeText || "TOP STORY"),
 	);
 	const safeSubline = escapeDrawtext(sublineFit.text);
-	const headlineFontSize = Math.max(54, Math.round(96 * headlineFit.fontScale));
-	const sublineFontSize = Math.max(24, Math.round(34 * sublineFit.fontScale));
+	let headlineFontSize = Math.max(54, Math.round(96 * headlineFit.fontScale));
 	const headlineLines = String(headlineFit.text || "")
 		.split(/\n+/)
 		.map((line) => normalizeWhitespace(line))
 		.filter(Boolean)
 		.slice(0, 2);
+	headlineFontSize = fitFontSizeToWidth(headlineLines, headlineFontSize, {
+		maxWidth: THUMBNAIL_TOPIC_PANEL_W - 112,
+		minFontSize: 54,
+	});
+	const sublineFontSize = fitFontSizeToWidth(
+		[sublineFit.text],
+		Math.max(22, Math.round(32 * sublineFit.fontScale)),
+		{
+			maxWidth: THUMBNAIL_TOPIC_PANEL_W - 126,
+			minFontSize: 20,
+		},
+	);
 	const headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
 	const headlineStartY =
 		headlineLines.length > 1
@@ -1028,15 +1139,27 @@ async function generateOpenAiThumbnailPlate({
 		intent,
 		topicReferenceCount: topicReferencePaths.length,
 	});
-	const seedBasePath = composeThumbnailSeedBase({
-		jobId,
+	const designSeed = renderTopicLeadThumbnailPlate({
+		jobId: `${jobId || "thumbnail"}_openai_seed`,
 		tmpDir,
 		presenterLocalPath,
 		topicReferencePaths,
+		headline,
+		badgeText,
+		sublineText,
+		accent: chooseAccentColor(
+			intent,
+			buildContextText({ title, shortTitle, seoTitle, topics }),
+		),
+		log,
 	});
 	const rawPath = path.join(tmpDir, `thumb_plate_raw_${jobId}.png`);
 	const outputPath = path.join(tmpDir, `thumb_plate_${jobId}.jpg`);
 	if (typeof log === "function") {
+		log("thumbnail openai design seed ready", {
+			path: path.basename(designSeed.path || ""),
+			topicReferenceCount: topicReferencePaths.length,
+		});
 		log("thumbnail openai plate prompt", {
 			attempt: 1,
 			pose,
@@ -1044,7 +1167,11 @@ async function generateOpenAiThumbnailPlate({
 		});
 	}
 	try {
-		const imagePaths = [seedBasePath, presenterLocalPath];
+		const imagePaths = [
+			designSeed.path,
+			presenterLocalPath,
+			...topicReferencePaths.slice(0, 1),
+		].filter(Boolean);
 		await editImageToPath({
 			prompt,
 			imagePaths,
@@ -1072,9 +1199,10 @@ async function generateOpenAiThumbnailPlate({
 		}
 		return {
 			path: outputPath,
+			method: "openai_edit",
 		};
 	} finally {
-		safeUnlink(seedBasePath);
+		safeUnlink(designSeed.path);
 		safeUnlink(rawPath);
 	}
 }
@@ -1165,6 +1293,11 @@ async function generateThumbnailPackage({
 	});
 	if (typeof log === "function") {
 		log("thumbnail route selected", {
+			primaryRoute: "openai_edit",
+			fallbackRoutes:
+				preferTopicLead || topicReferencePaths.length
+					? ["topic_lead_local", "seed_fallback"]
+					: ["seed_fallback"],
 			preferTopicLead,
 			intent,
 			topicReferenceCount: topicReferencePaths.length,
@@ -1220,11 +1353,9 @@ async function generateThumbnailPackage({
 	const openAiStep = { name: "openai_edit", run: tryOpenAi };
 	const seedStep = { name: "seed_fallback", run: trySeedFallback };
 	const route =
-		preferTopicLead && topicReferencePaths.length
-			? [topicLeadStep, openAiStep, seedStep]
-			: topicReferencePaths.length
-				? [openAiStep, topicLeadStep, seedStep]
-				: [openAiStep, seedStep];
+		preferTopicLead || topicReferencePaths.length
+			? [openAiStep, topicLeadStep, seedStep]
+			: [openAiStep, seedStep];
 
 	for (const step of route) {
 		try {

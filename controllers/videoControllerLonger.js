@@ -9219,6 +9219,28 @@ function summarizeScriptEngagement(script = {}) {
 	};
 }
 
+const SOURCE_LABEL_OVERRIDES = new Map([
+	["asatunews.co.id", "AsatuNews"],
+	["bbc.com", "BBC"],
+	["bbc.co.uk", "BBC"],
+	["cbsnews.com", "CBS News"],
+	["cnn.com", "CNN"],
+	["espn.com", "ESPN"],
+	["hindustantimes.com", "Hindustan Times"],
+	["nytimes.com", "The New York Times"],
+	["theguardian.com", "The Guardian"],
+	["washingtonpost.com", "The Washington Post"],
+]);
+
+function sourceLabelOverride(normalizedHost = "") {
+	for (const [host, label] of SOURCE_LABEL_OVERRIDES) {
+		if (normalizedHost === host || normalizedHost.endsWith(`.${host}`)) {
+			return label;
+		}
+	}
+	return "";
+}
+
 function formatSourceLabel(host = "", topicLabel = "") {
 	const cleaned = String(host || "")
 		.replace(/^www\./i, "")
@@ -9242,8 +9264,10 @@ function formatSourceLabel(host = "", topicLabel = "") {
 	) {
 		return "";
 	}
+	const overrideLabel = sourceLabelOverride(normalizedHost);
+	if (overrideLabel) return overrideLabel;
 	const base = cleaned.replace(
-		/\.(com|net|org|co|us|uk|io|tv|info|biz|gov)$/i,
+		/(?:\.co)?\.(com|net|org|us|uk|io|tv|info|biz|gov|id|in|au|ca)$/i,
 		"",
 	);
 	const words = base
