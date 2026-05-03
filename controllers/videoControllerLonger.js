@@ -4054,6 +4054,44 @@ function applyThumbnailSeedSelectionMeta(
 		: 0;
 }
 
+const SOFT_PERSON_THUMBNAIL_SOURCE_TYPES = new Set([
+	"article",
+	"existing",
+	"fallback",
+	"seed",
+	"topic",
+	"trend",
+]);
+
+function thumbnailTopicHasPersonAnchor(label = "") {
+	if (looksLikePersonName(label)) return true;
+	const words = cleanTopicLabel(label)
+		.replace(/[^a-zA-Z\s'.-]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.split(/\s+/)
+		.filter(Boolean);
+	for (const count of [2, 3]) {
+		if (
+			words.length >= count &&
+			looksLikePersonName(words.slice(0, count).join(" "))
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function isSoftPersonThumbnailSelection(selected = {}, topicLabel = "") {
+	if (!selected || !thumbnailTopicHasPersonAnchor(topicLabel)) return false;
+	const sourceType = String(selected.sourceType || "").toLowerCase();
+	const confidence = String(selected.confidence || "").toLowerCase();
+	return (
+		confidence !== "high" &&
+		SOFT_PERSON_THUMBNAIL_SOURCE_TYPES.has(sourceType)
+	);
+}
+
 async function ensureThumbnailSeedImages({
 	topics = [],
 	tmpDir,
@@ -4138,12 +4176,34 @@ async function ensureThumbnailSeedImages({
 			topicLabel,
 		});
 		let source = selected?.sourceType || "seed";
+		if (isSoftPersonThumbnailSelection(selected, topicLabel)) {
+			if (selected?.localPath) safeUnlink(selected.localPath);
+			if (log)
+				log("thumbnail seed image deferred", {
+					topic: topicLabel,
+					reason: "soft_person_reference",
+					source,
+					confidence: selected?.confidence || null,
+				});
+			selected = null;
+		}
 
 		if (!selected) {
 			const fallbackUrls = await collectThumbnailFallbackUrls({
 				topicLabel,
 				articleUrls,
-				seedUrls: preferredEntries.map((entry) => entry.url),
+				seedUrls: preferredEntries
+					.filter(
+						(entry) =>
+							!isSoftPersonThumbnailSelection(
+								{
+									sourceType: entry.sourceType,
+									confidence: thumbnailReferenceConfidence(entry, topicLabel),
+								},
+								topicLabel,
+							),
+					)
+					.map((entry) => entry.url),
 				limit: 6,
 			});
 			if (fallbackUrls.length) {
@@ -4156,6 +4216,17 @@ async function ensureThumbnailSeedImages({
 					jobId,
 					topicLabel,
 				});
+				if (isSoftPersonThumbnailSelection(selected, topicLabel)) {
+					if (selected?.localPath) safeUnlink(selected.localPath);
+					if (log)
+						log("thumbnail seed image deferred", {
+							topic: topicLabel,
+							reason: "soft_person_reference",
+							source: selected?.sourceType || source,
+							confidence: selected?.confidence || null,
+						});
+					selected = null;
+				}
 			}
 		}
 
@@ -6420,7 +6491,7 @@ function buildThumbnailSignalsFromTopicPick(topicPick) {
 }
 
 const THUMBNAIL_SERIOUS_UPDATE_RE =
-	/\b(concussion|injury|injured|health|brain|hospital|recovery|tbi|brain damage|medical|surgery|illness|diagnosis)\b/i;
+	/\b(concussion|injury|injured|health|brain|hospital|recovery|tbi|brain damage|medical|surgery|illness|diagnosis|death|dead|died|dies|mourn|mourning|tribute|tributes|devastated|passed away)\b/i;
 const THUMBNAIL_IMAGE_STRIP_TOKENS = [
 	"concussion",
 	"injury",

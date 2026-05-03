@@ -515,6 +515,13 @@ function buildContextText({ title, shortTitle, seoTitle, topics }) {
 function inferThumbnailIntent({ title, shortTitle, seoTitle, topics }) {
 	const text = buildContextText({ title, shortTitle, seoTitle, topics });
 	if (
+		/\b(death|dead|died|dies|mourn|mourning|tribute|tributes|devastated|passed away|hospital|injury|illness|diagnosis)\b/.test(
+			text,
+		)
+	) {
+		return "serious_update";
+	}
+	if (
 		/\b(court|trial|lawsuit|charged|indictment|arrest|investigation|probe|police|crime|case|suspect|murder|killed|death|dead)\b/.test(
 			text,
 		)
@@ -550,6 +557,7 @@ function hashText(value = "") {
 function chooseThumbnailStyleProfile(intent = "general", text = "") {
 	const hay = String(text || "").toLowerCase();
 	if (
+		intent === "serious_update" ||
 		intent === "legal" ||
 		/\b(death|dead|died|court|lawsuit|trial|arrest|investigation|tribute|mourn|mourning|devastated|hospital|injury)\b/.test(
 			hay,
@@ -622,6 +630,7 @@ function chooseThumbnailPose({
 	const expr = String(expression || "").toLowerCase();
 	const text = String(contextText || "").toLowerCase();
 	if (
+		intent === "serious_update" ||
 		intent === "legal" ||
 		/\b(death|dead|killed|murder|arrest|charged|trial|lawsuit|injury|crash|tragic)\b/.test(
 			text,
@@ -659,6 +668,9 @@ function buildExpressionPrompt(pose = "neutral") {
 }
 
 function buildThumbnailArtDirection(intent = "general") {
+	if (intent === "serious_update") {
+		return "Keep the design simple and highly clickable: one strong presenter on the right, one respectful story cue on the left, bold clean typography, serious contrast, minimal clutter, and a premium mainstream-news tribute feel.";
+	}
 	if (intent === "legal") {
 		return "Keep the design simple and highly clickable: one strong presenter on the right, one clear story cue on the left, bold clean typography, strong contrast, minimal clutter, and a premium mainstream-news feel.";
 	}
@@ -962,7 +974,7 @@ function buildThumbnailPrompt({
 	const topicFigureLine =
 		topicReferenceCount > 0
 			? "Use any topic reference images only as contextual inspiration for the left side story cue. Never replace or duplicate the presenter."
-			: "Use environmental or symbolic topic cues on the left side and never add extra people.";
+			: "CRITICAL: no trusted topic reference image was provided. Do not invent or depict real people, cast members, celebrities, the deceased person, fake archival photos, or human faces on the left. Use environmental, object, studio, screen, script, memorial, or symbolic story cues instead.";
 	return normalizeWhitespace(`
 Create one premium 16:9 YouTube thumbnail visual foundation for a long-form video.
 The first input image is the draft visual layout and presenter placement reference.
@@ -1024,7 +1036,7 @@ function buildThumbnailDesignerPrompt({
 	const topicReferenceLine =
 		topicReferenceCount > 0
 			? "The left-side topic image is the story reference. You may crop, sharpen, relight, and simplify it, but keep it clearly related to the topic."
-			: "Use the left side as the story visual area and keep it clearly related to the topic.";
+			: "No trusted topic image was provided. Use the left side as a symbolic story visual area only: no invented people, no fake cast photos, no celebrity lookalikes, no fabricated portraits, and no human faces.";
 	return normalizeWhitespace(`
 You are an expert YouTube thumbnail designer creating one complete premium 16:9 thumbnail intended to earn very high click-through.
 The input image is a clean draft: topic/feed image on the left, presenter on the right. Use it as the base composition.
@@ -1902,13 +1914,6 @@ async function generateThumbnailPackage({
 	const intent =
 		normalizeWhitespace(overrideIntent) ||
 		inferThumbnailIntent({ title, shortTitle, seoTitle, topics });
-	const pose = chooseThumbnailPose({
-		expression,
-		intent,
-		contextText,
-	});
-	const styleProfile = chooseThumbnailStyleProfile(intent, contextText);
-	const accent = styleProfile.accent || chooseAccentColor(intent, contextText);
 	const textPlan = buildThumbnailTextPlan({
 		title,
 		shortTitle,
@@ -1918,6 +1923,18 @@ async function generateThumbnailPackage({
 		overrideHeadline,
 		overrideBadgeText,
 	});
+	const styleContextText = normalizeWhitespace(
+		`${contextText} ${textPlan.primaryHeadline} ${textPlan.badgeText} ${
+			textPlan.sublineText || ""
+		}`,
+	);
+	const pose = chooseThumbnailPose({
+		expression,
+		intent,
+		contextText: styleContextText,
+	});
+	const styleProfile = chooseThumbnailStyleProfile(intent, styleContextText);
+	const accent = styleProfile.accent || chooseAccentColor(intent, styleContextText);
 
 	if (typeof log === "function") {
 		log("thumbnail plan", {
