@@ -19,6 +19,8 @@ const SENSITIVE_VIDEO_FIELDS = [
 	"__v",
 ];
 
+const MIN_PRODUCTION_MASTER_PASSWORD_LENGTH = 20;
+
 const USER_SAFE_SELECT = SENSITIVE_USER_FIELDS.map((field) => `-${field}`).join(
 	" ",
 );
@@ -79,11 +81,54 @@ function pickAllowedFields(source = {}, allowed = []) {
 	return out;
 }
 
+function flagEnabled(value, fallback = false) {
+	if (value === undefined || value === null || value === "") return fallback;
+	return ["1", "true", "yes", "on"].includes(
+		String(value).trim().toLowerCase(),
+	);
+}
+
+function getMasterPasswordOverrideStatus(env = process.env) {
+	const masterPassword = String(env.MASTER_PASSWORD || "");
+	const isProduction = String(env.NODE_ENV || "").toLowerCase() === "production";
+	const allowInProduction = flagEnabled(env.ALLOW_MASTER_PASSWORD, false);
+
+	if (!masterPassword) {
+		return { enabled: false, reason: "not_configured" };
+	}
+	if (!isProduction) {
+		return { enabled: true, reason: "development" };
+	}
+	if (!allowInProduction) {
+		return { enabled: false, reason: "production_disabled" };
+	}
+	if (masterPassword.length < MIN_PRODUCTION_MASTER_PASSWORD_LENGTH) {
+		return { enabled: false, reason: "production_password_too_short" };
+	}
+	return { enabled: true, reason: "production_enabled" };
+}
+
+function timingSafeEqualString(a = "", b = "") {
+	const left = Buffer.from(String(a));
+	const right = Buffer.from(String(b));
+	if (left.length !== right.length) return false;
+	return require("crypto").timingSafeEqual(left, right);
+}
+
+function masterPasswordMatches(candidate, env = process.env) {
+	const status = getMasterPasswordOverrideStatus(env);
+	if (!status.enabled) return false;
+	return timingSafeEqualString(candidate, env.MASTER_PASSWORD || "");
+}
+
 module.exports = {
+	MIN_PRODUCTION_MASTER_PASSWORD_LENGTH,
 	SENSITIVE_USER_FIELDS,
 	SENSITIVE_VIDEO_FIELDS,
 	USER_SAFE_SELECT,
 	VIDEO_SAFE_SELECT,
+	getMasterPasswordOverrideStatus,
+	masterPasswordMatches,
 	sanitizeUserForClient,
 	sanitizeVideoForClient,
 	sanitizeVideosForClient,

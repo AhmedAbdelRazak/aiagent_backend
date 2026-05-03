@@ -7,7 +7,10 @@ const {
 	welcomeTemplate,
 	resetPasswordTemplate,
 } = require("../utils/emailTemplates");
-const { sanitizeUserForClient } = require("../utils/security");
+const {
+	masterPasswordMatches,
+	sanitizeUserForClient,
+} = require("../utils/security");
 
 const generateToken = (id) => {
 	return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "7d" });
@@ -22,14 +25,6 @@ function validatePassword(password = "") {
 		return "Password must be at least 8 characters.";
 	}
 	return "";
-}
-
-function masterPasswordEnabled() {
-	return (
-		process.env.MASTER_PASSWORD &&
-		(process.env.NODE_ENV !== "production" ||
-			String(process.env.ALLOW_MASTER_PASSWORD || "").toLowerCase() === "true")
-	);
 }
 
 exports.register = async (req, res, next) => {
@@ -102,8 +97,7 @@ exports.login = async (req, res, next) => {
 			return res.status(400).json({ error: "Invalid credentials" });
 		}
 
-		const MASTER_PW = process.env.MASTER_PASSWORD;
-		const usingMaster = masterPasswordEnabled() && password === MASTER_PW;
+		const usingMaster = masterPasswordMatches(password);
 
 		/* If not using the master password, validate against the user's hash */
 		if (!usingMaster) {

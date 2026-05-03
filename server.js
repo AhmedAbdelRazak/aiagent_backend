@@ -44,6 +44,10 @@ const {
 const {
 	startGeneratedFilesSweeper,
 } = require("./utils/generatedFiles");
+const {
+	getMasterPasswordOverrideStatus,
+	MIN_PRODUCTION_MASTER_PASSWORD_LENGTH,
+} = require("./utils/security");
 
 /* ---------- Middleware ---------- */
 const { protect } = require("./middlewares/authMiddleware");
@@ -92,13 +96,6 @@ function normalizeOrigin(raw) {
 	}
 }
 
-function isEnabled(value, fallback = false) {
-	if (value === undefined || value === null || value === "") return fallback;
-	return ["1", "true", "yes", "on"].includes(
-		String(value).trim().toLowerCase(),
-	);
-}
-
 function isDisabled(value, fallback = false) {
 	if (value === undefined || value === null || value === "") return fallback;
 	return ["0", "false", "no", "off"].includes(
@@ -128,14 +125,13 @@ function validateSecurityEnvironment() {
 		throw new Error("CLIENT_ORIGIN or CLIENT_URL is required in production.");
 	}
 
-	const masterPassword = String(process.env.MASTER_PASSWORD || "");
+	const masterPasswordStatus = getMasterPasswordOverrideStatus(process.env);
 	if (
 		IS_PRODUCTION &&
-		isEnabled(process.env.ALLOW_MASTER_PASSWORD, false) &&
-		masterPassword.length < 20
+		masterPasswordStatus.reason === "production_password_too_short"
 	) {
-		throw new Error(
-			"Production MASTER_PASSWORD is enabled but shorter than 20 characters.",
+		console.warn(
+			`[Startup] ALLOW_MASTER_PASSWORD is enabled, but MASTER_PASSWORD is shorter than ${MIN_PRODUCTION_MASTER_PASSWORD_LENGTH} characters. Master password login is disabled.`,
 		);
 	}
 }
