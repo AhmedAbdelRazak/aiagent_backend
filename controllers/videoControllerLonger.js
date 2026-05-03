@@ -6480,6 +6480,16 @@ function buildPersonSpecificHeadline({ title = "", signals } = {}) {
 		(signals?.articleTitles || []).join(" "),
 	].join(" ");
 	const lower = hay.toLowerCase();
+	if (
+		/\b(cast|co-?stars?|fans|tributes?|mourn|mourning|devastated)\b/.test(
+			lower,
+		) &&
+		/\b(death|dead|died|mourn|mourning|tributes?)\b/.test(lower)
+	) {
+		return "CAST MOURNS";
+	}
+	if (/\b(cause of death|what happened|dead|died|death)\b/.test(lower))
+		return "WHAT HAPPENED?";
 	if (/\b(steps back|stepping away)\b/.test(lower)) return "STEPS BACK";
 	if (/\b(acting pause|pause from acting|acting break)\b/.test(lower))
 		return "ACTING PAUSE";
@@ -6499,6 +6509,8 @@ function pickHookFromQueries({
 
 	if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
 		return { headline: "WHAT HAPPENED", badge: "NEW DETAILS" };
+	if (/\b(cause of death|dead|died|death)\b/.test(hay))
+		return { headline: "WHAT HAPPENED?", badge: "WHAT WE KNOW" };
 	if (/\bwhy\b|\bexplained\b|\bmeaning\b/.test(hay))
 		return { headline: "EXPLAINED", badge: "BREAKDOWN" };
 	if (/\breaction\b|\bresigns?\b|\bsteps down\b/.test(hay))
@@ -6628,6 +6640,22 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 		slope,
 	});
 	let resolvedHeadline = clampHeadline(headline);
+	const storySpecificHeadline = buildPersonSpecificHeadline({ title, signals });
+	if (
+		storySpecificHeadline &&
+		(THUMBNAIL_GENERIC_HOOK_HEADLINES.has(resolvedHeadline) ||
+			/\b(death|dead|died|mourn|mourning|tribute|devastated)\b/i.test(
+				[
+					title || "",
+					signals?.displayTopic || "",
+					(signals?.articleTitles || []).join(" "),
+					(rq.top || []).join(" "),
+					(rq.rising || []).join(" "),
+				].join(" "),
+			))
+	) {
+		resolvedHeadline = clampHeadline(storySpecificHeadline);
+	}
 	const isPerson = looksLikePersonName(signals.displayTopic || "");
 	if (topics.length === 1 && isPerson) {
 		const isGeneric = THUMBNAIL_GENERIC_HOOK_HEADLINES.has(resolvedHeadline);
@@ -9229,6 +9257,7 @@ const SOURCE_LABEL_OVERRIDES = new Map([
 	["hindustantimes.com", "Hindustan Times"],
 	["nytimes.com", "The New York Times"],
 	["theguardian.com", "The Guardian"],
+	["usatoday.com", "USA Today"],
 	["washingtonpost.com", "The Washington Post"],
 ]);
 

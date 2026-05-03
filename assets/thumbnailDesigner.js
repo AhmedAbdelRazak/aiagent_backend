@@ -778,10 +778,8 @@ Keep all important faces inside safe margins so the final 16:9 crop cannot cut a
 Use the presenter reference image to preserve the same presenter identity, glasses, beard, hair, overall facial appearance, shoulders, and current dark outfit.
 The presenter must stay on the right side in the same position, same scale, and same framing established by the draft image, with the upper torso visible, camera-facing, photorealistic, crisp, and premium.
 Do not zoom in on the presenter face, do not crop tighter, do not reframe the presenter, and do not change the presenter scale relative to the frame.
-Allow only a tiny facial reaction: ${buildExpressionPrompt(pose)}.
-The face reaction must be micro-subtle: preserve the same identity, glasses, beard, hairline, natural eyebrow shape, facial proportions, and skin texture; do not reshape the face or create a reaction meme.
-Keep both eyebrows realistic, balanced, and close to the reference. Do not arch one eyebrow, do not enlarge the eyes, and do not make the face look surprised unless explicitly requested.
-Do not damage or redesign the presenter.
+Do not change the presenter expression. Treat the presenter as locked: same face, same eyes, same eyebrows, same mouth, same glasses, same beard, same hairline, same body position.
+Do not damage, redraw, redesign, relight, sharpen, smooth, stylize, or beautify the presenter. Design around him.
 Use the left side for the story setup and leave clear negative space for final text overlays.
 Topic direction: ${topicFocus || "current trending story"}.
 ${artDirection}
@@ -848,8 +846,8 @@ Typography direction:
 Presenter guardrails:
 - Preserve the presenter identity from the right side and presenter reference: same person, glasses, beard, hairline, facial proportions, skin texture, and outfit feel.
 - The presenter must remain on the right side, upper torso visible, camera-facing, same scale and framing as the draft.
-- Add only a tiny calm reaction based on the topic: ${buildExpressionPrompt(pose)}.
-- The reaction must be subtle but present. Keep eyebrows natural and balanced, eyes not enlarged, mouth natural, no meme face, no shock, no caricature.
+- Treat the presenter as locked. Do not change his face, expression, eyebrows, eyes, mouth, glasses, beard, hairline, body position, outfit, or lighting.
+- Do not add a reaction to the presenter. Put the click appeal into the composition, color, typography, contrast, and story cue instead.
 - Do not distort the face, glasses, beard, hands, anatomy, or clothing.
 
 Final result:
@@ -1308,6 +1306,55 @@ function normalizeThumbnailOutput({ candidatePath, outPath }) {
 	return outPath;
 }
 
+function lockPresenterPanel({
+	jobId,
+	tmpDir,
+	basePath,
+	presenterLocalPath,
+	label = "presenter_locked",
+	log,
+}) {
+	ensureImageFile(basePath, 5000);
+	ensureImageFile(presenterLocalPath, 5000);
+	const outputPath = path.join(
+		tmpDir,
+		`thumb_${safeSlug(label, 24)}_${jobId}.jpg`,
+	);
+	runFfmpeg(
+		[
+			"-i",
+			basePath,
+			"-i",
+			presenterLocalPath,
+			"-filter_complex",
+			[
+				`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,` +
+					`crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,setsar=1[base]`,
+				`[1:v]scale=${THUMBNAIL_PRESENTER_PANEL_W + 32}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,` +
+					`crop=${THUMBNAIL_PRESENTER_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,setsar=1[presenter]`,
+				`[base][presenter]overlay=${THUMBNAIL_TOPIC_PANEL_W}:0[outv]`,
+			].join(";"),
+			"-map",
+			"[outv]",
+			"-frames:v",
+			"1",
+			"-q:v",
+			"1",
+			"-y",
+			outputPath,
+		],
+		"thumbnail_presenter_lock",
+	);
+	ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+	if (typeof log === "function") {
+		log("thumbnail presenter locked", {
+			path: path.basename(outputPath),
+			label,
+		});
+	}
+	return outputPath;
+}
+
 function assertCloudinaryReady() {
 	if (
 		!process.env.CLOUDINARY_CLOUD_NAME ||
@@ -1385,6 +1432,7 @@ async function generateOpenAiDesignerThumbnailPlate({
 	});
 	const rawPath = path.join(tmpDir, `thumb_designer_raw_${jobId}.png`);
 	const outputPath = path.join(tmpDir, `thumb_designer_${jobId}.jpg`);
+	let lockedPath = "";
 	if (typeof log === "function") {
 		log("thumbnail openai designer seed ready", {
 			path: path.basename(visualSeed.path || ""),
@@ -1424,19 +1472,28 @@ async function generateOpenAiDesignerThumbnailPlate({
 			outPath: outputPath,
 		});
 		ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+		lockedPath = lockPresenterPanel({
+			jobId,
+			tmpDir,
+			basePath: outputPath,
+			presenterLocalPath,
+			label: "designer_presenter_locked",
+			log,
+		});
 		if (typeof log === "function") {
 			log("thumbnail openai designer ready", {
 				attempt: 1,
-				path: path.basename(outputPath),
+				path: path.basename(lockedPath),
 			});
 		}
 		return {
-			path: outputPath,
+			path: lockedPath,
 			method: "openai_full_designer",
 		};
 	} finally {
 		safeUnlink(visualSeed.path);
 		safeUnlink(rawPath);
+		safeUnlink(outputPath);
 	}
 }
 
@@ -1482,6 +1539,7 @@ async function generateOpenAiThumbnailPlate({
 	});
 	const rawPath = path.join(tmpDir, `thumb_plate_raw_${jobId}.png`);
 	const polishedPath = path.join(tmpDir, `thumb_polished_${jobId}.jpg`);
+	let lockedPolishedPath = "";
 	if (typeof log === "function") {
 		log("thumbnail openai visual seed ready", {
 			path: path.basename(visualSeed.path || ""),
@@ -1524,10 +1582,18 @@ async function generateOpenAiThumbnailPlate({
 				path: path.basename(polishedPath),
 			});
 		}
-		return renderLockedThumbnailTextOverlay({
+		lockedPolishedPath = lockPresenterPanel({
 			jobId,
 			tmpDir,
 			basePath: polishedPath,
+			presenterLocalPath,
+			label: "polished_presenter_locked",
+			log,
+		});
+		return renderLockedThumbnailTextOverlay({
+			jobId,
+			tmpDir,
+			basePath: lockedPolishedPath,
 			headline,
 			badgeText,
 			sublineText,
@@ -1538,6 +1604,7 @@ async function generateOpenAiThumbnailPlate({
 		safeUnlink(visualSeed.path);
 		safeUnlink(rawPath);
 		safeUnlink(polishedPath);
+		safeUnlink(lockedPolishedPath);
 	}
 }
 
