@@ -787,9 +787,10 @@ ${moodLine}
 ${topicFigureLine}
 Keep the composition clean and uncluttered.
 Use one dominant left-side visual cue only, not a busy collage.
+Make the left topic/feed image feel intentionally chosen and sharpened. Avoid letting an unrelated celebrity, fashion, red-carpet, or generic stock-like image become the story cue unless that is truly the topic.
 Make the thumbnail instantly understandable at a glance on mobile.
 Do not render any readable text, letters, captions, labels, signs, logos, watermarks, lower thirds, badges, or duplicated words. The final text will be added separately after this visual edit.
-Keep the lower-left and upper-left areas clean enough for bold thumbnail text to be added later.
+Keep the lower third clean enough for bold thumbnail text to be added later. The final text may overlap the lower presenter jacket/torso area, but the presenter face and glasses must stay clean.
 Do not add logos, watermarks, extra people, extra hands, deformed anatomy, broken glasses, damaged facial features, or muddy lighting.
 The final thumbnail should look like a finished production thumbnail, not a rough draft.
 	`);
@@ -818,6 +819,8 @@ function buildThumbnailDesignerPrompt({
 	const suggestedHeadline = normalizeWhitespace(headline || "NEW DETAILS");
 	const suggestedBadge = normalizeWhitespace(badgeText || "JUST DROPPED");
 	const suggestedSubline = normalizeWhitespace(sublineText || primaryTopic);
+	const textSafeWidth = THUMBNAIL_TOPIC_PANEL_W - 96;
+	const textSafeRight = THUMBNAIL_TOPIC_PANEL_W - 48;
 	const topicReferenceLine =
 		topicReferenceCount > 0
 			? "The left-side topic image is the story reference. You may crop, sharpen, relight, and simplify it, but keep it clearly related to the topic."
@@ -842,6 +845,10 @@ Typography direction:
 - Use at most two dominant text elements, plus one tiny subject label only if it improves clarity.
 - Keep the total readable text short. Do not add paragraphs, duplicate lines, watermarks, logos, or extra captions.
 - You may slightly improve the text wording only if it is shorter, clearer, more clickable, and still truthful to the topic.
+- Hard text safe zone: every readable word, badge, label, shadow, stroke, and text box must fit completely inside the left story panel only, from x=48 to x=${textSafeRight}, within roughly ${textSafeWidth}px of usable width.
+- Never place text across the vertical divider, over the center seam, on the presenter, or in the right 42% presenter panel.
+- Keep the main headline to one or two short lines on the left panel. If needed, make the font smaller rather than letting text run under the presenter.
+- Keep all text at least 36px away from every frame edge. No cropped words, no half-visible badges, and no text touching the top, bottom, left, or divider edge.
 
 Presenter guardrails:
 - Preserve the presenter identity from the right side and presenter reference: same person, glasses, beard, hairline, facial proportions, skin texture, and outfit feel.
@@ -849,6 +856,7 @@ Presenter guardrails:
 - Treat the presenter as locked. Do not change his face, expression, eyebrows, eyes, mouth, glasses, beard, hairline, body position, outfit, or lighting.
 - Do not add a reaction to the presenter. Put the click appeal into the composition, color, typography, contrast, and story cue instead.
 - Do not distort the face, glasses, beard, hands, anatomy, or clothing.
+- Important production note: after your design is generated, the original presenter panel on the right will be composited back over the image to lock the presenter. Anything you put on the right side will be hidden. Keep the right side clean and text-free.
 
 Final result:
 - One finished production-ready YouTube thumbnail.
@@ -1121,49 +1129,60 @@ function renderLockedThumbnailTextOverlay({
 	const fontFile = resolveThumbnailFontFile();
 	const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
 	const accentColor = normalizeAccentColor(accent);
+	const badgeFit = fitThumbnailText(badgeText || "TOP STORY", {
+		baseMaxChars: 16,
+		maxLines: 1,
+		maxChars: 20,
+	});
 	const headlineFit = fitThumbnailText(headline || "BIG UPDATE", {
-		baseMaxChars: 12,
+		baseMaxChars: 18,
 		maxLines: 2,
-		maxChars: 26,
+		maxChars: 30,
 	});
 	const sublineFit = fitThumbnailText(sublineText || "", {
 		baseMaxChars: 18,
 		maxLines: 1,
 		maxChars: 24,
 	});
-	const safeBadge = escapeDrawtext(
-		normalizeWhitespace(badgeText || "TOP STORY"),
-	);
+	const safeBadge = escapeDrawtext(badgeFit.text || "TOP STORY");
 	const safeSubline = escapeDrawtext(sublineFit.text);
-	let headlineFontSize = Math.max(54, Math.round(94 * headlineFit.fontScale));
+	const badgeFontSize = fitFontSizeToWidth(
+		[badgeFit.text || "TOP STORY"],
+		38,
+		{
+			maxWidth: THUMBNAIL_TOPIC_PANEL_W - 126,
+			minFontSize: 28,
+		},
+	);
+	let headlineFontSize = Math.max(58, Math.round(104 * headlineFit.fontScale));
 	const headlineLines = String(headlineFit.text || "")
 		.split(/\n+/)
 		.map((line) => normalizeWhitespace(line))
 		.filter(Boolean)
 		.slice(0, 2);
 	headlineFontSize = fitFontSizeToWidth(headlineLines, headlineFontSize, {
-		maxWidth: THUMBNAIL_TOPIC_PANEL_W - 118,
-		minFontSize: 54,
+		maxWidth: THUMBNAIL_WIDTH - 116,
+		minFontSize: 56,
 	});
 	const sublineFontSize = fitFontSizeToWidth(
 		[sublineFit.text],
 		Math.max(22, Math.round(31 * sublineFit.fontScale)),
 		{
-			maxWidth: THUMBNAIL_TOPIC_PANEL_W - 126,
+			maxWidth: THUMBNAIL_WIDTH - 126,
 			minFontSize: 20,
 		},
 	);
 	const headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
-	const headlineStartY =
-		headlineLines.length > 1
-			? 382
-			: Math.max(408, Math.round(442 - headlineFontSize * 0.25));
+	const headlineStartY = headlineLines.length > 1 ? 404 : 472;
+	const lowerBoxY = headlineLines.length > 1 ? 374 : 404;
 	const filters = [
 		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,setsar=1[base]`,
-		`[base]drawbox=x=0:y=384:w=${THUMBNAIL_TOPIC_PANEL_W}:h=258:color=black@0.20:t=fill[tmp0]`,
+		`[base]drawbox=x=0:y=${lowerBoxY}:w=${THUMBNAIL_WIDTH}:h=${
+			THUMBNAIL_HEIGHT - lowerBoxY
+		}:color=black@0.20:t=fill[tmp0]`,
 	];
 	const textFilters = [
-		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=38:fontcolor=black:x=58:y=72:box=1:boxcolor=${accentColor}@0.98:boxborderw=14:borderw=0:shadowx=0:shadowy=0`,
+		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=${badgeFontSize}:fontcolor=black:x=58:y=72:box=1:boxcolor=${accentColor}@0.98:boxborderw=14:borderw=0:shadowx=0:shadowy=0`,
 	];
 	for (let i = 0; i < headlineLines.length; i++) {
 		textFilters.push(
@@ -1694,11 +1713,11 @@ async function generateThumbnailPackage({
 	});
 	if (typeof log === "function") {
 		log("thumbnail route selected", {
-			primaryRoute: "openai_full_designer",
+			primaryRoute: "openai_edit_text_locked",
 			fallbackRoutes:
 				preferTopicLead || topicReferencePaths.length
-					? ["openai_edit_text_locked", "topic_lead_local", "seed_fallback"]
-					: ["openai_edit_text_locked", "seed_fallback"],
+					? ["topic_lead_local", "seed_fallback"]
+					: ["seed_fallback"],
 			preferTopicLead,
 			intent,
 			topicReferenceCount: topicReferencePaths.length,
@@ -1739,9 +1758,6 @@ async function generateThumbnailPackage({
 			log,
 		});
 
-	const tryOpenAiFullDesigner = () =>
-		generateOpenAiDesignerThumbnailPlate(sharedThumbArgs);
-
 	const tryOpenAi = () => generateOpenAiThumbnailPlate(sharedThumbArgs);
 
 	const trySeedFallback = () =>
@@ -1754,16 +1770,12 @@ async function generateThumbnailPackage({
 		});
 
 	const topicLeadStep = { name: "topic_lead_local", run: tryTopicLead };
-	const fullDesignerStep = {
-		name: "openai_full_designer",
-		run: tryOpenAiFullDesigner,
-	};
 	const openAiStep = { name: "openai_edit_text_locked", run: tryOpenAi };
 	const seedStep = { name: "seed_fallback", run: trySeedFallback };
 	const route =
 		preferTopicLead || topicReferencePaths.length
-			? [fullDesignerStep, openAiStep, topicLeadStep, seedStep]
-			: [fullDesignerStep, openAiStep, seedStep];
+			? [openAiStep, topicLeadStep, seedStep]
+			: [openAiStep, seedStep];
 
 	for (const step of route) {
 		try {

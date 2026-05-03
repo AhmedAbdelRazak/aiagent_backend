@@ -3644,6 +3644,12 @@ function buildThumbnailSeedCandidateEntries(topicObj = {}) {
 	);
 }
 
+const SEARCH_ONLY_THUMBNAIL_SOURCE_TYPES = new Set([
+	"cse",
+	"cse-query",
+	"google-images",
+]);
+
 function thumbnailSourceTrust(sourceType = "") {
 	const type = String(sourceType || "").toLowerCase();
 	if (
@@ -3660,17 +3666,56 @@ function thumbnailSourceTrust(sourceType = "") {
 	return 1;
 }
 
+function thumbnailCandidateUrlTokenHits(entry = {}, topicLabel = "") {
+	const tokens = expandTopicTokens(
+		filterSpecificTopicTokens(topicTokensFromTitle(topicLabel)),
+	);
+	if (!tokens.length) return 0;
+	const text = normalizeWhitespace(`${entry.source || ""} ${entry.url || ""}`)
+		.toLowerCase()
+		.replace(/[_-]+/g, " ");
+	let hits = 0;
+	for (const tok of tokens) {
+		if (text.includes(tok)) hits += 1;
+	}
+	return hits;
+}
+
+function hasKnownThumbnailMismatch(entry = {}, topicLabel = "") {
+	const topic = normalizeWhitespace(topicLabel).toLowerCase();
+	const text = normalizeWhitespace(
+		`${entry.title || ""} ${entry.description || ""} ${entry.source || ""} ${
+			entry.url || ""
+		}`,
+	)
+		.toLowerCase()
+		.replace(/[_-]+/g, " ");
+	if (/\bdavid kendall\b/.test(topic) && /\bjenner\b/.test(text)) {
+		return true;
+	}
+	return false;
+}
+
+function thumbnailEffectiveSourceTrust(entry = {}, topicLabel = "") {
+	const baseTrust = thumbnailSourceTrust(entry.sourceType);
+	const type = String(entry.sourceType || "").toLowerCase();
+	if (!SEARCH_ONLY_THUMBNAIL_SOURCE_TYPES.has(type)) return baseTrust;
+	const tokens = filterSpecificTopicTokens(topicTokensFromTitle(topicLabel));
+	const requiredHits = Math.min(2, Math.max(1, tokens.length));
+	const urlHits = thumbnailCandidateUrlTokenHits(entry, topicLabel);
+	if (urlHits < requiredHits) return Math.min(baseTrust, 1);
+	return baseTrust;
+}
+
 function thumbnailCandidateTextScore(entry = {}, topicLabel = "") {
 	const tokens = expandTopicTokens(
 		filterSpecificTopicTokens(topicTokensFromTitle(topicLabel)),
 	);
 	if (!tokens.length) return 0;
-	const fields = [
-		entry.title,
-		entry.description,
-		entry.source,
-		entry.url,
-	].filter(Boolean);
+	const type = String(entry.sourceType || "").toLowerCase();
+	const fields = SEARCH_ONLY_THUMBNAIL_SOURCE_TYPES.has(type)
+		? [entry.source, entry.url].filter(Boolean)
+		: [entry.title, entry.description, entry.source, entry.url].filter(Boolean);
 	const info = topicMatchInfo(tokens, fields);
 	let urlMatches = 0;
 	const urlText = `${entry.url || ""} ${entry.source || ""}`.toLowerCase();
@@ -3681,7 +3726,8 @@ function thumbnailCandidateTextScore(entry = {}, topicLabel = "") {
 }
 
 function thumbnailReferenceConfidence(entry = {}, topicLabel = "") {
-	const trust = thumbnailSourceTrust(entry.sourceType);
+	if (hasKnownThumbnailMismatch(entry, topicLabel)) return "weak";
+	const trust = thumbnailEffectiveSourceTrust(entry, topicLabel);
 	const textScore = thumbnailCandidateTextScore(entry, topicLabel);
 	if (trust >= 4) return "high";
 	if (trust >= 3 && textScore >= 1) return "high";
@@ -3882,16 +3928,21 @@ async function selectBestThumbnailSeedCandidate({
 	const candidates = dedupeThumbnailSeedEntries(urls).filter(
 		(entry) => isHttpUrl(entry.url) && !isLikelyThumbnailUrl(entry.url),
 	);
-	candidates.sort((a, b) => {
+	const safeCandidates = candidates.filter(
+		(entry) => !hasKnownThumbnailMismatch(entry, topicLabel),
+	);
+	const rankedCandidates = safeCandidates.length ? safeCandidates : candidates;
+	rankedCandidates.sort((a, b) => {
 		const trustDelta =
-			thumbnailSourceTrust(b.sourceType) - thumbnailSourceTrust(a.sourceType);
+			thumbnailEffectiveSourceTrust(b, topicLabel) -
+			thumbnailEffectiveSourceTrust(a, topicLabel);
 		if (trustDelta) return trustDelta;
 		return (
 			thumbnailCandidateTextScore(b, topicLabel) -
 			thumbnailCandidateTextScore(a, topicLabel)
 		);
 	});
-	for (const entry of candidates) {
+	for (const entry of rankedCandidates) {
 		if (isCloudinaryImageUrl(entry.url)) {
 			return {
 				url: entry.url,
@@ -3903,7 +3954,7 @@ async function selectBestThumbnailSeedCandidate({
 	}
 	let attempts = 0;
 	let best = null;
-	for (const entry of candidates) {
+	for (const entry of rankedCandidates) {
 		if (attempts >= maxDownloads) break;
 		const url = entry.url;
 		const looksDirect = isProbablyDirectImageUrl(url);
@@ -3948,7 +3999,7 @@ async function selectBestThumbnailSeedCandidate({
 				Number.isFinite(aspectRatio) && aspectRatio >= 1.08
 					? Math.min((aspectRatio - 1) * 0.12, 0.22)
 					: 0;
-			const trust = thumbnailSourceTrust(entry.sourceType);
+			const trust = thumbnailEffectiveSourceTrust(entry, topicLabel);
 			const textScore = thumbnailCandidateTextScore(entry, topicLabel);
 			const score =
 				trust * 1e12 + textScore * 1e10 + tier * 1e9 + area * (1 + portraitBoost);
@@ -4027,10 +4078,12 @@ async function ensureThumbnailSeedImages({
 			.map((a) => a?.url)
 			.filter((u) => isHttpUrl(u));
 
+		const trustedSeedCount = countTrustedThumbnailEntries(
+			candidateEntries,
+			topicLabel,
+		);
 		const shouldSmartTopUp =
-			topicLabel &&
-			(candidateEntries.length < 2 ||
-				countTrustedThumbnailEntries(candidateEntries, topicLabel) < 2);
+			topicLabel && (candidateEntries.length < 4 || trustedSeedCount < 2);
 		let searchEntries = [];
 		if (shouldSmartTopUp) {
 			searchEntries = await collectThumbnailSearchCandidateEntries({
