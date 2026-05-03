@@ -3775,6 +3775,7 @@ async function collectThumbnailSearchCandidateEntries({
 	jobId,
 	log,
 	target = 6,
+	allowCse = false,
 }) {
 	const topic = cleanTopicLabel(topicLabel);
 	if (!topic) return [];
@@ -3782,41 +3783,6 @@ async function collectThumbnailSearchCandidateEntries({
 	const targetCount = clampNumber(Number(target) || 6, 2, 10);
 	const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
 	const queries = buildThumbnailSearchQueries({ topicLabel: topic, imageQueries });
-
-	if (GOOGLE_CSE_ID && GOOGLE_CSE_KEY) {
-		for (const query of queries.slice(0, 3)) {
-			if (entries.length >= targetCount) break;
-			const urls = await fetchCseImagesForQuery(
-				query,
-				topicTokens,
-				Math.max(3, targetCount - entries.length),
-				jobId,
-				{ maxPages: 2 },
-			);
-			entries.push(
-				...urls.map((url) =>
-					normalizeThumbnailSeedEntry(
-						{ url, sourceType: "cse-query", title: query, description: query },
-						"cse-query",
-					),
-				),
-			);
-		}
-		if (entries.length < targetCount) {
-			const urls = await fetchCseImages(topic, [], jobId, {
-				maxResults: Math.max(4, targetCount - entries.length),
-				maxPages: 2,
-			});
-			entries.push(
-				...urls.map((url) =>
-					normalizeThumbnailSeedEntry(
-						{ url, sourceType: "cse", title: topic, description: topic },
-						"cse",
-					),
-				),
-			);
-		}
-	}
 
 	if (entries.length < 2) {
 		const wiki = await fetchWikipediaPageImageUrl(topic);
@@ -3876,12 +3842,48 @@ async function collectThumbnailSearchCandidateEntries({
 		}
 	}
 
+	if (allowCse && GOOGLE_CSE_ID && GOOGLE_CSE_KEY) {
+		for (const query of queries.slice(0, 3)) {
+			if (entries.length >= targetCount) break;
+			const urls = await fetchCseImagesForQuery(
+				query,
+				topicTokens,
+				Math.max(3, targetCount - entries.length),
+				jobId,
+				{ maxPages: 2 },
+			);
+			entries.push(
+				...urls.map((url) =>
+					normalizeThumbnailSeedEntry(
+						{ url, sourceType: "cse-query", title: query, description: query },
+						"cse-query",
+					),
+				),
+			);
+		}
+		if (entries.length < targetCount) {
+			const urls = await fetchCseImages(topic, [], jobId, {
+				maxResults: Math.max(4, targetCount - entries.length),
+				maxPages: 2,
+			});
+			entries.push(
+				...urls.map((url) =>
+					normalizeThumbnailSeedEntry(
+						{ url, sourceType: "cse", title: topic, description: topic },
+						"cse",
+					),
+				),
+			);
+		}
+	}
+
 	const deduped = dedupeThumbnailSeedEntries(entries, { limit: targetCount });
 	if (typeof log === "function" && deduped.length) {
 		log("thumbnail seed smart topup", {
 			topic,
 			count: deduped.length,
 			queries: queries.slice(0, 4),
+			allowCse,
 		});
 	}
 	return deduped;
@@ -3955,6 +3957,8 @@ async function selectBestThumbnailSeedCandidate({
 				cloudinary: true,
 				sourceType: entry.sourceType,
 				confidence: thumbnailReferenceConfidence(entry, topicLabel),
+				sourceTrust: thumbnailEffectiveSourceTrust(entry, topicLabel),
+				textScore: thumbnailCandidateTextScore(entry, topicLabel),
 			};
 		}
 	}
@@ -4020,6 +4024,8 @@ async function selectBestThumbnailSeedCandidate({
 					score,
 					sourceType: entry.sourceType,
 					confidence: thumbnailReferenceConfidence(entry, topicLabel),
+					sourceTrust: trust,
+					textScore,
 				};
 			} else {
 				safeUnlink(outPath);
@@ -4029,6 +4035,23 @@ async function selectBestThumbnailSeedCandidate({
 		}
 	}
 	return best;
+}
+
+function applyThumbnailSeedSelectionMeta(
+	topic,
+	selected = {},
+	source = "seed",
+	fallbackConfidence = "weak",
+) {
+	if (!topic || !selected) return;
+	const textScore = Number(selected.textScore);
+	const sourceTrust = Number(selected.sourceTrust);
+	topic.thumbnailImageConfidence = selected.confidence || fallbackConfidence;
+	topic.thumbnailImageSourceType = selected.sourceType || source || "seed";
+	topic.thumbnailImageTextScore = Number.isFinite(textScore) ? textScore : 0;
+	topic.thumbnailImageSourceTrust = Number.isFinite(sourceTrust)
+		? sourceTrust
+		: 0;
 }
 
 async function ensureThumbnailSeedImages({
@@ -4170,7 +4193,7 @@ async function ensureThumbnailSeedImages({
 
 		if (selected.cloudinary && selected.url) {
 			t.thumbnailImageUrls = [selected.url];
-			t.thumbnailImageConfidence = selected.confidence || "medium";
+			applyThumbnailSeedSelectionMeta(t, selected, source, "medium");
 			if (log)
 				log("thumbnail seed image selected", {
 					topic: topicLabel,
@@ -4198,7 +4221,7 @@ async function ensureThumbnailSeedImages({
 				);
 				if (uploaded?.url) {
 					t.thumbnailImageUrls = [uploaded.url];
-					t.thumbnailImageConfidence = selected.confidence || "medium";
+					applyThumbnailSeedSelectionMeta(t, selected, source, "medium");
 					if (log)
 						log("thumbnail seed image uploaded", {
 							topic: topicLabel,
@@ -4210,7 +4233,7 @@ async function ensureThumbnailSeedImages({
 						});
 				} else if (selected.url) {
 					t.thumbnailImageUrls = [selected.url];
-					t.thumbnailImageConfidence = selected.confidence || "weak";
+					applyThumbnailSeedSelectionMeta(t, selected, source, "weak");
 					if (log)
 						log("thumbnail seed image upload missing; using raw url", {
 							topic: topicLabel,
@@ -4221,7 +4244,8 @@ async function ensureThumbnailSeedImages({
 				}
 			} catch (e) {
 				if (selected.url) t.thumbnailImageUrls = [selected.url];
-				if (selected.url) t.thumbnailImageConfidence = selected.confidence || "weak";
+				if (selected.url)
+					applyThumbnailSeedSelectionMeta(t, selected, source, "weak");
 				if (log)
 					log("thumbnail seed image upload failed", {
 						topic: topicLabel,
@@ -4235,7 +4259,7 @@ async function ensureThumbnailSeedImages({
 
 		if (selected.url) {
 			t.thumbnailImageUrls = [selected.url];
-			t.thumbnailImageConfidence = selected.confidence || "weak";
+			applyThumbnailSeedSelectionMeta(t, selected, source, "weak");
 			if (log)
 				log("thumbnail seed image selected", {
 					topic: topicLabel,
@@ -4528,6 +4552,35 @@ async function prepareImageSegments({
 			}
 		}
 
+		const availableBeforeFallback = candidates.filter((url) => {
+			const key = normalizeImageUrlKey(url);
+			return !usedUrlsGlobal.has(key);
+		});
+		if (availableBeforeFallback.length < desiredCount) {
+			const fallbackKey = `${query}||${effectiveTopicLabel}`;
+			let fallbackUrls = fallbackCache.get(fallbackKey);
+			if (!fallbackUrls) {
+				fallbackUrls = await fetchFallbackImageUrlsForSegment({
+					query,
+					topicLabel: effectiveTopicLabel,
+					limit: Math.max(6, desiredCount * 2),
+					articleUrls: meta.articleUrls,
+					seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
+				});
+				fallbackCache.set(fallbackKey, fallbackUrls);
+			}
+			candidates = dedupeUrlsPreserveOrder([
+				...candidates,
+				...(fallbackUrls || []),
+			]);
+			logJob(jobId, "segment image candidates (fallback)", {
+				segment: seg.index,
+				query,
+				topicLabel: effectiveTopicLabel,
+				total: candidates.length,
+			});
+		}
+
 		const availableBeforeCse = candidates.filter((url) => {
 			const key = normalizeImageUrlKey(url);
 			return !usedUrlsGlobal.has(key);
@@ -4610,31 +4663,6 @@ async function prepareImageSegments({
 			total: candidates.length,
 			cseTopUp: allowCseTopUp,
 		});
-
-		if (candidates.length < desiredCount) {
-			const fallbackKey = `${query}||${effectiveTopicLabel}`;
-			let fallbackUrls = fallbackCache.get(fallbackKey);
-			if (!fallbackUrls) {
-				fallbackUrls = await fetchFallbackImageUrlsForSegment({
-					query,
-					topicLabel: effectiveTopicLabel,
-					limit: Math.max(6, desiredCount * 2),
-					articleUrls: meta.articleUrls,
-					seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
-				});
-				fallbackCache.set(fallbackKey, fallbackUrls);
-			}
-			candidates = dedupeUrlsPreserveOrder([
-				...candidates,
-				...(fallbackUrls || []),
-			]);
-			logJob(jobId, "segment image candidates (fallback)", {
-				segment: seg.index,
-				query,
-				topicLabel: effectiveTopicLabel,
-				total: candidates.length,
-			});
-		}
 
 		const usedUrlKeys = getUsedUrlKeys(topicIndex);
 		const picks = pickSegmentImageUrls(
@@ -6490,6 +6518,7 @@ function inferIntentFromSignals({ title, signals }) {
 
 function clampHeadline(text) {
 	const t = String(text || "")
+		.replace(/[?]+/g, "")
 		.trim()
 		.toUpperCase();
 	if (!t) return "";
@@ -6548,7 +6577,7 @@ function buildPersonSpecificHeadline({ title = "", signals } = {}) {
 		return "CAST MOURNS";
 	}
 	if (/\b(cause of death|what happened|dead|died|death)\b/.test(lower))
-		return "WHAT HAPPENED?";
+		return "WHAT HAPPENED";
 	if (/\b(steps back|stepping away)\b/.test(lower)) return "STEPS BACK";
 	if (/\b(acting pause|pause from acting|acting break)\b/.test(lower))
 		return "ACTING PAUSE";
@@ -6569,20 +6598,20 @@ function pickHookFromQueries({
 	if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
 		return { headline: "WHAT HAPPENED", badge: "NEW DETAILS" };
 	if (/\b(cause of death|dead|died|death)\b/.test(hay))
-		return { headline: "WHAT HAPPENED?", badge: "WHAT WE KNOW" };
+		return { headline: "WHAT HAPPENED", badge: "WHAT WE KNOW" };
 	if (/\bwhy\b|\bexplained\b|\bmeaning\b/.test(hay))
-		return { headline: "EXPLAINED", badge: "BREAKDOWN" };
+		return { headline: "WHY IT MATTERS", badge: "BREAKDOWN" };
 	if (/\breaction\b|\bresigns?\b|\bsteps down\b/.test(hay))
 		return { headline: "BIG REACTION", badge: "JUST DROPPED" };
 
 	if (intent === "serious_update") {
 		if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
-			return { headline: "WHAT HAPPENED?", badge: "WHAT CHANGED" };
+			return { headline: "WHAT HAPPENED", badge: "WHAT CHANGED" };
 		if (/\bwhat she said\b|\bwhat he said\b/.test(hay))
 			return { headline: "WHAT SHE SAID", badge: "NEW DETAILS" };
 		if (/\brecovery\b|\bhealth\b/.test(hay))
 			return { headline: "HEALTH NEWS", badge: "WHAT CHANGED" };
-		return { headline: "WHAT WE KNOW?", badge: "NEW DETAILS" };
+		return { headline: "WHAT CHANGED", badge: "NEW DETAILS" };
 	}
 	if (intent === "legal")
 		return { headline: "LEGAL MOVE", badge: "COURT FILE" };

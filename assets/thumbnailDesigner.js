@@ -24,12 +24,77 @@ const MAX_TOPIC_REFERENCE_IMAGES = 2;
 const DEFAULT_LEFT_TEXT_PCT = 0.54;
 const THUMBNAIL_TOPIC_PANEL_W = 740;
 const THUMBNAIL_PRESENTER_PANEL_W = THUMBNAIL_WIDTH - THUMBNAIL_TOPIC_PANEL_W;
+const THUMBNAIL_FINISH_FILTER =
+	"eq=contrast=1.025:saturation=1.025:brightness=0.004,unsharp=5:5:0.38:3:3:0.05";
+const SOFT_THUMBNAIL_REFERENCE_SOURCES = new Set([
+	"article",
+	"existing",
+	"fallback",
+	"seed",
+	"topic",
+	"trend",
+]);
 
 const ACCENT_PALETTE = {
 	default: "0xFFC700",
 	tech: "0x00C2FF",
 	business: "0x48C67A",
+	legal: "0xFFB020",
+	sports: "0x7CFF6B",
+	politics: "0xFF4D4D",
+	entertainment: "0xFFC700",
 };
+
+const THUMBNAIL_STYLE_PROFILES = [
+	{
+		id: "cinematic_gold",
+		accent: "0xFFC700",
+		tagColor: "0x27305F",
+		lowerPanelOpacity: 0.34,
+		brief:
+			"cinematic editorial contrast, warm gold accent, clean dark lower panel, premium entertainment-news energy",
+	},
+	{
+		id: "electric_cyan",
+		accent: "0x00C2FF",
+		tagColor: "0x102A43",
+		lowerPanelOpacity: 0.32,
+		brief:
+			"cool tech-forward contrast, cyan accent, crisp edge lighting, modern product/news energy",
+	},
+	{
+		id: "market_green",
+		accent: "0x48C67A",
+		tagColor: "0x12392B",
+		lowerPanelOpacity: 0.31,
+		brief:
+			"polished business-news contrast, green accent, controlled highlights, clean financial-news energy",
+	},
+	{
+		id: "serious_amber",
+		accent: "0xFFB020",
+		tagColor: "0x2B2118",
+		lowerPanelOpacity: 0.38,
+		brief:
+			"serious mainstream-news contrast, amber accent, restrained dramatic depth, respectful editorial energy",
+	},
+	{
+		id: "sports_lime",
+		accent: "0xA6FF3D",
+		tagColor: "0x17310F",
+		lowerPanelOpacity: 0.33,
+		brief:
+			"fast sports-broadcast contrast, lime accent, action-focused clarity, energetic but uncluttered",
+	},
+	{
+		id: "magenta_pop",
+		accent: "0xFF4DB8",
+		tagColor: "0x3A1438",
+		lowerPanelOpacity: 0.32,
+		brief:
+			"glossy pop-culture contrast, magenta accent, bright subject separation, entertainment energy",
+	},
+];
 
 const PERSON_NAME_STOPWORDS = new Set([
 	"update",
@@ -335,6 +400,25 @@ async function downloadImageToPath({ url, tmpDir, basename }) {
 	return outPath;
 }
 
+function topicLabelHasPersonAnchor(label = "") {
+	const normalized = normalizeWhitespace(label);
+	if (!normalized) return false;
+	if (looksLikeLikelyPersonName(normalized)) return true;
+	const words = normalized
+		.split(/\s+/)
+		.map((word) => word.replace(/[^A-Za-z'.-]/g, ""))
+		.filter(Boolean);
+	for (const count of [2, 3]) {
+		if (
+			words.length >= count &&
+			looksLikeLikelyPersonName(words.slice(0, count).join(" "))
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
 async function collectTopicReferenceImages({
 	topics = [],
 	tmpDir,
@@ -352,6 +436,26 @@ async function collectTopicReferenceImages({
 				log("thumbnail topic reference skipped", {
 					reason: "weak_confidence",
 					topic: topic?.displayTopic || topic?.topic || "",
+				});
+			}
+			continue;
+		}
+		const sourceType = normalizeWhitespace(
+			topic?.thumbnailImageSourceType || topic?.thumbnailImageSource || "",
+		).toLowerCase();
+		const topicLabel = topic?.displayTopic || topic?.topic || "";
+		if (
+			confidence !== "high" &&
+			sourceType &&
+			SOFT_THUMBNAIL_REFERENCE_SOURCES.has(sourceType) &&
+			topicLabelHasPersonAnchor(topicLabel)
+		) {
+			if (typeof log === "function") {
+				log("thumbnail topic reference skipped", {
+					reason: "soft_person_reference",
+					topic: topicLabel,
+					source: sourceType,
+					confidence,
 				});
 			}
 			continue;
@@ -435,16 +539,79 @@ function inferThumbnailIntent({ title, shortTitle, seoTitle, topics }) {
 	return "general";
 }
 
+function hashText(value = "") {
+	let hash = 0;
+	for (const char of String(value || "")) {
+		hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+	}
+	return hash;
+}
+
+function chooseThumbnailStyleProfile(intent = "general", text = "") {
+	const hay = String(text || "").toLowerCase();
+	if (
+		intent === "legal" ||
+		/\b(death|dead|died|court|lawsuit|trial|arrest|investigation|tribute|mourn|mourning|devastated|hospital|injury)\b/.test(
+			hay,
+		)
+	) {
+		return { ...THUMBNAIL_STYLE_PROFILES[3] };
+	}
+	if (intent === "tech" || /\b(ai|tech|software|app|device|product)\b/.test(hay)) {
+		return { ...THUMBNAIL_STYLE_PROFILES[1] };
+	}
+	if (
+		intent === "business" ||
+		intent === "finance" ||
+		/\b(stock|market|earnings|business|startup|money|crypto|shares)\b/.test(
+			hay,
+		)
+	) {
+		return { ...THUMBNAIL_STYLE_PROFILES[2] };
+	}
+	if (
+		intent === "sports" ||
+		/\b(nfl|nba|nhl|mlb|ufc|match|playoffs|trade|goal|draft)\b/.test(hay)
+	) {
+		return { ...THUMBNAIL_STYLE_PROFILES[4] };
+	}
+	if (/\b(album|tour|song|music|artist|pop|concert)\b/.test(hay)) {
+		return { ...THUMBNAIL_STYLE_PROFILES[5] };
+	}
+	if (intent === "entertainment") {
+		const variants = [
+			THUMBNAIL_STYLE_PROFILES[0],
+			THUMBNAIL_STYLE_PROFILES[5],
+		];
+		return { ...variants[hashText(hay) % variants.length] };
+	}
+	const variants = [
+		THUMBNAIL_STYLE_PROFILES[0],
+		THUMBNAIL_STYLE_PROFILES[1],
+		THUMBNAIL_STYLE_PROFILES[2],
+		THUMBNAIL_STYLE_PROFILES[5],
+	];
+	return { ...variants[hashText(hay) % variants.length] };
+}
+
 function chooseAccentColor(intent, text = "") {
-	if (intent === "tech") return ACCENT_PALETTE.tech;
-	if (intent === "business") return ACCENT_PALETTE.business;
-	if (/\b(ai|tech|software|developer|code)\b/i.test(text)) {
-		return ACCENT_PALETTE.tech;
-	}
-	if (/\b(business|finance|money|market|startup)\b/i.test(text)) {
-		return ACCENT_PALETTE.business;
-	}
-	return ACCENT_PALETTE.default;
+	return chooseThumbnailStyleProfile(intent, text).accent || ACCENT_PALETTE.default;
+}
+
+function safeOpacity(value, fallback = 0.34) {
+	const n = Number(value);
+	if (!Number.isFinite(n)) return fallback;
+	return Math.min(0.5, Math.max(0.18, n));
+}
+
+function buildStyleDirectionLine(styleProfile = {}) {
+	const profile = styleProfile || {};
+	return normalizeWhitespace(
+		`Dynamic style profile: ${profile.id || "balanced_editorial"}. ${
+			profile.brief ||
+			"premium editorial contrast, topic-matched accent color, clean depth, and clear mobile hierarchy"
+		}. Use this as a direction, not a rigid template.`,
+	);
 }
 
 function chooseThumbnailPose({
@@ -626,6 +793,18 @@ const TITLE_STOP_WORDS = new Set([
 	"latest",
 ]);
 
+const GENERIC_THUMBNAIL_HEADLINES = new Set([
+	"BIG UPDATE",
+	"NEW DETAILS",
+	"NEW UPDATE",
+	"TOP STORY",
+	"TOP STORIES",
+	"TRENDING NOW",
+	"WHAT WE KNOW",
+	"WHAT CHANGED",
+	"EXPLAINED",
+]);
+
 function normalizeDisplayWords(text = "") {
 	return normalizeWhitespace(text)
 		.replace(/[_|:;/\\-]+/g, " ")
@@ -725,9 +904,23 @@ function buildThumbnailTextPlan({
 	overrideBadgeText,
 }) {
 	const primaryTopic = formatTopicDisplay(primaryTopicLabel(topics));
+	const derivedHeadline = deriveHeadlineFromTitle({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+		intent,
+	});
+	const overrideClean = normalizeHeadlineText(overrideHeadline || "", 4);
+	const derivedClean = normalizeHeadlineText(derivedHeadline, 4);
+	const preferredHeadline =
+		overrideHeadline &&
+		!GENERIC_THUMBNAIL_HEADLINES.has(overrideClean) &&
+		overrideClean.length >= 6
+			? overrideHeadline
+			: derivedHeadline || overrideHeadline;
 	const primaryHeadline = normalizeHeadlineText(
-		overrideHeadline ||
-			deriveHeadlineFromTitle({ title, shortTitle, seoTitle, topics, intent }),
+		preferredHeadline || derivedClean,
 		4,
 	);
 	const badgeText = chooseBadgeText({
@@ -757,9 +950,11 @@ function buildThumbnailPrompt({
 	pose = "neutral",
 	intent = "general",
 	topicReferenceCount = 0,
+	styleProfile = {},
 }) {
 	const topicFocus = buildTopicFocus({ title, shortTitle, seoTitle, topics });
 	const artDirection = buildThumbnailArtDirection(intent);
+	const styleLine = buildStyleDirectionLine(styleProfile);
 	const moodLine =
 		intent === "legal"
 			? "Keep the visual tone premium, serious, editorial, mainstream, bright enough for a high-performing YouTube thumbnail, and never horror-like."
@@ -783,10 +978,13 @@ Do not damage, redraw, redesign, relight, sharpen, smooth, stylize, or beautify 
 Use the left side for the story setup and leave clear negative space for final text overlays.
 Topic direction: ${topicFocus || "current trending story"}.
 ${artDirection}
+${styleLine}
 ${moodLine}
 ${topicFigureLine}
 Keep the composition clean and uncluttered.
 Use one dominant left-side visual cue only, not a busy collage.
+Create a topic-specific design, not the same repeated template. Vary the image treatment, accent color, lighting, depth, and energy based on the story.
+The design should feel punchy and clickable through contrast, focus, and hierarchy rather than heavy effects.
 Make the left topic/feed image feel intentionally chosen and sharpened. Avoid letting an unrelated celebrity, fashion, red-carpet, or generic stock-like image become the story cue unless that is truly the topic.
 Make the thumbnail instantly understandable at a glance on mobile.
 Do not render any readable text, letters, captions, labels, signs, logos, watermarks, lower thirds, badges, or duplicated words. The final text will be added separately after this visual edit.
@@ -807,6 +1005,7 @@ function buildThumbnailDesignerPrompt({
 	pose = "neutral",
 	intent = "general",
 	topicReferenceCount = 0,
+	styleProfile = {},
 }) {
 	const topicFocus = buildTopicFocus({ title, shortTitle, seoTitle, topics });
 	const primaryTopic = buildTopicFocus({
@@ -816,6 +1015,7 @@ function buildThumbnailDesignerPrompt({
 		topics,
 	});
 	const artDirection = buildThumbnailArtDirection(intent);
+	const styleLine = buildStyleDirectionLine(styleProfile);
 	const suggestedHeadline = normalizeWhitespace(headline || "NEW DETAILS");
 	const suggestedBadge = normalizeWhitespace(badgeText || "JUST DROPPED");
 	const suggestedSubline = normalizeWhitespace(sublineText || primaryTopic);
@@ -830,6 +1030,8 @@ You are an expert YouTube thumbnail designer creating one complete premium 16:9 
 The input image is a clean draft: topic/feed image on the left, presenter on the right. Use it as the base composition.
 Redesign the thumbnail fully: sharpen it, improve contrast, lighting, subject separation, color, text hierarchy, and click appeal.
 Keep it clean, modern, editorial, and easy to understand at mobile size. Avoid clutter and avoid too much text.
+Do not repeat one fixed template. Use the topic, mood, and source imagery to choose a fresh composition, color accent, sharpness level, lighting style, and visual energy for this specific video.
+${styleLine}
 Topic direction: ${topicFocus || "current trending story"}.
 ${artDirection}
 ${topicReferenceLine}
@@ -842,9 +1044,10 @@ ${suggestedSubline ? `- Optional small subject label: "${suggestedSubline}"` : "
 Typography direction:
 - Use bold condensed YouTube-style display lettering, similar to Anton, Bebas Neue, Impact, or a heavy editorial sans.
 - Use high-contrast text with clean stroke/shadow/box treatment when needed.
+- Use one dominant headline that gives the viewer a fast story promise, not a vague quiz. Prefer concrete hooks like impact, reveal, fallout, reaction, decision, warning, tribute, or what changed.
 - Use at most two dominant text elements, plus one tiny subject label only if it improves clarity.
 - Keep the total readable text short. Do not add paragraphs, duplicate lines, watermarks, logos, or extra captions.
-- You may slightly improve the text wording only if it is shorter, clearer, more clickable, and still truthful to the topic.
+- You may improve the text wording only if it is shorter, clearer, more clickable, and still truthful to the topic. Avoid boring generic text like "Top Story", "Update", or "New Details" unless the subject label makes the story instantly clear.
 - Hard text safe zone: every readable word, badge, label, shadow, stroke, and text box must fit completely inside the left story panel only, from x=48 to x=${textSafeRight}, within roughly ${textSafeWidth}px of usable width.
 - Never place text across the vertical divider, over the center seam, on the presenter, or in the right 42% presenter panel.
 - Keep the main headline to one or two short lines on the left panel. If needed, make the font smaller rather than letting text run under the presenter.
@@ -947,6 +1150,7 @@ function renderTopicLeadThumbnailPlate({
 	badgeText,
 	sublineText,
 	accent = ACCENT_PALETTE.default,
+	styleProfile = {},
 	log,
 }) {
 	const heroSource = topicReferencePaths[0] || presenterLocalPath;
@@ -957,6 +1161,8 @@ function renderTopicLeadThumbnailPlate({
 	const fontFile = resolveThumbnailFontFile();
 	const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
 	const accentColor = normalizeAccentColor(accent);
+	const tagColor = normalizeAccentColor(styleProfile.tagColor || "0x27305F");
+	const lowerPanelOpacity = safeOpacity(styleProfile.lowerPanelOpacity, 0.34);
 	const headlineFit = fitThumbnailText(headline || "BIG UPDATE", {
 		baseMaxChars: 12,
 		maxLines: 2,
@@ -971,29 +1177,29 @@ function renderTopicLeadThumbnailPlate({
 		normalizeWhitespace(badgeText || "TOP STORY"),
 	);
 	const safeSubline = escapeDrawtext(sublineFit.text);
-	let headlineFontSize = Math.max(54, Math.round(96 * headlineFit.fontScale));
+	let headlineFontSize = Math.max(58, Math.round(98 * headlineFit.fontScale));
 	const headlineLines = String(headlineFit.text || "")
 		.split(/\n+/)
 		.map((line) => normalizeWhitespace(line))
 		.filter(Boolean)
 		.slice(0, 2);
+	const headlineX = 58;
 	headlineFontSize = fitFontSizeToWidth(headlineLines, headlineFontSize, {
-		maxWidth: THUMBNAIL_TOPIC_PANEL_W - 112,
+		maxWidth: THUMBNAIL_TOPIC_PANEL_W - headlineX - 54,
 		minFontSize: 54,
 	});
-	const sublineFontSize = fitFontSizeToWidth(
+	const sublineTagFontSize = fitFontSizeToWidth(
 		[sublineFit.text],
-		Math.max(22, Math.round(32 * sublineFit.fontScale)),
+		Math.max(22, Math.round(34 * sublineFit.fontScale)),
 		{
-			maxWidth: THUMBNAIL_TOPIC_PANEL_W - 126,
-			minFontSize: 20,
+			maxWidth: THUMBNAIL_TOPIC_PANEL_W - 112,
+			minFontSize: 21,
 		},
 	);
 	const headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
-	const headlineStartY =
-		headlineLines.length > 1
-			? 382
-			: Math.max(404, Math.round(438 - headlineFontSize * 0.25));
+	const lowerBoxY = headlineLines.length > 1 ? 344 : 368;
+	const headlineStartY = headlineLines.length > 1 ? 406 : 448;
+	const badgeY = lowerBoxY + 20;
 	const filters = [
 		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=0.92:brightness=-0.015,gblur=sigma=18,setsar=1[bg]`,
 		`[1:v]scale=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.08:saturation=1.06:brightness=0.015,unsharp=5:5:0.60:5:5:0.0,setsar=1[topic]`,
@@ -1002,25 +1208,30 @@ function renderTopicLeadThumbnailPlate({
 		`[tmp0]drawbox=x=0:y=0:w=${THUMBNAIL_TOPIC_PANEL_W}:h=${THUMBNAIL_HEIGHT}:color=black@0.14:t=fill[tmp1]`,
 		`[tmp1][presenter]overlay=${THUMBNAIL_TOPIC_PANEL_W}:0[tmp2]`,
 		`[tmp2]drawbox=x=${THUMBNAIL_TOPIC_PANEL_W - 8}:y=0:w=8:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.96:t=fill[tmp3]`,
+		`[tmp3]drawbox=x=0:y=${lowerBoxY}:w=${THUMBNAIL_TOPIC_PANEL_W}:h=${
+			THUMBNAIL_HEIGHT - lowerBoxY
+		}:color=black@${lowerPanelOpacity.toFixed(2)}:t=fill[tmp4]`,
+		`[tmp4]drawbox=x=0:y=${lowerBoxY}:w=${THUMBNAIL_TOPIC_PANEL_W}:h=3:color=${accentColor}@0.48:t=fill[tmp5]`,
 	];
-	const textFilters = [
-		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=38:fontcolor=black:x=58:y=72:box=1:boxcolor=${accentColor}@0.98:boxborderw=14:borderw=0:shadowx=0:shadowy=0`,
-	];
+	const textFilters = [];
+	if (safeSubline) {
+		textFilters.push(
+			`drawtext=text='${safeSubline}'${fontOpt}:fontsize=${sublineTagFontSize}:fontcolor=white:x=24:y=8:box=1:boxcolor=${tagColor}@0.92:boxborderw=8:borderw=1:bordercolor=white@0.22:shadowcolor=black@0.35:shadowx=2:shadowy=2`,
+		);
+	}
+	textFilters.push(
+		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=31:fontcolor=${accentColor}:x=58:y=${badgeY}:box=1:boxcolor=black@0.72:boxborderw=10:borderw=1:bordercolor=${accentColor}@0.72:shadowcolor=black@0.55:shadowx=2:shadowy=2`,
+	);
 	for (let i = 0; i < headlineLines.length; i++) {
 		textFilters.push(
 			`drawtext=text='${escapeDrawtext(
 				headlineLines[i],
-			)}'${fontOpt}:fontsize=${headlineFontSize}:fontcolor=white:x=54:y=${
+			)}'${fontOpt}:fontsize=${headlineFontSize}:fontcolor=white:x=${headlineX}:y=${
 				headlineStartY + i * (headlineFontSize + headlineLineGap)
-			}:borderw=5:bordercolor=black@0.75:shadowcolor=black@0.55:shadowx=3:shadowy=3:box=1:boxcolor=black@0.26:boxborderw=20`,
+			}:borderw=5:bordercolor=black@0.84:shadowcolor=black@0.68:shadowx=4:shadowy=4`,
 		);
 	}
-	if (safeSubline) {
-		textFilters.push(
-			`drawtext=text='${safeSubline}'${fontOpt}:fontsize=${sublineFontSize}:fontcolor=white@0.96:x=58:y=642:borderw=2:bordercolor=black@0.55:shadowcolor=black@0.4:shadowx=2:shadowy=2:box=1:boxcolor=black@0.24:boxborderw=10`,
-		);
-	}
-	filters.push(`[tmp3]${textFilters.join(",")}[outv]`);
+	filters.push(`[tmp5]${textFilters.join(",")},${THUMBNAIL_FINISH_FILTER}[outv]`);
 
 	runFfmpeg(
 		[
@@ -1122,6 +1333,7 @@ function renderLockedThumbnailTextOverlay({
 	badgeText,
 	sublineText,
 	accent = ACCENT_PALETTE.default,
+	styleProfile = {},
 	log,
 }) {
 	ensureImageFile(basePath, 5000);
@@ -1129,6 +1341,8 @@ function renderLockedThumbnailTextOverlay({
 	const fontFile = resolveThumbnailFontFile();
 	const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
 	const accentColor = normalizeAccentColor(accent);
+	const tagColor = normalizeAccentColor(styleProfile.tagColor || "0x27305F");
+	const lowerPanelOpacity = safeOpacity(styleProfile.lowerPanelOpacity, 0.34);
 	const badgeFit = fitThumbnailText(badgeText || "TOP STORY", {
 		baseMaxChars: 16,
 		maxLines: 1,
@@ -1148,57 +1362,61 @@ function renderLockedThumbnailTextOverlay({
 	const safeSubline = escapeDrawtext(sublineFit.text);
 	const badgeFontSize = fitFontSizeToWidth(
 		[badgeFit.text || "TOP STORY"],
-		38,
+		34,
 		{
 			maxWidth: THUMBNAIL_TOPIC_PANEL_W - 126,
-			minFontSize: 28,
+			minFontSize: 24,
 		},
 	);
-	let headlineFontSize = Math.max(58, Math.round(104 * headlineFit.fontScale));
+	let headlineFontSize = Math.max(62, Math.round(112 * headlineFit.fontScale));
 	const headlineLines = String(headlineFit.text || "")
 		.split(/\n+/)
 		.map((line) => normalizeWhitespace(line))
 		.filter(Boolean)
 		.slice(0, 2);
+	const headlineX = headlineLines.length > 1 ? 64 : 154;
 	headlineFontSize = fitFontSizeToWidth(headlineLines, headlineFontSize, {
-		maxWidth: THUMBNAIL_WIDTH - 116,
-		minFontSize: 56,
+		maxWidth: THUMBNAIL_WIDTH - headlineX - 82,
+		minFontSize: 58,
 	});
-	const sublineFontSize = fitFontSizeToWidth(
+	const sublineTagFontSize = fitFontSizeToWidth(
 		[sublineFit.text],
-		Math.max(22, Math.round(31 * sublineFit.fontScale)),
+		Math.max(22, Math.round(34 * sublineFit.fontScale)),
 		{
-			maxWidth: THUMBNAIL_WIDTH - 126,
-			minFontSize: 20,
+			maxWidth: THUMBNAIL_TOPIC_PANEL_W - 112,
+			minFontSize: 21,
 		},
 	);
 	const headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
-	const headlineStartY = headlineLines.length > 1 ? 404 : 472;
-	const lowerBoxY = headlineLines.length > 1 ? 374 : 404;
+	const headlineStartY = headlineLines.length > 1 ? 406 : 448;
+	const lowerBoxY = headlineLines.length > 1 ? 344 : 368;
+	const badgeY = lowerBoxY + 20;
 	const filters = [
 		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,setsar=1[base]`,
 		`[base]drawbox=x=0:y=${lowerBoxY}:w=${THUMBNAIL_WIDTH}:h=${
 			THUMBNAIL_HEIGHT - lowerBoxY
-		}:color=black@0.20:t=fill[tmp0]`,
+		}:color=black@${lowerPanelOpacity.toFixed(2)}:t=fill[tmp0]`,
+		`[tmp0]drawbox=x=0:y=${lowerBoxY}:w=${THUMBNAIL_TOPIC_PANEL_W}:h=3:color=${accentColor}@0.48:t=fill[tmp1]`,
 	];
-	const textFilters = [
-		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=${badgeFontSize}:fontcolor=black:x=58:y=72:box=1:boxcolor=${accentColor}@0.98:boxborderw=14:borderw=0:shadowx=0:shadowy=0`,
-	];
+	const textFilters = [];
+	if (safeSubline) {
+		textFilters.push(
+			`drawtext=text='${safeSubline}'${fontOpt}:fontsize=${sublineTagFontSize}:fontcolor=white:x=24:y=8:box=1:boxcolor=${tagColor}@0.92:boxborderw=8:borderw=1:bordercolor=white@0.22:shadowcolor=black@0.35:shadowx=2:shadowy=2`,
+		);
+	}
+	textFilters.push(
+		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=${badgeFontSize}:fontcolor=${accentColor}:x=58:y=${badgeY}:box=1:boxcolor=black@0.72:boxborderw=10:borderw=1:bordercolor=${accentColor}@0.72:shadowcolor=black@0.55:shadowx=2:shadowy=2`,
+	);
 	for (let i = 0; i < headlineLines.length; i++) {
 		textFilters.push(
 			`drawtext=text='${escapeDrawtext(
 				headlineLines[i],
-			)}'${fontOpt}:fontsize=${headlineFontSize}:fontcolor=white:x=54:y=${
+			)}'${fontOpt}:fontsize=${headlineFontSize}:fontcolor=white:x=${headlineX}:y=${
 				headlineStartY + i * (headlineFontSize + headlineLineGap)
-			}:borderw=5:bordercolor=black@0.78:shadowcolor=black@0.6:shadowx=3:shadowy=3:box=1:boxcolor=black@0.22:boxborderw=18`,
+			}:borderw=5:bordercolor=black@0.84:shadowcolor=black@0.68:shadowx=4:shadowy=4`,
 		);
 	}
-	if (safeSubline) {
-		textFilters.push(
-			`drawtext=text='${safeSubline}'${fontOpt}:fontsize=${sublineFontSize}:fontcolor=white@0.96:x=58:y=620:borderw=2:bordercolor=black@0.60:shadowcolor=black@0.45:shadowx=2:shadowy=2:box=1:boxcolor=black@0.20:boxborderw=10`,
-		);
-	}
-	filters.push(`[tmp0]${textFilters.join(",")}[outv]`);
+	filters.push(`[tmp1]${textFilters.join(",")},drawbox=x=0:y=0:w=iw:h=ih:color=white@0.08:t=2,${THUMBNAIL_FINISH_FILTER}[outv]`);
 	runFfmpeg(
 		[
 			"-i",
@@ -1423,12 +1641,17 @@ async function generateOpenAiDesignerThumbnailPlate({
 	sublineText,
 	pose,
 	intent,
+	styleProfile = {},
 	log,
 }) {
-	const accent = chooseAccentColor(
-		intent,
-		buildContextText({ title, shortTitle, seoTitle, topics }),
-	);
+	const contextText = buildContextText({ title, shortTitle, seoTitle, topics });
+	const effectiveStyleProfile =
+		styleProfile && styleProfile.id
+			? styleProfile
+			: chooseThumbnailStyleProfile(intent, contextText);
+	const accent =
+		effectiveStyleProfile.accent ||
+		chooseThumbnailStyleProfile(intent, contextText).accent;
 	const prompt = buildThumbnailDesignerPrompt({
 		title,
 		shortTitle,
@@ -1440,6 +1663,7 @@ async function generateOpenAiDesignerThumbnailPlate({
 		pose,
 		intent,
 		topicReferenceCount: topicReferencePaths.length,
+		styleProfile: effectiveStyleProfile,
 	});
 	const visualSeed = renderTopicLeadVisualSeed({
 		jobId: `${jobId || "thumbnail"}_designer_seed`,
@@ -1530,8 +1754,14 @@ async function generateOpenAiThumbnailPlate({
 	sublineText,
 	pose,
 	intent,
+	styleProfile = {},
 	log,
 }) {
+	const contextText = buildContextText({ title, shortTitle, seoTitle, topics });
+	const effectiveStyleProfile =
+		styleProfile && styleProfile.id
+			? styleProfile
+			: chooseThumbnailStyleProfile(intent, contextText);
 	const prompt = buildThumbnailPrompt({
 		title,
 		shortTitle,
@@ -1543,11 +1773,9 @@ async function generateOpenAiThumbnailPlate({
 		pose,
 		intent,
 		topicReferenceCount: topicReferencePaths.length,
+		styleProfile: effectiveStyleProfile,
 	});
-	const accent = chooseAccentColor(
-		intent,
-		buildContextText({ title, shortTitle, seoTitle, topics }),
-	);
+	const accent = effectiveStyleProfile.accent || chooseAccentColor(intent, contextText);
 	const visualSeed = renderTopicLeadVisualSeed({
 		jobId: `${jobId || "thumbnail"}_openai_seed`,
 		tmpDir,
@@ -1617,6 +1845,7 @@ async function generateOpenAiThumbnailPlate({
 			badgeText,
 			sublineText,
 			accent,
+			styleProfile: effectiveStyleProfile,
 			log,
 		});
 	} finally {
@@ -1678,7 +1907,8 @@ async function generateThumbnailPackage({
 		intent,
 		contextText,
 	});
-	const accent = chooseAccentColor(intent, contextText);
+	const styleProfile = chooseThumbnailStyleProfile(intent, contextText);
+	const accent = styleProfile.accent || chooseAccentColor(intent, contextText);
 	const textPlan = buildThumbnailTextPlan({
 		title,
 		shortTitle,
@@ -1696,6 +1926,7 @@ async function generateThumbnailPackage({
 			headline: textPlan.primaryHeadline,
 			badgeText: textPlan.badgeText,
 			subline: textPlan.sublineText || null,
+			style: styleProfile.id,
 		});
 	}
 
@@ -1739,6 +1970,7 @@ async function generateThumbnailPackage({
 		sublineText: textPlan.sublineText,
 		pose,
 		intent,
+		styleProfile,
 		log,
 	};
 
@@ -1755,6 +1987,7 @@ async function generateThumbnailPackage({
 			badgeText: textPlan.badgeText,
 			sublineText: textPlan.sublineText,
 			accent,
+			styleProfile,
 			log,
 		});
 
@@ -1828,6 +2061,7 @@ async function generateThumbnailPackage({
 		title: textPlan.primaryHeadline,
 		pose,
 		accent,
+		style: styleProfile.id,
 		method: plate.method || "unknown",
 		variants: [variant],
 	};
