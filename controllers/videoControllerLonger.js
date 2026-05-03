@@ -172,8 +172,14 @@ const WIKIMEDIA_API_BASE = "https://commons.wikimedia.org/w/api.php";
 
 const TRENDS_API_URL =
 	process.env.TRENDS_API_URL || "http://localhost:8102/api/google-trends";
-const TRENDS_HTTP_TIMEOUT_MS = 180000;
-const TRENDS_HTTP_MAX_ATTEMPTS = 2;
+const TRENDS_HTTP_TIMEOUT_MS = clampNumber(
+	process.env.TRENDS_HTTP_TIMEOUT_MS ?? 240000,
+	60000,
+	600000,
+);
+const TRENDS_HTTP_MAX_ATTEMPTS = Math.floor(
+	clampNumber(process.env.TRENDS_HTTP_MAX_ATTEMPTS ?? 1, 1, 2),
+);
 const TRENDS_HTTP_RETRY_DELAY_MS = 5000;
 const LONG_VIDEO_REQUIRE_TRENDS = true;
 const LONG_VIDEO_TRENDS_GEO = "US";
@@ -199,7 +205,10 @@ function buildTrendsApiCandidates(baseUrl) {
 		}
 	};
 	add(TRENDS_API_URL);
-	if (baseUrl) add(`${String(baseUrl).replace(/\/+$/, "")}/api/google-trends`);
+	if (baseUrl) {
+		const trimmed = canonicalizeLoopbackBase(baseUrl);
+		if (isPrivateHttpBase(trimmed)) add(`${trimmed}/api/google-trends`);
+	}
 	return Array.from(new Set(list));
 }
 

@@ -56,6 +56,10 @@ const GOOGLE_IMAGES_MAX_RESULTS = 80;
 const GOOGLE_IMAGES_SCROLLS = 7;
 const GOOGLE_IMAGES_SCROLL_DELAY_MS = 650;
 const GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS = 15000;
+const GOOGLE_IMAGES_TOPUP_QUERY_LIMIT = 3;
+const GOOGLE_IMAGES_TOPUP_SCROLLS = 2;
+const GOOGLE_IMAGES_TOPUP_SCROLL_DELAY_MS = 350;
+const GOOGLE_IMAGES_TOPUP_SELECTOR_TIMEOUT_MS = 6500;
 const TRENDS_SIGNAL_WINDOW_HOURS = 48;
 const TRENDS_SIGNAL_FALLBACK_HOURS = 168;
 const TRENDS_SIGNAL_MAX_STORIES = 8;
@@ -661,6 +665,7 @@ function buildGoogleImagesTopUpQueriesForStory(story) {
   if (primary) {
     add(`${primary} portrait`);
     add(`${primary} press photo`);
+    add(primary);
     add(`${primary} news photo`);
   }
   add(story?.title);
@@ -671,7 +676,7 @@ function buildGoogleImagesTopUpQueriesForStory(story) {
     : []) {
     add(`${phrase} photo`);
   }
-  return uniqueStrings(candidates, { limit: 5 });
+  return uniqueStrings(candidates, { limit: GOOGLE_IMAGES_TOPUP_QUERY_LIMIT });
 }
 
 function buildCbsSearchUrl(query = "") {
@@ -3143,7 +3148,10 @@ async function enrichStoriesWithPotentialImages(
             // eslint-disable-next-line no-await-in-loop
             urls = await scrapeGoogleImages({
               query,
-              limit: Math.max(20, minFeedImages * 6),
+              limit: Math.max(16, minFeedImages * 5),
+              scrolls: GOOGLE_IMAGES_TOPUP_SCROLLS,
+              scrollDelayMs: GOOGLE_IMAGES_TOPUP_SCROLL_DELAY_MS,
+              selectorTimeoutMs: GOOGLE_IMAGES_TOPUP_SELECTOR_TIMEOUT_MS,
             });
           } catch (err) {
             log("Google images topup failed", {
@@ -3216,6 +3224,9 @@ async function autoScrollPage(page, { scrolls, delayMs } = {}) {
 async function scrapeGoogleImages({
   query,
   limit = GOOGLE_IMAGES_DEFAULT_LIMIT,
+  scrolls = GOOGLE_IMAGES_SCROLLS,
+  scrollDelayMs = GOOGLE_IMAGES_SCROLL_DELAY_MS,
+  selectorTimeoutMs = GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS,
 }) {
   const page = await getBrowserPage({ label: "google-images" });
   page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
@@ -3238,15 +3249,15 @@ async function scrapeGoogleImages({
     await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
     try {
       await page.waitForSelector("img", {
-        timeout: GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS,
+        timeout: selectorTimeoutMs,
       });
     } catch {
       // Continue even if images are slow to load.
     }
 
     await autoScrollPage(page, {
-      scrolls: GOOGLE_IMAGES_SCROLLS,
-      delayMs: GOOGLE_IMAGES_SCROLL_DELAY_MS,
+      scrolls,
+      delayMs: scrollDelayMs,
     });
 
     const rawUrls = await page.evaluate(() => {
