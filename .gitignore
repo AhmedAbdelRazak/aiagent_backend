@@ -1,2 +1,11 @@
 node_modules
 .env
+
+# AgentAI generated runtime files. These are created by the app and cleaned by
+# utils/generatedFiles.js; they should not be deployed as source code.
+uploads/tmp/
+uploads/job_state/
+uploads/videos/
+uploads/shorts/
+uploads/thumbnails/
+uploads/**/*.log

@@ -1,4 +1,6 @@
 {
+  "verbose": false,
+  "legacyWatch": true,
   "watch": [
     "server.js",
     "controllers",
@@ -17,5 +19,9 @@
     "PhotosForLongerVideos/**",
     "*.log"
   ],
-  "delay": "750"
+  "delay": "750",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "restartable": "rs"
 }

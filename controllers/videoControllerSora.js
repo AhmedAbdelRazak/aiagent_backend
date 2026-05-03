@@ -32,6 +32,7 @@ const cloudinary = require("cloudinary").v2;
 
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
+const { resolveFfprobePath } = require("../utils/mediaBinaries");
 const {
 	ALL_TOP5_TOPICS,
 	googleTrendingCategoriesId,
@@ -78,7 +79,14 @@ try {
 	process.exit(1);
 }
 ffmpeg.setFfmpegPath(FFMPEG_BIN);
-ffmpeg.setFfprobePath(ENV.FFPROBE_PATH || "ffprobe");
+const FFPROBE_BIN = resolveFfprobePath({ ffmpegPath: FFMPEG_BIN, env: ENV });
+if (FFPROBE_BIN) {
+	ffmpeg.setFfprobePath(FFPROBE_BIN);
+} else {
+	console.warn(
+		"[Startup] WARN - No valid FFprobe binary found. Install ffprobe, set FFPROBE_PATH, or install ffprobe-static."
+	);
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Global config                                                              */

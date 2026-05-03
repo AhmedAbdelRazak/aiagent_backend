@@ -15,6 +15,9 @@ const OpenAI = require("openai");
 const googleTrends = require("google-trends-api");
 const Video = require("../models/Video");
 const { googleTrendingCategoriesId } = require("../assets/utils");
+const {
+  requireLocalOrInternalKey,
+} = require("../middlewares/securityMiddleware");
 
 puppeteer.use(Stealth());
 
@@ -32,7 +35,15 @@ const PAGE_CREATE_RETRY_DELAY_MS = 750;
 const BROWSER_CLOSE_TIMEOUT_MS = 5000;
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 8_000; // cap for fetching article HTML
 const ARTICLE_FETCH_BLOCKLIST_HOSTS = ["washingtonpost.com", "nytimes.com"];
+const LOG_STARTUP_DETAILS = ["1", "true", "yes", "on"].includes(
+  String(process.env.LOG_STARTUP_DETAILS || "")
+    .trim()
+    .toLowerCase(),
+);
 const log = (...m) => console.log("[Trends]", ...m);
+const logStartupDetail = (...m) => {
+  if (LOG_STARTUP_DETAILS) log(...m);
+};
 const ffmpegPath =
   process.env.FFMPEG_PATH ||
   process.env.FFMPEG ||
@@ -405,7 +416,7 @@ const CHATGPT_API_TOKEN =
 if (CHATGPT_API_TOKEN) {
   try {
     openai = new OpenAI({ apiKey: CHATGPT_API_TOKEN });
-    log("OpenAI client initialized");
+    logStartupDetail("OpenAI client initialized");
   } catch (err) {
     console.error("[Trends] Failed to init OpenAI client:", err.message);
     openai = null;
@@ -3491,7 +3502,7 @@ async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
 
 /* ------------------------------------------------------------- express API */
 
-router.get("/google-images", async (req, res) => {
+router.get("/google-images", requireLocalOrInternalKey, async (req, res) => {
   const query = String(req.query.q || req.query.query || "").trim();
   if (!query) {
     return res.status(400).json({
@@ -3523,7 +3534,7 @@ router.get("/google-images", async (req, res) => {
   }
 });
 
-router.get("/google-trends", async (req, res) => {
+router.get("/google-trends", requireLocalOrInternalKey, async (req, res) => {
   const geo = (req.query.geo || "").toUpperCase();
   if (!/^[A-Z]{2}$/.test(geo)) {
     return res.status(400).json({

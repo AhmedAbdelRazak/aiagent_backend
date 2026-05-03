@@ -41,6 +41,11 @@ const cloudinary = require("cloudinary").v2;
 
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
+const { resolveFfprobePath } = require("../utils/mediaBinaries");
+const {
+	sanitizeVideoForClient,
+	sanitizeVideosForClient,
+} = require("../utils/security");
 const {
 	ALL_TOP5_TOPICS,
 	googleTrendingCategoriesId,
@@ -54,6 +59,15 @@ cloudinary.config({
 
 const PST_TZ = "America/Los_Angeles";
 const OWNER_ONLY_USER_ID = "683e3a0329b0515ff5f7a1e1";
+const LOG_STARTUP_DETAILS = ["1", "true", "yes", "on"].includes(
+	String(process.env.LOG_STARTUP_DETAILS || "")
+		.trim()
+		.toLowerCase(),
+);
+
+function logStartupDetail(...args) {
+	if (LOG_STARTUP_DETAILS) console.log(...args);
+}
 
 function isOwnerOnlyUser(req) {
 	const userId = req?.user?._id || req?.user?.id || req?.userId;
@@ -96,16 +110,22 @@ const ffmpegPath = resolveFfmpegPath();
 
 if (ffmpegPath) {
 	ffmpeg.setFfmpegPath(ffmpegPath);
-	console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
+	logStartupDetail(`[FFmpeg]  binary : ${ffmpegPath}`);
 } else {
 	console.warn(
 		"[Startup] WARN - No valid FFmpeg binary found. Set FFMPEG_PATH or ensure ffmpeg is on PATH.",
 	);
 }
 
-const ffprobePath = process.env.FFPROBE_PATH || "ffprobe";
-ffmpeg.setFfprobePath(ffprobePath);
-console.log(`[FFprobe] binary : ${ffprobePath}`);
+const ffprobePath = resolveFfprobePath({ ffmpegPath });
+if (ffprobePath) {
+	ffmpeg.setFfprobePath(ffprobePath);
+	logStartupDetail(`[FFprobe] binary : ${ffprobePath}`);
+} else {
+	console.warn(
+		"[Startup] WARN - No valid FFprobe binary found. Install ffprobe, set FFPROBE_PATH, or install ffprobe-static.",
+	);
+}
 
 function ffmpegSupportsLavfi() {
 	const bin = ffmpegPath || "ffmpeg";
@@ -120,8 +140,8 @@ function ffmpegSupportsLavfi() {
 	}
 }
 const hasLavfi = ffmpegSupportsLavfi();
-console.log(`[FFmpeg]   binary : ${ffmpegPath || "ffmpeg (PATH)"}`);
-console.log(`[FFmpeg]   lavfi  ? ${hasLavfi}`);
+logStartupDetail(`[FFmpeg]   binary : ${ffmpegPath || "ffmpeg (PATH)"}`);
+logStartupDetail(`[FFmpeg]   lavfi  ? ${hasLavfi}`);
 
 /* font discovery (for any future overlays) */
 function resolveFontPath() {
@@ -13655,7 +13675,11 @@ exports.getUserVideos = async (req, res, next) => {
 		const videos = await Video.find({ user: user._id }).sort({ createdAt: -1 });
 		return res
 			.status(200)
-			.json({ success: true, count: videos.length, data: videos });
+			.json({
+				success: true,
+				count: videos.length,
+				data: sanitizeVideosForClient(videos),
+			});
 	} catch (err) {
 		console.error("[getUserVideos] error:", err);
 		next(err);
@@ -13690,7 +13714,9 @@ exports.getVideoById = async (req, res, next) => {
 				.json({ error: "Not authorised to view this video." });
 		}
 
-		return res.status(200).json({ success: true, data: video });
+		return res
+			.status(200)
+			.json({ success: true, data: sanitizeVideoForClient(video) });
 	} catch (err) {
 		console.error("[getVideoById] error:", err);
 		next(err);
@@ -13764,7 +13790,9 @@ exports.updateVideo = async (req, res, next) => {
 		}
 
 		await video.save();
-		return res.status(200).json({ success: true, data: video });
+		return res
+			.status(200)
+			.json({ success: true, data: sanitizeVideoForClient(video) });
 	} catch (err) {
 		console.error("[updateVideo] error:", err);
 		next(err);
@@ -13840,7 +13868,7 @@ exports.listVideos = async (req, res, next) => {
 			limit,
 			count: videos.length,
 			total,
-			data: videos,
+			data: sanitizeVideosForClient(videos),
 		});
 	} catch (err) {
 		console.error("[listVideos] error:", err);

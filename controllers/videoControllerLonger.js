@@ -65,6 +65,9 @@ const {
 const Video = require("../models/Video");
 const Schedule = require("../models/Schedule");
 const {
+	resolveFfprobePath: resolveSharedFfprobePath,
+} = require("../utils/mediaBinaries");
+const {
 	googleTrendingCategoriesId,
 	EXPLICIT_EXCITED_CUES,
 	EXPLICIT_SERIOUS_CUES,
@@ -98,6 +101,15 @@ const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
 
 const CHAT_MODEL = "gpt-5.2";
 const OWNER_ONLY_USER_ID = "683e3a0329b0515ff5f7a1e1";
+const LOG_STARTUP_DETAILS = ["1", "true", "yes", "on"].includes(
+	String(process.env.LOG_STARTUP_DETAILS || "")
+		.trim()
+		.toLowerCase(),
+);
+
+function logStartupDetail(...args) {
+	if (LOG_STARTUP_DETAILS) console.log(...args);
+}
 
 function isOwnerOnlyUser(req) {
 	const userId = req?.user?._id || req?.user?.id || req?.userId;
@@ -534,7 +546,7 @@ function getLongVideoRuntimeProfile() {
 	};
 }
 
-console.log("[LongVideo] controller loaded", getLongVideoRuntimeProfile());
+logStartupDetail("[LongVideo] controller loaded", getLongVideoRuntimeProfile());
 
 /* ---------------------------------------------------------------
  * In-memory job store
@@ -775,30 +787,20 @@ function resolveFfmpegPath() {
 }
 
 const ffmpegPath = resolveFfmpegPath();
-if (ffmpegPath) console.log(`[FFmpeg]  binary : ${ffmpegPath}`);
+if (ffmpegPath) logStartupDetail(`[FFmpeg]  binary : ${ffmpegPath}`);
 else
 	console.warn(
 		"[LongVideo] WARN - No valid FFmpeg binary found. Set FFMPEG_PATH or ensure ffmpeg is on PATH.",
 	);
 
-function resolveFfprobePath() {
-	if (ffmpegPath) {
-		const dir = path.dirname(ffmpegPath);
-		const probeName = os.platform() === "win32" ? "ffprobe.exe" : "ffprobe";
-		const candidate = path.join(dir, probeName);
-		if (fs.existsSync(candidate) && canExecBin(candidate, ["-version"]))
-			return candidate;
-	}
-
-	if (canExecBin("ffprobe", ["-version"])) return "ffprobe";
-	if (os.platform() === "win32" && canExecBin("ffprobe.exe", ["-version"]))
-		return "ffprobe.exe";
-
-	return os.platform() === "win32" ? "ffprobe.exe" : "ffprobe";
+const ffprobePath = resolveSharedFfprobePath({ ffmpegPath });
+if (ffprobePath) {
+	logStartupDetail(`[FFprobe] binary : ${ffprobePath}`);
+} else {
+	console.warn(
+		"[LongVideo] WARN - No valid FFprobe binary found. Install ffprobe, set FFPROBE_PATH, or install ffprobe-static.",
+	);
 }
-
-const ffprobePath = resolveFfprobePath();
-console.log(`[FFprobe] binary : ${ffprobePath}`);
 
 function spawnBin(binPath, args, label, { timeoutMs } = {}) {
 	return new Promise((resolve, reject) => {
@@ -15324,6 +15326,7 @@ function createLongVideoController(controllerConfig = {}) {
 
 		const job = {
 			jobId,
+			userId: req.user?._id ? String(req.user._id) : "",
 			status: "queued",
 			progressPct: 0,
 			topic: null,
@@ -15409,6 +15412,13 @@ exports.getLongVideoStatus = async (req, res) => {
 	const { jobId } = req.params;
 	const job = JOBS.get(jobId);
 	if (!job) return res.status(404).json({ error: "Job not found" });
+	if (
+		job.userId &&
+		String(job.userId) !== String(req.user?._id || "") &&
+		req.user?.role !== "admin"
+	) {
+		return res.status(403).json({ error: "Not authorized" });
+	}
 
 	return res.json({
 		jobId: job.jobId,

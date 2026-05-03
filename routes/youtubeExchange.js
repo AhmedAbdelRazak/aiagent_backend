@@ -35,7 +35,9 @@ router.post("/exchange-code", protect, async (req, res, next) => {
 		oauth2Client.setCredentials(tokens);
 		const oauth2 = google.oauth2({ auth: oauth2Client, version: "v2" });
 		const userInfoRes = await oauth2.userinfo.get();
-		const youtubeEmail = userInfoRes.data.email;
+		const youtubeEmail = String(userInfoRes.data.email || "")
+			.trim()
+			.toLowerCase();
 
 		// Save to your User document:
 		const user = await User.findById(req.user._id);
@@ -47,7 +49,7 @@ router.post("/exchange-code", protect, async (req, res, next) => {
 
 		return res.json({ success: true, message: "YouTube tokens saved" });
 	} catch (err) {
-		console.error("Error in /youtube/exchange-code:", err);
+		console.error("Error in /youtube/exchange-code:", err?.message || err);
 		next(err);
 	}
 });

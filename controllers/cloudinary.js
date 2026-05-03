@@ -1,6 +1,7 @@
 /** @format */
 
 const cloudinary = require("cloudinary");
+const crypto = require("crypto");
 
 // config
 cloudinary.config({
@@ -11,9 +12,16 @@ cloudinary.config({
 
 exports.uploadImages = async (req, res) => {
 	try {
-		const result = await cloudinary.uploader.upload(req.body.image, {
-			public_id: `aivideomatic/${Date.now()}`,
-			resource_type: "auto", // let Cloudinary handle the format
+		const image = String(req.body.image || "");
+		if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(image)) {
+			return res.status(400).json({ error: "A valid image data URL is required" });
+		}
+
+		const publicId = `aivideomatic/${req.user._id}/${Date.now()}-${crypto.randomUUID()}`;
+		const result = await cloudinary.uploader.upload(image, {
+			public_id: publicId,
+			resource_type: "image",
+			overwrite: false,
 		});
 
 		// Return the public_id & secure_url to the client
@@ -28,14 +36,15 @@ exports.uploadImages = async (req, res) => {
 };
 
 exports.remove = (req, res) => {
-	let image_id = req.body.public_id;
-	// For debugging:
-	console.log("Removing image:", image_id);
+	const image_id = String(req.body.public_id || "").trim();
+	if (!/^aivideomatic\/[a-zA-Z0-9/_-]+$/.test(image_id)) {
+		return res.status(400).json({ error: "Invalid image id" });
+	}
 
 	cloudinary.uploader.destroy(image_id, (err, result) => {
 		if (err) {
 			console.error("Cloudinary remove error:", err);
-			return res.json({ success: false, err });
+			return res.status(400).json({ success: false, error: "Image remove failed" });
 		}
 		// Or return any JSON you prefer:
 		res.json({ success: true, result });

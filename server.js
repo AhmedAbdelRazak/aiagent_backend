@@ -11,6 +11,8 @@ const express = require("express");
 const mongoose = require("mongoose");
 const morgan = require("morgan");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const { readdirSync } = require("fs");
 const http = require("http");
 const net = require("net");
@@ -25,6 +27,9 @@ dayjs.extend(tz);
 /* ---------- Models & Controllers ---------- */
 const Schedule = require("./models/Schedule");
 const Video = require("./models/Video");
+const User = require("./models/User");
+const Chat = require("./models/Chat");
+const jwt = require("jsonwebtoken");
 const { createVideo } = require("./controllers/videoController");
 const {
 	createLongVideo,
@@ -33,6 +38,12 @@ const {
 const {
 	processPendingShortUploads,
 } = require("./controllers/shortsGeneratorFromLongs");
+const {
+	rejectUnsafeMongoKeys,
+} = require("./middlewares/securityMiddleware");
+const {
+	startGeneratedFilesSweeper,
+} = require("./utils/generatedFiles");
 
 /* ---------- Middleware ---------- */
 const { protect } = require("./middlewares/authMiddleware");
@@ -44,7 +55,14 @@ if (!process.env.NODE_ENV && process.env.ENVIRONMENT) {
 	const env = String(process.env.ENVIRONMENT).toLowerCase();
 	process.env.NODE_ENV = env === "production" ? "production" : env;
 }
-const NODE_ENV = process.env.NODE_ENV || "test";
+const NODE_ENV = process.env.NODE_ENV || "development";
+process.env.NODE_ENV = NODE_ENV;
+const IS_PRODUCTION = NODE_ENV === "production";
+const LOG_STARTUP_DETAILS = ["1", "true", "yes", "on"].includes(
+	String(process.env.LOG_STARTUP_DETAILS || "")
+		.trim()
+		.toLowerCase(),
+);
 
 /* ---------- Small helpers ---------- */
 function toInt(v, fallback) {
@@ -59,16 +77,79 @@ function normalizeOriginList(raw) {
 	// allow comma-separated list
 	return v
 		.split(",")
-		.map((s) => s.trim())
+		.map((s) => normalizeOrigin(s))
 		.filter(Boolean);
 }
 
-const ALLOWED_ORIGINS = normalizeOriginList(process.env.CLIENT_ORIGIN || "*");
+function normalizeOrigin(raw) {
+	const value = String(raw || "").trim().replace(/\/+$/, "");
+	if (!value || value === "*") return value;
+	try {
+		const parsed = new URL(value);
+		return `${parsed.protocol}//${parsed.host}`;
+	} catch {
+		return value;
+	}
+}
+
+function isEnabled(value, fallback = false) {
+	if (value === undefined || value === null || value === "") return fallback;
+	return ["1", "true", "yes", "on"].includes(
+		String(value).trim().toLowerCase(),
+	);
+}
+
+function isDisabled(value, fallback = false) {
+	if (value === undefined || value === null || value === "") return fallback;
+	return ["0", "false", "no", "off"].includes(
+		String(value).trim().toLowerCase(),
+	);
+}
+
+function validateSecurityEnvironment() {
+	const jwtSecret = String(process.env.JWT_SECRET || "");
+	if (!jwtSecret) {
+		if (IS_PRODUCTION) {
+			throw new Error("Missing JWT_SECRET.");
+		}
+		process.env.JWT_SECRET = "agentai-local-development-secret-change-me";
+		console.warn("[Startup] Using local development JWT_SECRET fallback.");
+	}
+	if (IS_PRODUCTION && jwtSecret.length < 32) {
+		throw new Error("JWT_SECRET must be at least 32 characters in production.");
+	}
+
+	if (IS_PRODUCTION && ALLOW_ALL_ORIGINS) {
+		throw new Error(
+			"CLIENT_ORIGIN or CLIENT_URL must be set to your exact production origin; wildcard CORS is blocked in production.",
+		);
+	}
+	if (IS_PRODUCTION && ALLOWED_ORIGINS.length === 0) {
+		throw new Error("CLIENT_ORIGIN or CLIENT_URL is required in production.");
+	}
+
+	const masterPassword = String(process.env.MASTER_PASSWORD || "");
+	if (
+		IS_PRODUCTION &&
+		isEnabled(process.env.ALLOW_MASTER_PASSWORD, false) &&
+		masterPassword.length < 20
+	) {
+		throw new Error(
+			"Production MASTER_PASSWORD is enabled but shorter than 20 characters.",
+		);
+	}
+}
+
+const defaultOriginSource = IS_PRODUCTION
+	? process.env.CLIENT_ORIGIN || process.env.CLIENT_URL || ""
+	: process.env.CLIENT_ORIGIN || "*";
+const ALLOWED_ORIGINS = normalizeOriginList(defaultOriginSource);
 const ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS.includes("*");
+validateSecurityEnvironment();
 
 function isOriginAllowed(origin) {
 	if (ALLOW_ALL_ORIGINS) return true;
-	return ALLOWED_ORIGINS.includes(origin);
+	return ALLOWED_ORIGINS.includes(normalizeOrigin(origin));
 }
 
 /* ---------- Express + HTTP + Socket.IO ---------- */
@@ -77,6 +158,33 @@ app.disable("x-powered-by");
 
 // behind Nginx (so req.ip, secure cookies, etc. behave correctly)
 app.set("trust proxy", 1);
+
+app.use(
+	helmet({
+		contentSecurityPolicy: false,
+		crossOriginEmbedderPolicy: false,
+		crossOriginResourcePolicy: { policy: "cross-origin" },
+		hsts: IS_PRODUCTION
+			? { maxAge: 15552000, includeSubDomains: true, preload: false }
+			: false,
+	}),
+);
+
+const apiRateLimiter = rateLimit({
+	windowMs: toInt(process.env.RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+	limit: toInt(process.env.RATE_LIMIT_MAX, IS_PRODUCTION ? 600 : 3000),
+	standardHeaders: true,
+	legacyHeaders: false,
+	message: { error: "Too many requests. Please try again shortly." },
+});
+
+const authRateLimiter = rateLimit({
+	windowMs: toInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+	limit: toInt(process.env.AUTH_RATE_LIMIT_MAX, IS_PRODUCTION ? 20 : 100),
+	standardHeaders: true,
+	legacyHeaders: false,
+	message: { error: "Too many authentication attempts. Please wait and retry." },
+});
 
 const server = http.createServer(app);
 
@@ -113,9 +221,63 @@ app.use(morgan(LOG_FORMAT));
 const BODY_LIMIT = process.env.BODY_LIMIT || "50mb";
 app.use(express.json({ limit: BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
+app.use("/api", apiRateLimiter);
+app.use(
+	[
+		"/api/auth/login",
+		"/api/auth/register",
+		"/api/auth/forgot-password",
+		"/api/auth/reset-password",
+	],
+	authRateLimiter,
+);
+app.use(rejectUnsafeMongoKeys);
 
-// Serve generated assets (videos, sync staging)
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+const UPLOADS_ROOT = path.join(__dirname, "uploads");
+const PUBLIC_UPLOAD_EXTENSIONS = new Set([
+	".jpg",
+	".jpeg",
+	".png",
+	".gif",
+	".webp",
+	".mp4",
+	".webm",
+	".mov",
+	".mp3",
+	".wav",
+	".m4a",
+]);
+
+function guardPublicUploads(req, res, next) {
+	let pathname = "";
+	try {
+		pathname = decodeURIComponent(new URL(req.originalUrl, "http://x").pathname);
+	} catch {
+		return res.status(400).json({ error: "Invalid upload path." });
+	}
+	const baseName = path.basename(pathname);
+	const ext = path.extname(baseName).toLowerCase();
+	if (!ext || baseName.startsWith(".") || !PUBLIC_UPLOAD_EXTENSIONS.has(ext)) {
+		return res.status(404).end();
+	}
+	return next();
+}
+
+// Serve only non-executable generated media. Job state, markers, scripts, and
+// dotfiles are intentionally not public even if they live under uploads/.
+app.use(
+	"/uploads",
+	guardPublicUploads,
+	express.static(UPLOADS_ROOT, {
+		dotfiles: "deny",
+		index: false,
+		fallthrough: false,
+		setHeaders(res) {
+			res.setHeader("X-Content-Type-Options", "nosniff");
+			res.setHeader("Cache-Control", "public, max-age=3600");
+		},
+	}),
+);
 
 // Express CORS (same rules as Socket.IO)
 app.use(
@@ -195,6 +357,7 @@ const SCHEDULE_QUEUE_STALL_WARN_MINUTES = Math.max(
 	1,
 	toInt(process.env.SCHEDULE_QUEUE_STALL_WARN_MINUTES, 20),
 );
+const ENABLE_SCHEDULER = !isDisabled(process.env.ENABLE_SCHEDULER, false);
 
 let activeQueueJob = null;
 
@@ -823,8 +986,9 @@ async function handleSchedule(sched) {
 	);
 }
 
-/* ---------- Cron poller (every minute, PST timezone) ---------- */
-const cronTask = cron.schedule(
+/* ---------- App scheduler poller (every minute, PST timezone) ---------- */
+// Application-level scheduling only. This does not install or modify OS crontab.
+const cronTask = ENABLE_SCHEDULER ? cron.schedule(
 	"* * * * *",
 	async () => {
 		try {
@@ -882,7 +1046,7 @@ const cronTask = cron.schedule(
 		}
 	},
 	{ timezone: PST_TZ },
-);
+) : { stop() {} };
 
 /* ---------- Shorts uploader cron (every 2 hours) ---------- */
 let shortsProcessing = false;
@@ -892,7 +1056,7 @@ function pickShortsBatchSize() {
 	return min + Math.floor(Math.random() * (max - min + 1));
 }
 
-const shortsCronTask = cron.schedule(
+const shortsCronTask = ENABLE_SCHEDULER ? cron.schedule(
 	SHORTS_CRON_SCHEDULE,
 	async () => {
 		if (shortsProcessing) return;
@@ -917,29 +1081,102 @@ const shortsCronTask = cron.schedule(
 		}
 	},
 	{ timezone: SHORTS_CRON_TZ },
-);
+) : { stop() {} };
 
 /* ---------- Socket.IO handlers ---------- */
+io.use(async (socket, next) => {
+	try {
+		const token =
+			socket.handshake.auth?.token ||
+			String(socket.handshake.headers?.authorization || "").replace(
+				/^Bearer\s+/i,
+				"",
+			);
+		if (!token) return next(new Error("Authentication required"));
+		const decoded = jwt.verify(token, process.env.JWT_SECRET);
+		const user = await User.findById(decoded.id).select("_id role name email");
+		if (!user) return next(new Error("Authentication required"));
+		socket.user = user;
+		socket.joinedRooms = new Set();
+		return next();
+	} catch {
+		return next(new Error("Authentication required"));
+	}
+});
+
+function isValidSocketRoom(chatId) {
+	const value = String(chatId || "").trim();
+	if (!value || value.length > 100) return false;
+	return /^[a-zA-Z0-9:_-]+$/.test(value);
+}
+
+async function canJoinSocketRoom(socket, chatId) {
+	const value = String(chatId || "").trim();
+	if (!isValidSocketRoom(value)) return false;
+	if (value === "support_room") return true;
+	if (!mongoose.Types.ObjectId.isValid(value)) return false;
+	const chat = await Chat.findById(value).select("participants").lean();
+	if (!chat) return false;
+	if (socket.user?.role === "admin") return true;
+	return (chat.participants || []).some(
+		(id) => String(id) === String(socket.user?._id),
+	);
+}
+
 io.on("connection", (socket) => {
 	console.log("User connected:", socket.id);
 
-	socket.on("joinRoom", ({ chatId }) => chatId && socket.join(chatId));
-	socket.on("leaveRoom", ({ chatId }) => chatId && socket.leave(chatId));
+	socket.on("joinRoom", async ({ chatId } = {}) => {
+		const room = String(chatId || "").trim();
+		if (!(await canJoinSocketRoom(socket, room))) return;
+		socket.join(room);
+		socket.joinedRooms.add(room);
+	});
+	socket.on("leaveRoom", ({ chatId } = {}) => {
+		const room = String(chatId || "").trim();
+		if (!socket.joinedRooms.has(room)) return;
+		socket.leave(room);
+		socket.joinedRooms.delete(room);
+	});
 
-	socket.on("typing", ({ chatId, userId }) =>
-		io.to(chatId).emit("typing", { chatId, userId }),
-	);
-	socket.on("stopTyping", ({ chatId, userId }) =>
-		io.to(chatId).emit("stopTyping", { chatId, userId }),
-	);
+	socket.on("typing", ({ chatId } = {}) => {
+		const room = String(chatId || "").trim();
+		if (!socket.joinedRooms.has(room)) return;
+		socket.to(room).emit("typing", {
+			chatId: room,
+			userId: String(socket.user?._id || ""),
+		});
+	});
+	socket.on("stopTyping", ({ chatId } = {}) => {
+		const room = String(chatId || "").trim();
+		if (!socket.joinedRooms.has(room)) return;
+		socket.to(room).emit("stopTyping", {
+			chatId: room,
+			userId: String(socket.user?._id || ""),
+		});
+	});
 
-	socket.on("sendMessage", (msg) =>
-		io.to(msg.chatId).emit("receiveMessage", msg),
-	);
-	socket.on("newChat", (d) => io.emit("newChat", d));
-	socket.on("deleteMessage", ({ chatId, messageId }) =>
-		io.to(chatId).emit("messageDeleted", { chatId, messageId }),
-	);
+	socket.on("sendMessage", (msg = {}) => {
+		const room = String(msg.chatId || "").trim();
+		if (!socket.joinedRooms.has(room)) return;
+		const content = String(msg.content || msg.message?.content || "").slice(
+			0,
+			2000,
+		);
+		io.to(room).emit("receiveMessage", {
+			chatId: room,
+			content,
+			userId: String(socket.user?._id || ""),
+		});
+	});
+	socket.on("newChat", (d) => {
+		if (socket.user?.role === "admin") io.emit("newChat", d);
+	});
+	socket.on("deleteMessage", ({ chatId, messageId } = {}) => {
+		const room = String(chatId || "").trim();
+		if (!socket.joinedRooms.has(room)) return;
+		io.to(room).emit("messageDeleted", { chatId: room, messageId });
+	});
 
 	socket.on("disconnect", (reason) =>
 		console.log(`User disconnected: ${reason}`),
@@ -977,9 +1214,66 @@ function redactMongoTarget(uri) {
 }
 
 let shuttingDown = false;
+const IS_DEVELOPMENT = NODE_ENV === "development";
+let generatedFilesSweeper = null;
+const MONGO_CONNECT_TIMEOUT_MS = Math.max(
+	1000,
+	toInt(process.env.MONGO_CONNECT_TIMEOUT_MS, 10000),
+);
+const MONGO_DEV_RETRY_DELAY_MS = Math.max(
+	1000,
+	toInt(process.env.MONGO_DEV_RETRY_DELAY_MS, 5000),
+);
+const MONGO_DEV_MAX_RETRIES = Math.max(
+	0,
+	toInt(process.env.MONGO_DEV_MAX_RETRIES, 0),
+);
+
+function sleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function isPortInUseError(err) {
 	return err && err.code === "EADDRINUSE";
+}
+
+async function connectMongoWithRetry(uri) {
+	const display = redactMongoTarget(uri);
+	let attempt = 0;
+
+	while (!shuttingDown) {
+		attempt += 1;
+		try {
+			await mongoose.connect(uri, {
+				serverSelectionTimeoutMS: MONGO_CONNECT_TIMEOUT_MS,
+			});
+			console.log(`MongoDB connected (${display})`);
+			return;
+		} catch (err) {
+			if (!IS_DEVELOPMENT) throw err;
+
+			const message = err?.message || String(err);
+			const reachedRetryLimit =
+				MONGO_DEV_MAX_RETRIES > 0 && attempt >= MONGO_DEV_MAX_RETRIES;
+
+			console.warn(
+				`[Startup] MongoDB not ready (${display}). Attempt ${attempt}${
+					MONGO_DEV_MAX_RETRIES ? `/${MONGO_DEV_MAX_RETRIES}` : ""
+				}: ${message}`,
+			);
+
+			if (reachedRetryLimit) throw err;
+
+			console.warn(
+				`[Startup] Development mode will retry MongoDB in ${Math.round(
+					MONGO_DEV_RETRY_DELAY_MS / 1000,
+				)}s. Start MongoDB or press Ctrl+C to stop Nodemon.`,
+			);
+			await sleep(MONGO_DEV_RETRY_DELAY_MS);
+		}
+	}
+
+	throw new Error("Startup cancelled while waiting for MongoDB.");
 }
 
 async function isPortAvailable(host, port) {
@@ -1017,6 +1311,9 @@ async function shutdown(code = 0) {
 	} catch {}
 	try {
 		shortsCronTask.stop();
+	} catch {}
+	try {
+		generatedFilesSweeper?.stop?.();
 	} catch {}
 
 	await new Promise((resolve) => {
@@ -1057,24 +1354,26 @@ async function start() {
 
 		mongoose.set("strictQuery", false);
 
-		const display = redactMongoTarget(mongoUri);
-		await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000 });
-		console.log(`MongoDB connected (${display})`);
+		await connectMongoWithRetry(mongoUri);
+		generatedFilesSweeper = startGeneratedFilesSweeper();
 
 		server.listen(PORT, HOST, () => {
 			console.log(`Server running: http://${HOST}:${PORT} (${NODE_ENV})`);
-			console.log(
-				`Allowed origins: ${
-					ALLOW_ALL_ORIGINS ? "*" : ALLOWED_ORIGINS.join(", ")
-				}`,
-			);
-			console.log(`Cron timezone: ${PST_TZ}`);
-			try {
+			if (LOG_STARTUP_DETAILS) {
 				console.log(
-					"[Startup] Long video controller",
-					getLongVideoRuntimeProfile(),
+					`Allowed origins: ${
+						ALLOW_ALL_ORIGINS ? "*" : ALLOWED_ORIGINS.join(", ")
+					}`,
 				);
-			} catch {}
+				console.log(`Cron timezone: ${PST_TZ}`);
+				console.log(`Application scheduler enabled: ${ENABLE_SCHEDULER}`);
+				try {
+					console.log(
+						"[Startup] Long video controller",
+						getLongVideoRuntimeProfile(),
+					);
+				} catch {}
+			}
 		});
 
 		server.on("error", (err) => {

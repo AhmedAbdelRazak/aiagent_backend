@@ -7,11 +7,10 @@ const { protect } = require("../middlewares/authMiddleware");
 /**
  * POST /api/youtube/save-tokens
  * Body: { accessToken, refreshToken, expiresIn, youtubeEmail }
- * Saves the user’s YouTube OAuth tokens and email into their User document.
+ * Saves the user's YouTube OAuth tokens and email into their User document.
  */
 router.post("/save-tokens", protect, async (req, res, next) => {
 	try {
-		console.log("👉 [youtube/save-tokens] request body:", req.body);
 		const { accessToken, refreshToken, expiresIn, youtubeEmail } = req.body;
 
 		if (!accessToken) {
@@ -22,11 +21,6 @@ router.post("/save-tokens", protect, async (req, res, next) => {
 		}
 
 		const user = await User.findById(req.user._id);
-		console.log(
-			"👉 [youtube/save-tokens] before save, user.youtubeRefreshToken:",
-			user.youtubeRefreshToken
-		);
-
 		user.youtubeAccessToken = accessToken;
 		if (refreshToken) {
 			user.youtubeRefreshToken = refreshToken;
@@ -34,13 +28,13 @@ router.post("/save-tokens", protect, async (req, res, next) => {
 		if (expiresIn) {
 			user.youtubeTokenExpiresAt = new Date(Date.now() + expiresIn * 1000);
 		}
-		user.youtubeEmail = youtubeEmail;
+		user.youtubeEmail = String(youtubeEmail || "").trim().toLowerCase();
 
 		await user.save();
-		console.log(
-			"👉 [youtube/save-tokens] after save, user.youtubeRefreshToken:",
-			user.youtubeRefreshToken
-		);
+		console.log("[youtube/save-tokens] tokens saved", {
+			userId: String(user._id),
+			hasRefreshToken: Boolean(user.youtubeRefreshToken),
+		});
 
 		return res.json({ success: true, message: "YouTube tokens saved" });
 	} catch (err) {

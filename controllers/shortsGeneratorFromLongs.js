@@ -763,6 +763,12 @@ exports.createShortsFromLong = async (req, res) => {
 
 		const video = await Video.findById(videoId);
 		if (!video) return res.status(404).json({ error: "Video not found." });
+		if (
+			String(video.user || "") !== String(req.user?._id || "") &&
+			req.user?.role !== "admin"
+		) {
+			return res.status(403).json({ error: "Not authorized." });
+		}
 		if (!video.isLongVideo)
 			return res.status(400).json({ error: "Not a long video." });
 		if (!video.shortsDetails) {
@@ -970,6 +976,12 @@ exports.getShortsFromLong = async (req, res) => {
 		const { videoId } = req.params;
 		const video = await Video.findById(videoId);
 		if (!video) return res.status(404).json({ error: "Video not found." });
+		if (
+			String(video.user || "") !== String(req.user?._id || "") &&
+			req.user?.role !== "admin"
+		) {
+			return res.status(403).json({ error: "Not authorized." });
+		}
 		if (!video.isLongVideo)
 			return res.status(400).json({ error: "Not a long video." });
 
@@ -1016,6 +1028,7 @@ exports.listShortsEligibleLongVideos = async (req, res) => {
 				{ "shortsDetails.status": "planned" },
 			],
 		};
+		if (req.user?.role !== "admin") filter.user = req.user._id;
 		const videos = await Video.find(filter)
 			.sort({ createdAt: -1 })
 			.select("_id seoTitle topic createdAt shortsDetails");
