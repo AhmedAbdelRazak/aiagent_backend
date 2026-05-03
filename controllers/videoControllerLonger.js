@@ -1227,6 +1227,12 @@ const TOPIC_TOKEN_ALIASES = Object.freeze({
 	"golden globes": ["golden globe"],
 });
 
+function normalizeWhitespace(value = "") {
+	return String(value || "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 function tokenizeLabel(text = "") {
 	return String(text || "")
 		.toLowerCase()
