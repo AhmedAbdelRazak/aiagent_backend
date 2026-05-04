@@ -56,10 +56,13 @@ const GOOGLE_IMAGES_MAX_RESULTS = 80;
 const GOOGLE_IMAGES_SCROLLS = 7;
 const GOOGLE_IMAGES_SCROLL_DELAY_MS = 650;
 const GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS = 15000;
-const GOOGLE_IMAGES_TOPUP_QUERY_LIMIT = 5;
+const GOOGLE_IMAGES_TOPUP_QUERY_LIMIT = 8;
 const GOOGLE_IMAGES_TOPUP_SCROLLS = 4;
 const GOOGLE_IMAGES_TOPUP_SCROLL_DELAY_MS = 350;
 const GOOGLE_IMAGES_TOPUP_SELECTOR_TIMEOUT_MS = 6500;
+const BING_IMAGES_SCROLLS = 4;
+const BING_IMAGES_SCROLL_DELAY_MS = 450;
+const BING_IMAGES_SELECTOR_TIMEOUT_MS = 9000;
 const TRENDS_SIGNAL_WINDOW_HOURS = 48;
 const TRENDS_SIGNAL_FALLBACK_HOURS = 168;
 const TRENDS_SIGNAL_MAX_STORIES = 8;
@@ -680,7 +683,101 @@ function buildGoogleImagesTopUpQueriesForStory(story) {
     : []) {
     add(`${phrase} photo`);
   }
+  buildNearTopicImageQueriesForStory(story).forEach(add);
   return uniqueStrings(candidates, { limit: GOOGLE_IMAGES_TOPUP_QUERY_LIMIT });
+}
+
+function storyTokenSet(story) {
+  const parts = [
+    story?.title,
+    story?.rawTitle,
+    story?.trendDialogTitle,
+    ...(Array.isArray(story?.searchPhrases) ? story.searchPhrases : []),
+    ...(Array.isArray(story?.entityNames) ? story.entityNames : []),
+    ...(Array.isArray(story?.articles)
+      ? story.articles.map((a) => a?.title).filter(Boolean)
+      : []),
+  ];
+  const tokens = normalizeSearchQuery(parts.filter(Boolean).join(" "))
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  return new Set(tokens);
+}
+
+function storyHasAnyToken(tokenSet, tokens = []) {
+  return tokens.some((token) => tokenSet.has(String(token).toLowerCase()));
+}
+
+function buildNearTopicImageQueriesForStory(story) {
+  const primary =
+    story?.title || story?.rawTitle || story?.trendDialogTitle || "";
+  const tokens = storyTokenSet(story);
+  const queries = [];
+  const add = (value) => {
+    const normalized = limitQueryLength(normalizeSearchQuery(value), 90);
+    if (normalized) queries.push(normalized);
+  };
+
+  if (primary) {
+    add(`${primary} event photo`);
+    add(`${primary} location photo`);
+    add(`${primary} official meeting`);
+  }
+
+  if (
+    storyHasAnyToken(tokens, [
+      "peace",
+      "proposal",
+      "talks",
+      "war",
+      "diplomacy",
+      "diplomatic",
+      "government",
+      "president",
+      "minister",
+      "election",
+    ])
+  ) {
+    if (primary) {
+      add(`${primary} diplomatic talks`);
+      add(`${primary} government officials`);
+      add(`${primary} press conference`);
+    }
+    add("diplomats meeting press conference");
+    add("peace talks conference table");
+  }
+  if (storyHasAnyToken(tokens, ["iran", "iranian", "tehran"])) {
+    add("Iran diplomacy news photo");
+    add("Iran foreign ministry building");
+    add("Tehran government press conference");
+    add("Iran flag government building");
+  }
+  if (
+    storyHasAnyToken(tokens, [
+      "hormuz",
+      "strait",
+      "gulf",
+      "ship",
+      "ships",
+      "shipping",
+      "escort",
+      "escorting",
+      "tanker",
+      "naval",
+    ])
+  ) {
+    add("Strait of Hormuz oil tanker");
+    add("Persian Gulf warship tanker");
+    add("Strait of Hormuz shipping lane");
+  }
+  if (storyHasAnyToken(tokens, ["trump", "president", "white", "house", "us", "u.s"])) {
+    add("U.S. president press conference");
+    add("White House press briefing");
+    add("Trump press conference");
+  }
+
+  return uniqueStrings(queries, { limit: 12 });
 }
 
 function buildCbsSearchUrl(query = "") {
@@ -3374,6 +3471,140 @@ async function scrapeGoogleImages({
       limit: clampInt(limit, 6, GOOGLE_IMAGES_MAX_RESULTS),
     });
     log("Google images scraped", {
+      query,
+      raw: rawUrls.length,
+      filtered: filtered.length,
+      returned: unique.length,
+    });
+    if (!unique.length) {
+      const bing = await scrapeBingImages({
+        query,
+        limit,
+        scrolls: Math.min(BING_IMAGES_SCROLLS, Math.max(1, scrolls)),
+      });
+      if (bing.length) {
+        log("Google images free fallback hit", {
+          query,
+          provider: "bing-images",
+          returned: bing.length,
+        });
+        return bing;
+      }
+    }
+    return unique;
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+async function scrapeBingImages({
+  query,
+  limit = GOOGLE_IMAGES_DEFAULT_LIMIT,
+  scrolls = BING_IMAGES_SCROLLS,
+  scrollDelayMs = BING_IMAGES_SCROLL_DELAY_MS,
+  selectorTimeoutMs = BING_IMAGES_SELECTOR_TIMEOUT_MS,
+}) {
+  const page = await getBrowserPage({ label: "bing-images" });
+  page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
+  await page.setUserAgent(BROWSER_UA);
+
+  await page.setRequestInterception(true);
+  page.on("request", (req) => {
+    const type = req.resourceType();
+    if (type === "font") return req.abort();
+    return req.continue();
+  });
+
+  const targetUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(
+    query,
+  )}&form=HDRSC2&first=1`;
+  log("Bing images navigate:", targetUrl);
+
+  try {
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+    try {
+      await page.waitForSelector("img,a.iusc", {
+        timeout: selectorTimeoutMs,
+      });
+    } catch {
+      // Continue and inspect any hydrated HTML.
+    }
+
+    await autoScrollPage(page, {
+      scrolls,
+      delayMs: scrollDelayMs,
+    });
+
+    const rawUrls = await page.evaluate(() => {
+      const out = [];
+      const seen = new Set();
+      const normalizeUrl = (u) =>
+        String(u || "")
+          .replace(/\\u0026/gi, "&")
+          .replace(/\\u003d/gi, "=")
+          .replace(/\\x26/gi, "&")
+          .replace(/\\x3d/gi, "=")
+          .replace(/\\\//g, "/")
+          .replace(/&amp;/gi, "&")
+          .trim();
+      const push = (u) => {
+        const url = normalizeUrl(u);
+        if (!url || seen.has(url)) return;
+        seen.add(url);
+        out.push(url);
+      };
+
+      for (const anchor of Array.from(document.querySelectorAll("a.iusc"))) {
+        const meta = anchor.getAttribute("m") || "";
+        if (meta) {
+          try {
+            const parsed = JSON.parse(meta);
+            push(parsed.murl || parsed.turl || "");
+          } catch {
+            const match = meta.match(/"murl":"([^"]+)"/i);
+            if (match) push(match[1]);
+          }
+        }
+        const href = anchor.getAttribute("href") || "";
+        if (href) {
+          try {
+            const parsed = new URL(href, location.href);
+            push(parsed.searchParams.get("mediaurl") || "");
+          } catch {
+            // ignore bad hrefs
+          }
+        }
+      }
+
+      for (const img of Array.from(document.querySelectorAll("img"))) {
+        push(
+          img.getAttribute("data-src") ||
+            img.getAttribute("data-original") ||
+            img.getAttribute("src") ||
+            "",
+        );
+        const srcset = img.getAttribute("srcset") || "";
+        for (const part of srcset.split(",")) {
+          const url = part.trim().split(/\s+/)[0];
+          if (url) push(url);
+        }
+      }
+
+      const html = document.documentElement?.innerHTML || "";
+      const imageUrlPattern =
+        /https?:\\?\/\\?\/[^\s"'<>]+?\.(?:jpg|jpeg|png|webp)(?:[^\s"'<>]*)?/gi;
+      for (const match of html.match(imageUrlPattern) || []) push(match);
+      return out;
+    });
+
+    const filtered = (rawUrls || [])
+      .map((u) => String(u || "").trim())
+      .filter((u) => /^https?:\/\//i.test(u))
+      .filter((u) => !isLikelyThumbnailUrl(u));
+    const unique = uniqueStrings(filtered, {
+      limit: clampInt(limit, 6, GOOGLE_IMAGES_MAX_RESULTS),
+    });
+    log("Bing images scraped", {
       query,
       raw: rawUrls.length,
       filtered: filtered.length,

@@ -9988,6 +9988,13 @@ const SCRIPT_SERIOUS_CASUAL_PATTERNS = [
 	/\bhonestly\b/i,
 ];
 
+const SCRIPT_INCOMPLETE_SENTENCE_PATTERNS = [
+	/\b(?:said|says|reported|reports|suggested|suggests|claimed|claims|announced|warned|added)\s+(?:the\s+)?(?:u\.s\.|us|u\.k\.|uk|u\.n\.|un)\.?$/i,
+	/\b(?:a|an|the|earlier|latest|new|proposed|first|second|next)\s+(?:u\.s\.|us|u\.k\.|uk|u\.n\.|un)\.?$/i,
+	/\b(?:according\s+to|reported\s+by|because|while|after|before|although|but|and|or)\s*$/i,
+	/\b(?:centers\s+on|focuses\s+on|points\s+to|starts\s+with|ends\s+with)\s*$/i,
+];
+
 function analyzeScriptSpeakability({
 	script,
 	topics = [],
@@ -10015,6 +10022,10 @@ function analyzeScriptSpeakability({
 			bettingPromoSegments.push(i);
 		}
 		if (SCRIPT_SPEECH_AWKWARD_PATTERNS.some((rx) => rx.test(text))) {
+			speechAwkwardSegments.push(i);
+		} else if (
+			SCRIPT_INCOMPLETE_SENTENCE_PATTERNS.some((rx) => rx.test(text))
+		) {
 			speechAwkwardSegments.push(i);
 		} else if (
 			isPolitics &&
