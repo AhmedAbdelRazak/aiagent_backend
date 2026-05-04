@@ -102,7 +102,11 @@ const CBS_SEARCH_SELECTOR_TIMEOUT_MS = 12_000;
 const CBS_SEARCH_MAX_RESULTS = 12;
 const CBS_SEARCH_MAX_ARTICLES = 3;
 const CBS_SEARCH_MIN_SCORE = 2;
-const CBS_SEARCH_MAX_AGE_DAYS = 365;
+const CBS_SEARCH_MAX_AGE_DAYS = clampInt(
+  process.env.TRENDS_CBS_SEARCH_MAX_AGE_DAYS ?? 14,
+  1,
+  365,
+);
 const CBS_SEARCH_BASE_URL = "https://www.cbsnews.com/search/";
 const POTENTIAL_IMAGE_CAPTCHA_HINTS = [
   "captcha",

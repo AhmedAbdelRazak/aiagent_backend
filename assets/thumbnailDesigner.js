@@ -87,6 +87,15 @@ const THUMBNAIL_STYLE_PROFILES = [
 			"fast sports-broadcast contrast, lime accent, action-focused clarity, energetic but uncluttered",
 	},
 	{
+		id: "diplomatic_blue",
+		accent: "0x4EA3FF",
+		tagColor: "0x132C45",
+		lowerPanelOpacity: 0.39,
+		textPanelOpacity: 0.72,
+		brief:
+			"serious geopolitical-news contrast, diplomatic blue accent, crisp editorial depth, restrained but high-urgency news energy",
+	},
+	{
 		id: "magenta_pop",
 		accent: "0xFF4DB8",
 		tagColor: "0x3A1438",
@@ -528,6 +537,13 @@ function inferThumbnailIntent({ title, shortTitle, seoTitle, topics }) {
 	) {
 		return "legal";
 	}
+	if (
+		/\b(election|vote|president|prime minister|senator|congress|parliament|campaign|governor|white house|supreme court|iran|israel|hezbollah|hamas|gaza|ukraine|russia|china|taiwan|middle east|peace proposal|peace talks|ceasefire|diplomacy|diplomatic|sanctions|foreign minister|state department|united nations)\b/.test(
+			text,
+		)
+	) {
+		return "politics";
+	}
 	if (/\b(market|finance|stock|earnings|business|startup|money)\b/.test(text)) {
 		return "business";
 	}
@@ -544,6 +560,10 @@ function inferThumbnailIntent({ title, shortTitle, seoTitle, topics }) {
 		return "entertainment";
 	}
 	return "general";
+}
+
+function getThumbnailStyleProfile(id) {
+	return THUMBNAIL_STYLE_PROFILES.find((profile) => profile.id === id) || null;
 }
 
 function hashText(value = "") {
@@ -565,6 +585,17 @@ function chooseThumbnailStyleProfile(intent = "general", text = "") {
 	) {
 		return { ...THUMBNAIL_STYLE_PROFILES[3] };
 	}
+	if (
+		intent === "politics" ||
+		/\b(election|president|prime minister|congress|senate|white house|supreme court|iran|israel|hezbollah|hamas|gaza|ukraine|russia|china|taiwan|middle east|peace proposal|peace talks|ceasefire|diplomacy|diplomatic|sanctions|foreign minister|state department|united nations)\b/.test(
+			hay,
+		)
+	) {
+		return {
+			...(getThumbnailStyleProfile("diplomatic_blue") ||
+				THUMBNAIL_STYLE_PROFILES[3]),
+		};
+	}
 	if (intent === "tech" || /\b(ai|tech|software|app|device|product)\b/.test(hay)) {
 		return { ...THUMBNAIL_STYLE_PROFILES[1] };
 	}
@@ -579,17 +610,23 @@ function chooseThumbnailStyleProfile(intent = "general", text = "") {
 	}
 	if (
 		intent === "sports" ||
-		/\b(nfl|nba|nhl|mlb|ufc|match|playoffs|trade|goal|draft)\b/.test(hay)
+		/\b(nfl|nba|nhl|mlb|ufc|world cup|champions league|premier league|playoffs|draft pick|trade deadline|transfer window|goal scored|quarterback|linebacker|pitcher|striker)\b/.test(
+			hay,
+		)
 	) {
 		return { ...THUMBNAIL_STYLE_PROFILES[4] };
 	}
 	if (/\b(album|tour|song|music|artist|pop|concert)\b/.test(hay)) {
-		return { ...THUMBNAIL_STYLE_PROFILES[5] };
+		return {
+			...(getThumbnailStyleProfile("magenta_pop") ||
+				THUMBNAIL_STYLE_PROFILES[THUMBNAIL_STYLE_PROFILES.length - 1]),
+		};
 	}
 	if (intent === "entertainment") {
 		const variants = [
 			THUMBNAIL_STYLE_PROFILES[0],
-			THUMBNAIL_STYLE_PROFILES[5],
+			getThumbnailStyleProfile("magenta_pop") ||
+				THUMBNAIL_STYLE_PROFILES[THUMBNAIL_STYLE_PROFILES.length - 1],
 		];
 		return { ...variants[hashText(hay) % variants.length] };
 	}
@@ -597,7 +634,8 @@ function chooseThumbnailStyleProfile(intent = "general", text = "") {
 		THUMBNAIL_STYLE_PROFILES[0],
 		THUMBNAIL_STYLE_PROFILES[1],
 		THUMBNAIL_STYLE_PROFILES[2],
-		THUMBNAIL_STYLE_PROFILES[5],
+		getThumbnailStyleProfile("magenta_pop") ||
+			THUMBNAIL_STYLE_PROFILES[THUMBNAIL_STYLE_PROFILES.length - 1],
 	];
 	return { ...variants[hashText(hay) % variants.length] };
 }
@@ -609,7 +647,7 @@ function chooseAccentColor(intent, text = "") {
 function safeOpacity(value, fallback = 0.34) {
 	const n = Number(value);
 	if (!Number.isFinite(n)) return fallback;
-	return Math.min(0.5, Math.max(0.18, n));
+	return Math.min(0.78, Math.max(0.18, n));
 }
 
 function buildStyleDirectionLine(styleProfile = {}) {
@@ -636,7 +674,24 @@ function chooseLockedTextOverlayLayout(styleProfile = {}) {
 			badgeX: 64,
 			badgeY: 398,
 			maxTextWidth: 596,
-			panelOpacity: 0.22,
+			panelOpacity: 0.68,
+			badgeBox: false,
+			accentRail: true,
+		};
+	}
+	if (id === "diplomatic_blue") {
+		return {
+			id: "geopolitical_editorial_anchor",
+			panelX: 42,
+			panelY: 372,
+			panelW: 650,
+			panelH: 268,
+			headlineX: 64,
+			headlineY: 446,
+			badgeX: 64,
+			badgeY: 398,
+			maxTextWidth: 594,
+			panelOpacity: 0.72,
 			badgeBox: false,
 			accentRail: true,
 		};
@@ -653,7 +708,7 @@ function chooseLockedTextOverlayLayout(styleProfile = {}) {
 			badgeX: 66,
 			badgeY: 394,
 			maxTextWidth: 600,
-			panelOpacity: 0.2,
+			panelOpacity: 0.62,
 			badgeBox: true,
 			accentRail: true,
 		};
@@ -670,7 +725,7 @@ function chooseLockedTextOverlayLayout(styleProfile = {}) {
 			badgeX: 64,
 			badgeY: 400,
 			maxTextWidth: 590,
-			panelOpacity: 0.18,
+			panelOpacity: 0.58,
 			badgeBox: false,
 			accentRail: true,
 		};
@@ -686,7 +741,7 @@ function chooseLockedTextOverlayLayout(styleProfile = {}) {
 		badgeX: 64,
 		badgeY: 398,
 		maxTextWidth: 596,
-		panelOpacity: 0.2,
+		panelOpacity: 0.62,
 		badgeBox: false,
 		accentRail: true,
 	};
@@ -749,6 +804,9 @@ function buildThumbnailArtDirection(intent = "general") {
 	}
 	if (intent === "tech") {
 		return "Keep the design simple and highly clickable: one strong presenter on the right, one clear modern tech cue on the left, crisp typography, bright contrast, minimal clutter, and a premium product-launch feel.";
+	}
+	if (intent === "politics") {
+		return "Keep the design simple and highly clickable: one strong presenter on the right, one clear geopolitical-news cue on the left, bold clean typography, restrained urgency, polished broadcast contrast, and no sports, meme, or entertainment styling.";
 	}
 	if (intent === "entertainment") {
 		return "Keep the design simple and highly clickable: one strong presenter on the right, one clear entertainment cue on the left, bold clean typography, bright contrast, minimal clutter, and a glossy editorial feel.";
@@ -930,6 +988,23 @@ function deriveHeadlineFromTitle({
 		return `${primaryTopic} UPDATE`;
 	}
 	if (primaryTopic && intent === "legal") return `${primaryTopic} CASE`;
+	if (intent === "politics") {
+		if (
+			/\b(peace proposal|peace talks|ceasefire|diplomacy|diplomatic)\b/.test(
+				context,
+			)
+		) {
+			return "PEACE TALKS";
+		}
+		if (
+			/\b(war|conflict|sanctions|white house|congress|senate|supreme court)\b/.test(
+				context,
+			)
+		) {
+			return "WHAT CHANGED";
+		}
+		return primaryTopic ? `${primaryTopic} UPDATE` : "WHAT CHANGED";
+	}
 
 	const significant =
 		buildSignificantPhrase(title, 4) ||
@@ -957,6 +1032,7 @@ function chooseBadgeText({ intent, overrideBadgeText = "" }) {
 	if (intent === "business") return "MARKET WATCH";
 	if (intent === "tech") return "BIG UPDATE";
 	if (intent === "entertainment") return "TRENDING NOW";
+	if (intent === "politics") return "WHAT CHANGED";
 	return "TOP STORY";
 }
 
@@ -1043,7 +1119,7 @@ function buildThumbnailPrompt({
 			: "Keep the visual tone premium, modern, high-end, clean, bright, and clearly click-worthy for a long-form YouTube thumbnail.";
 	const topicFigureLine =
 		topicReferenceCount > 0
-			? "Use any topic reference images only as contextual inspiration for the left side story cue. Never replace or duplicate the presenter."
+			? "Use the topic/feed reference image as the real left-side story cue. Preserve the meaningful subject and enough surrounding context so the image reads clearly; do not zoom into a random body part, mouth, cropped face, or tiny detail unless that is the unmistakable story."
 			: "CRITICAL: no trusted topic reference image was provided. Do not invent or depict real people, cast members, celebrities, the deceased person, fake archival photos, or human faces on the left. Use environmental, object, studio, screen, script, memorial, or symbolic story cues instead.";
 	return normalizeWhitespace(`
 Create one premium 16:9 YouTube thumbnail visual foundation for a long-form video.
@@ -1070,9 +1146,10 @@ The design should feel punchy and clickable through contrast, focus, and hierarc
 You have creative freedom to build a polished editorial text-safe area on the left using subtle curves, angled panels, layered shadows, light streaks, tasteful icon-like symbols, or story-matched graphic accents. Use these only when they fit the topic; for a memorial or death story, keep accents restrained and respectful.
 Avoid plain full-width dark bars. Prefer an intentional designer-made area with depth, shape, and negative space.
 Make the left topic/feed image feel intentionally chosen and sharpened. Avoid letting an unrelated celebrity, fashion, red-carpet, or generic stock-like image become the story cue unless that is truly the topic.
+When a real feed image is provided, keep the important subject visible and properly framed inside the left panel. You may add depth, glow, shadows, blur behind it, or editorial framing, but do not crop away the main context or make the viewer guess what the image is.
 If the topic/feed image contains a face, crop and position that face so it stays clear and recognizable, but keep a clean face-free area for final text. Never put the final text-safe zone directly over any eyes, mouth, or important facial features in the topic image.
 Make the thumbnail instantly understandable at a glance on mobile.
-Do not render any readable text, letters, captions, labels, signs, logos, watermarks, lower thirds, badges, or duplicated words. The final text will be added separately after this visual edit.
+Do not render any readable text, fake text, pseudo letters, captions, labels, signs, logos, watermarks, lower thirds, badges, text boxes, or duplicated words. The final text will be added separately after this visual edit.
 Keep the left-side lower/mid area clean enough for bold thumbnail text to be added later, but do not place a face underneath that clean area. The final text may overlap abstract background or clothing, but it must not cover the presenter face, presenter glasses, topic-face eyes, topic-face mouth, or the main identity cue.
 Do not add logos, watermarks, extra people, extra hands, deformed anatomy, broken glasses, damaged facial features, or muddy lighting.
 The final thumbnail should look like a finished production thumbnail, not a rough draft.
@@ -1108,7 +1185,7 @@ function buildThumbnailDesignerPrompt({
 	const textSafeRight = THUMBNAIL_TOPIC_PANEL_W - 48;
 	const topicReferenceLine =
 		topicReferenceCount > 0
-			? "The left-side topic image is the story reference. You may crop, sharpen, relight, and simplify it, but keep it clearly related to the topic."
+			? "The left-side topic image is the real story reference. You may sharpen, relight, and simplify it, but keep the meaningful subject and context visible; avoid extreme crops that turn it into an unrecognizable face, mouth, body part, or tiny detail."
 			: "No trusted topic image was provided. Use the left side as a symbolic story visual area only: no invented people, no fake cast photos, no celebrity lookalikes, no fabricated portraits, and no human faces.";
 	return normalizeWhitespace(`
 You are an expert YouTube thumbnail designer creating one complete premium 16:9 thumbnail intended to earn very high click-through.
@@ -1127,6 +1204,7 @@ Creative direction:
 - If the story is serious, death-related, memorial, legal, or sensitive, keep symbols respectful and minimal. Do not use playful icons or anything that trivializes the topic.
 - Avoid generic full-width translucent black bars. Make the text area feel intentionally designed, sharp, and premium.
 - If the topic/feed image includes a face, preserve the face and keep readable text away from eyes, mouth, and key identity features. Recompose the image so text lands on clean negative space, not on a face.
+- Do not duplicate the same text idea in multiple places. Avoid stacked labels that say the same thing twice.
 
 Recommended on-image text from the orchestrator:
 - Main headline idea: "${suggestedHeadline}"
@@ -1294,7 +1372,9 @@ function renderTopicLeadThumbnailPlate({
 	const badgeY = lowerBoxY + 20;
 	const filters = [
 		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=0.92:brightness=-0.015,gblur=sigma=18,setsar=1[bg]`,
-		`[1:v]scale=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.08:saturation=1.06:brightness=0.015,unsharp=5:5:0.60:5:5:0.0,setsar=1[topic]`,
+		`[1:v]scale=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.04:saturation=0.95:brightness=-0.035,gblur=sigma=10,setsar=1[topicbg]`,
+		`[1:v]scale=${THUMBNAIL_TOPIC_PANEL_W - 28}:${THUMBNAIL_HEIGHT - 28}:force_original_aspect_ratio=decrease:flags=lanczos,eq=contrast=1.08:saturation=1.06:brightness=0.015,unsharp=5:5:0.60:5:5:0.0,setsar=1[topicfg]`,
+		`[topicbg][topicfg]overlay=(W-w)/2:(H-h)/2[topic]`,
 		`[2:v]scale=${THUMBNAIL_PRESENTER_PANEL_W + 32}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_PRESENTER_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=1.02,setsar=1[presenter]`,
 		`[bg][topic]overlay=0:0[tmp0]`,
 		`[tmp0]drawbox=x=0:y=0:w=${THUMBNAIL_TOPIC_PANEL_W}:h=${THUMBNAIL_HEIGHT}:color=black@0.14:t=fill[tmp1]`,
@@ -1376,7 +1456,9 @@ function renderTopicLeadVisualSeed({
 	const accentColor = normalizeAccentColor(accent);
 	const filters = [
 		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=0.92:brightness=-0.015,gblur=sigma=18,setsar=1[bg]`,
-		`[1:v]scale=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.08:saturation=1.06:brightness=0.015,unsharp=5:5:0.60:5:5:0.0,setsar=1[topic]`,
+		`[1:v]scale=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_TOPIC_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.04:saturation=0.95:brightness=-0.035,gblur=sigma=10,setsar=1[topicbg]`,
+		`[1:v]scale=${THUMBNAIL_TOPIC_PANEL_W - 28}:${THUMBNAIL_HEIGHT - 28}:force_original_aspect_ratio=decrease:flags=lanczos,eq=contrast=1.08:saturation=1.06:brightness=0.015,unsharp=5:5:0.60:5:5:0.0,setsar=1[topicfg]`,
+		`[topicbg][topicfg]overlay=(W-w)/2:(H-h)/2[topic]`,
 		`[2:v]scale=${THUMBNAIL_PRESENTER_PANEL_W + 32}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_PRESENTER_PANEL_W}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=1.02,setsar=1[presenter]`,
 		`[bg][topic]overlay=0:0[tmp0]`,
 		`[tmp0]drawbox=x=0:y=0:w=${THUMBNAIL_TOPIC_PANEL_W}:h=${THUMBNAIL_HEIGHT}:color=black@0.08:t=fill[tmp1]`,
@@ -1488,6 +1570,11 @@ function renderLockedThumbnailTextOverlay({
 	const headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
 	const headlineStartY =
 		headlineLines.length > 1 ? layout.headlineY - 28 : layout.headlineY;
+	const shouldDrawSubline = Boolean(safeSubline && headlineLines.length <= 1);
+	const sublineY = Math.min(
+		layout.panelY + layout.panelH - sublineTagFontSize - 18,
+		headlineStartY + headlineFontSize + 18,
+	);
 	const chainFilters = [
 		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos`,
 		`crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2`,
@@ -1503,11 +1590,11 @@ function renderLockedThumbnailTextOverlay({
 			`drawbox=x=${layout.panelX + 20}:y=${layout.panelY + 32}:w=24:h=5:color=white@0.32:t=fill`,
 		);
 	}
-	if (safeSubline) {
+	if (shouldDrawSubline) {
 		chainFilters.push(
 			`drawtext=text='${safeSubline}'${fontOpt}:fontsize=${sublineTagFontSize}:fontcolor=white:x=${
 				layout.panelX + 78
-			}:y=${layout.panelY + 15}:box=1:boxcolor=${tagColor}@0.78:boxborderw=7:borderw=1:bordercolor=white@0.18:shadowcolor=black@0.35:shadowx=2:shadowy=2`,
+			}:y=${sublineY}:box=1:boxcolor=${tagColor}@0.78:boxborderw=7:borderw=1:bordercolor=white@0.18:shadowcolor=black@0.35:shadowx=2:shadowy=2`,
 		);
 	}
 	const badgeBox = layout.badgeBox

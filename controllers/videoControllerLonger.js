@@ -535,7 +535,11 @@ const CONTENT_PRESENTER_RATIO = clampNumber(
 );
 const IMAGE_SEGMENT_TARGET_SEC = clampNumber(3.8, 2.5, 8);
 const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
-const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(6, 2, 10);
+const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(
+	process.env.LONG_VIDEO_IMAGE_SEGMENT_MAX_IMAGES ?? 3,
+	2,
+	6,
+);
 const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(4.8, 3, 12);
 const IMAGE_SEGMENT_MIN_UNIQUE_RATIO = clampNumber(0.5, 0.4, 1);
 const ENABLE_PRESENTER_RUN_MERGE = true;
@@ -1862,9 +1866,14 @@ function computeFlexibleNarrationTargetSec({
 }) {
 	const requested = Math.max(18, Number(requestedSec) || 0);
 	const topicCount = Math.max(1, topics.length || 1);
+	const maxMultiplier = clampNumber(
+		process.env.LONG_VIDEO_FLEX_MAX_MULTIPLIER ?? 1.35,
+		1,
+		2,
+	);
 
 	const minSec = Math.max(18, Math.round(requested * 0.5));
-	const maxSec = Math.max(minSec, Math.round(requested * 2));
+	const maxSec = Math.max(minSec, Math.round(requested * maxMultiplier));
 
 	let totalSignal = 0;
 	for (let i = 0; i < topicCount; i++) {
@@ -1894,11 +1903,11 @@ function computeFlexibleNarrationTargetSec({
 	if (normalized >= 0.92) {
 		target = maxSec;
 	} else if (normalized >= 0.75) {
-		target = Math.min(maxSec, Math.round(requested * 1.7));
+		target = Math.min(maxSec, Math.round(requested * 1.25));
 	} else if (normalized >= 0.55) {
-		target = Math.min(maxSec, Math.round(requested * 1.35));
+		target = Math.min(maxSec, Math.round(requested * 1.15));
 	} else if (normalized >= 0.4) {
-		target = Math.min(maxSec, Math.round(requested * 1.1));
+		target = Math.min(maxSec, Math.round(requested * 1.05));
 	} else if (normalized <= 0.15) {
 		target = minSec;
 	} else if (normalized <= 0.3) {
@@ -1916,6 +1925,7 @@ function computeFlexibleNarrationTargetSec({
 			total: Number(totalSignal.toFixed(2)),
 			avg: Number(avgSignal.toFixed(2)),
 			normalized: Number(normalized.toFixed(3)),
+			maxMultiplier: Number(maxMultiplier.toFixed(2)),
 		},
 	};
 }
@@ -3090,9 +3100,63 @@ function isGenericOverlayQuery(query = "", topicLabel = "") {
 	return nonTopic.length === 0;
 }
 
+const SEGMENT_IMAGE_STOP_TOKENS = new Set([
+	...TOPIC_STOP_WORDS,
+	...GENERIC_TOPIC_TOKENS,
+	"actually",
+	"another",
+	"because",
+	"being",
+	"came",
+	"clear",
+	"context",
+	"could",
+	"debate",
+	"detail",
+	"details",
+	"difference",
+	"early",
+	"explained",
+	"gives",
+	"happened",
+	"here",
+	"important",
+	"keeps",
+	"latest",
+	"layer",
+	"matters",
+	"meaning",
+	"people",
+	"provided",
+	"really",
+	"report",
+	"reported",
+	"reporting",
+	"reports",
+	"right",
+	"says",
+	"story",
+	"takeaway",
+	"tension",
+	"thing",
+	"timeline",
+	"today",
+	"unclear",
+	"update",
+	"what",
+	"whether",
+	"while",
+]);
+
+function filterSegmentImageMatchTokens(tokens = []) {
+	return filterSpecificTopicTokens(normalizeTopicTokens(tokens)).filter(
+		(t) => t && !SEGMENT_IMAGE_STOP_TOKENS.has(t),
+	);
+}
+
 function buildOverlayQueryFallback(text = "", topic = "") {
 	const base = cleanTopicCandidate(topic);
-	const tokens = filterSpecificTopicTokens(tokenizeLabel(text)).slice(0, 4);
+	const tokens = filterSegmentImageMatchTokens(tokenizeLabel(text)).slice(0, 4);
 	const extras = tokens.filter(
 		(t) => !base.toLowerCase().includes(String(t || "").toLowerCase()),
 	);
@@ -3403,7 +3467,7 @@ function buildSegmentImageQueryVariants({
 	if (topicLabel) push(topicLabel);
 
 	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
-	const textTokens = filterSpecificTopicTokens(
+	const textTokens = filterSegmentImageMatchTokens(
 		tokenizeLabel(segmentText || ""),
 	).filter((t) => !topicTokens.has(t));
 	if (topicLabel && textTokens.length) {
@@ -3436,7 +3500,7 @@ function extractSegmentMatchTokens(
 	maxTokens = 4,
 ) {
 	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
-	const tokens = filterSpecificTopicTokens(
+	const tokens = filterSegmentImageMatchTokens(
 		tokenizeLabel(segmentText || ""),
 	).filter((t) => !topicTokens.has(t));
 	return tokens.slice(0, Math.max(1, Number(maxTokens) || 1));
@@ -6154,6 +6218,9 @@ const REAL_WORLD_OVERRIDE_TOKENS = [
 	"paparazzi",
 ];
 
+const REAL_WORLD_NEWS_OVERRIDE_RE =
+	/\b(iran|israel|hezbollah|hamas|gaza|ukraine|russia|china|taiwan|middle east|white house|congress|senate|parliament|supreme court|president|prime minister|governor|diplomacy|diplomatic|ceasefire|peace proposal|peace talks|sanctions|foreign minister|state department|united nations)\b/i;
+
 const ANCHOR_NOISE_TOKENS = new Set([
 	"latest",
 	"trending",
@@ -6256,12 +6323,30 @@ const TOPIC_DOMAIN_TOKENS = [
 			"congress",
 			"house",
 			"president",
+			"prime minister",
 			"campaign",
 			"vote",
 			"policy",
 			"governor",
 			"mayor",
 			"parliament",
+			"iran",
+			"israel",
+			"hezbollah",
+			"hamas",
+			"gaza",
+			"ukraine",
+			"russia",
+			"china",
+			"taiwan",
+			"middle east",
+			"ceasefire",
+			"peace proposal",
+			"peace talks",
+			"diplomacy",
+			"diplomatic",
+			"sanctions",
+			"white house",
 		],
 	},
 	{
@@ -6304,6 +6389,7 @@ function detectFictionalContext(text = "") {
 	const raw = String(text || "");
 	const hay = raw.toLowerCase();
 	if (!hay) return false;
+	if (REAL_WORLD_NEWS_OVERRIDE_RE.test(hay)) return false;
 	const hasStrong = FICTIONAL_CONTEXT_STRONG_TOKENS.some((tok) =>
 		hay.includes(tok),
 	);
@@ -6330,6 +6416,11 @@ function detectFictionalContext(text = "") {
 		/\bending explained\b/.test(hay) ||
 		/\bwho\s+(dies|died|survives|survived)\b/.test(hay);
 	return hasQuestionCue;
+}
+
+function looksLikeRealWorldNewsContext(text = "") {
+	const hay = String(text || "");
+	return REAL_WORLD_NEWS_OVERRIDE_RE.test(hay);
 }
 
 function inferFictionalMedium(text = "") {
@@ -7051,16 +7142,16 @@ const THUMBNAIL_INTENT_RULES = [
 		re: /\b(stock|shares|ipo|earnings|revenue|sec|market|inflation|interest rate|crypto|bitcoin|ethereum)\b/i,
 	},
 	{
+		intent: "politics",
+		re: /\b(election|vote|president|prime minister|senator|congress|parliament|campaign|governor|white house|supreme court|iran|israel|hezbollah|hamas|gaza|ukraine|russia|china|taiwan|middle east|peace proposal|peace talks|ceasefire|diplomacy|diplomatic|sanctions|foreign minister|state department|united nations)\b/i,
+	},
+	{
 		intent: "sports",
-		re: /\b(nfl|nba|nhl|mlb|ufc|f1|match|goal|playoffs|draft|trade|transfer)\b/i,
+		re: /\b(nfl|nba|nhl|mlb|ufc|f1|world cup|champions league|premier league|playoffs|draft pick|trade deadline|transfer window|goal scored|quarterback|linebacker|pitcher|striker)\b/i,
 	},
 	{
 		intent: "entertainment",
 		re: /\b(trailer|season|episode|premiere|cast|box office|album|tour)\b/i,
-	},
-	{
-		intent: "politics",
-		re: /\b(election|vote|president|prime minister|senator|congress|parliament|campaign)\b/i,
 	},
 	{
 		intent: "weather",
@@ -7260,6 +7351,20 @@ function buildTopicImageQueries({ signals, intent }) {
 		);
 	}
 
+	if (intent === "politics") {
+		return uniqueStrings(
+			[
+				`${core} news photo`,
+				`${core} meeting`,
+				`${core} diplomatic talks`,
+				`${core} press conference`,
+				`${core} middle east diplomacy`,
+				`${core} official photo`,
+			],
+			{ limit: 6 },
+		);
+	}
+
 	if (intent === "entertainment") {
 		const awardsRe =
 			/\b(award|awards|golden globes|globes|oscars|oscar|emmys|emmy|grammys|grammy|bafta|baftas|red carpet)\b/i;
@@ -7299,12 +7404,32 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 	const intent = inferIntentFromSignals({ title, signals });
 	const rq = signals.relatedQueries || { top: [], rising: [] };
 	const slope = Number(signals.interestOverTime?.slope || 0);
-	const { headline, badge } = pickHookFromQueries({
+	let { headline, badge } = pickHookFromQueries({
 		rqTop: rq.top,
 		rqRising: rq.rising,
 		intent,
 		slope,
 	});
+	const hookContext = [
+		title || "",
+		signals.displayTopic || "",
+		signals.angle || "",
+		(signals.articleTitles || []).join(" "),
+		(signals.keywords || []).join(" "),
+		(rq.top || []).join(" "),
+		(rq.rising || []).join(" "),
+	]
+		.join(" ")
+		.toLowerCase();
+	if (
+		intent === "politics" &&
+		/\b(peace proposal|peace talks|ceasefire|diplomacy|diplomatic|iran)\b/.test(
+			hookContext,
+		)
+	) {
+		headline = "PEACE TALKS";
+		badge = "WHAT CHANGED";
+	}
 	let resolvedHeadline = clampHeadline(headline);
 	const storySpecificHeadline = buildPersonSpecificHeadline({ title, signals });
 	if (
@@ -14380,9 +14505,12 @@ async function runLongVideoJob(
 			const topicObj = Array.isArray(topicPicks) ? topicPicks[idx] : null;
 			const contextStrings = buildTopicContextStrings(topicObj || tc, items);
 			const contextText = contextStrings.join(" ");
+			const isClearlyRealWorld = looksLikeRealWorldNewsContext(contextText);
 			return {
 				topic: tc.topic,
-				isFictional: detectFictionalContext(contextText),
+				isFictional: isClearlyRealWorld
+					? false
+					: detectFictionalContext(contextText),
 			};
 		});
 		const hasFictionalTopic = topicContextFlags.some((t) => t.isFictional);

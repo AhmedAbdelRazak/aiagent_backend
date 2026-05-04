@@ -241,7 +241,7 @@ function buildTopicContext({ title, topics = [], categoryLabel = "" }) {
 function inferPresentationMode({ title, topics, categoryLabel }) {
 	const context = buildTopicContext({ title, topics, categoryLabel });
 	if (
-		/\b(arrest|court|trial|lawsuit|legal|investigation|crime|murder|victim|charged|hearing|government|policy|finance|business)\b/.test(
+		/\b(arrest|court|trial|lawsuit|legal|investigation|crime|murder|victim|charged|hearing|government|policy|finance|business|election|president|prime minister|congress|senate|parliament|governor|white house|supreme court|iran|israel|hezbollah|hamas|gaza|ukraine|russia|china|taiwan|middle east|peace proposal|peace talks|ceasefire|diplomacy|diplomatic|sanctions|foreign minister|state department|united nations)\b/.test(
 			context,
 		)
 	) {
