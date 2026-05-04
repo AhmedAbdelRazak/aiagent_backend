@@ -1135,6 +1135,11 @@ function collectStoryTokens(topic = "", trendStory = null) {
 			...storyTokens,
 			...articleTokens,
 			...entityTokens,
+			...(Array.isArray(trendStory?.imageSearchQueries)
+				? trendStory.imageSearchQueries.flatMap((p) =>
+						topicTokensFromTitle(p || ""),
+					)
+				: []),
 			...(Array.isArray(trendStory?.searchPhrases)
 				? trendStory.searchPhrases.flatMap((p) => topicTokensFromTitle(p || ""))
 				: []),
@@ -1169,6 +1174,9 @@ function buildAnchorPhrasesFromStory(trendStory = null) {
 			trendStory.title,
 			...(Array.isArray(trendStory.searchPhrases)
 				? trendStory.searchPhrases
+				: []),
+			...(Array.isArray(trendStory.imageSearchQueries)
+				? trendStory.imageSearchQueries
 				: []),
 			...(Array.isArray(trendStory.entityNames) ? trendStory.entityNames : []),
 		].filter(Boolean),
@@ -4996,10 +5004,20 @@ async function fetchTrendingStory(
 				rawTitle,
 				dialogTitle,
 				s.title,
+				...(Array.isArray(s.imageSearchQueries) ? s.imageSearchQueries : []),
+				...(Array.isArray(s.visualSearchQueries) ? s.visualSearchQueries : []),
 				...(Array.isArray(s.searchPhrases) ? s.searchPhrases : []),
 				...sanitizedArticles.slice(0, 3).map((a) => a.title),
 			],
 			10,
+		);
+		const imageSearchQueries = cleanStrings(
+			[
+				...(Array.isArray(s.imageSearchQueries) ? s.imageSearchQueries : []),
+				...(Array.isArray(s.visualSearchQueries) ? s.visualSearchQueries : []),
+				...(Array.isArray(s.searchQueries) ? s.searchQueries : []),
+			],
+			8,
 		);
 		const entityNames = cleanStrings(
 			Array.isArray(s.entityNames) ? s.entityNames : [rawTitle, dialogTitle],
@@ -5070,6 +5088,7 @@ async function fetchTrendingStory(
 					: null,
 				entityNames,
 				searchPhrases,
+				imageSearchQueries,
 				trendDialogTitle: dialogTitle || null,
 				imageComment,
 				viralImageBriefs: viralBriefs,
@@ -5112,6 +5131,7 @@ async function fetchTrendingStory(
 					: null,
 				entityNames,
 				searchPhrases,
+				imageSearchQueries,
 				trendDialogTitle: dialogTitle || null,
 				imageComment,
 				viralImageBriefs: viralBriefs,
@@ -5170,6 +5190,7 @@ async function fetchTrendingStory(
 				: null,
 			entityNames,
 			searchPhrases,
+			imageSearchQueries,
 			trendDialogTitle: dialogTitle || null,
 			imageComment,
 			viralImageBriefs: viralBriefs,
@@ -5893,170 +5914,51 @@ function sanitizeImageQuery(query = "") {
 	return (lastSpace >= 60 ? clipped.slice(0, lastSpace) : clipped).trim();
 }
 
-function hasAnyImageQueryToken(tokens = [], values = []) {
-	const set = new Set(normalizeTopicTokens(tokens));
-	return (values || []).some((value) => set.has(String(value).toLowerCase()));
-}
-
-const TOPIC_NEAR_IMAGE_RULES = [
-	{
-		categories: ["sport"],
-		tokens: ["athlete", "coach", "game", "match", "player", "team", "tournament"],
-		suffixes: [
-			"action photo",
-			"game photo",
-			"match photo",
-			"stadium photo",
-			"team photo",
-			"player press conference",
-		],
-		generic: ["sports action photo", "stadium crowd photo"],
-	},
-	{
-		categories: ["entertain", "movie", "tv", "film", "celebrity"],
-		tokens: [
-			"actor",
-			"actress",
-			"cast",
-			"celebrity",
-			"episode",
-			"film",
-			"movie",
-			"show",
-			"series",
-			"star",
-			"television",
-		],
-		suffixes: [
-			"cast photo",
-			"red carpet photo",
-			"interview photo",
-			"public appearance",
-			"behind the scenes",
-			"series still",
-		],
-		generic: ["TV show cast photo", "actor interview photo"],
-	},
-	{
-		categories: ["polit", "government", "world"],
-		tokens: [
-			"congress",
-			"diplomacy",
-			"election",
-			"governor",
-			"minister",
-			"peace",
-			"president",
-			"senate",
-			"talks",
-			"war",
-		],
-		suffixes: [
-			"press conference",
-			"diplomatic talks",
-			"government officials",
-			"official meeting",
-			"capitol briefing",
-		],
-		generic: ["government press conference", "diplomats meeting photo"],
-	},
-	{
-		categories: ["business", "finance", "market", "econom"],
-		tokens: ["bank", "ceo", "company", "earnings", "market", "stock", "shares"],
-		suffixes: [
-			"CEO interview photo",
-			"company headquarters",
-			"stock exchange photo",
-			"business press conference",
-			"product launch photo",
-		],
-		generic: ["stock exchange trading floor", "company headquarters photo"],
-	},
-	{
-		categories: ["tech", "technology", "science"],
-		tokens: [
-			"ai",
-			"app",
-			"device",
-			"iphone",
-			"launch",
-			"model",
-			"product",
-			"research",
-			"robot",
-			"space",
-		],
-		suffixes: [
-			"product photo",
-			"device photo",
-			"launch event photo",
-			"research lab photo",
-			"conference demo",
-		],
-		generic: ["technology product launch photo", "research lab photo"],
-	},
-	{
-		categories: ["health", "medical"],
-		tokens: ["doctor", "health", "hospital", "medical", "vaccine", "virus"],
-		suffixes: [
-			"hospital photo",
-			"doctor press conference",
-			"medical research lab",
-			"health officials briefing",
-		],
-		generic: ["hospital exterior photo", "medical research lab photo"],
-	},
-	{
-		categories: ["weather", "climate", "environment"],
-		tokens: ["climate", "fire", "flood", "hurricane", "storm", "weather"],
-		suffixes: [
-			"weather map",
-			"satellite image",
-			"storm damage photo",
-			"city weather photo",
-		],
-		generic: ["weather satellite image", "storm damage news photo"],
-	},
-	{
-		categories: ["travel", "food", "lifestyle"],
-		tokens: ["city", "food", "hotel", "restaurant", "travel", "tourism"],
-		suffixes: [
-			"location photo",
-			"city skyline",
-			"landmark photo",
-			"restaurant photo",
-			"street scene",
-		],
-		generic: ["city skyline photo", "landmark travel photo"],
-	},
-	{
-		categories: ["gaming", "game"],
-		tokens: ["game", "gaming", "playstation", "xbox", "nintendo", "trailer"],
-		suffixes: [
-			"gameplay screenshot",
-			"game character",
-			"trailer still",
-			"gaming event photo",
-		],
-		generic: ["gaming event photo", "gameplay screenshot"],
-	},
-	{
-		categories: ["legal", "crime"],
-		tokens: ["court", "judge", "lawsuit", "legal", "police", "trial"],
-		suffixes: [
-			"courthouse photo",
-			"courtroom sketch",
-			"police press conference",
-			"legal team photo",
-		],
-		generic: ["courthouse exterior photo", "police press conference"],
-	},
+const GENERIC_NEAR_IMAGE_MODIFIERS = [
+	"news photo",
+	"event photo",
+	"press photo",
+	"official photo",
+	"location photo",
 ];
 
-function ruleMatchesTopic(rule, category = "", tokens = []) {
-	const cat = String(category || "").toLowerCase();
-	if ((rule.categories || []).some((part) => cat.includes(part))) return true;
-	return hasAnyImageQueryToken(tokens, rule.tokens || []);
+function isUsefulVisualPhraseToken(token = "", topicTokens = new Set()) {
+	const t = String(token || "").toLowerCase();
+	if (!t) return false;
+	if (topicTokens.has(t)) return true;
+	if (/^\d+$/.test(t)) return false;
+	if (t.length < 3) return false;
+	if (SEGMENT_STOP_WORDS.has(t)) return false;
+	if (TOPIC_STOP_WORDS.has(t)) return false;
+	if (GENERIC_TOPIC_TOKENS.has(t)) return false;
+	return true;
+}
+
+function buildDynamicVisualPhrasesFromTexts(
+	texts = [],
+	topic = "",
+	{ limit = 10 } = {},
+) {
+	const topicTokens = new Set(tokenizeLabel(topic || ""));
+	const phrases = [];
+	const pushTokens = (tokens = []) => {
+		const phrase = uniqueStrings(tokens, { limit: 7 }).join(" ").trim();
+		if (phrase && phrase.split(/\s+/).length >= 2) phrases.push(phrase);
+	};
+
+	for (const text of texts) {
+		const tokens = normalizeTopicTokens(tokenizeLabel(text || "")).filter((t) =>
+			isUsefulVisualPhraseToken(t, topicTokens),
+		);
+		if (tokens.length < 2) continue;
+		pushTokens(tokens);
+		if (tokens.length > 4) pushTokens(tokens.slice(-4));
+		for (let i = 0; i < tokens.length - 1 && phrases.length < limit * 3; i += 1) {
+			pushTokens(tokens.slice(i, i + 3));
+		}
+	}
+
+	return uniqueStrings(phrases, { limit });
 }
 
 function cleanImageQueryHint(hint = "", topic = "") {
@@ -6082,7 +5984,7 @@ function cleanImageQueryHint(hint = "", topic = "") {
 
 function buildTopicNearImageQueries(
 	topic = "",
-	{ category = "", trendStory = null, extraHints = [] } = {},
+	{ trendStory = null, extraHints = [] } = {},
 ) {
 	const base = cleanAnchorCandidate(topic);
 	const storyHints = [
@@ -6091,6 +5993,9 @@ function buildTopicNearImageQueries(
 		trendStory?.trendDialogTitle,
 		trendStory?.trendSearchTerm,
 		...(Array.isArray(trendStory?.entityNames) ? trendStory.entityNames : []),
+		...(Array.isArray(trendStory?.imageSearchQueries)
+			? trendStory.imageSearchQueries
+			: []),
 		...(Array.isArray(trendStory?.searchPhrases)
 			? trendStory.searchPhrases
 			: []),
@@ -6099,8 +6004,6 @@ function buildTopicNearImageQueries(
 			: []),
 		...(Array.isArray(extraHints) ? extraHints : []),
 	].filter(Boolean);
-	const contextText = [topic, ...storyHints].join(" ");
-	const tokens = normalizeTopicTokens(tokenizeLabel(contextText));
 	const queries = [];
 	const push = (raw) => {
 		const q = sanitizeImageQuery(raw);
@@ -6109,163 +6012,24 @@ function buildTopicNearImageQueries(
 
 	if (base) {
 		push(base);
-		push(`${base} news photo`);
-		push(`${base} press photo`);
-		push(`${base} official photo`);
-		push(`${base} event photo`);
-		push(`${base} location photo`);
-	}
-
-	for (const rule of TOPIC_NEAR_IMAGE_RULES) {
-		if (!ruleMatchesTopic(rule, category, tokens)) continue;
-		if (base) {
-			for (const suffix of rule.suffixes || []) {
-				push(`${base} ${suffix}`);
-			}
+		for (const modifier of GENERIC_NEAR_IMAGE_MODIFIERS) {
+			push(`${base} ${modifier}`);
 		}
-		for (const generic of rule.generic || []) push(generic);
-	}
-
-	const cat = String(category || "").toLowerCase();
-	const isPolitics =
-		cat.includes("polit") ||
-		hasAnyImageQueryToken(tokens, [
-			"diplomacy",
-			"diplomatic",
-			"election",
-			"governor",
-			"minister",
-			"peace",
-			"politics",
-			"president",
-			"proposal",
-			"senate",
-			"talks",
-			"trump",
-			"war",
-		]);
-	if (isPolitics) {
-		if (base) {
-			push(`${base} diplomatic talks`);
-			push(`${base} government officials`);
-			push(`${base} press conference`);
-		}
-		push("diplomats meeting press conference");
-		push("peace talks conference table");
-	}
-
-	const isEntertainment =
-		cat.includes("entertain") ||
-		hasAnyImageQueryToken(tokens, [
-			"actor",
-			"actress",
-			"cast",
-			"celebrity",
-			"character",
-			"episode",
-			"film",
-			"movie",
-			"producer",
-			"reunion",
-			"scene",
-			"series",
-			"show",
-			"sitcom",
-			"star",
-			"television",
-			"tv",
-		]);
-	if (isEntertainment) {
-		if (base) {
-			push(`${base} cast photo`);
-			push(`${base} TV show cast`);
-			push(`${base} actor interview`);
-			push(`${base} public appearance`);
-			push(`${base} television series still`);
-			push(`${base} behind the scenes`);
-		}
-		push("TV show cast photo");
-		push("television actor interview photo");
-		push("sitcom cast reunion photo");
-	}
-
-	const likelyPerson =
-		tokens.length >= 2 &&
-		!isPolitics &&
-		!isEntertainment &&
-		!hasAnyImageQueryToken(tokens, ["proposal", "talks", "election", "war"]);
-	if (likelyPerson && base) {
-		push(`${base} portrait`);
-		push(`${base} interview photo`);
-		push(`${base} public appearance`);
-		push(`${base} press photo`);
-	}
-
-	if (hasAnyImageQueryToken(tokens, ["boy", "meets", "world"])) {
-		push("Boy Meets World cast photo");
-		push("Boy Meets World TV show cast");
-		push("Boy Meets World series still");
-		if (base) push(`${base} Boy Meets World cast`);
-	}
-	if (hasAnyImageQueryToken(tokens, ["iran", "iranian", "tehran"])) {
-		push("Iran diplomacy news photo");
-		push("Iran foreign ministry building");
-		push("Tehran government press conference");
-		push("Iran flag government building");
-	}
-	if (
-		hasAnyImageQueryToken(tokens, [
-			"strait",
-			"hormuz",
-			"gulf",
-			"tanker",
-			"naval",
-			"ship",
-			"ships",
-			"shipping",
-			"escort",
-			"escorts",
-		])
-	) {
-		push("Strait of Hormuz oil tanker");
-		push("Persian Gulf warship tanker");
-		push("Strait of Hormuz shipping lane");
-	}
-	if (
-		hasAnyImageQueryToken(tokens, [
-			"trump",
-			"president",
-			"white",
-			"house",
-			"washington",
-			"u.s",
-			"us",
-		])
-	) {
-		push("U.S. president press conference");
-		push("White House press briefing");
-		push("Trump press conference");
-	}
-	if (
-		hasAnyImageQueryToken(tokens, [
-			"election",
-			"vote",
-			"voters",
-			"campaign",
-			"senate",
-			"governor",
-			"congress",
-		])
-	) {
-		if (base) push(`${base} campaign rally`);
-		push("election polling place news photo");
-		push("political campaign press conference");
 	}
 
 	storyHints
 		.map((hint) => cleanImageQueryHint(hint, base || topic))
 		.filter(Boolean)
 		.forEach(push);
+	for (const phrase of buildDynamicVisualPhrasesFromTexts(
+		[topic, ...storyHints],
+		base || topic,
+	)) {
+		if (base && !phrase.toLowerCase().includes(base.toLowerCase())) {
+			push(`${base} ${phrase}`);
+		}
+		push(`${phrase} news photo`);
+	}
 
 	return uniqueStrings(queries, { limit: 18 });
 }
@@ -10990,6 +10754,12 @@ async function buildVideoPlanWithGPT({
 				null
 			: imageBriefs[0] || null;
 	const imageComment = String(trendStory?.imageComment || "").trim();
+	const imageSearchHints = Array.isArray(trendStory?.imageSearchQueries)
+		? trendStory.imageSearchQueries
+				.map((q) => String(q || "").trim())
+				.filter(Boolean)
+				.slice(0, 8)
+		: [];
 	const top5Context = Array.isArray(top5LiveContext) ? top5LiveContext : [];
 	const liveImages = Array.isArray(top5ImagePool) ? top5ImagePool : [];
 	const liveTopicContext = Array.isArray(liveWebContext) ? liveWebContext : [];
@@ -11158,6 +10928,8 @@ Image notes for the orchestrator:
 - General comment about what the lead image depicts: ${
 			imageComment || "(none provided)"
 		}.
+- Source-aware image search hints:
+  ${imageSearchHints.length ? imageSearchHints.map((q) => `- ${q}`).join("\n  ") : "- (none provided; derive visual cues from the topic, article headlines, and segment text)"}
 - Viral hooks by aspect ratio (use the one matching the requested ratio ${
 			ratio || "unspecified"
 		}):
@@ -11193,6 +10965,8 @@ Your job:
 6) ${runwayAnimationNote}
 
 Critical visual rules:
+- Treat "visualCue" as the downstream image-search contract. It must be topic-bound and name a visible subject, place, action, object, institution, or scene from the segment/source context.
+- If exact photos are scarce, broaden only to adjacent visible context that is directly implied by the topic or article headlines; never use unrelated celebrities, politicians, teams, landmarks, or generic scenery.
 - The model ALREADY SEES the real Google Trends photo. "runwayPrompt" describes motion and subtle, realistic changes.
 - Do NOT change who the people are. Do not add new people that are not implied.
 - Do NOT change the basic setting in a drastic way.
@@ -11358,6 +11132,8 @@ You must imagine the visuals from scratch. For each segment output:
 - ${runwayAnimationNote}
 
 Visual rules:
+- Treat "visualCue" as the downstream image-search contract. It must be topic-bound and name a visible subject, place, action, object, institution, or scene from the segment/source context.
+- If exact photos are scarce, broaden only to adjacent visible context that is directly implied by the topic or live/source context; never use unrelated people, places, or generic scenery.
 - Realistic, grounded scenes.
 - Clear focal subject, good lighting.
 - Physical realism: body poses must be possible; props (mics, tools, objects) are held or touched naturally; no floating or stitched-together objects; lighting and shadows must match a single scene.

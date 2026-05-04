@@ -726,6 +726,11 @@ function buildGoogleImagesTopUpQueriesForStory(story) {
   const peopleOrEntertainment = isLikelyPeopleOrEntertainmentStory(story);
   if (primary) {
     add(primary);
+    for (const query of Array.isArray(story?.imageSearchQueries)
+      ? story.imageSearchQueries
+      : []) {
+      add(query);
+    }
     add(`${primary} news photo`);
     add(`${primary} event photo`);
     add(`${primary} press photo`);
@@ -755,6 +760,7 @@ function storyTokenSet(story) {
     story?.title,
     story?.rawTitle,
     story?.trendDialogTitle,
+    ...(Array.isArray(story?.imageSearchQueries) ? story.imageSearchQueries : []),
     ...(Array.isArray(story?.searchPhrases) ? story.searchPhrases : []),
     ...(Array.isArray(story?.entityNames) ? story.entityNames : []),
     ...(Array.isArray(story?.articles)
@@ -772,10 +778,54 @@ function storyHasAnyToken(tokenSet, tokens = []) {
   return tokens.some((token) => tokenSet.has(String(token).toLowerCase()));
 }
 
+function cleanVisualQueryHintText(text = "") {
+  return normalizeSearchQuery(text)
+    .replace(/^live\s+updates?\s*:\s*/i, " ")
+    .replace(
+      /\b\d+\s*(?:minute|minutes|hour|hours|day|days|week|weeks)\s+ago\b.*$/i,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function visualPhraseTokens(text = "", topicTokens = new Set()) {
+  return cleanVisualQueryHintText(text)
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((token) => {
+      if (topicTokens.has(token)) return true;
+      if (/^\d+$/.test(token)) return false;
+      if (token.length < 3) return false;
+      return !IMAGE_STOPWORDS.has(token);
+    });
+}
+
+function buildDynamicVisualPhrases(texts = [], primary = "", { limit = 10 } = {}) {
+  const topicTokens = new Set(visualPhraseTokens(primary));
+  const phrases = [];
+  const push = (tokens) => {
+    const phrase = uniqueStrings(tokens, { limit: 7 }).join(" ").trim();
+    if (phrase && phrase.split(/\s+/).length >= 2) phrases.push(phrase);
+  };
+
+  for (const text of texts) {
+    const tokens = visualPhraseTokens(text, topicTokens);
+    if (tokens.length < 2) continue;
+    push(tokens);
+    if (tokens.length > 4) push(tokens.slice(-4));
+    for (let i = 0; i < tokens.length - 1 && phrases.length < limit * 3; i += 1) {
+      push(tokens.slice(i, i + 3));
+    }
+  }
+
+  return uniqueStrings(phrases, { limit });
+}
+
 function buildNearTopicImageQueriesForStory(story) {
   const primary =
     story?.title || story?.rawTitle || story?.trendDialogTitle || "";
-  const tokens = storyTokenSet(story);
   const queries = [];
   const add = (value) => {
     const normalized = limitQueryLength(normalizeSearchQuery(value), 90);
@@ -785,89 +835,26 @@ function buildNearTopicImageQueriesForStory(story) {
   if (primary) {
     add(`${primary} event photo`);
     add(`${primary} location photo`);
-    add(`${primary} official meeting`);
+    add(`${primary} official photo`);
   }
 
-  if (
-    storyHasAnyToken(tokens, [
-      "peace",
-      "proposal",
-      "talks",
-      "war",
-      "diplomacy",
-      "diplomatic",
-      "government",
-      "president",
-      "minister",
-      "election",
-    ])
-  ) {
-    if (primary) {
-      add(`${primary} diplomatic talks`);
-      add(`${primary} government officials`);
-      add(`${primary} press conference`);
+  const contextTexts = [
+    primary,
+    story?.rawTitle,
+    story?.trendDialogTitle,
+    ...(Array.isArray(story?.searchPhrases) ? story.searchPhrases : []),
+    ...(Array.isArray(story?.entityNames) ? story.entityNames : []),
+    ...(Array.isArray(story?.articles)
+      ? story.articles.map((a) => a?.title).filter(Boolean)
+      : []),
+  ].filter(Boolean);
+
+  for (const phrase of buildDynamicVisualPhrases(contextTexts, primary)) {
+    add(phrase);
+    if (primary && !phrase.toLowerCase().includes(String(primary).toLowerCase())) {
+      add(`${primary} ${phrase}`);
     }
-    add("diplomats meeting press conference");
-    add("peace talks conference table");
-  }
-  if (storyHasAnyToken(tokens, ["iran", "iranian", "tehran"])) {
-    add("Iran diplomacy news photo");
-    add("Iran foreign ministry building");
-    add("Tehran government press conference");
-    add("Iran flag government building");
-  }
-  if (
-    storyHasAnyToken(tokens, [
-      "hormuz",
-      "strait",
-      "gulf",
-      "ship",
-      "ships",
-      "shipping",
-      "escort",
-      "escorting",
-      "tanker",
-      "naval",
-    ])
-  ) {
-    add("Strait of Hormuz oil tanker");
-    add("Persian Gulf warship tanker");
-    add("Strait of Hormuz shipping lane");
-  }
-  if (storyHasAnyToken(tokens, ["trump", "president", "white", "house", "us", "u.s"])) {
-    add("U.S. president press conference");
-    add("White House press briefing");
-    add("Trump press conference");
-  }
-  if (
-    storyHasAnyToken(tokens, [
-      "actor",
-      "actress",
-      "cast",
-      "celebrity",
-      "episode",
-      "film",
-      "movie",
-      "show",
-      "tv",
-    ])
-  ) {
-    if (primary) {
-      add(`${primary} cast photo`);
-      add(`${primary} interview photo`);
-      add(`${primary} red carpet`);
-    }
-    add("television cast photo");
-    add("actor press photo");
-  }
-  if (
-    storyHasAnyToken(tokens, ["boy", "meets", "world"]) &&
-    tokens.has("boy") &&
-    tokens.has("meets") &&
-    tokens.has("world")
-  ) {
-    add("Boy Meets World cast photo");
-    add("Boy Meets World actor photo");
+    add(`${phrase} news photo`);
   }
 
   return uniqueStrings(queries, { limit: 12 });
@@ -1542,7 +1529,8 @@ async function enhanceStoriesWithOpenAI(
         '   - "visualHook": a vivid, specific description of what the image shows (clear subject, camera framing, and motion-friendly composition, no text overlays, no logos)\n' +
         '   - "emotion": the main emotion the image should evoke\n' +
         '   - "rationale": a short note for the video orchestrator about why this hook works for that aspect ratio\n' +
-        "4) One short 'imageComment' that plainly describes what the recommended hero shot should look like so downstream video generation can pick the right image for Runway (mention subject + setting, no extra fluff).\n\n" +
+        "4) One short 'imageComment' that plainly describes what the recommended hero shot should look like so downstream video generation can pick the right image for Runway (mention subject + setting, no extra fluff).\n" +
+        "5) An 'imageSearchQueries' array with 4-8 concise web-image search phrases. Derive these from the topic and article titles. Each query must name a concrete visible subject, place, action, object, person, or institution that would make a real editorial photo. Keep them topic-bound, avoid generic words alone, avoid logos/wallpapers, and broaden only to directly related visual context when exact photos may be scarce.\n\n" +
         "Each topic MUST include the original id field provided.\n" +
         `ALL text must be in ${language}, even if the country/geo differs. No other languages or scripts are allowed.\n` +
         "Your entire reply MUST be valid JSON, no extra commentary.",
@@ -1551,7 +1539,7 @@ async function enhanceStoriesWithOpenAI(
         JSON.stringify(payload) +
         "\n\n" +
         "Respond with a JSON object of the form:\n" +
-        '{ "topics": [ { "id": string, "term": string, "blogTitle": string, "youtubeShortTitle": string, "imageComment": string, "imageDirectives": [ { "aspectRatio": "1280:720", "visualHook": string, "emotion": string, "rationale": string }, { "aspectRatio": "720:1280", "visualHook": string, "emotion": string, "rationale": string } ] } ] }',
+        '{ "topics": [ { "id": string, "term": string, "blogTitle": string, "youtubeShortTitle": string, "imageComment": string, "imageSearchQueries": [string], "imageDirectives": [ { "aspectRatio": "1280:720", "visualHook": string, "emotion": string, "rationale": string }, { "aspectRatio": "720:1280", "visualHook": string, "emotion": string, "rationale": string } ] } ] }',
       // We skip response_format to avoid model/version compatibility errors
       // and just force JSON via instructions.
     });
@@ -1597,12 +1585,27 @@ async function enhanceStoriesWithOpenAI(
           : `Lead image for ${s.title}, framed for ${
               briefs[0]?.aspectRatio === "720:1280" ? "vertical" : "landscape"
             } video.`);
+      const imageSearchQueries = uniqueStrings(
+        [
+          ...(Array.isArray(match.imageSearchQueries)
+            ? match.imageSearchQueries
+            : []),
+          ...(Array.isArray(match.visualSearchQueries)
+            ? match.visualSearchQueries
+            : []),
+          ...(Array.isArray(match.searchQueries) ? match.searchQueries : []),
+        ]
+          .map((q) => limitQueryLength(normalizeSearchQuery(q), 90))
+          .filter(Boolean),
+        { limit: 8 },
+      );
 
       return {
         ...s,
         seoTitle: match.blogTitle || s.title,
         youtubeShortTitle: match.youtubeShortTitle || s.title,
         imageComment,
+        imageSearchQueries,
         viralImageBriefs: briefs,
       };
     });
