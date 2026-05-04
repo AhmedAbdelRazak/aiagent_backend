@@ -466,7 +466,7 @@ const HUMAN_SAFETY =
 const BRAND_ENHANCEMENT_HINT =
 	"subtle global brightness and contrast boost, slightly brighter and clearer faces while preserving natural skin tones, consistent AiVideomatic brand color grading";
 
-const CHAT_MODEL = "gpt-5.2";
+const CHAT_MODEL = "gpt-5.4";
 
 const ELEVEN_VOICES = {
 	English: "21m00Tcm4TlvDq8ikWAM",

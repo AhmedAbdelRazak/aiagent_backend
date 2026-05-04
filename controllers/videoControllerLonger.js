@@ -50,6 +50,7 @@ const path = require("path");
 const crypto = require("crypto");
 const child_process = require("child_process");
 const axios = require("axios");
+const xml2js = require("xml2js");
 const dayjs = require("dayjs");
 const { google } = require("googleapis");
 const { OpenAI } = require("openai");
@@ -99,7 +100,7 @@ try {
 
 const openai = new OpenAI({ apiKey: process.env.CHATGPT_API_TOKEN });
 
-const CHAT_MODEL = "gpt-5.2";
+const CHAT_MODEL = "gpt-5.4";
 const OWNER_ONLY_USER_ID = "683e3a0329b0515ff5f7a1e1";
 const LOG_STARTUP_DETAILS = ["1", "true", "yes", "on"].includes(
 	String(process.env.LOG_STARTUP_DETAILS || "")
@@ -526,8 +527,12 @@ const OVERLAY_MARGIN_PX = clampNumber(28, 6, 120);
 const OVERLAY_DEFAULT_POSITION = "topRight";
 const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 
-// Content visual mix (presenter vs static images)
-const CONTENT_PRESENTER_RATIO = clampNumber(0.4, 0.2, 0.8);
+// Content visual mix (presenter vs static images). Default is 40% presenter / 60% scraped feed images.
+const CONTENT_PRESENTER_RATIO = clampNumber(
+	process.env.LONG_VIDEO_PRESENTER_RATIO ?? 0.4,
+	0.2,
+	0.8,
+);
 const IMAGE_SEGMENT_TARGET_SEC = clampNumber(3.8, 2.5, 8);
 const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
 const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(6, 2, 10);
@@ -542,6 +547,25 @@ const GOOGLE_IMAGES_SEARCH_ENABLED = true;
 const GOOGLE_IMAGES_VARIANT_LIMIT = clampNumber(4, 1, 6);
 const GOOGLE_IMAGES_RESULTS_PER_QUERY = clampNumber(28, 8, 40);
 const GOOGLE_IMAGES_MIN_POOL_MULTIPLIER = clampNumber(3, 1, 5);
+const CSE_IMAGE_TOPUP_ENABLED = envFlag("LONG_VIDEO_CSE_IMAGE_TOPUP", true);
+const CSE_CONTEXT_FALLBACK_ENABLED = envFlag(
+	"LONG_VIDEO_CSE_CONTEXT_FALLBACK",
+	false,
+);
+const NEWS_IMAGE_FALLBACK_ENABLED = envFlag(
+	"LONG_VIDEO_NEWS_IMAGE_FALLBACK",
+	true,
+);
+const NEWS_IMAGE_FALLBACK_LIMIT = clampNumber(
+	process.env.LONG_VIDEO_NEWS_IMAGE_FALLBACK_LIMIT ?? 8,
+	2,
+	12,
+);
+const NEWS_RSS_TIMEOUT_MS = clampNumber(
+	process.env.LONG_VIDEO_NEWS_RSS_TIMEOUT_MS ?? 8000,
+	3000,
+	20000,
+);
 
 const ENABLE_LONG_VIDEO_OVERLAYS = false;
 
@@ -639,6 +663,12 @@ function clampNumber(n, min, max) {
 	const x = Number(n);
 	if (!Number.isFinite(x)) return min;
 	return Math.max(min, Math.min(max, x));
+}
+
+function envFlag(name, fallback = false) {
+	const raw = process.env[name];
+	if (raw === undefined || raw === null || raw === "") return Boolean(fallback);
+	return !/^(0|false|no|off)$/i.test(String(raw).trim());
 }
 
 function makeEven(n) {
@@ -2488,6 +2518,148 @@ async function fetchGoogleImagesFromService(
 	return [];
 }
 
+function rssText(value) {
+	if (value === undefined || value === null) return "";
+	if (typeof value === "string" || typeof value === "number")
+		return String(value);
+	if (Array.isArray(value)) return rssText(value[0]);
+	if (typeof value === "object") {
+		if (value._ !== undefined) return rssText(value._);
+		if (value.$?.url) return rssText(value.$.url);
+	}
+	return "";
+}
+
+function extractArticleUrlFromNewsLink(raw = "") {
+	const link = String(raw || "").trim();
+	if (!/^https?:\/\//i.test(link)) return "";
+	try {
+		const parsed = new URL(link);
+		const direct = parsed.searchParams.get("url") || parsed.searchParams.get("u");
+		if (direct && /^https?:\/\//i.test(direct)) return direct;
+		if (/^news\.google\.com$/i.test(parsed.hostname)) return "";
+	} catch {}
+	return link;
+}
+
+async function fetchRssArticleUrls({
+	endpoint,
+	params = {},
+	query,
+	topicLabel,
+	limit = NEWS_IMAGE_FALLBACK_LIMIT,
+	jobId,
+	label = "news",
+}) {
+	const q = sanitizeOverlayQuery(query || topicLabel || "");
+	if (!endpoint || !q) return [];
+	const topicTokens = filterSpecificTopicTokens(
+		topicTokensFromTitle(topicLabel || query || ""),
+	);
+	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
+	try {
+		const { data } = await axios.get(endpoint, {
+			params,
+			timeout: NEWS_RSS_TIMEOUT_MS,
+			maxContentLength: 768 * 1024,
+			maxBodyLength: 768 * 1024,
+			headers: { "User-Agent": "agentai-long-video/2.0" },
+			validateStatus: (s) => s >= 200 && s < 400,
+		});
+		const parsed = await xml2js.parseStringPromise(String(data || ""), {
+			explicitArray: false,
+			trim: true,
+		});
+		const rawItems =
+			parsed?.rss?.channel?.item ||
+			parsed?.feed?.entry ||
+			parsed?.channel?.item ||
+			[];
+		const items = Array.isArray(rawItems)
+			? rawItems
+			: rawItems
+				? [rawItems]
+				: [];
+		const urls = [];
+		for (const item of items) {
+			const title = rssText(item?.title);
+			const link =
+				rssText(item?.link?.href) || rssText(item?.link) || rssText(item?.id);
+			const source =
+				rssText(item?.source?.$?.url) ||
+				rssText(item?.source?.url) ||
+				rssText(item?.source);
+			const description =
+				rssText(item?.description) || rssText(item?.summary) || "";
+			const fields = [title, link, source, description];
+			if (
+				requiredTopicMatches &&
+				topicMatchInfo(topicTokens, fields).count < requiredTopicMatches
+			) {
+				continue;
+			}
+			const url = extractArticleUrlFromNewsLink(link);
+			if (!isHttpUrl(url)) continue;
+			urls.push(url);
+			if (urls.length >= limit) break;
+		}
+		const unique = uniqueStrings(urls, { limit });
+		if (jobId)
+			logJob(jobId, "news rss article candidates", {
+				source: label,
+				query: q,
+				count: unique.length,
+			});
+		return unique;
+	} catch (e) {
+		if (jobId)
+			logJob(jobId, "news rss article fetch failed", {
+				source: label,
+				query: q,
+				error: e.message,
+			});
+		return [];
+	}
+}
+
+async function fetchNewsArticleUrlsForImages({
+	query,
+	topicLabel,
+	limit = NEWS_IMAGE_FALLBACK_LIMIT,
+	jobId,
+} = {}) {
+	if (!NEWS_IMAGE_FALLBACK_ENABLED) return [];
+	const q = sanitizeOverlayQuery(query || topicLabel || "");
+	if (!q) return [];
+	const target = clampNumber(Number(limit) || NEWS_IMAGE_FALLBACK_LIMIT, 1, 16);
+	const searches = [
+		fetchRssArticleUrls({
+			endpoint: "https://news.google.com/rss/search",
+			params: { q, hl: "en-US", gl: "US", ceid: "US:en" },
+			query: q,
+			topicLabel,
+			limit: target,
+			jobId,
+			label: "google_news",
+		}),
+		fetchRssArticleUrls({
+			endpoint: "https://www.bing.com/news/search",
+			params: { q, format: "rss", mkt: "en-US" },
+			query: q,
+			topicLabel,
+			limit: target,
+			jobId,
+			label: "bing_news",
+		}),
+	];
+	const settled = await Promise.allSettled(searches);
+	const urls = [];
+	for (const result of settled) {
+		if (result.status === "fulfilled") urls.push(...(result.value || []));
+	}
+	return uniqueStrings(urls, { limit: target });
+}
+
 async function fetchCseContext(topic, extraTokens = []) {
 	if (!topic) return [];
 	const extra = Array.isArray(extraTokens)
@@ -3313,6 +3485,90 @@ function scoreUrlTokenMatch(url = "", tokens = []) {
 	return count;
 }
 
+function getImageUrlRelevanceTokens(opts = {}) {
+	const topicTokens = filterSpecificTopicTokens(
+		normalizeTopicTokens(opts.topicTokens || opts.preferTokens || []),
+	);
+	const segmentTokens = filterSpecificTopicTokens(
+		normalizeTopicTokens(opts.segmentTokens || opts.requireTokens || []),
+	);
+	const queryTokens = filterSpecificTopicTokens(
+		normalizeTopicTokens(opts.queryTokens || []),
+	);
+	return { topicTokens, segmentTokens, queryTokens };
+}
+
+function getTrustedImageUrlKeys(opts = {}) {
+	if (opts?.trustedUrlKeys instanceof Set) return opts.trustedUrlKeys;
+	return new Set();
+}
+
+function scoreImageUrlRelevance(url = "", opts = {}) {
+	const key = normalizeImageUrlKey(url);
+	const trustedUrlKeys = getTrustedImageUrlKeys(opts);
+	if (trustedUrlKeys.has(key)) {
+		return {
+			trusted: true,
+			accepted: true,
+			score: 1000,
+			topicScore: 0,
+			segmentScore: 0,
+			queryScore: 0,
+		};
+	}
+
+	const { topicTokens, segmentTokens, queryTokens } =
+		getImageUrlRelevanceTokens(opts);
+	const topicScore = scoreUrlTokenMatch(url, topicTokens);
+	const segmentScore = scoreUrlTokenMatch(url, segmentTokens);
+	const queryScore = scoreUrlTokenMatch(url, queryTokens);
+	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
+	const queryRequired = queryTokens.length >= 3 ? 2 : queryTokens.length ? 1 : 0;
+	const topical =
+		requiredTopicMatches > 0 && topicScore >= requiredTopicMatches;
+	const queryMatched = queryRequired > 0 && queryScore >= queryRequired;
+	const segmentMatched = segmentTokens.length > 0 && segmentScore > 0;
+	const accepted =
+		topical ||
+		queryMatched ||
+		(topicScore > 0 && segmentMatched) ||
+		(!requiredTopicMatches && (segmentMatched || queryMatched));
+	return {
+		trusted: false,
+		accepted,
+		score: topicScore * 3 + queryScore * 2 + segmentScore,
+		topicScore,
+		segmentScore,
+		queryScore,
+	};
+}
+
+function filterRelevantImageCandidatePool(pool = [], opts = {}) {
+	if (opts?.enforceRelevance === false) return pool;
+	const relevanceTokens = getImageUrlRelevanceTokens(opts);
+	const hasSignals =
+		relevanceTokens.topicTokens.length ||
+		relevanceTokens.segmentTokens.length ||
+		relevanceTokens.queryTokens.length ||
+		getTrustedImageUrlKeys(opts).size;
+	if (!hasSignals) return pool;
+
+	const scored = pool
+		.map((url) => ({ url, ...scoreImageUrlRelevance(url, opts) }))
+		.filter((entry) => entry.accepted);
+	if (!scored.length) return [];
+	scored.sort((a, b) => {
+		if (Number(b.trusted) !== Number(a.trusted))
+			return Number(b.trusted) - Number(a.trusted);
+		if (b.topicScore !== a.topicScore) return b.topicScore - a.topicScore;
+		if (b.queryScore !== a.queryScore) return b.queryScore - a.queryScore;
+		if (b.segmentScore !== a.segmentScore)
+			return b.segmentScore - a.segmentScore;
+		return b.score - a.score;
+	});
+	return scored.map((entry) => entry.url);
+}
+
 function dedupeUrlsPreserveOrder(urls = []) {
 	const out = [];
 	const seen = new Set();
@@ -3350,6 +3606,12 @@ function pickSegmentImageUrls(
 	const preferTokens = Array.isArray(opts.preferTokens)
 		? normalizeTopicTokens(opts.preferTokens)
 		: [];
+	pool = filterRelevantImageCandidatePool(pool, {
+		...opts,
+		topicTokens: opts.topicTokens || preferTokens,
+		segmentTokens: opts.segmentTokens || requireTokens,
+	});
+	if (!pool.length) return [];
 	if (requireTokens.length) {
 		const matched = pool.filter(
 			(url) => scoreUrlTokenMatch(url, requireTokens) > 0,
@@ -3635,10 +3897,11 @@ function buildThumbnailSeedCandidateEntries(topicObj = {}) {
 					source: a?.url,
 					title: a?.title,
 					description: a?.title,
+					sourceType: "article-og",
 				}))
 			: []),
 	]
-		.map((item) => normalizeThumbnailSeedEntry(item, "article"))
+		.map((item) => normalizeThumbnailSeedEntry(item, "article-og"))
 		.filter(Boolean);
 	return dedupeThumbnailSeedEntries(
 		[
@@ -3659,6 +3922,8 @@ const SEARCH_ONLY_THUMBNAIL_SOURCE_TYPES = new Set([
 function thumbnailSourceTrust(sourceType = "") {
 	const type = String(sourceType || "").toLowerCase();
 	if (
+		type === "article-og" ||
+		type === "news-og" ||
 		type === "cse" ||
 		type === "cse-query" ||
 		type === "wikipedia" ||
@@ -3667,8 +3932,7 @@ function thumbnailSourceTrust(sourceType = "") {
 		return 4;
 	}
 	if (type === "google-images" || type === "topic") return 3;
-	if (type === "trend") return 2;
-	if (type === "article" || type === "fallback") return 1;
+	if (type === "article" || type === "fallback" || type === "trend") return 2;
 	return 1;
 }
 
@@ -3735,7 +3999,8 @@ function thumbnailReferenceConfidence(entry = {}, topicLabel = "") {
 	if (hasKnownThumbnailMismatch(entry, topicLabel)) return "weak";
 	const trust = thumbnailEffectiveSourceTrust(entry, topicLabel);
 	const textScore = thumbnailCandidateTextScore(entry, topicLabel);
-	if (trust >= 4) return "high";
+	if (trust >= 4 && textScore >= 1) return "high";
+	if (trust >= 4) return "medium";
 	if (trust >= 3 && textScore >= 1) return "high";
 	if (trust >= 3) return "medium";
 	if (trust >= 2 && textScore >= 1) return "medium";
@@ -3887,6 +4152,102 @@ async function collectThumbnailSearchCandidateEntries({
 		});
 	}
 	return deduped;
+}
+
+async function collectThumbnailFeedImageEntries({
+	topicLabel,
+	articleUrls = [],
+	storyArticles = [],
+	jobId,
+	limit = 8,
+}) {
+	const topic = cleanTopicLabel(topicLabel);
+	if (!topic) return [];
+	const target = clampNumber(Number(limit) || 8, 2, 12);
+	const topicTokens = filterSpecificTopicTokens(topicTokensFromTitle(topic));
+	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
+	const entries = [];
+	const articleItems = [];
+	for (const article of Array.isArray(storyArticles) ? storyArticles : []) {
+		const pageUrl = String(article?.url || "").trim();
+		const title = String(article?.title || "").trim();
+		const image = String(article?.image || "").trim();
+		const fields = [title, pageUrl];
+		if (
+			requiredTopicMatches &&
+			topicMatchInfo(topicTokens, fields).count < requiredTopicMatches
+		) {
+			continue;
+		}
+		if (isHttpUrl(image) && !isLikelyThumbnailUrl(image)) {
+			entries.push(
+				normalizeThumbnailSeedEntry(
+					{
+						url: image,
+						source: pageUrl,
+						title,
+						description: title,
+						sourceType: "article-og",
+					},
+					"article-og",
+				),
+			);
+		}
+		if (isHttpUrl(pageUrl))
+			articleItems.push({ url: pageUrl, title, sourceType: "article-og" });
+	}
+	for (const pageUrl of Array.isArray(articleUrls) ? articleUrls : []) {
+		if (!isHttpUrl(pageUrl)) continue;
+		if (
+			requiredTopicMatches &&
+			topicMatchInfo(topicTokens, [pageUrl]).count <
+				Math.max(1, Math.min(requiredTopicMatches, 2))
+		) {
+			continue;
+		}
+		articleItems.push({ url: pageUrl, title: topic, sourceType: "article-og" });
+	}
+	if (entries.length < target) {
+		const newsUrls = await fetchNewsArticleUrlsForImages({
+			query: topic,
+			topicLabel: topic,
+			limit: NEWS_IMAGE_FALLBACK_LIMIT,
+			jobId,
+		});
+		for (const newsUrl of newsUrls) {
+			if (!isHttpUrl(newsUrl)) continue;
+			articleItems.push({ url: newsUrl, title: topic });
+		}
+	}
+
+	const seenPages = new Set();
+	for (const item of articleItems) {
+		if (entries.length >= target) break;
+		const pageUrl = item?.url || "";
+		const key = normalizeImageUrlKey(pageUrl);
+		if (!pageUrl || seenPages.has(key)) continue;
+		seenPages.add(key);
+		const og = await fetchOpenGraphImageUrl(pageUrl);
+		if (!og || isLikelyThumbnailUrl(og)) continue;
+		if (!isProbablyDirectImageUrl(og)) {
+			const ct = await headContentType(og, 7000);
+			if (ct && !ct.startsWith("image/")) continue;
+		}
+		entries.push(
+			normalizeThumbnailSeedEntry(
+				{
+					url: og,
+					source: pageUrl,
+					title: item?.title || topic,
+					description: item?.title || topic,
+					sourceType: item?.sourceType || "news-og",
+				},
+				"news-og",
+			),
+		);
+	}
+
+	return dedupeThumbnailSeedEntries(entries.filter(Boolean), { limit: target });
 }
 
 async function collectThumbnailFallbackUrls({
@@ -4141,16 +4502,35 @@ async function ensureThumbnailSeedImages({
 			{ limit: 28 },
 		);
 		const story = t.trendStory || {};
+		const storyArticles = Array.isArray(story.articles) ? story.articles : [];
 		const articleUrls = (Array.isArray(story.articles) ? story.articles : [])
 			.map((a) => a?.url)
 			.filter((u) => isHttpUrl(u));
+		const feedEntries = await collectThumbnailFeedImageEntries({
+			topicLabel,
+			articleUrls,
+			storyArticles,
+			jobId,
+			limit: 8,
+		});
+		if (feedEntries.length && log) {
+			log("thumbnail feed image candidates", {
+				topic: topicLabel,
+				count: feedEntries.length,
+				trusted: countTrustedThumbnailEntries(feedEntries, topicLabel),
+			});
+		}
+		const baseCandidateEntries = dedupeThumbnailSeedEntries(
+			[...feedEntries, ...candidateEntries],
+			{ limit: 34 },
+		);
 
 		const trustedSeedCount = countTrustedThumbnailEntries(
-			candidateEntries,
+			baseCandidateEntries,
 			topicLabel,
 		);
 		const shouldSmartTopUp =
-			topicLabel && (candidateEntries.length < 4 || trustedSeedCount < 2);
+			topicLabel && (baseCandidateEntries.length < 4 || trustedSeedCount < 2);
 		let searchEntries = [];
 		if (shouldSmartTopUp) {
 			searchEntries = await collectThumbnailSearchCandidateEntries({
@@ -4162,10 +4542,16 @@ async function ensureThumbnailSeedImages({
 				target: 8,
 			});
 		}
+		const trustedFeedAvailable = hasTrustedThumbnailEntries(
+			feedEntries,
+			topicLabel,
+		);
 		const preferredEntries = dedupeThumbnailSeedEntries(
-			hasTrustedThumbnailEntries(searchEntries, topicLabel)
-				? [...searchEntries, ...candidateEntries]
-				: [...candidateEntries, ...searchEntries],
+			trustedFeedAvailable
+				? [...feedEntries, ...searchEntries, ...candidateEntries]
+				: hasTrustedThumbnailEntries(searchEntries, topicLabel)
+					? [...searchEntries, ...baseCandidateEntries]
+					: [...baseCandidateEntries, ...searchEntries],
 			{ limit: 30 },
 		);
 
@@ -4348,33 +4734,38 @@ async function fetchFallbackImageUrlsForSegment({
 	limit = 4,
 	articleUrls = [],
 	seedUrls = [],
+	jobId,
+	allowCseContext = CSE_CONTEXT_FALLBACK_ENABLED,
 }) {
 	const target = clampNumber(Number(limit) || 4, 1, 8);
 	const urls = [];
 	const seeded = uniqueStrings(seedUrls, { limit: Math.max(6, target * 2) });
 	urls.push(...seeded);
+	if (urls.length >= target) return uniqueStrings(urls, { limit: target });
 
 	const topicTokens = filterSpecificTopicTokens(
 		topicTokensFromTitle(topicLabel || query || ""),
 	);
 	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
-	const contextItems = await fetchCseContext(
-		query || topicLabel,
-		topicLabel ? [topicLabel] : [],
+	const newsArticleUrls = await fetchNewsArticleUrlsForImages({
+		query,
+		topicLabel,
+		limit: NEWS_IMAGE_FALLBACK_LIMIT,
+		jobId,
+	});
+	const directArticleUrls = (Array.isArray(articleUrls) ? articleUrls : []).filter(
+		(u) => {
+			if (!isHttpUrl(u)) return false;
+			if (!requiredTopicMatches) return true;
+			return (
+				topicMatchInfo(topicTokens, [u]).count >=
+				Math.max(1, Math.min(requiredTopicMatches, 2))
+			);
+		},
 	);
-	const strictContextItems = requiredTopicMatches
-		? contextItems.filter(
-				(it) =>
-					topicMatchInfo(topicTokens, [it.title, it.snippet, it.link]).count >=
-					requiredTopicMatches,
-			)
-		: contextItems;
 	const contextArticleUrls = uniqueStrings(
-		[
-			...strictContextItems.map((c) => c?.link).filter(Boolean),
-			...(Array.isArray(articleUrls) ? articleUrls : []),
-		],
-		{ limit: 10 },
+		[...directArticleUrls, ...newsArticleUrls.filter(isHttpUrl)],
+		{ limit: 12 },
 	);
 	for (const pageUrl of contextArticleUrls) {
 		if (urls.length >= target) break;
@@ -4386,6 +4777,42 @@ async function fetchFallbackImageUrlsForSegment({
 		}
 		const ct = await headContentType(og, 7000);
 		if (ct && ct.startsWith("image/")) urls.push(og);
+	}
+
+	if (urls.length < target && allowCseContext) {
+		const contextItems = await fetchCseContext(
+			query || topicLabel,
+			topicLabel ? [topicLabel] : [],
+		);
+		const strictContextItems = requiredTopicMatches
+			? contextItems.filter(
+					(it) =>
+						topicMatchInfo(topicTokens, [it.title, it.snippet, it.link])
+							.count >= requiredTopicMatches,
+				)
+			: contextItems;
+		const cseArticleUrls = uniqueStrings(
+			strictContextItems.map((c) => c?.link).filter(Boolean),
+			{ limit: 8 },
+		);
+		for (const pageUrl of cseArticleUrls) {
+			if (urls.length >= target) break;
+			const og = await fetchOpenGraphImageUrl(pageUrl);
+			if (!og) continue;
+			if (isProbablyDirectImageUrl(og)) {
+				urls.push(og);
+				continue;
+			}
+			const ct = await headContentType(og, 7000);
+			if (ct && ct.startsWith("image/")) urls.push(og);
+		}
+		if (jobId)
+			logJob(jobId, "segment fallback CSE context used", {
+				query,
+				topicLabel,
+				articles: cseArticleUrls.length,
+				total: urls.length,
+			});
 	}
 
 	if (urls.length < target && topicLabel) {
@@ -4453,6 +4880,12 @@ async function prepareImageSegments({
 		const articleUrls = (story.articles || [])
 			.map((a) => a.url)
 			.filter((u) => isHttpUrl(u));
+		const articleImageUrls = uniqueStrings(
+			(story.articles || [])
+				.map((a) => a.image)
+				.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
+			{ limit: 8 },
+		);
 		const potentialUrls = uniqueStrings(
 			(Array.isArray(story.potentialImages) ? story.potentialImages : [])
 				.map((p) => p?.url)
@@ -4468,9 +4901,7 @@ async function prepareImageSegments({
 				t.image,
 				story.image,
 				...(Array.isArray(story.images) ? story.images : []),
-				...(story.articles || [])
-					.map((a) => a.image)
-					.filter((u) => isHttpUrl(u)),
+				...articleImageUrls,
 			],
 			{ limit: 12 },
 		)
@@ -4483,6 +4914,7 @@ async function prepareImageSegments({
 			articleUrls,
 			potentialUrls,
 			seedUrls,
+			trustedSeedUrls: articleImageUrls,
 		});
 	}
 
@@ -4543,6 +4975,9 @@ async function prepareImageSegments({
 		if (!queryVariants.length && query) queryVariants.push(query);
 		if (!queryVariants.length && effectiveTopicLabel)
 			queryVariants.push(effectiveTopicLabel);
+		const queryTokens = filterSpecificTopicTokens(
+			queryVariants.flatMap((q) => tokenizeLabel(q)),
+		).slice(0, 16);
 
 		logJob(jobId, "segment image search", {
 			segment: seg.index,
@@ -4551,6 +4986,7 @@ async function prepareImageSegments({
 			desiredCount,
 			variantCount: queryVariants.length,
 			segmentTokens,
+			queryTokens: queryTokens.slice(0, 8),
 		});
 
 		const plannedSegmentUrls = dedupeUrlsPreserveOrder(
@@ -4564,6 +5000,14 @@ async function prepareImageSegments({
 		const seedUrls = Array.isArray(meta.seedUrls)
 			? meta.seedUrls.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
 			: [];
+		const trustedSeedUrls = Array.isArray(meta.trustedSeedUrls)
+			? meta.trustedSeedUrls.filter(
+					(u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u),
+				)
+			: [];
+		const trustedSeedUrlKeys = new Set(
+			trustedSeedUrls.map((u) => normalizeImageUrlKey(u)),
+		);
 
 		const plannedUrlKeys = new Set(
 			plannedSegmentUrls.map((u) => normalizeImageUrlKey(u)),
@@ -4582,10 +5026,69 @@ async function prepareImageSegments({
 			const key = normalizeImageUrlKey(url);
 			return !usedUrlsGlobal.has(key);
 		});
+		let fallbackUrls = [];
+		let fallbackUrlKeys = new Set();
+		const baseRelevanceOpts = {
+			topicTokens,
+			segmentTokens,
+			queryTokens,
+			trustedUrlKeys: trustedSeedUrlKeys,
+		};
 
+		const relevantBeforeFallback = filterRelevantImageCandidatePool(
+			plannedAvailable,
+			baseRelevanceOpts,
+		);
+		if (relevantBeforeFallback.length < desiredCount) {
+			const fallbackKey = `${query}||${effectiveTopicLabel}`;
+			fallbackUrls = fallbackCache.get(fallbackKey);
+			if (!fallbackUrls) {
+				fallbackUrls = await fetchFallbackImageUrlsForSegment({
+					query,
+					topicLabel: effectiveTopicLabel,
+					limit: Math.max(6, desiredCount * 2),
+					articleUrls: meta.articleUrls,
+					seedUrls: trustedSeedUrls,
+					jobId,
+				});
+				fallbackCache.set(fallbackKey, fallbackUrls);
+			}
+			fallbackUrlKeys = new Set(
+				(fallbackUrls || []).map((u) => normalizeImageUrlKey(u)),
+			);
+			candidates = dedupeUrlsPreserveOrder([
+				...candidates,
+				...(fallbackUrls || []),
+			]);
+			logJob(jobId, "segment image candidates (fallback)", {
+				segment: seg.index,
+				query,
+				topicLabel: effectiveTopicLabel,
+				relevantBeforeFallback: relevantBeforeFallback.length,
+				added: fallbackUrls?.length || 0,
+				total: candidates.length,
+			});
+		}
+
+		const trustedBeforeGoogleKeys = new Set([
+			...trustedSeedUrlKeys,
+			...fallbackUrlKeys,
+		]);
+		const relevantBeforeGoogle = filterRelevantImageCandidatePool(
+			candidates.filter((url) => {
+				const key = normalizeImageUrlKey(url);
+				return !usedUrlsGlobal.has(key);
+			}),
+			{
+				topicTokens,
+				segmentTokens,
+				queryTokens,
+				trustedUrlKeys: trustedBeforeGoogleKeys,
+			},
+		);
 		if (
 			GOOGLE_IMAGES_SEARCH_ENABLED &&
-			candidates.length <
+			relevantBeforeGoogle.length <
 				desiredCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER)
 		) {
 			const googleVariants = queryVariants.slice(
@@ -4617,47 +5120,33 @@ async function prepareImageSegments({
 					query,
 					topicLabel: effectiveTopicLabel,
 					variants: googleVariants.length,
+					relevantBeforeGoogle: relevantBeforeGoogle.length,
 					added: googleUrls.length,
 					total: candidates.length,
 				});
 			}
 		}
 
-		const availableBeforeFallback = candidates.filter((url) => {
-			const key = normalizeImageUrlKey(url);
-			return !usedUrlsGlobal.has(key);
-		});
-		if (availableBeforeFallback.length < desiredCount) {
-			const fallbackKey = `${query}||${effectiveTopicLabel}`;
-			let fallbackUrls = fallbackCache.get(fallbackKey);
-			if (!fallbackUrls) {
-				fallbackUrls = await fetchFallbackImageUrlsForSegment({
-					query,
-					topicLabel: effectiveTopicLabel,
-					limit: Math.max(6, desiredCount * 2),
-					articleUrls: meta.articleUrls,
-					seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
-				});
-				fallbackCache.set(fallbackKey, fallbackUrls);
-			}
-			candidates = dedupeUrlsPreserveOrder([
-				...candidates,
-				...(fallbackUrls || []),
-			]);
-			logJob(jobId, "segment image candidates (fallback)", {
-				segment: seg.index,
-				query,
-				topicLabel: effectiveTopicLabel,
-				total: candidates.length,
-			});
-		}
-
-		const availableBeforeCse = candidates.filter((url) => {
-			const key = normalizeImageUrlKey(url);
-			return !usedUrlsGlobal.has(key);
-		});
+		const trustedBeforeCseKeys = new Set([
+			...trustedSeedUrlKeys,
+			...fallbackUrlKeys,
+		]);
+		const availableBeforeCse = filterRelevantImageCandidatePool(
+			candidates.filter((url) => {
+				const key = normalizeImageUrlKey(url);
+				return !usedUrlsGlobal.has(key);
+			}),
+			{
+				topicTokens,
+				segmentTokens,
+				queryTokens,
+				trustedUrlKeys: trustedBeforeCseKeys,
+			},
+		);
 		const allowCseTopUp =
-			cseAvailable && availableBeforeCse.length < desiredCount;
+			CSE_IMAGE_TOPUP_ENABLED &&
+			cseAvailable &&
+			availableBeforeCse.length < desiredCount;
 
 		let segmentCseQueryCalls = 0;
 		let segmentCseTopicCalls = 0;
@@ -4720,6 +5209,14 @@ async function prepareImageSegments({
 				...fromTopicUrls,
 			]);
 		}
+		const cseUrlKeys = new Set(
+			[...fromQueryUrls, ...fromTopicUrls].map((u) => normalizeImageUrlKey(u)),
+		);
+		const trustedUrlKeys = new Set([
+			...trustedSeedUrlKeys,
+			...fallbackUrlKeys,
+			...cseUrlKeys,
+		]);
 
 		logJob(jobId, "segment image candidates", {
 			segment: seg.index,
@@ -4731,6 +5228,7 @@ async function prepareImageSegments({
 			seeded: seedUrls.length,
 			fromQuery: fromQueryUrls.length,
 			fromTopic: fromTopicUrls.length,
+			relevantBeforeCse: availableBeforeCse.length,
 			total: candidates.length,
 			cseTopUp: allowCseTopUp,
 		});
@@ -4748,6 +5246,10 @@ async function prepareImageSegments({
 				),
 				requireTokens: segmentTokens,
 				preferTokens: topicTokens,
+				queryTokens,
+				topicTokens,
+				segmentTokens,
+				trustedUrlKeys,
 				usedUrlsGlobal,
 			},
 		);
@@ -4787,9 +5289,13 @@ async function prepareImageSegments({
 					topicLabel: effectiveTopicLabel,
 					limit: Math.max(6, desiredCount * 2),
 					articleUrls: meta.articleUrls,
-					seedUrls: dedupeUrlsPreserveOrder([...potentialUrls, ...seedUrls]),
+					seedUrls: trustedSeedUrls,
+					jobId,
 				}));
 			fallbackCache.set(fallbackKey, fallbackUrls);
+			for (const url of fallbackUrls || []) {
+				trustedUrlKeys.add(normalizeImageUrlKey(url));
+			}
 			const fallbackPicks = pickSegmentImageUrls(
 				fallbackUrls,
 				missing || desiredCount,
@@ -4802,6 +5308,10 @@ async function prepareImageSegments({
 					),
 					requireTokens: segmentTokens,
 					preferTokens: topicTokens,
+					queryTokens,
+					topicTokens,
+					segmentTokens,
+					trustedUrlKeys,
 					usedUrlsGlobal,
 				},
 			);
@@ -4830,9 +5340,6 @@ async function prepareImageSegments({
 			});
 		}
 
-		const cseUrlKeys = new Set(
-			[...fromQueryUrls, ...fromTopicUrls].map((u) => normalizeImageUrlKey(u)),
-		);
 		let pickedPlanned = 0;
 		let pickedPotential = 0;
 		let pickedCse = 0;
@@ -15077,7 +15584,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			},
 		});
 
-		// 8.5) Visual plan: 50/50 presenter vs static image segments (content only)
+		// 8.5) Visual plan: budget-aware presenter vs static feed images (content only)
 		const totalSegments = timeline.length;
 		let presenterCount = Math.floor(totalSegments * CONTENT_PRESENTER_RATIO);
 		if (totalSegments >= 2) {
@@ -15100,6 +15607,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		});
 		logJob(jobId, "segment visual plan", {
 			totalSegments,
+			targetPresenterRatio: CONTENT_PRESENTER_RATIO,
+			targetPresenterCount: presenterSegments.length,
+			targetImageCount: imageSegments.length,
 			presenterSegments,
 			imageSegments,
 		});
@@ -15122,6 +15632,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			if (seg.visualType === "image") finalImageSegments.push(seg.index);
 			else finalPresenterSegments.push(seg.index);
 		}
+		logJob(jobId, "segment visual plan final", {
+			totalSegments,
+			targetPresenterRatio: CONTENT_PRESENTER_RATIO,
+			presenterCount: finalPresenterSegments.length,
+			imageCount: finalImageSegments.length,
+			presenterSegments: finalPresenterSegments,
+			imageSegments: finalImageSegments,
+		});
 		const premiumPresenterSegments = [];
 		if (finalPresenterSegments.length) {
 			premiumPresenterSegments.push(finalPresenterSegments[0]);
@@ -15165,6 +15683,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				...JOBS.get(jobId)?.meta,
 				timeline,
 				visualPlan: {
+					targetPresenterRatio: CONTENT_PRESENTER_RATIO,
 					presenterSegments: finalPresenterSegments,
 					imageSegments: finalImageSegments,
 				},
