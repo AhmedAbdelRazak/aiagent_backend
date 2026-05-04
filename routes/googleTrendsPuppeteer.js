@@ -176,9 +176,19 @@ const IMAGE_STOPWORDS = new Set([
   "over",
   "under",
   "new",
+  "news",
   "latest",
   "update",
   "updates",
+  "report",
+  "reports",
+  "story",
+  "image",
+  "picture",
+  "pictures",
+  "event",
+  "portrait",
+  "press",
   "official",
   "photo",
   "photos",
@@ -3117,8 +3127,8 @@ async function topUpPotentialImagesWithFreeSearch({
         (queryTerms && matchesAnyTermStrict(hay, queryTerms));
     } else if (mode === "query-relaxed") {
       ok =
-        matchesAnyTerm(hay, matchTerms) ||
-        (queryTerms && matchesAnyTerm(hay, queryTerms));
+        matchesAnyTermStrict(hay, matchTerms) ||
+        (queryTerms && matchesAnyTermStrict(hay, queryTerms));
     }
     if (!ok) return false;
 
@@ -3545,6 +3555,7 @@ async function scrapeGoogleImages({
   scrolls = GOOGLE_IMAGES_SCROLLS,
   scrollDelayMs = GOOGLE_IMAGES_SCROLL_DELAY_MS,
   selectorTimeoutMs = GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS,
+  includeMetadata = false,
 }) {
   const page = await getBrowserPage({ label: "google-images" });
   page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
@@ -3663,6 +3674,14 @@ async function scrapeGoogleImages({
       filtered: filtered.length,
       returned: unique.length,
     });
+    if (includeMetadata) {
+      return unique.map((url) => ({
+        url,
+        title: "",
+        sourcePage: "",
+        provider: "google-images",
+      }));
+    }
     return unique;
   } finally {
     await page.close().catch(() => {});
@@ -3675,6 +3694,7 @@ async function scrapeBingImages({
   scrolls = BING_IMAGES_SCROLLS,
   scrollDelayMs = BING_IMAGES_SCROLL_DELAY_MS,
   selectorTimeoutMs = BING_IMAGES_SELECTOR_TIMEOUT_MS,
+  includeMetadata = false,
 }) {
   const page = await getBrowserPage({ label: "bing-images" });
   page.setDefaultNavigationTimeout(PROTOCOL_TIMEOUT);
@@ -3707,7 +3727,7 @@ async function scrapeBingImages({
       delayMs: scrollDelayMs,
     });
 
-    const rawUrls = await page.evaluate(() => {
+    const rawItems = await page.evaluate(() => {
       const out = [];
       const seen = new Set();
       const normalizeUrl = (u) =>
@@ -3719,11 +3739,16 @@ async function scrapeBingImages({
           .replace(/\\\//g, "/")
           .replace(/&amp;/gi, "&")
           .trim();
-      const push = (u) => {
+      const push = (u, meta = {}) => {
         const url = normalizeUrl(u);
         if (!url || seen.has(url)) return;
         seen.add(url);
-        out.push(url);
+        out.push({
+          url,
+          title: String(meta.title || meta.alt || "").trim(),
+          sourcePage: String(meta.sourcePage || meta.pageUrl || "").trim(),
+          provider: "bing-images",
+        });
       };
 
       for (const anchor of Array.from(document.querySelectorAll("a.iusc"))) {
@@ -3731,17 +3756,38 @@ async function scrapeBingImages({
         if (meta) {
           try {
             const parsed = JSON.parse(meta);
-            push(parsed.murl || parsed.turl || "");
+            push(parsed.murl || parsed.turl || "", {
+              title:
+                parsed.t ||
+                parsed.desc ||
+                anchor.getAttribute("aria-label") ||
+                anchor.textContent ||
+                "",
+              sourcePage: parsed.purl || parsed.surl || "",
+            });
           } catch {
             const match = meta.match(/"murl":"([^"]+)"/i);
-            if (match) push(match[1]);
+            if (match) {
+              push(match[1], {
+                title:
+                  anchor.getAttribute("aria-label") ||
+                  anchor.textContent ||
+                  "",
+              });
+            }
           }
         }
         const href = anchor.getAttribute("href") || "";
         if (href) {
           try {
             const parsed = new URL(href, location.href);
-            push(parsed.searchParams.get("mediaurl") || "");
+            push(parsed.searchParams.get("mediaurl") || "", {
+              title:
+                anchor.getAttribute("aria-label") ||
+                anchor.textContent ||
+                "",
+              sourcePage: parsed.searchParams.get("r") || "",
+            });
           } catch {
             // ignore bad hrefs
           }
@@ -3754,11 +3800,19 @@ async function scrapeBingImages({
             img.getAttribute("data-original") ||
             img.getAttribute("src") ||
             "",
+          {
+            title: img.getAttribute("alt") || img.getAttribute("title") || "",
+          },
         );
         const srcset = img.getAttribute("srcset") || "";
         for (const part of srcset.split(",")) {
           const url = part.trim().split(/\s+/)[0];
-          if (url) push(url);
+          if (url) {
+            push(url, {
+              title:
+                img.getAttribute("alt") || img.getAttribute("title") || "",
+            });
+          }
         }
       }
 
@@ -3769,20 +3823,20 @@ async function scrapeBingImages({
       return out;
     });
 
-    const filtered = (rawUrls || [])
-      .map((u) => String(u || "").trim())
-      .filter((u) => /^https?:\/\//i.test(u))
-      .filter((u) => !isLikelyThumbnailUrl(u));
-    const unique = uniqueStrings(filtered, {
+    const filtered = (rawItems || [])
+      .map(normalizeFreeSearchCandidate)
+      .filter((item) => /^https?:\/\//i.test(item.url))
+      .filter((item) => !isLikelyThumbnailUrl(item.url));
+    const unique = dedupeFreeSearchCandidates(filtered, {
       limit: clampInt(limit, 6, GOOGLE_IMAGES_MAX_RESULTS),
     });
     log("Bing images scraped", {
       query,
-      raw: rawUrls.length,
+      raw: rawItems.length,
       filtered: filtered.length,
       returned: unique.length,
     });
-    return unique;
+    return includeMetadata ? unique : unique.map((item) => item.url);
   } finally {
     await page.close().catch(() => {});
   }
@@ -3794,6 +3848,7 @@ async function scrapeFreeImageSearch({
   scrolls = GOOGLE_IMAGES_SCROLLS,
   scrollDelayMs = GOOGLE_IMAGES_SCROLL_DELAY_MS,
   selectorTimeoutMs = GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS,
+  includeMetadata = false,
 }) {
   try {
     const bing = await scrapeBingImages({
@@ -3805,6 +3860,7 @@ async function scrapeFreeImageSearch({
         BING_IMAGES_SELECTOR_TIMEOUT_MS,
         selectorTimeoutMs,
       ),
+      includeMetadata,
     });
     if (bing.length) {
       log("Free image search primary hit", {
@@ -3828,6 +3884,7 @@ async function scrapeFreeImageSearch({
     scrolls,
     scrollDelayMs,
     selectorTimeoutMs,
+    includeMetadata,
   });
   if (google.length) {
     log("Free image search fallback hit", {
