@@ -618,8 +618,78 @@ function buildStyleDirectionLine(styleProfile = {}) {
 		`Dynamic style profile: ${profile.id || "balanced_editorial"}. ${
 			profile.brief ||
 			"premium editorial contrast, topic-matched accent color, clean depth, and clear mobile hierarchy"
-		}. Use this as a direction, not a rigid template.`,
+		}. Use this as a direction, not a rigid template. The designer may choose refined shapes, curved or angled editorial panels, tasteful topic-appropriate symbolic accents, and depth effects when they improve click appeal.`,
 	);
+}
+
+function chooseLockedTextOverlayLayout(styleProfile = {}) {
+	const id = String(styleProfile?.id || "").toLowerCase();
+	if (id === "serious_amber") {
+		return {
+			id: "respectful_editorial_anchor",
+			panelX: 42,
+			panelY: 376,
+			panelW: 650,
+			panelH: 264,
+			headlineX: 62,
+			headlineY: 448,
+			badgeX: 64,
+			badgeY: 398,
+			maxTextWidth: 596,
+			panelOpacity: 0.22,
+			badgeBox: false,
+			accentRail: true,
+		};
+	}
+	if (id === "magenta_pop") {
+		return {
+			id: "pop_editorial_stack",
+			panelX: 38,
+			panelY: 380,
+			panelW: 660,
+			panelH: 254,
+			headlineX: 66,
+			headlineY: 442,
+			badgeX: 66,
+			badgeY: 394,
+			maxTextWidth: 600,
+			panelOpacity: 0.2,
+			badgeBox: true,
+			accentRail: true,
+		};
+	}
+	if (id === "electric_cyan") {
+		return {
+			id: "clean_tech_anchor",
+			panelX: 40,
+			panelY: 386,
+			panelW: 648,
+			panelH: 248,
+			headlineX: 64,
+			headlineY: 448,
+			badgeX: 64,
+			badgeY: 400,
+			maxTextWidth: 590,
+			panelOpacity: 0.18,
+			badgeBox: false,
+			accentRail: true,
+		};
+	}
+	return {
+		id: "cinematic_editorial_anchor",
+		panelX: 42,
+		panelY: 382,
+		panelW: 652,
+		panelH: 252,
+		headlineX: 64,
+		headlineY: 446,
+		badgeX: 64,
+		badgeY: 398,
+		maxTextWidth: 596,
+		panelOpacity: 0.2,
+		badgeBox: false,
+		accentRail: true,
+	};
 }
 
 function chooseThumbnailPose({
@@ -997,10 +1067,13 @@ Keep the composition clean and uncluttered.
 Use one dominant left-side visual cue only, not a busy collage.
 Create a topic-specific design, not the same repeated template. Vary the image treatment, accent color, lighting, depth, and energy based on the story.
 The design should feel punchy and clickable through contrast, focus, and hierarchy rather than heavy effects.
+You have creative freedom to build a polished editorial text-safe area on the left using subtle curves, angled panels, layered shadows, light streaks, tasteful icon-like symbols, or story-matched graphic accents. Use these only when they fit the topic; for a memorial or death story, keep accents restrained and respectful.
+Avoid plain full-width dark bars. Prefer an intentional designer-made area with depth, shape, and negative space.
 Make the left topic/feed image feel intentionally chosen and sharpened. Avoid letting an unrelated celebrity, fashion, red-carpet, or generic stock-like image become the story cue unless that is truly the topic.
+If the topic/feed image contains a face, crop and position that face so it stays clear and recognizable, but keep a clean face-free area for final text. Never put the final text-safe zone directly over any eyes, mouth, or important facial features in the topic image.
 Make the thumbnail instantly understandable at a glance on mobile.
 Do not render any readable text, letters, captions, labels, signs, logos, watermarks, lower thirds, badges, or duplicated words. The final text will be added separately after this visual edit.
-Keep the lower third clean enough for bold thumbnail text to be added later. The final text may overlap the lower presenter jacket/torso area, but the presenter face and glasses must stay clean.
+Keep the left-side lower/mid area clean enough for bold thumbnail text to be added later, but do not place a face underneath that clean area. The final text may overlap abstract background or clothing, but it must not cover the presenter face, presenter glasses, topic-face eyes, topic-face mouth, or the main identity cue.
 Do not add logos, watermarks, extra people, extra hands, deformed anatomy, broken glasses, damaged facial features, or muddy lighting.
 The final thumbnail should look like a finished production thumbnail, not a rough draft.
 	`);
@@ -1047,6 +1120,13 @@ ${styleLine}
 Topic direction: ${topicFocus || "current trending story"}.
 ${artDirection}
 ${topicReferenceLine}
+
+Creative direction:
+- You are not locked to a fixed badge-on-top template. Choose the strongest design for this topic.
+- You may use subtle curved panels, angled editorial shapes, tasteful light beams, small topic-appropriate icon-like symbols, depth layers, or accent strokes when they improve clarity.
+- If the story is serious, death-related, memorial, legal, or sensitive, keep symbols respectful and minimal. Do not use playful icons or anything that trivializes the topic.
+- Avoid generic full-width translucent black bars. Make the text area feel intentionally designed, sharp, and premium.
+- If the topic/feed image includes a face, preserve the face and keep readable text away from eyes, mouth, and key identity features. Recompose the image so text lands on clean negative space, not on a face.
 
 Recommended on-image text from the orchestrator:
 - Main headline idea: "${suggestedHeadline}"
@@ -1354,14 +1434,18 @@ function renderLockedThumbnailTextOverlay({
 	const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
 	const accentColor = normalizeAccentColor(accent);
 	const tagColor = normalizeAccentColor(styleProfile.tagColor || "0x27305F");
-	const lowerPanelOpacity = safeOpacity(styleProfile.lowerPanelOpacity, 0.34);
+	const layout = chooseLockedTextOverlayLayout(styleProfile);
+	const panelOpacity = safeOpacity(
+		styleProfile.textPanelOpacity ?? layout.panelOpacity,
+		layout.panelOpacity,
+	);
 	const badgeFit = fitThumbnailText(badgeText || "TOP STORY", {
 		baseMaxChars: 16,
 		maxLines: 1,
 		maxChars: 20,
 	});
 	const headlineFit = fitThumbnailText(headline || "BIG UPDATE", {
-		baseMaxChars: 18,
+		baseMaxChars: 12,
 		maxLines: 2,
 		maxChars: 30,
 	});
@@ -1374,61 +1458,78 @@ function renderLockedThumbnailTextOverlay({
 	const safeSubline = escapeDrawtext(sublineFit.text);
 	const badgeFontSize = fitFontSizeToWidth(
 		[badgeFit.text || "TOP STORY"],
-		34,
+		32,
 		{
-			maxWidth: THUMBNAIL_TOPIC_PANEL_W - 126,
-			minFontSize: 24,
+			maxWidth: layout.maxTextWidth,
+			minFontSize: 22,
 		},
 	);
-	let headlineFontSize = Math.max(62, Math.round(112 * headlineFit.fontScale));
 	const headlineLines = String(headlineFit.text || "")
 		.split(/\n+/)
 		.map((line) => normalizeWhitespace(line))
 		.filter(Boolean)
 		.slice(0, 2);
-	const headlineX = headlineLines.length > 1 ? 64 : 154;
+	let headlineFontSize = Math.max(
+		56,
+		Math.round((headlineLines.length > 1 ? 86 : 96) * headlineFit.fontScale),
+	);
 	headlineFontSize = fitFontSizeToWidth(headlineLines, headlineFontSize, {
-		maxWidth: THUMBNAIL_WIDTH - headlineX - 82,
-		minFontSize: 58,
+		maxWidth: layout.maxTextWidth,
+		minFontSize: 52,
 	});
 	const sublineTagFontSize = fitFontSizeToWidth(
 		[sublineFit.text],
-		Math.max(22, Math.round(34 * sublineFit.fontScale)),
+		Math.max(20, Math.round(30 * sublineFit.fontScale)),
 		{
-			maxWidth: THUMBNAIL_TOPIC_PANEL_W - 112,
-			minFontSize: 21,
+			maxWidth: layout.maxTextWidth,
+			minFontSize: 19,
 		},
 	);
 	const headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
-	const headlineStartY = headlineLines.length > 1 ? 406 : 448;
-	const lowerBoxY = headlineLines.length > 1 ? 344 : 368;
-	const badgeY = lowerBoxY + 20;
-	const filters = [
-		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,setsar=1[base]`,
-		`[base]drawbox=x=0:y=${lowerBoxY}:w=${THUMBNAIL_WIDTH}:h=${
-			THUMBNAIL_HEIGHT - lowerBoxY
-		}:color=black@${lowerPanelOpacity.toFixed(2)}:t=fill[tmp0]`,
-		`[tmp0]drawbox=x=0:y=${lowerBoxY}:w=${THUMBNAIL_TOPIC_PANEL_W}:h=3:color=${accentColor}@0.48:t=fill[tmp1]`,
+	const headlineStartY =
+		headlineLines.length > 1 ? layout.headlineY - 28 : layout.headlineY;
+	const chainFilters = [
+		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos`,
+		`crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2`,
+		"setsar=1",
+		`drawbox=x=${layout.panelX}:y=${layout.panelY}:w=${layout.panelW}:h=${layout.panelH}:color=black@${panelOpacity.toFixed(2)}:t=fill`,
+		`drawbox=x=${layout.panelX}:y=${layout.panelY}:w=${layout.panelW}:h=2:color=${accentColor}@0.70:t=fill`,
+		`drawbox=x=${layout.panelX}:y=${layout.panelY + layout.panelH - 2}:w=${layout.panelW}:h=2:color=white@0.16:t=fill`,
 	];
-	const textFilters = [];
-	if (safeSubline) {
-		textFilters.push(
-			`drawtext=text='${safeSubline}'${fontOpt}:fontsize=${sublineTagFontSize}:fontcolor=white:x=24:y=8:box=1:boxcolor=${tagColor}@0.92:boxborderw=8:borderw=1:bordercolor=white@0.22:shadowcolor=black@0.35:shadowx=2:shadowy=2`,
+	if (layout.accentRail) {
+		chainFilters.push(
+			`drawbox=x=${layout.panelX}:y=${layout.panelY}:w=8:h=${layout.panelH}:color=${accentColor}@0.92:t=fill`,
+			`drawbox=x=${layout.panelX + 20}:y=${layout.panelY + 20}:w=46:h=5:color=${accentColor}@0.78:t=fill`,
+			`drawbox=x=${layout.panelX + 20}:y=${layout.panelY + 32}:w=24:h=5:color=white@0.32:t=fill`,
 		);
 	}
-	textFilters.push(
-		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=${badgeFontSize}:fontcolor=${accentColor}:x=58:y=${badgeY}:box=1:boxcolor=black@0.72:boxborderw=10:borderw=1:bordercolor=${accentColor}@0.72:shadowcolor=black@0.55:shadowx=2:shadowy=2`,
+	if (safeSubline) {
+		chainFilters.push(
+			`drawtext=text='${safeSubline}'${fontOpt}:fontsize=${sublineTagFontSize}:fontcolor=white:x=${
+				layout.panelX + 78
+			}:y=${layout.panelY + 15}:box=1:boxcolor=${tagColor}@0.78:boxborderw=7:borderw=1:bordercolor=white@0.18:shadowcolor=black@0.35:shadowx=2:shadowy=2`,
+		);
+	}
+	const badgeBox = layout.badgeBox
+		? `:box=1:boxcolor=black@0.56:boxborderw=8:borderw=1:bordercolor=${accentColor}@0.62`
+		: ":borderw=2:bordercolor=black@0.78";
+	chainFilters.push(
+		`drawtext=text='${safeBadge}'${fontOpt}:fontsize=${badgeFontSize}:fontcolor=${accentColor}:x=${layout.badgeX}:y=${layout.badgeY}${badgeBox}:shadowcolor=black@0.55:shadowx=2:shadowy=2`,
 	);
 	for (let i = 0; i < headlineLines.length; i++) {
-		textFilters.push(
+		chainFilters.push(
 			`drawtext=text='${escapeDrawtext(
 				headlineLines[i],
-			)}'${fontOpt}:fontsize=${headlineFontSize}:fontcolor=white:x=${headlineX}:y=${
+			)}'${fontOpt}:fontsize=${headlineFontSize}:fontcolor=white:x=${layout.headlineX}:y=${
 				headlineStartY + i * (headlineFontSize + headlineLineGap)
 			}:borderw=5:bordercolor=black@0.84:shadowcolor=black@0.68:shadowx=4:shadowy=4`,
 		);
 	}
-	filters.push(`[tmp1]${textFilters.join(",")},drawbox=x=0:y=0:w=iw:h=ih:color=white@0.08:t=2,${THUMBNAIL_FINISH_FILTER}[outv]`);
+	chainFilters.push(
+		"drawbox=x=0:y=0:w=iw:h=ih:color=white@0.08:t=2",
+		THUMBNAIL_FINISH_FILTER,
+	);
+	const filters = [`[0:v]${chainFilters.join(",")}[outv]`];
 	runFfmpeg(
 		[
 			"-i",
@@ -1453,6 +1554,7 @@ function renderLockedThumbnailTextOverlay({
 			headline: headlineFit.text,
 			badgeText: normalizeWhitespace(badgeText || "TOP STORY"),
 			subline: sublineFit.text || null,
+			layout: layout.id,
 			font: fontFile ? path.basename(fontFile) : "default",
 		});
 	}
