@@ -462,7 +462,9 @@ const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(2, 0, 5);
 const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
 const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
 const REQUIRE_LIPSYNC = true;
-const SYNC_SO_FREEZE_CHECK_MIN_SEC = clampNumber(2.6, 0.5, 12);
+// Short presenter beats are still visible enough that a static lip-sync output
+// should retry instead of passing duration-only QA.
+const SYNC_SO_FREEZE_CHECK_MIN_SEC = clampNumber(0.9, 0.5, 12);
 const SYNC_SO_FREEZE_NOISE = clampNumber(0.0012, 0.0001, 0.01);
 const SYNC_SO_FREEZE_MIN_SEC = clampNumber(0.55, 0.2, 4);
 const SYNC_SO_MAX_FREEZE_RATIO = clampNumber(0.22, 0.05, 0.6);
