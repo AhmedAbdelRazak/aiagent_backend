@@ -3296,8 +3296,21 @@ async function scrapeGoogleImages({
 
     const rawUrls = await page.evaluate(() => {
       const out = [];
+      const seen = new Set();
+      const normalizeUrl = (u) =>
+        String(u || "")
+          .replace(/\\u0026/gi, "&")
+          .replace(/\\u003d/gi, "=")
+          .replace(/\\x26/gi, "&")
+          .replace(/\\x3d/gi, "=")
+          .replace(/\\\//g, "/")
+          .replace(/&amp;/gi, "&")
+          .trim();
       const push = (u) => {
-        if (u) out.push(u);
+        const url = normalizeUrl(u);
+        if (!url || seen.has(url)) return;
+        seen.add(url);
+        out.push(url);
       };
 
       const anchors = Array.from(
@@ -3325,6 +3338,28 @@ async function scrapeGoogleImages({
           img.src ||
           "";
         if (candidate) push(candidate);
+        const srcset = img.getAttribute("srcset") || "";
+        for (const part of srcset.split(",")) {
+          const url = part.trim().split(/\s+/)[0];
+          if (url) push(url);
+        }
+      }
+
+      const metaImages = Array.from(
+        document.querySelectorAll(
+          'meta[property="og:image"],meta[name="twitter:image"],link[rel="image_src"]',
+        ),
+      );
+      for (const el of metaImages) {
+        push(el.getAttribute("content") || el.getAttribute("href") || "");
+      }
+
+      const html = document.documentElement?.innerHTML || "";
+      const imageUrlPattern =
+        /https?:\\?\/\\?\/[^\s"'<>]+?\.(?:jpg|jpeg|png|webp)(?:[^\s"'<>]*)?/gi;
+      const matches = html.match(imageUrlPattern) || [];
+      for (const match of matches) {
+        push(match);
       }
 
       return out;
@@ -3335,9 +3370,16 @@ async function scrapeGoogleImages({
       .filter((u) => /^https?:\/\//i.test(u))
       .filter((u) => !isLikelyThumbnailUrl(u));
 
-    return uniqueStrings(filtered, {
+    const unique = uniqueStrings(filtered, {
       limit: clampInt(limit, 6, GOOGLE_IMAGES_MAX_RESULTS),
     });
+    log("Google images scraped", {
+      query,
+      raw: rawUrls.length,
+      filtered: filtered.length,
+      returned: unique.length,
+    });
+    return unique;
   } finally {
     await page.close().catch(() => {});
   }

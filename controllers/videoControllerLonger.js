@@ -554,6 +554,15 @@ const GOOGLE_IMAGES_VARIANT_LIMIT = clampNumber(6, 1, 8);
 const GOOGLE_IMAGES_RESULTS_PER_QUERY = clampNumber(40, 8, 80);
 const GOOGLE_IMAGES_MIN_POOL_MULTIPLIER = clampNumber(6, 1, 10);
 const CSE_IMAGE_TOPUP_ENABLED = envFlag("LONG_VIDEO_CSE_IMAGE_TOPUP", true);
+const CSE_IMAGE_LAST_RESORT_ONLY = envFlag(
+	"LONG_VIDEO_CSE_IMAGE_LAST_RESORT_ONLY",
+	true,
+);
+const CSE_IMAGE_FREE_POOL_FLOOR = clampNumber(
+	process.env.LONG_VIDEO_CSE_IMAGE_FREE_POOL_FLOOR ?? 2,
+	1,
+	6,
+);
 const CSE_CONTEXT_FALLBACK_ENABLED = envFlag(
 	"LONG_VIDEO_CSE_CONTEXT_FALLBACK",
 	false,
@@ -3092,11 +3101,15 @@ async function fetchWikimediaImageUrls(query = "", limit = 3) {
 }
 
 function sanitizeOverlayQuery(query = "") {
-	return String(query || "")
+	const cleaned = String(query || "")
 		.replace(/[^a-z0-9\s]/gi, " ")
 		.replace(/\s+/g, " ")
 		.trim()
-		.slice(0, 80);
+		.slice(0, 120);
+	if (cleaned.length <= 80) return cleaned;
+	const clipped = cleaned.slice(0, 80);
+	const lastSpace = clipped.lastIndexOf(" ");
+	return (lastSpace >= 48 ? clipped.slice(0, lastSpace) : clipped).trim();
 }
 
 function ensureTopicInQuery(query = "", topicLabel = "") {
@@ -3125,30 +3138,53 @@ const SEGMENT_IMAGE_STOP_TOKENS = new Set([
 	...TOPIC_STOP_WORDS,
 	...GENERIC_TOPIC_TOKENS,
 	"actually",
+	"accept",
+	"accepted",
+	"accepts",
 	"another",
 	"argument",
+	"attention",
 	"basic",
+	"before",
 	"because",
 	"being",
+	"blame",
+	"blinks",
+	"both",
 	"breakthrough",
+	"broader",
 	"came",
 	"careful",
+	"carefully",
 	"channel",
+	"classic",
 	"clear",
 	"clearly",
 	"confidence",
+	"contained",
 	"context",
+	"constructive",
+	"converging",
 	"could",
+	"cut",
 	"debate",
+	"deal",
 	"detail",
 	"details",
 	"difference",
+	"designed",
 	"doubting",
 	"early",
+	"emergency",
 	"enough",
+	"enforcement",
+	"enter",
 	"exists",
 	"explained",
+	"fail",
+	"finished",
 	"gives",
+	"genuine",
 	"happening",
 	"happened",
 	"here",
@@ -3164,15 +3200,24 @@ const SEGMENT_IMAGE_STOP_TOKENS = new Set([
 	"matters",
 	"meaning",
 	"message",
+	"messages",
 	"moment",
 	"moving",
+	"narrower",
 	"nearly",
+	"now",
+	"off",
+	"offer",
 	"people",
+	"possible",
+	"pressure",
 	"provided",
 	"public",
 	"question",
 	"quick",
 	"quietly",
+	"received",
+	"sequencing",
 	"really",
 	"reason",
 	"reasons",
@@ -3187,8 +3232,15 @@ const SEGMENT_IMAGE_STOP_TOKENS = new Set([
 	"signals",
 	"simple",
 	"skepticism",
+	"sound",
+	"spiked",
+	"start",
+	"started",
+	"starts",
+	"still",
 	"story",
 	"stress",
+	"structured",
 	"substance",
 	"suggests",
 	"surged",
@@ -3201,9 +3253,13 @@ const SEGMENT_IMAGE_STOP_TOKENS = new Set([
 	"timeline",
 	"today",
 	"trust",
+	"two",
 	"unclear",
 	"unresolved",
 	"update",
+	"verification",
+	"way",
+	"ways",
 	"want",
 	"wanted",
 	"wants",
@@ -3228,6 +3284,355 @@ function buildOverlayQueryFallback(text = "", topic = "") {
 	);
 	const parts = [base, ...extras].filter(Boolean);
 	return sanitizeOverlayQuery(parts.join(" "));
+}
+
+function cleanImageQueryHint(hint = "", topicLabel = "") {
+	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
+	const cleaned = String(hint || "")
+		.replace(/[’‘]/g, "'")
+		.replace(/[“”]/g, '"')
+		.replace(/[●•].*$/g, " ")
+		.replace(/\b\d+\s*(?:minute|minutes|hour|hours|day|days|week|weeks)\s+ago\b.*$/i, " ")
+		.replace(/^live\s+updates?\s*:\s*/i, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	const tokens = tokenizeLabel(cleaned)
+		.filter((t) => topicTokens.has(t) || !SEGMENT_IMAGE_STOP_TOKENS.has(t))
+		.slice(0, 9);
+	if (tokens.length < 2) return "";
+	return ensureTopicInQuery(tokens.join(" "), topicLabel);
+}
+
+function includesAnyToken(tokens = [], values = []) {
+	const set = new Set(normalizeTopicTokens(tokens));
+	return (values || []).some((value) => set.has(String(value).toLowerCase()));
+}
+
+const TOPIC_NEAR_IMAGE_RULES = [
+	{
+		categories: ["sport"],
+		tokens: ["athlete", "coach", "game", "match", "player", "team", "tournament"],
+		suffixes: [
+			"action photo",
+			"game photo",
+			"match photo",
+			"stadium photo",
+			"team photo",
+			"player press conference",
+		],
+		generic: ["sports action photo", "stadium crowd photo"],
+	},
+	{
+		categories: ["entertain", "movie", "tv", "film", "celebrity"],
+		tokens: [
+			"actor",
+			"actress",
+			"cast",
+			"celebrity",
+			"episode",
+			"film",
+			"movie",
+			"show",
+			"series",
+			"star",
+			"television",
+		],
+		suffixes: [
+			"cast photo",
+			"red carpet photo",
+			"interview photo",
+			"public appearance",
+			"behind the scenes",
+			"series still",
+		],
+		generic: ["TV show cast photo", "actor interview photo"],
+	},
+	{
+		categories: ["polit", "government", "world"],
+		tokens: [
+			"congress",
+			"diplomacy",
+			"election",
+			"governor",
+			"minister",
+			"peace",
+			"president",
+			"senate",
+			"talks",
+			"war",
+		],
+		suffixes: [
+			"press conference",
+			"diplomatic talks",
+			"government officials",
+			"official meeting",
+			"capitol briefing",
+		],
+		generic: ["government press conference", "diplomats meeting photo"],
+	},
+	{
+		categories: ["business", "finance", "market", "econom"],
+		tokens: ["bank", "ceo", "company", "earnings", "market", "stock", "shares"],
+		suffixes: [
+			"CEO interview photo",
+			"company headquarters",
+			"stock exchange photo",
+			"business press conference",
+			"product launch photo",
+		],
+		generic: ["stock exchange trading floor", "company headquarters photo"],
+	},
+	{
+		categories: ["tech", "technology", "science"],
+		tokens: [
+			"ai",
+			"app",
+			"device",
+			"iphone",
+			"launch",
+			"model",
+			"product",
+			"research",
+			"robot",
+			"space",
+		],
+		suffixes: [
+			"product photo",
+			"device photo",
+			"launch event photo",
+			"research lab photo",
+			"conference demo",
+		],
+		generic: ["technology product launch photo", "research lab photo"],
+	},
+	{
+		categories: ["health", "medical"],
+		tokens: ["doctor", "health", "hospital", "medical", "vaccine", "virus"],
+		suffixes: [
+			"hospital photo",
+			"doctor press conference",
+			"medical research lab",
+			"health officials briefing",
+		],
+		generic: ["hospital exterior photo", "medical research lab photo"],
+	},
+	{
+		categories: ["weather", "climate", "environment"],
+		tokens: ["climate", "fire", "flood", "hurricane", "storm", "weather"],
+		suffixes: [
+			"weather map",
+			"satellite image",
+			"storm damage photo",
+			"city weather photo",
+		],
+		generic: ["weather satellite image", "storm damage news photo"],
+	},
+	{
+		categories: ["travel", "food", "lifestyle"],
+		tokens: ["city", "food", "hotel", "restaurant", "travel", "tourism"],
+		suffixes: [
+			"location photo",
+			"city skyline",
+			"landmark photo",
+			"restaurant photo",
+			"street scene",
+		],
+		generic: ["city skyline photo", "landmark travel photo"],
+	},
+	{
+		categories: ["gaming", "game"],
+		tokens: ["game", "gaming", "playstation", "xbox", "nintendo", "trailer"],
+		suffixes: [
+			"gameplay screenshot",
+			"game character",
+			"trailer still",
+			"gaming event photo",
+		],
+		generic: ["gaming event photo", "gameplay screenshot"],
+	},
+	{
+		categories: ["legal", "crime"],
+		tokens: ["court", "judge", "lawsuit", "legal", "police", "trial"],
+		suffixes: [
+			"courthouse photo",
+			"courtroom sketch",
+			"police press conference",
+			"legal team photo",
+		],
+		generic: ["courthouse exterior photo", "police press conference"],
+	},
+];
+
+function ruleMatchesTopic(rule, category = "", tokens = []) {
+	const cat = String(category || "").toLowerCase();
+	if ((rule.categories || []).some((part) => cat.includes(part))) return true;
+	return includesAnyToken(tokens, rule.tokens || []);
+}
+
+function buildTopicNearImageQueries(
+	topicLabel = "",
+	{ topicKeywords = [], articleTitles = [], category = "" } = {},
+) {
+	const base = cleanTopicCandidate(topicLabel);
+	const contextText = [
+		topicLabel,
+		...(Array.isArray(topicKeywords) ? topicKeywords : []),
+		...(Array.isArray(articleTitles) ? articleTitles : []),
+	].join(" ");
+	const tokens = normalizeTopicTokens(tokenizeLabel(contextText));
+	const queries = [];
+	const push = (raw) => {
+		const q = sanitizeOverlayQuery(raw);
+		if (q) queries.push(q);
+	};
+
+	if (base) {
+		push(base);
+		push(`${base} news photo`);
+		push(`${base} press photo`);
+		push(`${base} official photo`);
+		push(`${base} event photo`);
+		push(`${base} location photo`);
+	}
+
+	for (const rule of TOPIC_NEAR_IMAGE_RULES) {
+		if (!ruleMatchesTopic(rule, category, tokens)) continue;
+		if (base) {
+			for (const suffix of rule.suffixes || []) {
+				push(`${base} ${suffix}`);
+			}
+		}
+		for (const generic of rule.generic || []) push(generic);
+	}
+
+	const isPolitics =
+		String(category || "").toLowerCase().includes("polit") ||
+		includesAnyToken(tokens, [
+			"diplomacy",
+			"diplomatic",
+			"election",
+			"governor",
+			"minister",
+			"peace",
+			"politics",
+			"president",
+			"proposal",
+			"senate",
+			"talks",
+			"trump",
+			"war",
+		]);
+	if (isPolitics) {
+		if (base) {
+			push(`${base} diplomatic talks`);
+			push(`${base} government officials`);
+			push(`${base} press conference`);
+		}
+		push("diplomats meeting press conference");
+		push("peace talks conference table");
+	}
+
+	const isEntertainment =
+		String(category || "").toLowerCase().includes("entertain") ||
+		includesAnyToken(tokens, [
+			"actor",
+			"actress",
+			"cast",
+			"celebrity",
+			"character",
+			"episode",
+			"film",
+			"movie",
+			"producer",
+			"reunion",
+			"scene",
+			"series",
+			"show",
+			"sitcom",
+			"star",
+			"television",
+			"tv",
+		]);
+	if (isEntertainment) {
+		if (base) {
+			push(`${base} cast photo`);
+			push(`${base} TV show cast`);
+			push(`${base} actor interview`);
+			push(`${base} public appearance`);
+			push(`${base} television series still`);
+			push(`${base} behind the scenes`);
+		}
+		push("TV show cast photo");
+		push("television actor interview photo");
+		push("sitcom cast reunion photo");
+	}
+
+	const likelyPerson =
+		tokens.length >= 2 &&
+		!isPolitics &&
+		!isEntertainment &&
+		!includesAnyToken(tokens, ["proposal", "talks", "election", "war"]);
+	if (likelyPerson && base) {
+		push(`${base} portrait`);
+		push(`${base} interview photo`);
+		push(`${base} public appearance`);
+		push(`${base} press photo`);
+	}
+
+	if (includesAnyToken(tokens, ["boy", "meets", "world"])) {
+		push("Boy Meets World cast photo");
+		push("Boy Meets World TV show cast");
+		push("Boy Meets World series still");
+		if (base) push(`${base} Boy Meets World cast`);
+	}
+
+	if (includesAnyToken(tokens, ["iran", "iranian", "tehran"])) {
+		push("Iran diplomacy news photo");
+		push("Iran foreign ministry building");
+		push("Tehran government press conference");
+		push("Iran flag government building");
+	}
+	if (
+		includesAnyToken(tokens, [
+			"strait",
+			"hormuz",
+			"gulf",
+			"tanker",
+			"naval",
+			"ship",
+			"ships",
+			"shipping",
+			"escort",
+			"escorts",
+		])
+	) {
+		push("Strait of Hormuz oil tanker");
+		push("Persian Gulf warship tanker");
+		push("Strait of Hormuz shipping lane");
+	}
+	if (includesAnyToken(tokens, ["trump", "president", "white", "house", "washington", "u.s", "us"])) {
+		push("U.S. president press conference");
+		push("White House press briefing");
+		push("Trump press conference");
+	}
+	if (includesAnyToken(tokens, ["election", "vote", "voters", "campaign", "senate", "governor", "congress"])) {
+		if (base) push(`${base} campaign rally`);
+		push("election polling place news photo");
+		push("political campaign press conference");
+	}
+
+	const cleanedHints = uniqueStrings(
+		[
+			...(Array.isArray(topicKeywords) ? topicKeywords : []),
+			...(Array.isArray(articleTitles) ? articleTitles : []),
+		]
+			.map((hint) => cleanImageQueryHint(hint, topicLabel))
+			.filter(Boolean),
+		{ limit: 8 },
+	);
+	cleanedHints.forEach(push);
+
+	return uniqueStrings(queries, { limit: 16 });
 }
 
 async function fetchCseImagesForQuery(
@@ -3513,6 +3918,7 @@ function buildSegmentImageQueryVariants({
 	segmentText,
 	topicKeywords = [],
 	articleTitles = [],
+	category = "",
 	maxVariants = IMAGE_SEARCH_MAX_QUERY_VARIANTS,
 } = {}) {
 	const variants = [];
@@ -3530,7 +3936,11 @@ function buildSegmentImageQueryVariants({
 		);
 		push(fallback);
 	}
-	if (topicLabel) push(topicLabel);
+	buildTopicNearImageQueries(topicLabel, {
+		topicKeywords,
+		articleTitles,
+		category,
+	}).forEach(push);
 
 	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
 	const textTokens = filterSegmentImageMatchTokens(
@@ -3544,7 +3954,9 @@ function buildSegmentImageQueryVariants({
 		[
 			...(Array.isArray(topicKeywords) ? topicKeywords : []),
 			...(Array.isArray(articleTitles) ? articleTitles : []),
-		],
+		]
+			.map((hint) => cleanImageQueryHint(hint, topicLabel))
+			.filter(Boolean),
 		{ limit: Math.max(6, Number(maxVariants) || 6) },
 	);
 	for (const hint of hintList) {
@@ -4885,6 +5297,7 @@ async function ensureThumbnailSeedImages({
 async function fetchFallbackImageUrlsForSegment({
 	query,
 	topicLabel,
+	category = "",
 	limit = 4,
 	articleUrls = [],
 	seedUrls = [],
@@ -4901,12 +5314,24 @@ async function fetchFallbackImageUrlsForSegment({
 		topicTokensFromTitle(topicLabel || query || ""),
 	);
 	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
-	const newsArticleUrls = await fetchNewsArticleUrlsForImages({
-		query,
-		topicLabel,
-		limit: NEWS_IMAGE_FALLBACK_LIMIT,
-		jobId,
-	});
+	const relatedQueries = uniqueStrings(
+		[
+			query,
+			...buildTopicNearImageQueries(topicLabel || query, { category }),
+		].filter(Boolean),
+		{ limit: 5 },
+	);
+	const newsArticleUrls = [];
+	for (const relatedQuery of relatedQueries) {
+		if (newsArticleUrls.length >= NEWS_IMAGE_FALLBACK_LIMIT) break;
+		const urls = await fetchNewsArticleUrlsForImages({
+			query: relatedQuery,
+			topicLabel,
+			limit: NEWS_IMAGE_FALLBACK_LIMIT,
+			jobId,
+		});
+		newsArticleUrls.push(...urls);
+	}
 	const directArticleUrls = (Array.isArray(articleUrls) ? articleUrls : []).filter(
 		(u) => {
 			if (!isHttpUrl(u)) return false;
@@ -4989,6 +5414,7 @@ async function prepareImageSegments({
 	jobId,
 	baseUrl,
 	output,
+	category = "",
 }) {
 	if (!timeline.length) {
 		return {
@@ -5124,6 +5550,7 @@ async function prepareImageSegments({
 			segmentText: seg.text,
 			topicKeywords: meta.keywordHints,
 			articleTitles: meta.articleTitles,
+			category,
 			maxVariants: IMAGE_SEARCH_MAX_QUERY_VARIANTS,
 		});
 		if (!queryVariants.length && query) queryVariants.push(query);
@@ -5206,6 +5633,7 @@ async function prepareImageSegments({
 					),
 					articleUrls: meta.articleUrls,
 					seedUrls: trustedSeedUrls,
+					category,
 					jobId,
 				});
 				fallbackCache.set(fallbackKey, fallbackUrls);
@@ -5303,8 +5731,11 @@ async function prepareImageSegments({
 		const allowCseTopUp =
 			CSE_IMAGE_TOPUP_ENABLED &&
 			cseAvailable &&
-			availableBeforeCse.length <
-				desiredCount * IMAGE_SEARCH_MIN_RANKED_POOL_MULTIPLIER;
+			(CSE_IMAGE_LAST_RESORT_ONLY
+				? availableBeforeCse.length <
+					Math.max(1, Math.min(CSE_IMAGE_FREE_POOL_FLOOR, desiredCount))
+				: availableBeforeCse.length <
+					desiredCount * IMAGE_SEARCH_MIN_RANKED_POOL_MULTIPLIER);
 
 		let segmentCseQueryCalls = 0;
 		let segmentCseTopicCalls = 0;
@@ -5451,6 +5882,7 @@ async function prepareImageSegments({
 					),
 					articleUrls: meta.articleUrls,
 					seedUrls: trustedSeedUrls,
+					category,
 					jobId,
 				}));
 			fallbackCache.set(fallbackKey, fallbackUrls);
@@ -5505,6 +5937,11 @@ async function prepareImageSegments({
 			const rescueQueries = uniqueStrings(
 				[
 					query,
+					...buildTopicNearImageQueries(effectiveTopicLabel, {
+						topicKeywords: meta.keywordHints,
+						articleTitles: meta.articleTitles,
+						category,
+					}),
 					`${effectiveTopicLabel} news photo`,
 					`${effectiveTopicLabel} press photo`,
 					`${effectiveTopicLabel} event photo`,
@@ -5570,6 +6007,80 @@ async function prepareImageSegments({
 				queries: rescueQueries,
 				candidates: rescueUrls.length,
 				picked: rescuePicks.length,
+				downloaded: localPaths.length,
+			});
+		}
+
+		if (localPaths.length < desiredCount) {
+			const missing = Math.max(1, desiredCount - localPaths.length);
+			const alreadyPickedKeys = new Set(
+				pickedUrls.map((u) => normalizeImageUrlKey(u)),
+			);
+			const relaxedPool = dedupeUrlsPreserveOrder([
+				...plannedSegmentUrls,
+				...potentialUrls,
+				...trustedSeedUrls,
+				...seedUrls,
+				...(fallbackUrls || []),
+				...candidates,
+			]).filter((u) => !alreadyPickedKeys.has(normalizeImageUrlKey(u)));
+			let relaxedPicks = pickSegmentImageUrls(
+				relaxedPool,
+				missing,
+				usedUrlKeys,
+				null,
+				{
+					maxPicks: Math.max(
+						missing,
+						missing * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+					),
+					enforceRelevance: false,
+					usedUrlsGlobal,
+				},
+			);
+
+			if (!relaxedPicks.length && relaxedPool.length) {
+				relaxedPicks = pickSegmentImageUrls(
+					relaxedPool,
+					missing,
+					new Set(),
+					null,
+					{
+						maxPicks: Math.max(
+							missing,
+							missing * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+						),
+						enforceRelevance: false,
+					},
+				);
+			}
+
+			if (relaxedPicks.length) {
+				download = await downloadSegmentImages(
+					relaxedPicks,
+					tmpDir,
+					jobId,
+					seg.index,
+					missing,
+				);
+				localPaths = localPaths.concat(download.localPaths || []);
+				pickedUrls = pickedUrls.concat(download.usedUrls || []);
+				if (download.usedUrls?.length) {
+					for (const url of download.usedUrls) {
+						usedUrlKeys.add(normalizeImageUrlKey(url));
+						usedUrlsGlobal.add(normalizeImageUrlKey(url));
+						const host = getUrlHost(url);
+						if (host) usedHosts.add(host);
+					}
+				}
+			}
+
+			logJob(jobId, "segment image picks (ratio rescue)", {
+				segment: seg.index,
+				desiredCount,
+				missing,
+				candidates: relaxedPool.length,
+				picked: relaxedPicks.length,
 				downloaded: localPaths.length,
 			});
 		}
@@ -15999,6 +16510,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			jobId,
 			baseUrl,
 			output,
+			category,
 		});
 		timeline = imagePrep.timeline;
 		segmentImagePaths = imagePrep.segmentImagePaths || new Map();
