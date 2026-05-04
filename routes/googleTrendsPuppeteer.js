@@ -661,6 +661,50 @@ function buildCbsSearchQueriesForStory(story) {
   return uniqueStrings(candidates, { limit: 4 });
 }
 
+function isLikelyPeopleOrEntertainmentStory(story) {
+  const tokens = storyTokenSet(story);
+  if (
+    storyHasAnyToken(tokens, [
+      "actor",
+      "actress",
+      "artist",
+      "cast",
+      "celebrity",
+      "director",
+      "film",
+      "hollywood",
+      "movie",
+      "musician",
+      "rapper",
+      "singer",
+      "show",
+      "star",
+      "tv",
+    ])
+  ) {
+    return true;
+  }
+  const primary = normalizeSearchQuery(
+    story?.title || story?.rawTitle || story?.trendDialogTitle || "",
+  );
+  const words = primary.split(/\s+/).filter(Boolean);
+  if (
+    words.length >= 2 &&
+    words.length <= 5 &&
+    !storyHasAnyToken(tokens, [
+      "election",
+      "proposal",
+      "results",
+      "talks",
+      "war",
+      "weather",
+    ])
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function buildGoogleImagesTopUpQueriesForStory(story) {
   const candidates = [];
   const add = (value) => {
@@ -669,12 +713,19 @@ function buildGoogleImagesTopUpQueriesForStory(story) {
   };
   const primary =
     story?.title || story?.rawTitle || story?.trendDialogTitle || "";
+  const peopleOrEntertainment = isLikelyPeopleOrEntertainmentStory(story);
   if (primary) {
-    add(`${primary} portrait`);
-    add(`${primary} press photo`);
     add(primary);
     add(`${primary} news photo`);
+    add(`${primary} event photo`);
+    add(`${primary} press photo`);
+    if (peopleOrEntertainment) {
+      add(`${primary} photo`);
+      add(`${primary} portrait`);
+      add(`${primary} interview`);
+    }
   }
+  buildNearTopicImageQueriesForStory(story).forEach(add);
   add(story?.title);
   add(story?.rawTitle);
   add(story?.trendDialogTitle);
@@ -683,7 +734,9 @@ function buildGoogleImagesTopUpQueriesForStory(story) {
     : []) {
     add(`${phrase} photo`);
   }
-  buildNearTopicImageQueriesForStory(story).forEach(add);
+  if (primary && !peopleOrEntertainment) {
+    add(`${primary} photo`);
+  }
   return uniqueStrings(candidates, { limit: GOOGLE_IMAGES_TOPUP_QUERY_LIMIT });
 }
 
@@ -775,6 +828,36 @@ function buildNearTopicImageQueriesForStory(story) {
     add("U.S. president press conference");
     add("White House press briefing");
     add("Trump press conference");
+  }
+  if (
+    storyHasAnyToken(tokens, [
+      "actor",
+      "actress",
+      "cast",
+      "celebrity",
+      "episode",
+      "film",
+      "movie",
+      "show",
+      "tv",
+    ])
+  ) {
+    if (primary) {
+      add(`${primary} cast photo`);
+      add(`${primary} interview photo`);
+      add(`${primary} red carpet`);
+    }
+    add("television cast photo");
+    add("actor press photo");
+  }
+  if (
+    storyHasAnyToken(tokens, ["boy", "meets", "world"]) &&
+    tokens.has("boy") &&
+    tokens.has("meets") &&
+    tokens.has("world")
+  ) {
+    add("Boy Meets World cast photo");
+    add("Boy Meets World actor photo");
   }
 
   return uniqueStrings(queries, { limit: 12 });
@@ -1024,6 +1107,69 @@ function classifyImageUrl(rawUrl = "") {
   if (looksLikeArticlePath && !hasFormat) return "bad";
   if (looksLikeArticlePath && hasFormat) return "maybe";
   return hasFormat ? "maybe" : "bad";
+}
+
+function normalizeFreeSearchCandidate(item = {}) {
+  if (typeof item === "string") {
+    return { url: item, title: "", sourcePage: "", provider: "" };
+  }
+  return {
+    url: String(item?.url || item?.imageurl || item?.imageUrl || "").trim(),
+    title: String(item?.title || item?.alt || "").trim(),
+    sourcePage: String(item?.sourcePage || item?.pageUrl || item?.source || "")
+      .trim(),
+    provider: String(item?.provider || "").trim(),
+  };
+}
+
+function freeSearchCandidateText(candidate = {}) {
+  const normalized = normalizeFreeSearchCandidate(candidate);
+  let decoded = "";
+  try {
+    decoded = decodeURIComponent(normalized.url);
+  } catch {
+    decoded = normalized.url;
+  }
+  return [
+    getUrlPathForMatch(normalized.url),
+    decoded,
+    normalized.title,
+    normalized.sourcePage,
+    normalized.provider,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function scoreFreeSearchCandidate(candidate, storyTerms, queryTerms, index = 0) {
+  const hay = freeSearchCandidateText(candidate);
+  let score = 0;
+  if (matchesAnyTermStrict(hay, storyTerms)) score += 8;
+  else if (matchesAnyTerm(hay, storyTerms)) score += 3;
+  if (matchesAnyTermStrict(hay, queryTerms)) score += 6;
+  else if (matchesAnyTerm(hay, queryTerms)) score += 2;
+
+  const normalized = normalizeFreeSearchCandidate(candidate);
+  if (classifyImageUrl(normalized.url) === "good") score += 1;
+  if (normalized.title) score += 1;
+  if (normalized.sourcePage) score += 1;
+  if (index < 6) score += Math.max(0, 3 - index * 0.4);
+  return score;
+}
+
+function dedupeFreeSearchCandidates(items = [], { limit = 80 } = {}) {
+  const out = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    const normalized = normalizeFreeSearchCandidate(item);
+    if (!normalized.url) continue;
+    const key = normalizeImageUrlKey(normalized.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 async function validateImageUrl(
@@ -2921,6 +3067,164 @@ async function scrapeCbsSearchImages({
   return images;
 }
 
+async function topUpPotentialImagesWithFreeSearch({
+  story,
+  storyIndex,
+  potentialImages,
+  storySeen,
+  globalSeen,
+  minFeedImages,
+} = {}) {
+  if (!story || !Array.isArray(potentialImages)) return;
+  if (!minFeedImages || potentialImages.length >= minFeedImages) return;
+
+  const matchTerms = buildMatchTerms(
+    story?.title,
+    story?.rawTitle,
+    story?.trendDialogTitle,
+    story?.entityNames || [],
+    ...(Array.isArray(story?.articles)
+      ? story.articles.map((a) => a?.title).filter(Boolean)
+      : []),
+  );
+  const queries = buildGoogleImagesTopUpQueriesForStory(story);
+  let remaining = minFeedImages - potentialImages.length;
+  log("Free image search topup start", {
+    story: story?.title,
+    storyIndex,
+    remaining,
+    queries,
+  });
+
+  const addUrl = (candidate, mode = "strict", queryTerms = null) => {
+    const normalized = normalizeFreeSearchCandidate(candidate);
+    const url = normalized.url;
+    if (!url || potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY)
+      return false;
+    if (isLikelyThumbnailUrl(url)) return false;
+    if (classifyImageUrl(url) === "bad") return false;
+    const key = normalizeImageUrlKey(url);
+    if (storySeen.has(key) || globalSeen.has(key)) return false;
+    const hay = freeSearchCandidateText(normalized);
+    let ok = true;
+    if (mode === "strict") {
+      ok =
+        matchesAnyTermStrict(hay, matchTerms) ||
+        (queryTerms && matchesAnyTermStrict(hay, queryTerms));
+    } else if (mode === "relaxed") {
+      ok =
+        matchesAnyTerm(hay, matchTerms) ||
+        (queryTerms && matchesAnyTermStrict(hay, queryTerms));
+    } else if (mode === "query-relaxed") {
+      ok =
+        matchesAnyTerm(hay, matchTerms) ||
+        (queryTerms && matchesAnyTerm(hay, queryTerms));
+    }
+    if (!ok) return false;
+
+    storySeen.add(key);
+    globalSeen.add(key);
+    potentialImages.push({
+      imageurl: url,
+      description: story?.title || "",
+      source:
+        mode === "query-relaxed"
+          ? "google-images-query-relaxed"
+          : "google-images",
+    });
+    return true;
+  };
+
+  const queryRelaxedQueue = [];
+  for (const query of queries) {
+    if (remaining <= 0) break;
+    let candidates = [];
+    const queryTerms = buildMatchTerms(query);
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      candidates = await scrapeFreeImageSearch({
+        query,
+        limit: Math.max(16, minFeedImages * 5),
+        scrolls: GOOGLE_IMAGES_TOPUP_SCROLLS,
+        scrollDelayMs: GOOGLE_IMAGES_TOPUP_SCROLL_DELAY_MS,
+        selectorTimeoutMs: GOOGLE_IMAGES_TOPUP_SELECTOR_TIMEOUT_MS,
+        includeMetadata: true,
+      });
+    } catch (err) {
+      log("Free image search topup failed", {
+        story: story?.title,
+        query,
+        error: err.message || String(err),
+      });
+      continue;
+    }
+    const ranked = dedupeFreeSearchCandidates(candidates)
+      .map((candidate, index) => ({
+        ...candidate,
+        score: scoreFreeSearchCandidate(
+          candidate,
+          matchTerms,
+          queryTerms,
+          index,
+        ),
+      }))
+      .sort((a, b) => b.score - a.score);
+    for (const candidate of ranked) {
+      if (remaining <= 0) break;
+      if (addUrl(candidate, "strict", queryTerms)) {
+        remaining -= 1;
+      }
+    }
+    if (remaining > 0) {
+      for (const candidate of ranked) {
+        if (remaining <= 0) break;
+        if (addUrl(candidate, "relaxed", queryTerms)) {
+          remaining -= 1;
+        }
+      }
+    }
+    if (remaining > 0) {
+      for (const candidate of ranked) {
+        if (candidate.score < 4) continue;
+        queryRelaxedQueue.push({ query, queryTerms, candidate });
+      }
+    }
+  }
+
+  let queryRelaxedAdded = 0;
+  if (remaining > 0 && queryRelaxedQueue.length) {
+    queryRelaxedQueue.sort((a, b) => b.candidate.score - a.candidate.score);
+    for (const item of queryRelaxedQueue) {
+      if (remaining <= 0) break;
+      if (addUrl(item.candidate, "query-relaxed", item.queryTerms)) {
+        remaining -= 1;
+        queryRelaxedAdded += 1;
+      }
+    }
+    if (queryRelaxedAdded) {
+      log("Free image search topup query-relaxed added", {
+        story: story?.title,
+        storyIndex,
+        added: queryRelaxedAdded,
+        count: potentialImages.length,
+      });
+    }
+  }
+
+  log("Free image search topup done", {
+    story: story?.title,
+    storyIndex,
+    count: potentialImages.length,
+  });
+  if (potentialImages.length < minFeedImages) {
+    log("Potential images below minimum after free search", {
+      story: story?.title,
+      storyIndex,
+      count: potentialImages.length,
+    });
+  }
+}
+
 async function enrichStoriesWithPotentialImages(
   stories,
   {
@@ -2958,6 +3262,7 @@ async function enrichStoriesWithPotentialImages(
     0,
     POTENTIAL_IMAGE_MAX_PER_STORY,
   );
+  const fallbackTargetImages = minFeedImages || targetImages;
   const topUpLimit = clampInt(topUpTopics || 0, 0, stories.length);
   const bbcTopUpLimit = clampInt(bbcTopUpTopics || 0, 0, stories.length);
   const cbsTopUpLimit = clampInt(cbsTopUpTopics || 0, 0, stories.length);
@@ -3039,18 +3344,30 @@ async function enrichStoriesWithPotentialImages(
           if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
         }
         if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
+        if (minFeedImages > 0 && potentialImages.length >= minFeedImages) break;
         // eslint-disable-next-line no-await-in-loop
         await delay(150);
       }
 
+      if (enableGoogleImagesTopUp) {
+        await topUpPotentialImagesWithFreeSearch({
+          story,
+          storyIndex: i + 1,
+          potentialImages,
+          storySeen,
+          globalSeen,
+          minFeedImages,
+        });
+      }
+
       const shouldTopUp =
         enableVogueFallback &&
-        targetImages > 0 &&
+        fallbackTargetImages > 0 &&
         i < topUpLimit &&
-        potentialImages.length < targetImages;
+        potentialImages.length < fallbackTargetImages;
       if (shouldTopUp) {
         const queries = buildVogueSearchQueriesForStory(story);
-        let remaining = targetImages - potentialImages.length;
+        let remaining = fallbackTargetImages - potentialImages.length;
         log("Vogue search topup start", {
           story: story?.title,
           storyIndex: i + 1,
@@ -3060,7 +3377,7 @@ async function enrichStoriesWithPotentialImages(
 
         for (const query of queries) {
           if (remaining <= 0) break;
-          if (potentialImages.length >= targetImages) break;
+          if (potentialImages.length >= fallbackTargetImages) break;
           const searchMatchTerms = buildMatchTerms(
             query,
             story?.title,
@@ -3082,7 +3399,7 @@ async function enrichStoriesWithPotentialImages(
             potentialImages.push(img);
             if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
           }
-          remaining = targetImages - potentialImages.length;
+          remaining = fallbackTargetImages - potentialImages.length;
         }
 
         log("Vogue search topup done", {
@@ -3094,12 +3411,12 @@ async function enrichStoriesWithPotentialImages(
 
       const shouldBbcTopUp =
         enableBbcFallback &&
-        targetImages > 0 &&
+        fallbackTargetImages > 0 &&
         i < bbcTopUpLimit &&
-        potentialImages.length < targetImages;
+        potentialImages.length < fallbackTargetImages;
       if (shouldBbcTopUp) {
         const queries = buildBbcSearchQueriesForStory(story);
-        let remaining = targetImages - potentialImages.length;
+        let remaining = fallbackTargetImages - potentialImages.length;
         log("BBC search topup start", {
           story: story?.title,
           storyIndex: i + 1,
@@ -3109,7 +3426,7 @@ async function enrichStoriesWithPotentialImages(
 
         for (const query of queries) {
           if (remaining <= 0) break;
-          if (potentialImages.length >= targetImages) break;
+          if (potentialImages.length >= fallbackTargetImages) break;
           // eslint-disable-next-line no-await-in-loop
           const searchImages = await scrapeBbcSearchImages({
             query,
@@ -3130,7 +3447,7 @@ async function enrichStoriesWithPotentialImages(
             potentialImages.push(img);
             if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
           }
-          remaining = targetImages - potentialImages.length;
+          remaining = fallbackTargetImages - potentialImages.length;
         }
 
         log("BBC search topup done", {
@@ -3142,12 +3459,12 @@ async function enrichStoriesWithPotentialImages(
 
       const shouldCbsTopUp =
         enableCbsFallback &&
-        targetImages > 0 &&
+        fallbackTargetImages > 0 &&
         i < cbsTopUpLimit &&
-        potentialImages.length < targetImages;
+        potentialImages.length < fallbackTargetImages;
       if (shouldCbsTopUp) {
         const queries = buildCbsSearchQueriesForStory(story);
-        let remaining = targetImages - potentialImages.length;
+        let remaining = fallbackTargetImages - potentialImages.length;
         log("CBS search topup start", {
           story: story?.title,
           storyIndex: i + 1,
@@ -3157,7 +3474,7 @@ async function enrichStoriesWithPotentialImages(
 
         for (const query of queries) {
           if (remaining <= 0) break;
-          if (potentialImages.length >= targetImages) break;
+          if (potentialImages.length >= fallbackTargetImages) break;
           // eslint-disable-next-line no-await-in-loop
           const searchImages = await scrapeCbsSearchImages({
             query,
@@ -3178,7 +3495,7 @@ async function enrichStoriesWithPotentialImages(
             potentialImages.push(img);
             if (potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY) break;
           }
-          remaining = targetImages - potentialImages.length;
+          remaining = fallbackTargetImages - potentialImages.length;
         }
 
         log("CBS search topup done", {
@@ -3192,136 +3509,6 @@ async function enrichStoriesWithPotentialImages(
         term: story?.title,
         count: potentialImages.length,
       });
-
-      if (enableGoogleImagesTopUp && potentialImages.length < minFeedImages) {
-        const matchTerms = buildMatchTerms(
-          story?.title,
-          story?.rawTitle,
-          story?.trendDialogTitle,
-          story?.entityNames || [],
-          ...(Array.isArray(story?.articles)
-            ? story.articles.map((a) => a?.title).filter(Boolean)
-            : []),
-        );
-        const queries = buildGoogleImagesTopUpQueriesForStory(story);
-        let remaining = minFeedImages - potentialImages.length;
-        log("Google images topup start", {
-          story: story?.title,
-          storyIndex: i + 1,
-          remaining,
-          queries,
-        });
-
-        const addUrl = (url, mode = "strict") => {
-          if (!url || potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY)
-            return false;
-          if (isLikelyThumbnailUrl(url)) return false;
-          if (classifyImageUrl(url) === "bad") return false;
-          const key = normalizeImageUrlKey(url);
-          if (storySeen.has(key) || globalSeen.has(key)) return false;
-          let decoded = "";
-          try {
-            decoded = decodeURIComponent(url);
-          } catch {
-            decoded = url;
-          }
-          const hay = `${getUrlPathForMatch(url)} ${decoded}`;
-          let ok = true;
-          if (mode === "strict") {
-            ok = matchesAnyTermStrict(hay, matchTerms);
-          } else if (mode === "relaxed") {
-            ok = matchesAnyTerm(hay, matchTerms);
-          }
-          if (!ok) return false;
-
-          storySeen.add(key);
-          globalSeen.add(key);
-          potentialImages.push({
-            imageurl: url,
-            description: story?.title || "",
-            source:
-              mode === "query-relaxed"
-                ? "google-images-query-relaxed"
-                : "google-images",
-          });
-          return true;
-        };
-
-        const queryRelaxedQueue = [];
-        for (const query of queries) {
-          if (remaining <= 0) break;
-          let urls = [];
-          try {
-            // eslint-disable-next-line no-await-in-loop
-            urls = await scrapeGoogleImages({
-              query,
-              limit: Math.max(16, minFeedImages * 5),
-              scrolls: GOOGLE_IMAGES_TOPUP_SCROLLS,
-              scrollDelayMs: GOOGLE_IMAGES_TOPUP_SCROLL_DELAY_MS,
-              selectorTimeoutMs: GOOGLE_IMAGES_TOPUP_SELECTOR_TIMEOUT_MS,
-            });
-          } catch (err) {
-            log("Google images topup failed", {
-              story: story?.title,
-              query,
-              error: err.message || String(err),
-            });
-            continue;
-          }
-          const deduped = dedupeImageUrlsByKey(urls);
-          for (const url of deduped) {
-            if (remaining <= 0) break;
-            if (addUrl(url, "strict")) {
-              remaining -= 1;
-            }
-          }
-          if (remaining > 0) {
-            for (const url of deduped) {
-              if (remaining <= 0) break;
-              if (addUrl(url, "relaxed")) {
-                remaining -= 1;
-              }
-            }
-          }
-          if (remaining > 0) {
-            for (const url of deduped) {
-              queryRelaxedQueue.push({ query, url });
-            }
-          }
-        }
-
-        let queryRelaxedAdded = 0;
-        if (remaining > 0 && queryRelaxedQueue.length) {
-          for (const item of queryRelaxedQueue) {
-            if (remaining <= 0) break;
-            if (addUrl(item.url, "query-relaxed")) {
-              remaining -= 1;
-              queryRelaxedAdded += 1;
-            }
-          }
-          if (queryRelaxedAdded) {
-            log("Google images topup query-relaxed added", {
-              story: story?.title,
-              storyIndex: i + 1,
-              added: queryRelaxedAdded,
-              count: potentialImages.length,
-            });
-          }
-        }
-
-        log("Google images topup done", {
-          story: story?.title,
-          storyIndex: i + 1,
-          count: potentialImages.length,
-        });
-        if (potentialImages.length < minFeedImages) {
-          log("Potential images still below minimum", {
-            story: story?.title,
-            storyIndex: i + 1,
-            count: potentialImages.length,
-          });
-        }
-      }
 
       out.push({ ...story, potentialImages });
     } catch (err) {
@@ -3337,7 +3524,7 @@ async function enrichStoriesWithPotentialImages(
 }
 
 /* ---------------------------------------------------------------
- * Google Images scraping helper
+ * Free image-search scraping helper
  * ------------------------------------------------------------- */
 
 async function autoScrollPage(page, { scrolls, delayMs } = {}) {
@@ -3476,21 +3663,6 @@ async function scrapeGoogleImages({
       filtered: filtered.length,
       returned: unique.length,
     });
-    if (!unique.length) {
-      const bing = await scrapeBingImages({
-        query,
-        limit,
-        scrolls: Math.min(BING_IMAGES_SCROLLS, Math.max(1, scrolls)),
-      });
-      if (bing.length) {
-        log("Google images free fallback hit", {
-          query,
-          provider: "bing-images",
-          returned: bing.length,
-        });
-        return bing;
-      }
-    }
     return unique;
   } finally {
     await page.close().catch(() => {});
@@ -3614,6 +3786,57 @@ async function scrapeBingImages({
   } finally {
     await page.close().catch(() => {});
   }
+}
+
+async function scrapeFreeImageSearch({
+  query,
+  limit = GOOGLE_IMAGES_DEFAULT_LIMIT,
+  scrolls = GOOGLE_IMAGES_SCROLLS,
+  scrollDelayMs = GOOGLE_IMAGES_SCROLL_DELAY_MS,
+  selectorTimeoutMs = GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS,
+}) {
+  try {
+    const bing = await scrapeBingImages({
+      query,
+      limit,
+      scrolls: Math.min(BING_IMAGES_SCROLLS, Math.max(1, scrolls)),
+      scrollDelayMs: Math.min(BING_IMAGES_SCROLL_DELAY_MS, scrollDelayMs),
+      selectorTimeoutMs: Math.min(
+        BING_IMAGES_SELECTOR_TIMEOUT_MS,
+        selectorTimeoutMs,
+      ),
+    });
+    if (bing.length) {
+      log("Free image search primary hit", {
+        query,
+        provider: "bing-images",
+        returned: bing.length,
+      });
+      return bing;
+    }
+  } catch (err) {
+    log("Free image search provider failed", {
+      query,
+      provider: "bing-images",
+      error: err.message || String(err),
+    });
+  }
+
+  const google = await scrapeGoogleImages({
+    query,
+    limit,
+    scrolls,
+    scrollDelayMs,
+    selectorTimeoutMs,
+  });
+  if (google.length) {
+    log("Free image search fallback hit", {
+      query,
+      provider: "google-images",
+      returned: google.length,
+    });
+  }
+  return google;
 }
 
 async function scrape({ geo, hours, category, sort, limit, skipTerms } = {}) {
@@ -3850,7 +4073,7 @@ router.get("/google-images", requireLocalOrInternalKey, async (req, res) => {
     : GOOGLE_IMAGES_DEFAULT_LIMIT;
 
   try {
-    const images = await scrapeGoogleImages({ query, limit });
+    const images = await scrapeFreeImageSearch({ query, limit });
     return res.json({
       query,
       count: images.length,
@@ -3858,11 +4081,11 @@ router.get("/google-images", requireLocalOrInternalKey, async (req, res) => {
     });
   } catch (err) {
     console.error(
-      "[Trends] Google Images scraping failed:",
+      "[Trends] Free image search scraping failed:",
       err.message || err,
     );
     return res.status(500).json({
-      error: "Google Images scraping failed",
+      error: "Free image search scraping failed",
       detail: err.message || String(err),
     });
   }
