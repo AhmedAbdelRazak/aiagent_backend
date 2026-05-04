@@ -1277,7 +1277,7 @@ async function enhanceStoriesWithOpenAI(
 
   try {
     const response = await openai.responses.create({
-      model: "gpt-5.2",
+      model: "gpt-5.4",
       instructions:
         "You are an expert SEO copywriter and YouTube Shorts strategist. " +
         "Given trending search topics and their news article titles, " +
@@ -3107,8 +3107,7 @@ async function enrichStoriesWithPotentialImages(
             : []),
         );
         const queries = buildGoogleImagesTopUpQueriesForStory(story);
-        let remaining = MIN_FEED_IMAGES_PER_STORY - potentialImages.length;
-        remaining = minFeedImages - potentialImages.length;
+        let remaining = minFeedImages - potentialImages.length;
         log("Google images topup start", {
           story: story?.title,
           storyIndex: i + 1,
@@ -3116,7 +3115,7 @@ async function enrichStoriesWithPotentialImages(
           queries,
         });
 
-        const addUrl = (url, strict = true) => {
+        const addUrl = (url, mode = "strict") => {
           if (!url || potentialImages.length >= POTENTIAL_IMAGE_MAX_PER_STORY)
             return false;
           if (isLikelyThumbnailUrl(url)) return false;
@@ -3130,9 +3129,12 @@ async function enrichStoriesWithPotentialImages(
             decoded = url;
           }
           const hay = `${getUrlPathForMatch(url)} ${decoded}`;
-          const ok = strict
-            ? matchesAnyTermStrict(hay, matchTerms)
-            : matchesAnyTerm(hay, matchTerms);
+          let ok = true;
+          if (mode === "strict") {
+            ok = matchesAnyTermStrict(hay, matchTerms);
+          } else if (mode === "relaxed") {
+            ok = matchesAnyTerm(hay, matchTerms);
+          }
           if (!ok) return false;
 
           storySeen.add(key);
@@ -3140,11 +3142,15 @@ async function enrichStoriesWithPotentialImages(
           potentialImages.push({
             imageurl: url,
             description: story?.title || "",
-            source: "google-images",
+            source:
+              mode === "query-relaxed"
+                ? "google-images-query-relaxed"
+                : "google-images",
           });
           return true;
         };
 
+        const queryRelaxedQueue = [];
         for (const query of queries) {
           if (remaining <= 0) break;
           let urls = [];
@@ -3168,17 +3174,41 @@ async function enrichStoriesWithPotentialImages(
           const deduped = dedupeImageUrlsByKey(urls);
           for (const url of deduped) {
             if (remaining <= 0) break;
-            if (addUrl(url, true)) {
+            if (addUrl(url, "strict")) {
               remaining -= 1;
             }
           }
           if (remaining > 0) {
             for (const url of deduped) {
               if (remaining <= 0) break;
-              if (addUrl(url, false)) {
+              if (addUrl(url, "relaxed")) {
                 remaining -= 1;
               }
             }
+          }
+          if (remaining > 0) {
+            for (const url of deduped) {
+              queryRelaxedQueue.push({ query, url });
+            }
+          }
+        }
+
+        let queryRelaxedAdded = 0;
+        if (remaining > 0 && queryRelaxedQueue.length) {
+          for (const item of queryRelaxedQueue) {
+            if (remaining <= 0) break;
+            if (addUrl(item.url, "query-relaxed")) {
+              remaining -= 1;
+              queryRelaxedAdded += 1;
+            }
+          }
+          if (queryRelaxedAdded) {
+            log("Google images topup query-relaxed added", {
+              story: story?.title,
+              storyIndex: i + 1,
+              added: queryRelaxedAdded,
+              count: potentialImages.length,
+            });
           }
         }
 
