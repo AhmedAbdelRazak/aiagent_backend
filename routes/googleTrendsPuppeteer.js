@@ -56,8 +56,8 @@ const GOOGLE_IMAGES_MAX_RESULTS = 80;
 const GOOGLE_IMAGES_SCROLLS = 7;
 const GOOGLE_IMAGES_SCROLL_DELAY_MS = 650;
 const GOOGLE_IMAGES_SELECTOR_TIMEOUT_MS = 15000;
-const GOOGLE_IMAGES_TOPUP_QUERY_LIMIT = 3;
-const GOOGLE_IMAGES_TOPUP_SCROLLS = 2;
+const GOOGLE_IMAGES_TOPUP_QUERY_LIMIT = 5;
+const GOOGLE_IMAGES_TOPUP_SCROLLS = 4;
 const GOOGLE_IMAGES_TOPUP_SCROLL_DELAY_MS = 350;
 const GOOGLE_IMAGES_TOPUP_SELECTOR_TIMEOUT_MS = 6500;
 const TRENDS_SIGNAL_WINDOW_HOURS = 48;
@@ -70,12 +70,12 @@ const RELATED_QUERIES_LIMIT = 12;
 const TRENDS_CACHE_TTL_MS = 5 * 60 * 1000;
 const RECENT_VIDEO_LOOKBACK_DAYS = 3;
 const POTENTIAL_IMAGE_TOPIC_LIMIT = ROW_LIMIT;
-const POTENTIAL_IMAGE_MIN_PER_STORY = 4;
-const MIN_FEED_IMAGES_PER_STORY = 3;
+const POTENTIAL_IMAGE_MIN_PER_STORY = 6;
+const MIN_FEED_IMAGES_PER_STORY = 8;
 const POTENTIAL_IMAGE_TOPUP_TOPIC_LIMIT = 5;
-const POTENTIAL_IMAGE_ARTICLE_LIMIT = 3;
-const POTENTIAL_IMAGE_PER_ARTICLE_LIMIT = 6;
-const POTENTIAL_IMAGE_MAX_PER_STORY = 15;
+const POTENTIAL_IMAGE_ARTICLE_LIMIT = 5;
+const POTENTIAL_IMAGE_PER_ARTICLE_LIMIT = 8;
+const POTENTIAL_IMAGE_MAX_PER_STORY = 30;
 const POTENTIAL_IMAGE_MIN_WIDTH = 320;
 const POTENTIAL_IMAGE_MIN_HEIGHT = 180;
 const POTENTIAL_IMAGE_SELECTOR_TIMEOUT_MS = 8000;
@@ -3739,7 +3739,7 @@ router.get("/google-trends", requireLocalOrInternalKey, async (req, res) => {
         ...(s.articles || []).map((a) => a.image).filter(Boolean),
       ];
       const feedImages = includeImages
-        ? dedupeImageUrlsByKey([...baseImages, ...potentialUrls], { limit: 8 })
+        ? dedupeImageUrlsByKey([...baseImages, ...potentialUrls], { limit: 20 })
         : [];
 
       return {

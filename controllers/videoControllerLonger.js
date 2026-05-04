@@ -527,12 +527,9 @@ const OVERLAY_MARGIN_PX = clampNumber(28, 6, 120);
 const OVERLAY_DEFAULT_POSITION = "topRight";
 const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 
-// Content visual mix (presenter vs static images). Default is 40% presenter / 60% scraped feed images.
-const CONTENT_PRESENTER_RATIO = clampNumber(
-	process.env.LONG_VIDEO_PRESENTER_RATIO ?? 0.4,
-	0.2,
-	0.8,
-);
+// Content visual mix (presenter vs static images). Required default is
+// 40% presenter / 60% scraped feed or topic images.
+const CONTENT_PRESENTER_RATIO = 0.4;
 const IMAGE_SEGMENT_TARGET_SEC = clampNumber(3.8, 2.5, 8);
 const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
 const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(
@@ -545,12 +542,17 @@ const IMAGE_SEGMENT_MIN_UNIQUE_RATIO = clampNumber(0.5, 0.4, 1);
 const ENABLE_PRESENTER_RUN_MERGE = true;
 const PRESENTER_RUN_MERGE_MAX_SEC = clampNumber(22, 8, 30);
 const PRESENTER_RUN_MERGE_MAX_SEGMENTS = clampNumber(3, 2, 4);
-const IMAGE_SEARCH_MAX_QUERY_VARIANTS = clampNumber(10, 4, 12);
-const IMAGE_SEARCH_CANDIDATE_MULTIPLIER = clampNumber(7, 2, 8);
+const IMAGE_SEARCH_MAX_QUERY_VARIANTS = clampNumber(12, 4, 16);
+const IMAGE_SEARCH_CANDIDATE_MULTIPLIER = clampNumber(9, 2, 12);
+const IMAGE_SEARCH_MIN_RANKED_POOL_MULTIPLIER = clampNumber(
+	process.env.LONG_VIDEO_IMAGE_MIN_RANKED_POOL_MULTIPLIER ?? 6,
+	2,
+	12,
+);
 const GOOGLE_IMAGES_SEARCH_ENABLED = true;
-const GOOGLE_IMAGES_VARIANT_LIMIT = clampNumber(4, 1, 6);
-const GOOGLE_IMAGES_RESULTS_PER_QUERY = clampNumber(28, 8, 40);
-const GOOGLE_IMAGES_MIN_POOL_MULTIPLIER = clampNumber(3, 1, 5);
+const GOOGLE_IMAGES_VARIANT_LIMIT = clampNumber(6, 1, 8);
+const GOOGLE_IMAGES_RESULTS_PER_QUERY = clampNumber(40, 8, 80);
+const GOOGLE_IMAGES_MIN_POOL_MULTIPLIER = clampNumber(6, 1, 10);
 const CSE_IMAGE_TOPUP_ENABLED = envFlag("LONG_VIDEO_CSE_IMAGE_TOPUP", true);
 const CSE_CONTEXT_FALLBACK_ENABLED = envFlag(
 	"LONG_VIDEO_CSE_CONTEXT_FALLBACK",
@@ -1867,9 +1869,24 @@ function computeFlexibleNarrationTargetSec({
 	const requested = Math.max(18, Number(requestedSec) || 0);
 	const topicCount = Math.max(1, topics.length || 1);
 	const maxMultiplier = clampNumber(
-		process.env.LONG_VIDEO_FLEX_MAX_MULTIPLIER ?? 1.35,
+		process.env.LONG_VIDEO_FLEX_MAX_MULTIPLIER ?? 2,
 		1,
-		2,
+		2.5,
+	);
+	const minMultiplier = clampNumber(
+		process.env.LONG_VIDEO_FLEX_MIN_MULTIPLIER ?? 0.5,
+		0.25,
+		maxMultiplier,
+	);
+	const fullSignal = clampNumber(
+		process.env.LONG_VIDEO_FLEX_FULL_SIGNAL ?? 16,
+		4,
+		40,
+	);
+	const neutralSignal = clampNumber(
+		process.env.LONG_VIDEO_FLEX_NEUTRAL_SIGNAL ?? 0.42,
+		0.1,
+		0.9,
 	);
 
 	const minSec = Math.max(18, Math.round(requested * 0.5));
@@ -1897,22 +1914,22 @@ function computeFlexibleNarrationTargetSec({
 	}
 
 	const avgSignal = totalSignal / topicCount;
-	const normalized = clampNumber(avgSignal / 10, 0, 1);
+	const normalized = clampNumber(avgSignal / fullSignal, 0, 1);
 
-	let target = requested;
-	if (normalized >= 0.92) {
-		target = maxSec;
-	} else if (normalized >= 0.75) {
-		target = Math.min(maxSec, Math.round(requested * 1.25));
-	} else if (normalized >= 0.55) {
-		target = Math.min(maxSec, Math.round(requested * 1.15));
-	} else if (normalized >= 0.4) {
-		target = Math.min(maxSec, Math.round(requested * 1.05));
-	} else if (normalized <= 0.15) {
-		target = minSec;
-	} else if (normalized <= 0.3) {
-		target = Math.max(minSec, Math.round(requested * 0.67));
+	let multiplier = 1;
+	if (normalized <= neutralSignal) {
+		const t = clampNumber(normalized / neutralSignal, 0, 1);
+		multiplier = minMultiplier + (1 - minMultiplier) * Math.pow(t, 0.85);
+	} else {
+		const t = clampNumber(
+			(normalized - neutralSignal) / Math.max(0.01, 1 - neutralSignal),
+			0,
+			1,
+		);
+		multiplier = 1 + (maxMultiplier - 1) * Math.pow(t, 1.35);
 	}
+
+	let target = Math.round(requested * multiplier);
 
 	target = clampNumber(target, minSec, maxSec);
 
@@ -1925,6 +1942,10 @@ function computeFlexibleNarrationTargetSec({
 			total: Number(totalSignal.toFixed(2)),
 			avg: Number(avgSignal.toFixed(2)),
 			normalized: Number(normalized.toFixed(3)),
+			multiplier: Number(multiplier.toFixed(3)),
+			fullSignal: Number(fullSignal.toFixed(2)),
+			neutralSignal: Number(neutralSignal.toFixed(2)),
+			minMultiplier: Number(minMultiplier.toFixed(2)),
 			maxMultiplier: Number(maxMultiplier.toFixed(2)),
 		},
 	};
@@ -3105,47 +3126,81 @@ const SEGMENT_IMAGE_STOP_TOKENS = new Set([
 	...GENERIC_TOPIC_TOKENS,
 	"actually",
 	"another",
+	"argument",
+	"basic",
 	"because",
 	"being",
+	"breakthrough",
 	"came",
+	"careful",
+	"channel",
 	"clear",
+	"clearly",
+	"confidence",
 	"context",
 	"could",
 	"debate",
 	"detail",
 	"details",
 	"difference",
+	"doubting",
 	"early",
+	"enough",
+	"exists",
 	"explained",
 	"gives",
+	"happening",
 	"happened",
 	"here",
+	"holds",
 	"important",
+	"limited",
 	"keeps",
 	"latest",
 	"layer",
 	"matters",
 	"meaning",
+	"message",
+	"moment",
 	"people",
 	"provided",
+	"public",
+	"question",
+	"quick",
+	"quietly",
 	"really",
 	"report",
 	"reported",
 	"reporting",
 	"reports",
+	"response",
 	"right",
 	"says",
+	"sequence",
+	"signals",
+	"skepticism",
 	"story",
+	"stress",
+	"suggests",
 	"takeaway",
+	"terms",
+	"testing",
 	"tension",
 	"thing",
 	"timeline",
 	"today",
+	"trust",
 	"unclear",
+	"unresolved",
 	"update",
+	"want",
+	"wanted",
+	"wants",
 	"what",
 	"whether",
 	"while",
+	"wide",
+	"yet",
 ]);
 
 function filterSegmentImageMatchTokens(tokens = []) {
@@ -3567,14 +3622,35 @@ function getTrustedImageUrlKeys(opts = {}) {
 	return new Set();
 }
 
+function scoreImageUrlQuality(url = "") {
+	const raw = String(url || "");
+	const lower = raw.toLowerCase();
+	let score = 0;
+	if (/\b(1200|1280|1600|1920|2048|2560|3000|3840|4096)\b/.test(lower))
+		score += 4;
+	if (/\b(original|xlarge|xxlarge|large|super|master|uploads)\b/.test(lower))
+		score += 2;
+	if (/\b(w=|width=|resize|fit=|crop=|quality=|format=)\b/.test(lower))
+		score += 1;
+	if (/\b(thumbnail|thumb|small|sprite|avatar|profile|logo|icon)\b/.test(lower))
+		score -= 4;
+	if (isLikelyThumbnailUrl(raw)) score -= 8;
+	const host = getUrlHost(raw);
+	if (/\b(cnn|bbc|cnbc|nytimes|reuters|apnews|cbsnews|usatoday)\./i.test(host))
+		score += 2;
+	return score;
+}
+
 function scoreImageUrlRelevance(url = "", opts = {}) {
 	const key = normalizeImageUrlKey(url);
 	const trustedUrlKeys = getTrustedImageUrlKeys(opts);
+	const qualityScore = scoreImageUrlQuality(url);
 	if (trustedUrlKeys.has(key)) {
 		return {
 			trusted: true,
 			accepted: true,
 			score: 1000,
+			qualityScore,
 			topicScore: 0,
 			segmentScore: 0,
 			queryScore: 0,
@@ -3600,7 +3676,8 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 	return {
 		trusted: false,
 		accepted,
-		score: topicScore * 3 + queryScore * 2 + segmentScore,
+		score: topicScore * 3 + queryScore * 2 + segmentScore + qualityScore * 0.25,
+		qualityScore,
 		topicScore,
 		segmentScore,
 		queryScore,
@@ -3628,6 +3705,8 @@ function filterRelevantImageCandidatePool(pool = [], opts = {}) {
 		if (b.queryScore !== a.queryScore) return b.queryScore - a.queryScore;
 		if (b.segmentScore !== a.segmentScore)
 			return b.segmentScore - a.segmentScore;
+		if (b.qualityScore !== a.qualityScore)
+			return b.qualityScore - a.qualityScore;
 		return b.score - a.score;
 	});
 	return scored.map((entry) => entry.url);
@@ -4954,7 +5033,7 @@ async function prepareImageSegments({
 			(Array.isArray(story.potentialImages) ? story.potentialImages : [])
 				.map((p) => p?.url)
 				.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
-			{ limit: 14 },
+			{ limit: 30 },
 		);
 		const potentialKeys = new Set(
 			potentialUrls.map((u) => normalizeImageUrlKey(u)),
@@ -4967,7 +5046,7 @@ async function prepareImageSegments({
 				...(Array.isArray(story.images) ? story.images : []),
 				...articleImageUrls,
 			],
-			{ limit: 12 },
+			{ limit: 18 },
 		)
 			.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u))
 			.filter((u) => !potentialKeys.has(normalizeImageUrlKey(u)));
@@ -5110,7 +5189,10 @@ async function prepareImageSegments({
 				fallbackUrls = await fetchFallbackImageUrlsForSegment({
 					query,
 					topicLabel: effectiveTopicLabel,
-					limit: Math.max(6, desiredCount * 2),
+					limit: Math.max(
+						10,
+						desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+					),
 					articleUrls: meta.articleUrls,
 					seedUrls: trustedSeedUrls,
 					jobId,
@@ -5210,7 +5292,8 @@ async function prepareImageSegments({
 		const allowCseTopUp =
 			CSE_IMAGE_TOPUP_ENABLED &&
 			cseAvailable &&
-			availableBeforeCse.length < desiredCount;
+			availableBeforeCse.length <
+				desiredCount * IMAGE_SEARCH_MIN_RANKED_POOL_MULTIPLIER;
 
 		let segmentCseQueryCalls = 0;
 		let segmentCseTopicCalls = 0;
@@ -5351,7 +5434,10 @@ async function prepareImageSegments({
 				(await fetchFallbackImageUrlsForSegment({
 					query,
 					topicLabel: effectiveTopicLabel,
-					limit: Math.max(6, desiredCount * 2),
+					limit: Math.max(
+						10,
+						desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+					),
 					articleUrls: meta.articleUrls,
 					seedUrls: trustedSeedUrls,
 					jobId,
@@ -5400,6 +5486,79 @@ async function prepareImageSegments({
 				segment: seg.index,
 				desiredCount,
 				picked: fallbackPicks.length,
+				downloaded: localPaths.length,
+			});
+		}
+
+		if (!localPaths.length && GOOGLE_IMAGES_SEARCH_ENABLED) {
+			const rescueQueries = uniqueStrings(
+				[
+					query,
+					`${effectiveTopicLabel} news photo`,
+					`${effectiveTopicLabel} press photo`,
+					`${effectiveTopicLabel} event photo`,
+					effectiveTopicLabel,
+				].filter(Boolean),
+				{ limit: Math.max(3, GOOGLE_IMAGES_VARIANT_LIMIT) },
+			);
+			const rescueUrls = [];
+			for (const rescueQuery of rescueQueries) {
+				const cacheKey = `rescue::${rescueQuery}`;
+				let urls = googleImageCache.get(cacheKey);
+				if (!urls) {
+					urls = await fetchGoogleImagesFromService(rescueQuery, {
+						limit: Math.max(
+							GOOGLE_IMAGES_RESULTS_PER_QUERY,
+							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+						),
+						baseUrl,
+						jobId,
+					});
+					googleImageCache.set(cacheKey, urls);
+				}
+				rescueUrls.push(...(urls || []));
+			}
+			const rescuePicks = pickSegmentImageUrls(
+				rescueUrls,
+				desiredCount,
+				usedUrlKeys,
+				usedHosts,
+				{
+					maxPicks: Math.max(
+						desiredCount,
+						desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+					),
+					preferTokens: topicTokens,
+					queryTokens,
+					topicTokens,
+					segmentTokens,
+					trustedUrlKeys,
+					usedUrlsGlobal,
+				},
+			);
+			download = await downloadSegmentImages(
+				rescuePicks,
+				tmpDir,
+				jobId,
+				seg.index,
+				desiredCount,
+			);
+			localPaths = localPaths.concat(download.localPaths || []);
+			pickedUrls = pickedUrls.concat(download.usedUrls || []);
+			if (download.usedUrls?.length) {
+				for (const url of download.usedUrls) {
+					usedUrlKeys.add(normalizeImageUrlKey(url));
+					usedUrlsGlobal.add(normalizeImageUrlKey(url));
+					const host = getUrlHost(url);
+					if (host) usedHosts.add(host);
+				}
+			}
+			logJob(jobId, "segment image picks (google rescue)", {
+				segment: seg.index,
+				desiredCount,
+				queries: rescueQueries,
+				candidates: rescueUrls.length,
+				picked: rescuePicks.length,
 				downloaded: localPaths.length,
 			});
 		}
@@ -6991,7 +7150,7 @@ function shortTitleFromText(text = "") {
 		.split(/\s+/)
 		.filter(Boolean);
 	if (!words.length) return "Quick Update";
-	return words.slice(0, 5).join(" ");
+	return normalizeCommonTitleAcronyms(words.slice(0, 5).join(" "));
 }
 
 function normalizeRelatedQueriesAny(rq) {
@@ -8047,6 +8206,22 @@ function normalizeTitleWhitespace(text = "") {
 		.trim();
 }
 
+function normalizeCommonTitleAcronyms(text = "") {
+	return String(text || "")
+		.replace(/\bU\s+S(?=\s|$|[,;:!?])/g, "U.S.")
+		.replace(/\bU\.s\.?(?=\s|$|[,;:!?])/g, "U.S.")
+		.replace(/\bU\.S\.?(?=\s|$|[,;:!?])/g, "U.S.")
+		.replace(/\bUS(?=\s|$|[,;:!?])/g, "U.S.")
+		.replace(/\bU\s+K(?=\s|$|[,;:!?])/g, "U.K.")
+		.replace(/\bU\.k\.?(?=\s|$|[,;:!?])/g, "U.K.")
+		.replace(/\bU\.K\.?(?=\s|$|[,;:!?])/g, "U.K.")
+		.replace(/\bUK(?=\s|$|[,;:!?])/g, "U.K.")
+		.replace(/\bU\s+N(?=\s|$|[,;:!?])/g, "U.N.")
+		.replace(/\bU\.n\.?(?=\s|$|[,;:!?])/g, "U.N.")
+		.replace(/\bU\.N\.?(?=\s|$|[,;:!?])/g, "U.N.")
+		.replace(/\bUN(?=\s|$|[,;:!?])/g, "U.N.");
+}
+
 function isAllCapsTitleToken(token = "") {
 	return /^[A-Z0-9&+/'-]{2,}$/.test(token || "");
 }
@@ -8100,6 +8275,7 @@ function formatHumanTitle(text = "", max = 95) {
 		.trim();
 	if (!cleaned) return "";
 	cleaned = toHeadlineCase(cleaned);
+	cleaned = normalizeCommonTitleAcronyms(cleaned);
 	return trimTitleToLimit(cleaned, max);
 }
 
@@ -8578,6 +8754,21 @@ function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
 		};
 	}
 	if (
+		/\b(election|vote|president|prime minister|senator|congress|parliament|campaign|governor|white house|supreme court|iran|israel|hezbollah|hamas|gaza|ukraine|russia|china|taiwan|middle east|peace proposal|peace talks|ceasefire|diplomacy|diplomatic|sanctions|foreign minister|state department|united nations)\b/.test(
+			text,
+		)
+	) {
+		return {
+			beats: [
+				"what the reporting confirms",
+				"where the terms are still unresolved",
+				"why the timing matters",
+				"what could change next",
+			],
+			cardSubtitle: "What Changed and What's Next",
+		};
+	}
+	if (
 		/\b(movie|film|show|series|episode|season|album|song|tour|cast|trailer|awards?)\b/.test(
 			text,
 		)
@@ -8647,7 +8838,9 @@ function buildIntroCardTitle({ title = "", shortTitle = "" } = {}) {
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	const fallbackLabel = shortTopicLabel(shortTitle || "today's topic", 6);
 	const topicLabels = buildIntroTopicLabels(topics, 6);
-	const safeLabels = topicLabels.length ? topicLabels : [fallbackLabel];
+	const safeLabels = (topicLabels.length ? topicLabels : [fallbackLabel]).map(
+		(label) => formatHumanTitle(label, 72) || cleanTopicLabel(label),
+	);
 	const topicList = formatLabelList(safeLabels) || fallbackLabel;
 	const sensitive = isSensitiveTopicText(
 		`${shortTitle || ""} ${safeLabels.join(" ")} ${mood || ""}`,
@@ -8661,7 +8854,7 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	const agenda = formatAgendaList(profile.beats);
 	const line =
 		safeLabels.length <= 1
-			? `${introLead} ${safeLabels[0] || topicList}. We're breaking down ${agenda}, so stay with me.`
+			? `${introLead} ${safeLabels[0] || topicList}. I'll walk through ${agenda}, so stay with me.`
 			: `${introLead} ${topicList}. I'll walk you through ${agenda}, so stay with me.`;
 	return sanitizeIntroOutroLine(line);
 }
@@ -9171,10 +9364,43 @@ function isSportsCategoryLabel(categoryLabel = "", topics = []) {
 		: false;
 }
 
+function isPoliticsCategoryLabel(categoryLabel = "", topics = []) {
+	const normalized = normalizeCategoryLabel(categoryLabel).toLowerCase();
+	if (/\b(politics|political|world news|news|government)\b/.test(normalized))
+		return true;
+	return Array.isArray(topics)
+		? topics.some((topic) => {
+				const label = String(
+					topic?.displayTopic || topic?.topic || topic || "",
+				).toLowerCase();
+				return /\b(election|vote|president|prime minister|senator|congress|parliament|campaign|governor|white house|supreme court|iran|israel|hezbollah|hamas|gaza|ukraine|russia|china|taiwan|middle east|peace proposal|peace talks|ceasefire|diplomacy|diplomatic|sanctions|foreign minister|state department|united nations)\b/.test(
+					label,
+				);
+			})
+		: false;
+}
+
 function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
-	if (!isSportsCategoryLabel(categoryLabel, topics)) {
+	const isSports = isSportsCategoryLabel(categoryLabel, topics);
+	const isPolitics = isPoliticsCategoryLabel(categoryLabel, topics);
+	if (isPolitics) {
 		return {
 			isSports: false,
+			isPolitics: true,
+			lines: [
+				"- For politics, diplomacy, war, courts, or public safety, keep the voice measured and specific. No jokes, hype, or overly casual creator filler.",
+				'- Avoid casual pivots like "real quick" and "here\'s the thing"; use precise transitions such as "the key question", "the pressure point", or "the unresolved part".',
+				"- Attribute sensitive claims close to the claim, and separate confirmed reporting from interpretation.",
+				"- Focus on the concrete stakes: timeline, people, institutions, negotiations, conflict risk, and what changes next.",
+				"- Write for spoken delivery first. Translate keyword-style phrases into natural sentences a presenter would actually say.",
+			],
+		};
+	}
+
+	if (!isSports) {
+		return {
+			isSports: false,
+			isPolitics: false,
 			lines: [
 				"- Write for spoken delivery first. Translate keyword-style phrases into natural sentences a presenter would actually say.",
 				"- Attribute the reporting source, analyst, or outlet itself. Do not treat a platform host like YouTube, TikTok, Reddit, Instagram, or X as the authority.",
@@ -9186,6 +9412,7 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 
 	return {
 		isSports: true,
+		isPolitics: false,
 		lines: [
 			"- For sports topics, write like a sharp postgame or pregame breakdown, not a search-trends explainer.",
 			"- Open on the matchup tension, turning point, or strategic edge. Do NOT open on what people are searching for.",
@@ -9233,6 +9460,12 @@ const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
 	/\bthe\s+angle\s+today\s+is\b/i,
 ];
 
+const SCRIPT_SERIOUS_CASUAL_PATTERNS = [
+	/\breal\s+quick\b/i,
+	/\bhere(?:'s| is)\s+the\s+thing\b/i,
+	/\bhonestly\b/i,
+];
+
 function analyzeScriptSpeakability({
 	script,
 	topics = [],
@@ -9240,6 +9473,7 @@ function analyzeScriptSpeakability({
 }) {
 	const segments = Array.isArray(script?.segments) ? script.segments : [];
 	const isSports = isSportsCategoryLabel(categoryLabel, topics);
+	const isPolitics = isPoliticsCategoryLabel(categoryLabel, topics);
 	const searchMetaSegments = [];
 	const platformAttributionSegments = [];
 	const bettingPromoSegments = [];
@@ -9259,6 +9493,11 @@ function analyzeScriptSpeakability({
 			bettingPromoSegments.push(i);
 		}
 		if (SCRIPT_SPEECH_AWKWARD_PATTERNS.some((rx) => rx.test(text))) {
+			speechAwkwardSegments.push(i);
+		} else if (
+			isPolitics &&
+			SCRIPT_SERIOUS_CASUAL_PATTERNS.some((rx) => rx.test(text))
+		) {
 			speechAwkwardSegments.push(i);
 		}
 	}
@@ -9531,7 +9770,7 @@ Style rules (IMPORTANT):
 - Avoid abstract or unnatural phrases a real host would not say out loud, such as "loss circle" or stiff framing like "the angle today is".
 - Keep the delivery composed and natural, not shouty. The writing should feel sharp, engaging, and lightly provocative when the story supports it, but never reckless, insulting, or overhyped.
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
-- Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic), but stay professional.
+- Keep it natural, not forced. For serious politics, diplomacy, legal stories, tragedies, or conflict, avoid casual filler like "real quick" or "here's the thing"; for lighter topics, use at most one friendly pivot per topic.
 - For entertainment topics (film, TV, music, awards), add ONE or TWO short reactionary opinions per topic from the presenter (brief clauses only). Keep them grounded, fair, and clearly separate from sourced facts.
 - Use contractions. Punchy sentences. A little playful, but not cringe.
 - Avoid staccato punctuation. Do NOT put commas between single words.
