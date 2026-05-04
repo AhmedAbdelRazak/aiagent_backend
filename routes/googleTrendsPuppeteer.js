@@ -789,6 +789,33 @@ function cleanVisualQueryHintText(text = "") {
     .trim();
 }
 
+function mergeImageSearchQueryTerms(primary = "", secondary = "") {
+  const left = normalizeSearchQuery(primary);
+  const right = normalizeSearchQuery(secondary);
+  if (!left) return right;
+  if (!right) return left;
+  const leftTokens = left.split(/\s+/).filter(Boolean);
+  const rightTokens = right.split(/\s+/).filter(Boolean);
+  if (!leftTokens.length) return right;
+  if (!rightTokens.length) return left;
+  const leftLower = leftTokens.map((t) => t.toLowerCase());
+  const rightLower = rightTokens.map((t) => t.toLowerCase());
+  if (rightLower.every((t) => leftLower.includes(t))) return left;
+  if (leftLower.every((t) => rightLower.includes(t))) return right;
+  let overlap = Math.min(leftTokens.length, rightTokens.length);
+  while (overlap > 0) {
+    const leftSuffix = leftLower.slice(leftLower.length - overlap).join(" ");
+    const rightPrefix = rightLower.slice(0, overlap).join(" ");
+    if (leftSuffix === rightPrefix) {
+      return normalizeSearchQuery(
+        [...leftTokens, ...rightTokens.slice(overlap)].join(" "),
+      );
+    }
+    overlap -= 1;
+  }
+  return normalizeSearchQuery(`${left} ${right}`);
+}
+
 function visualPhraseTokens(text = "", topicTokens = new Set()) {
   return cleanVisualQueryHintText(text)
     .toLowerCase()
@@ -852,7 +879,7 @@ function buildNearTopicImageQueriesForStory(story) {
   for (const phrase of buildDynamicVisualPhrases(contextTexts, primary)) {
     add(phrase);
     if (primary && !phrase.toLowerCase().includes(String(primary).toLowerCase())) {
-      add(`${primary} ${phrase}`);
+      add(mergeImageSearchQueryTerms(primary, phrase));
     }
     add(`${phrase} news photo`);
   }

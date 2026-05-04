@@ -5914,6 +5914,72 @@ function sanitizeImageQuery(query = "") {
 	return (lastSpace >= 60 ? clipped.slice(0, lastSpace) : clipped).trim();
 }
 
+function mergeImageQueryTerms(primary = "", secondary = "") {
+	const left = sanitizeImageQuery(primary);
+	const right = sanitizeImageQuery(secondary);
+	if (!left) return right;
+	if (!right) return left;
+	const leftTokens = left.split(/\s+/).filter(Boolean);
+	const rightTokens = right.split(/\s+/).filter(Boolean);
+	if (!leftTokens.length) return right;
+	if (!rightTokens.length) return left;
+	const leftLower = leftTokens.map((t) => t.toLowerCase());
+	const rightLower = rightTokens.map((t) => t.toLowerCase());
+	if (rightLower.every((t) => leftLower.includes(t))) return left;
+	if (leftLower.every((t) => rightLower.includes(t))) return right;
+	let overlap = Math.min(leftTokens.length, rightTokens.length);
+	while (overlap > 0) {
+		const leftSuffix = leftLower.slice(leftLower.length - overlap).join(" ");
+		const rightPrefix = rightLower.slice(0, overlap).join(" ");
+		if (leftSuffix === rightPrefix) {
+			return sanitizeImageQuery(
+				[...leftTokens, ...rightTokens.slice(overlap)].join(" "),
+			);
+		}
+		overlap -= 1;
+	}
+	return sanitizeImageQuery(`${left} ${right}`);
+}
+
+function visualCueLeakTokens(text = "") {
+	return filterSpecificTopicTokens(tokenizeLabel(text || "")).filter(
+		(t) => t && !SEGMENT_STOP_WORDS.has(t) && !GENERIC_TOPIC_TOKENS.has(t),
+	);
+}
+
+function isLikelyVisualCueLeakLabel(label = "", cuePhrases = []) {
+	const labelTokens = visualCueLeakTokens(label);
+	if (labelTokens.length < 2) return false;
+	for (const phrase of cuePhrases || []) {
+		const cueTokens = visualCueLeakTokens(phrase);
+		if (cueTokens.length < 2) continue;
+		const overlap = labelTokens.filter((token) =>
+			cueTokens.includes(token),
+		).length;
+		if (overlap >= Math.min(3, cueTokens.length, labelTokens.length)) {
+			return true;
+		}
+	}
+	return /\b(image|visual|photo|picture|search|query|cue)\b/i.test(label);
+}
+
+function stripVisualCueLeakFromScriptText(text = "", cuePhrases = []) {
+	let updated = String(text || "").trim();
+	if (!updated || !Array.isArray(cuePhrases) || !cuePhrases.length) return updated;
+	updated = updated.replace(/^([^:]{6,140}):\s*/i, (match, label) =>
+		isLikelyVisualCueLeakLabel(label, cuePhrases) ? "" : match,
+	);
+	updated = updated.replace(
+		/\b((?:that|this|which)\s+is\s+why)\s+([^,.]{6,160}?)\s+(?:has\s+become|became|is|was)\s+(?:the\s+)?(?:main\s+|lead\s+|anchor\s+)?(?:image|visual|photo|picture)\s*,?\s*(?:even\s+while|while)\s+/i,
+		(match, intro, label) =>
+			isLikelyVisualCueLeakLabel(label, cuePhrases) ? `${intro} ` : match,
+	);
+	return updated
+		.replace(/\s+([,.!?])/g, "$1")
+		.replace(/\s{2,}/g, " ")
+		.trim();
+}
+
 const GENERIC_NEAR_IMAGE_MODIFIERS = [
 	"news photo",
 	"event photo",
@@ -6026,7 +6092,7 @@ function buildTopicNearImageQueries(
 		base || topic,
 	)) {
 		if (base && !phrase.toLowerCase().includes(base.toLowerCase())) {
-			push(`${base} ${phrase}`);
+			push(mergeImageQueryTerms(base, phrase));
 		}
 		push(`${phrase} news photo`);
 	}
@@ -6095,7 +6161,7 @@ async function fetchGoogleImagesFromService(
 
 			const deduped = orderPool(urls);
 			if (deduped.length) {
-				console.log("[ImageSearch] google images fallback hit", {
+				console.log("[ImageSearch] free image search service hit", {
 					query: q,
 					endpoint,
 					count: deduped.length,
@@ -6103,7 +6169,7 @@ async function fetchGoogleImagesFromService(
 				return deduped;
 			}
 		} catch (e) {
-			console.warn("[ImageSearch] google images fallback failed", {
+			console.warn("[ImageSearch] free image search service failed", {
 				query: q,
 				endpoint,
 				message: e.message,
@@ -7176,6 +7242,9 @@ async function fetchHighQualityImagesForTopic({
 		queries.forEach((q) => pushGoogleQuery(q));
 		fallbackQueries.forEach((q) => pushGoogleQuery(q));
 		const limitedQueries = googleQueries.slice(0, variantLimit);
+		const enoughFreeCandidates = () =>
+			candidates.length >=
+			Math.max(desiredCount, desiredCount * GOOGLE_IMAGES_MIN_POOL_MULTIPLIER);
 
 		for (const gQuery of limitedQueries) {
 			const googleUrls = await fetchGoogleImagesFromService(gQuery, {
@@ -7201,7 +7270,7 @@ async function fetchHighQualityImagesForTopic({
 				dedupeSet.add(url);
 				if (candidates.length >= maxCandidates) break;
 			}
-			if (candidates.length >= maxCandidates) break;
+			if (candidates.length >= maxCandidates || enoughFreeCandidates()) break;
 		}
 	}
 
@@ -10966,6 +11035,7 @@ Your job:
 
 Critical visual rules:
 - Treat "visualCue" as the downstream image-search contract. It must be topic-bound and name a visible subject, place, action, object, institution, or scene from the segment/source context.
+- Do NOT include visualCue text, image-search hints, visual cue labels, or anchor-image language in the spoken "scriptText". Those are metadata only.
 - If exact photos are scarce, broaden only to adjacent visible context that is directly implied by the topic or article headlines; never use unrelated celebrities, politicians, teams, landmarks, or generic scenery.
 - The model ALREADY SEES the real Google Trends photo. "runwayPrompt" describes motion and subtle, realistic changes.
 - Do NOT change who the people are. Do not add new people that are not implied.
@@ -11133,6 +11203,7 @@ You must imagine the visuals from scratch. For each segment output:
 
 Visual rules:
 - Treat "visualCue" as the downstream image-search contract. It must be topic-bound and name a visible subject, place, action, object, institution, or scene from the segment/source context.
+- Do NOT include visualCue text, image-search hints, visual cue labels, or anchor-image language in the spoken "scriptText". Those are metadata only.
 - If exact photos are scarce, broaden only to adjacent visible context that is directly implied by the topic or live/source context; never use unrelated people, places, or generic scenery.
 - Realistic, grounded scenes.
 - Clear focal subject, good lighting.
@@ -11230,6 +11301,22 @@ Return JSON:
 					: null,
 		};
 	});
+	const sharedVisualCuePhrases = uniqueStrings(
+		[
+			...(Array.isArray(trendStory?.imageSearchQueries)
+				? trendStory.imageSearchQueries
+				: []),
+		],
+		{ limit: 20 },
+	);
+	segments = segments.map((seg) => ({
+		...seg,
+		scriptText:
+			stripVisualCueLeakFromScriptText(seg.scriptText, [
+				seg.visualCue,
+				...sharedVisualCuePhrases,
+			]) || seg.scriptText,
+	}));
 
 	// Second pass: enforce sane, non-redundant image usage
 	if (hasImages) {

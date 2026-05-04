@@ -2552,7 +2552,7 @@ async function fetchGoogleImagesFromService(
 			);
 			if (urls.length) {
 				if (jobId)
-					logJob(jobId, "google images fallback hit", {
+					logJob(jobId, "free image search service hit", {
 						query: q,
 						endpoint,
 						count: urls.length,
@@ -2561,7 +2561,7 @@ async function fetchGoogleImagesFromService(
 			}
 		} catch (e) {
 			if (jobId)
-				logJob(jobId, "google images fallback failed", {
+				logJob(jobId, "free image search service failed", {
 					query: q,
 					endpoint,
 					error: e.message,
@@ -3125,6 +3125,33 @@ function sanitizeOverlayQuery(query = "") {
 	return (lastSpace >= 48 ? clipped.slice(0, lastSpace) : clipped).trim();
 }
 
+function mergeImageQueryTerms(primary = "", secondary = "") {
+	const left = sanitizeOverlayQuery(primary);
+	const right = sanitizeOverlayQuery(secondary);
+	if (!left) return right;
+	if (!right) return left;
+	const leftTokens = left.split(/\s+/).filter(Boolean);
+	const rightTokens = right.split(/\s+/).filter(Boolean);
+	if (!leftTokens.length) return right;
+	if (!rightTokens.length) return left;
+	const leftLower = leftTokens.map((t) => t.toLowerCase());
+	const rightLower = rightTokens.map((t) => t.toLowerCase());
+	if (rightLower.every((t) => leftLower.includes(t))) return left;
+	if (leftLower.every((t) => rightLower.includes(t))) return right;
+	let overlap = Math.min(leftTokens.length, rightTokens.length);
+	while (overlap > 0) {
+		const leftSuffix = leftLower.slice(leftLower.length - overlap).join(" ");
+		const rightPrefix = rightLower.slice(0, overlap).join(" ");
+		if (leftSuffix === rightPrefix) {
+			return sanitizeOverlayQuery(
+				[...leftTokens, ...rightTokens.slice(overlap)].join(" "),
+			);
+		}
+		overlap -= 1;
+	}
+	return sanitizeOverlayQuery(`${left} ${right}`);
+}
+
 function ensureTopicInQuery(query = "", topicLabel = "") {
 	const base = sanitizeOverlayQuery(query);
 	const topic = sanitizeOverlayQuery(topicLabel);
@@ -3398,7 +3425,7 @@ function buildTopicNearImageQueries(
 	cleanedHints.forEach(push);
 	for (const phrase of buildDynamicVisualPhrasesFromTexts(rawContextTexts, topicLabel)) {
 		if (base && !phrase.toLowerCase().includes(base.toLowerCase())) {
-			push(`${base} ${phrase}`);
+			push(mergeImageQueryTerms(base, phrase));
 		}
 		push(`${phrase} news photo`);
 	}
@@ -5448,6 +5475,10 @@ async function prepareImageSegments({
 			relevantBeforeGoogle.length <
 				desiredCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER)
 		) {
+			const googleTargetPool = Math.max(
+				desiredCount,
+				desiredCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER),
+			);
 			const googleVariants = queryVariants.slice(
 				0,
 				Math.max(1, GOOGLE_IMAGES_VARIANT_LIMIT),
@@ -5469,6 +5500,21 @@ async function prepareImageSegments({
 					googleImageCache.set(cacheKey, urls);
 				}
 				googleUrls.push(...(urls || []));
+				const trialRelevant = filterRelevantImageCandidatePool(
+					dedupeUrlsPreserveOrder([...candidates, ...googleUrls]).filter(
+						(url) => {
+							const key = normalizeImageUrlKey(url);
+							return !usedUrlsGlobal.has(key);
+						},
+					),
+					{
+						topicTokens,
+						segmentTokens,
+						queryTokens,
+						trustedUrlKeys: trustedBeforeGoogleKeys,
+					},
+				);
+				if (trialRelevant.length >= googleTargetPool) break;
 			}
 			if (googleUrls.length) {
 				candidates = dedupeUrlsPreserveOrder([...candidates, ...googleUrls]);
@@ -7795,7 +7841,7 @@ function buildTopicImageQueries({ signals }) {
 	const dynamicQueries = [];
 	for (const phrase of dynamicPhrases) {
 		if (core && !phrase.toLowerCase().includes(core.toLowerCase())) {
-			dynamicQueries.push(`${core} ${phrase}`);
+			dynamicQueries.push(mergeImageQueryTerms(core, phrase));
 		}
 		dynamicQueries.push(`${phrase} news photo`);
 	}
@@ -8259,6 +8305,86 @@ function stripAllFillers(text = "") {
 function sanitizeSegmentText(text = "") {
 	const cleaned = stripAllFillers(text);
 	return cleaned || "Quick update.";
+}
+
+function visualCueLeakTokens(text = "") {
+	return filterSpecificTopicTokens(tokenizeLabel(text || "")).filter(
+		(t) =>
+			t &&
+			!SEGMENT_IMAGE_STOP_TOKENS.has(t) &&
+			!GENERIC_TOPIC_TOKENS.has(t),
+	);
+}
+
+function isLikelyVisualCueLeakLabel(label = "", cuePhrases = []) {
+	const labelTokens = visualCueLeakTokens(label);
+	if (labelTokens.length < 2) return false;
+	for (const phrase of cuePhrases || []) {
+		const cueTokens = visualCueLeakTokens(phrase);
+		if (cueTokens.length < 2) continue;
+		const overlap = labelTokens.filter((token) =>
+			cueTokens.includes(token),
+		).length;
+		if (overlap >= Math.min(3, cueTokens.length, labelTokens.length)) {
+			return true;
+		}
+	}
+	return /\b(image|visual|photo|picture|search|query|cue)\b/i.test(label);
+}
+
+function collectVisualCuePhrasesForSegment(seg = {}, topics = []) {
+	const topicIndex = Number(seg?.topicIndex) || 0;
+	const topic = topics?.[topicIndex] || {};
+	const story = topic?.trendStory || {};
+	const cueQueries = Array.isArray(seg?.overlayCues)
+		? seg.overlayCues.map((cue) => cue?.query).filter(Boolean)
+		: [];
+	return uniqueStrings(
+		[
+			...cueQueries,
+			...(Array.isArray(story.imageSearchQueries)
+				? story.imageSearchQueries
+				: []),
+		],
+		{ limit: 20 },
+	);
+}
+
+function stripVisualCueLeakFromText(text = "", cuePhrases = []) {
+	let updated = String(text || "").trim();
+	if (!updated || !Array.isArray(cuePhrases) || !cuePhrases.length) return updated;
+
+	updated = updated.replace(
+		/^((?:According to|Per)\s+[^,]{2,60},\s*)([^:]{6,140}):\s*/i,
+		(match, prefix, label) =>
+			isLikelyVisualCueLeakLabel(label, cuePhrases) ? prefix : match,
+	);
+	updated = updated.replace(/^([^:]{6,140}):\s*/i, (match, label) =>
+		isLikelyVisualCueLeakLabel(label, cuePhrases) ? "" : match,
+	);
+	updated = updated.replace(
+		/\b((?:that|this|which)\s+is\s+why)\s+([^,.]{6,160}?)\s+(?:has\s+become|became|is|was)\s+(?:the\s+)?(?:main\s+|lead\s+|anchor\s+)?(?:image|visual|photo|picture)\s*,?\s*(?:even\s+while|while)\s+/i,
+		(match, intro, label) =>
+			isLikelyVisualCueLeakLabel(label, cuePhrases) ? `${intro} ` : match,
+	);
+
+	return cleanupSpeechText(updated)
+		.replace(/\s+([,.!?])/g, "$1")
+		.replace(/\s{2,}/g, " ")
+		.trim();
+}
+
+function sanitizeScriptVisualCueLeaks(script = {}, topics = []) {
+	if (!script || !Array.isArray(script.segments)) return script;
+	const segments = script.segments.map((seg) => {
+		const cuePhrases = collectVisualCuePhrasesForSegment(seg, topics);
+		const cleaned = stripVisualCueLeakFromText(seg.text || "", cuePhrases);
+		return {
+			...seg,
+			text: sanitizeSegmentText(cleaned || seg.text || ""),
+		};
+	});
+	return { ...script, segments };
 }
 
 const SHORTS_CLIP_TYPES = new Set([
@@ -10095,6 +10221,7 @@ ${categoryGuide.lines.join("\n")}
 - overlayCues.query must be 2-6 words, describe a real photo to search for, include the topic name or a key subject from that segment, no punctuation or hashtags.
 - overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
 - Treat overlayCues.query as the downstream image-search contract. It must stay within the topic and name a visible subject, place, action, object, institution, or scene from the segment/source context.
+- Do NOT include overlayCues.query, image-search hints, visual cue labels, or anchor-image language in the spoken segment text. Those are metadata only.
 - If exact photos are scarce, broaden only to adjacent visible context directly implied by the topic or source context; never use unrelated people, places, brands, or generic scenery.
 - overlayCues.startPct and endPct must be between 0.2 and 0.85, with endPct at least 0.2 greater than startPct.
 - overlayCues.position must be "topRight" only.
@@ -10533,9 +10660,12 @@ const SOURCE_LABEL_OVERRIDES = new Map([
 	["bbc.com", "BBC"],
 	["bbc.co.uk", "BBC"],
 	["cbsnews.com", "CBS News"],
+	["cnbc.com", "CNBC"],
 	["cnn.com", "CNN"],
 	["espn.com", "ESPN"],
 	["hindustantimes.com", "Hindustan Times"],
+	["ndtv.com", "NDTV"],
+	["npr.org", "NPR"],
 	["nytimes.com", "The New York Times"],
 	["theguardian.com", "The Guardian"],
 	["usatoday.com", "USA Today"],
@@ -10840,6 +10970,7 @@ Rules:
 - Rewrite keyword-style phrasing into natural spoken language that a presenter and ElevenLabs voice can deliver cleanly.
 - Avoid scoreboard shorthand, symbol-heavy phrasing, and awkward query fragments.
 - Write for spoken delivery, not article subheads. Never start a segment with a headline-style label plus a colon.
+- Never include image-search hints, visual cue labels, overlay query text, or anchor-image language in spoken narration.
 - Avoid abstract or unnatural spoken phrasing such as "loss circle" or stiff setups like "the angle today is".
 - Let each segment land cleanly as a spoken beat; if a thought needs one more clause to feel finished, keep it complete instead of clipping it short.
 - Do not repeat a word or short phrase back-to-back.
@@ -15072,6 +15203,7 @@ async function runLongVideoJob(
 			includeOutro: true,
 			contentMode,
 		});
+		script = sanitizeScriptVisualCueLeaks(script, topicPicks);
 
 		let qaResult = analyzeScriptQuality({
 			script,
@@ -15108,6 +15240,7 @@ async function runLongVideoJob(
 					includeOutro: true,
 					contentMode,
 				});
+				script = sanitizeScriptVisualCueLeaks(script, topicPicks);
 			} catch (e) {
 				logJob(jobId, "script qa rewrite failed", {
 					attempt: qaAttempt + 1,
@@ -15151,6 +15284,7 @@ async function runLongVideoJob(
 			wordCaps,
 			log: (message, payload) => logJob(jobId, message, payload),
 		});
+		script = sanitizeScriptVisualCueLeaks(script, topicPicks);
 		if (attributionFix.didInsert) {
 			qaResult = analyzeScriptQuality({
 				script,
