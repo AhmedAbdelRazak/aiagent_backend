@@ -103,6 +103,14 @@ const THUMBNAIL_STYLE_PROFILES = [
 		brief:
 			"glossy pop-culture contrast, magenta accent, bright subject separation, entertainment energy",
 	},
+	{
+		id: "gaming_teal_ember",
+		accent: "0x14D8CC",
+		tagColor: "0x2E2116",
+		lowerPanelOpacity: 0.34,
+		brief:
+			"premium game-cover contrast, teal edge lighting with warm amber highlights, deep shadows, preserved skin tones, cinematic but readable gaming-news energy",
+	},
 ];
 
 const PERSON_NAME_STOPWORDS = new Set([
@@ -553,6 +561,13 @@ function inferThumbnailIntent({ title, shortTitle, seoTitle, topics }) {
 		return "tech";
 	}
 	if (
+		/\b(video game|gameplay|gaming|game trailer|pc game|console game|playstation|xbox|nintendo|steam|rpg|mmo|open world|esports?)\b/.test(
+			text,
+		)
+	) {
+		return "gaming";
+	}
+	if (
 		/\b(movie|film|tv|series|music|album|song|artist|actor|celebrity|trailer|season|show)\b/.test(
 			text,
 		)
@@ -594,6 +609,17 @@ function chooseThumbnailStyleProfile(intent = "general", text = "") {
 		return {
 			...(getThumbnailStyleProfile("diplomatic_blue") ||
 				THUMBNAIL_STYLE_PROFILES[3]),
+		};
+	}
+	if (
+		intent === "gaming" ||
+		/\b(video game|gameplay|gaming|game trailer|pc game|console game|playstation|xbox|nintendo|steam|rpg|mmo|open world|esports?)\b/.test(
+			hay,
+		)
+	) {
+		return {
+			...(getThumbnailStyleProfile("gaming_teal_ember") ||
+				THUMBNAIL_STYLE_PROFILES[1]),
 		};
 	}
 	if (intent === "tech" || /\b(ai|tech|software|app|device|product)\b/.test(hay)) {
@@ -727,6 +753,24 @@ function chooseLockedTextOverlayLayout(styleProfile = {}) {
 			maxTextWidth: 590,
 			panelOpacity: 0.58,
 			badgeBox: false,
+			accentRail: true,
+		};
+	}
+	if (id === "gaming_teal_ember") {
+		return {
+			id: "gaming_editorial_anchor",
+			panelX: 40,
+			panelY: 386,
+			panelW: 648,
+			panelH: 248,
+			headlineX: 64,
+			headlineY: 448,
+			badgeX: 64,
+			badgeY: 400,
+			maxTextWidth: 590,
+			panelOpacity: 0.64,
+			badgeBox: true,
+			badgeFontSize: 36,
 			accentRail: true,
 		};
 	}
@@ -1540,7 +1584,7 @@ function renderLockedThumbnailTextOverlay({
 	const safeSubline = escapeDrawtext(sublineFit.text);
 	const badgeFontSize = fitFontSizeToWidth(
 		[badgeFit.text || "TOP STORY"],
-		32,
+		Number(layout.badgeFontSize) || 32,
 		{
 			maxWidth: layout.maxTextWidth,
 			minFontSize: 22,

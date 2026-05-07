@@ -583,6 +583,49 @@ const NEWS_RSS_TIMEOUT_MS = clampNumber(
 	3000,
 	20000,
 );
+const PROMPT_TOPIC_NEWS_CONTEXT_ENABLED = envFlag(
+	"LONG_VIDEO_PROMPT_NEWS_CONTEXT",
+	true,
+);
+const PROMPT_TOPIC_NEWS_CONTEXT_LIMIT = clampNumber(
+	process.env.LONG_VIDEO_PROMPT_NEWS_CONTEXT_LIMIT ?? 4,
+	1,
+	8,
+);
+const PROMPT_TOPIC_NEWS_QUERY_LIMIT = clampNumber(
+	process.env.LONG_VIDEO_PROMPT_NEWS_QUERY_LIMIT ?? 3,
+	1,
+	6,
+);
+const PROMPT_TOPIC_SOURCE_MIN_LINKS = clampNumber(
+	process.env.LONG_VIDEO_PROMPT_SOURCE_MIN_LINKS ?? 2,
+	1,
+	5,
+);
+const PROMPT_TOPIC_CSE_QUERY_LIMIT = clampNumber(
+	process.env.LONG_VIDEO_PROMPT_CSE_QUERY_LIMIT ?? 4,
+	1,
+	8,
+);
+const PROMPT_TOPIC_CSE_RESULTS_PER_QUERY = clampNumber(
+	process.env.LONG_VIDEO_PROMPT_CSE_RESULTS_PER_QUERY ?? 4,
+	1,
+	8,
+);
+const PROMPT_TOPIC_FREE_IMAGE_PREFETCH_ENABLED = envFlag(
+	"LONG_VIDEO_PROMPT_IMAGE_PREFETCH",
+	true,
+);
+const PROMPT_TOPIC_FREE_IMAGE_PREFETCH_QUERY_LIMIT = clampNumber(
+	process.env.LONG_VIDEO_PROMPT_IMAGE_PREFETCH_QUERY_LIMIT ?? 3,
+	1,
+	6,
+);
+const PROMPT_TOPIC_FREE_IMAGE_PREFETCH_TARGET = clampNumber(
+	process.env.LONG_VIDEO_PROMPT_IMAGE_PREFETCH_TARGET ?? 24,
+	8,
+	60,
+);
 
 const ENABLE_LONG_VIDEO_OVERLAYS = false;
 
@@ -1540,6 +1583,59 @@ function uniqueStrings(list = [], { limit = 0 } = {}) {
 	return out;
 }
 
+function normalizeContextItem(item) {
+	if (typeof item === "string") {
+		const text = normalizeWhitespace(item);
+		return text ? text.slice(0, 320) : "";
+	}
+	if (!item || typeof item !== "object") return null;
+	const title = normalizeWhitespace(item.title || "").slice(0, 180);
+	const snippet = normalizeWhitespace(item.snippet || item.description || "").slice(
+		0,
+		260,
+	);
+	const link = isHttpUrl(item.link) ? String(item.link).trim() : "";
+	const image = isHttpUrl(item.image) ? String(item.image).trim() : null;
+	const source = normalizeWhitespace(item.source || "").slice(0, 120);
+	if (!title && !snippet && !link) return null;
+	return {
+		...item,
+		title,
+		snippet,
+		link,
+		image,
+		source,
+	};
+}
+
+function uniqueContextItems(items = [], { limit = 0 } = {}) {
+	const seen = new Set();
+	const out = [];
+	for (const raw of Array.isArray(items) ? items : []) {
+		const item = normalizeContextItem(raw);
+		if (!item) continue;
+		const key =
+			typeof item === "string"
+				? `text:${item.toLowerCase()}`
+				: item.link
+					? `url:${normalizeImageUrlKey(item.link).toLowerCase()}`
+					: `ctx:${item.title}|${item.snippet}`.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(item);
+		if (limit && out.length >= limit) break;
+	}
+	return out;
+}
+
+function countContextSourceLinks(items = []) {
+	return uniqueStrings(
+		(Array.isArray(items) ? items : [])
+			.map((item) => (typeof item === "string" ? "" : item?.link))
+			.filter((u) => isHttpUrl(u)),
+	).length;
+}
+
 function safeSlug(text = "", max = 60) {
 	return String(text || "")
 		.toLowerCase()
@@ -2358,6 +2454,13 @@ function buildPromptImageSearchHints(topic = "", promptText = "", topList = null
 	return uniqueStrings(hints, { limit: 12 });
 }
 
+function isUserPromptTopicPick(topic = {}) {
+	return (
+		String(topic?.source || "").toLowerCase() === "user_prompt" ||
+		Boolean(topic?.promptText)
+	);
+}
+
 function normalizeUrlCandidate(raw = "") {
 	const trimmed = String(raw || "").trim();
 	if (!trimmed) return "";
@@ -2886,6 +2989,166 @@ async function fetchRssArticleUrls({
 	}
 }
 
+function cleanRssText(value = "", maxLen = 260) {
+	return normalizeWhitespace(
+		String(value || "")
+			.replace(/<[^>]+>/g, " ")
+			.replace(/&amp;|&#38;|&#038;/gi, "&")
+			.replace(/&quot;|&#34;/gi, '"')
+			.replace(/&#39;|&apos;/gi, "'")
+			.replace(/&nbsp;/gi, " "),
+	).slice(0, Math.max(20, Number(maxLen) || 260));
+}
+
+async function fetchRssArticleContextItems({
+	endpoint,
+	params = {},
+	query,
+	topicLabel,
+	limit = PROMPT_TOPIC_NEWS_CONTEXT_LIMIT,
+	jobId,
+	label = "news",
+}) {
+	const q = sanitizeOverlayQuery(query || topicLabel || "");
+	if (!endpoint || !q) return [];
+	const target = clampNumber(Number(limit) || PROMPT_TOPIC_NEWS_CONTEXT_LIMIT, 1, 12);
+	const topicTokens = filterSpecificTopicTokens(
+		topicTokensFromTitle(topicLabel || query || ""),
+	);
+	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
+	try {
+		const { data } = await axios.get(endpoint, {
+			params,
+			timeout: NEWS_RSS_TIMEOUT_MS,
+			maxContentLength: 768 * 1024,
+			maxBodyLength: 768 * 1024,
+			headers: { "User-Agent": "agentai-long-video/2.0" },
+			validateStatus: (s) => s >= 200 && s < 400,
+		});
+		const parsed = await xml2js.parseStringPromise(String(data || ""), {
+			explicitArray: false,
+			trim: true,
+		});
+		const rawItems =
+			parsed?.rss?.channel?.item ||
+			parsed?.feed?.entry ||
+			parsed?.channel?.item ||
+			[];
+		const items = Array.isArray(rawItems)
+			? rawItems
+			: rawItems
+				? [rawItems]
+				: [];
+		const contextItems = [];
+		for (const item of items) {
+			const title = cleanRssText(rssText(item?.title), 180);
+			const rawLink =
+				rssText(item?.link?.href) || rssText(item?.link) || rssText(item?.id);
+			const source =
+				rssText(item?.source?.$?.url) ||
+				rssText(item?.source?.url) ||
+				rssText(item?.source);
+			const description = cleanRssText(
+				rssText(item?.description) || rssText(item?.summary) || "",
+				220,
+			);
+			const fields = [title, rawLink, source, description];
+			if (
+				requiredTopicMatches &&
+				topicMatchInfo(topicTokens, fields).count < requiredTopicMatches
+			) {
+				continue;
+			}
+			const url =
+				extractArticleUrlFromNewsLink(rawLink) ||
+				extractArticleUrlFromNewsLink(source);
+			if (!isHttpUrl(url)) continue;
+			const sourceName = isHttpUrl(source)
+				? getUrlHost(source)
+				: cleanRssText(source, 80);
+			const snippet = normalizeWhitespace(
+				[description, sourceName ? `Source: ${sourceName}` : ""]
+					.filter(Boolean)
+					.join(" "),
+			);
+			contextItems.push({
+				title,
+				snippet,
+				link: url,
+				source: label,
+			});
+			if (contextItems.length >= target) break;
+		}
+		const unique = uniqueContextItems(contextItems, { limit: target });
+		if (jobId)
+			logJob(jobId, "prompt news context candidates", {
+				source: label,
+				query: q,
+				count: unique.length,
+			});
+		return unique;
+	} catch (e) {
+		if (jobId)
+			logJob(jobId, "prompt news context fetch failed", {
+				source: label,
+				query: q,
+				error: e.message,
+			});
+		return [];
+	}
+}
+
+async function fetchPromptTopicNewsContext({
+	topic,
+	searchHints = [],
+	promptText = "",
+	limit = PROMPT_TOPIC_NEWS_CONTEXT_LIMIT,
+	jobId,
+} = {}) {
+	if (!PROMPT_TOPIC_NEWS_CONTEXT_ENABLED) return [];
+	const topicLabel = cleanTopicLabel(topic || promptText);
+	if (!topicLabel) return [];
+	const target = clampNumber(Number(limit) || PROMPT_TOPIC_NEWS_CONTEXT_LIMIT, 1, 8);
+	const queries = uniqueStrings(
+		[
+			topicLabel,
+			`${topicLabel} latest updates`,
+			`${topicLabel} latest news`,
+			...(Array.isArray(searchHints) ? searchHints : []),
+		],
+		{ limit: PROMPT_TOPIC_NEWS_QUERY_LIMIT },
+	);
+	const out = [];
+	for (const q of queries) {
+		const searches = [
+			fetchRssArticleContextItems({
+				endpoint: "https://news.google.com/rss/search",
+				params: { q, hl: "en-US", gl: "US", ceid: "US:en" },
+				query: q,
+				topicLabel,
+				limit: target,
+				jobId,
+				label: "google_news",
+			}),
+			fetchRssArticleContextItems({
+				endpoint: "https://www.bing.com/news/search",
+				params: { q, format: "rss", mkt: "en-US" },
+				query: q,
+				topicLabel,
+				limit: target,
+				jobId,
+				label: "bing_news",
+			}),
+		];
+		const settled = await Promise.allSettled(searches);
+		for (const result of settled) {
+			if (result.status === "fulfilled") out.push(...(result.value || []));
+		}
+		if (countContextSourceLinks(out) >= target) break;
+	}
+	return uniqueContextItems(out, { limit: target });
+}
+
 async function fetchNewsArticleUrlsForImages({
 	query,
 	topicLabel,
@@ -2924,7 +3187,7 @@ async function fetchNewsArticleUrlsForImages({
 	return uniqueStrings(urls, { limit: target });
 }
 
-async function fetchCseContext(topic, extraTokens = []) {
+async function fetchCseContext(topic, extraTokens = [], opts = {}) {
 	if (!topic) return [];
 	const extra = Array.isArray(extraTokens)
 		? extraTokens.flatMap((t) => tokenizeLabel(t))
@@ -2967,7 +3230,18 @@ async function fetchCseContext(topic, extraTokens = []) {
 		queries.push(`${topic} rumor`, `${topic} leak`);
 	}
 
-	const items = await fetchCseItems(queries, { num: 5, maxPages: 2 });
+	const maxQueries = clampNumber(
+		opts?.maxQueries ?? queries.length,
+		1,
+		queries.length,
+	);
+	const num = clampNumber(opts?.num ?? 5, 1, 10);
+	const maxPages = clampNumber(opts?.maxPages ?? 2, 1, 5);
+	const limit = clampNumber(opts?.limit ?? 6, 1, 12);
+	const items = await fetchCseItems(uniqueStrings(queries, { limit: maxQueries }), {
+		num,
+		maxPages,
+	});
 	const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
 	const minMatches = minTopicTokenMatches(matchTokens);
 	return items
@@ -2976,7 +3250,7 @@ async function fetchCseContext(topic, extraTokens = []) {
 				topicMatchInfo(matchTokens, [it.title, it.snippet, it.link]).count >=
 				minMatches,
 		)
-		.slice(0, 6);
+		.slice(0, limit);
 }
 
 async function fetchCseImages(
@@ -5484,10 +5758,12 @@ async function prepareImageSegments({
 			{ limit: 8 },
 		);
 		let promptFreeImageUrls = [];
-		const isPromptTopic =
-			String(t.source || "").toLowerCase() === "user_prompt" ||
-			Boolean(t.promptText);
-		if (isPromptTopic && GOOGLE_IMAGES_SEARCH_ENABLED) {
+		const isPromptTopic = isUserPromptTopicPick(t);
+		if (
+			isPromptTopic &&
+			GOOGLE_IMAGES_SEARCH_ENABLED &&
+			PROMPT_TOPIC_FREE_IMAGE_PREFETCH_ENABLED
+		) {
 			const promptImageQueries = uniqueStrings(
 				[
 					...(Array.isArray(t.imageSearchHints) ? t.imageSearchHints : []),
@@ -5500,24 +5776,37 @@ async function prepareImageSegments({
 						category,
 					}),
 				],
-				{ limit: Math.max(3, GOOGLE_IMAGES_VARIANT_LIMIT) },
+				{ limit: PROMPT_TOPIC_FREE_IMAGE_PREFETCH_QUERY_LIMIT },
 			);
 			for (const imageQuery of promptImageQueries) {
 				const urls = await fetchGoogleImagesFromService(imageQuery, {
-					limit: Math.max(24, GOOGLE_IMAGES_RESULTS_PER_QUERY),
+					limit: Math.max(
+						8,
+						Math.min(
+							GOOGLE_IMAGES_RESULTS_PER_QUERY,
+							PROMPT_TOPIC_FREE_IMAGE_PREFETCH_TARGET,
+						),
+					),
 					baseUrl,
 					jobId,
 				});
 				promptFreeImageUrls.push(...urls);
-				if (uniqueStrings(promptFreeImageUrls, { limit: 60 }).length >= 36)
+				if (
+					uniqueStrings(promptFreeImageUrls, {
+						limit: PROMPT_TOPIC_FREE_IMAGE_PREFETCH_TARGET,
+					}).length >= PROMPT_TOPIC_FREE_IMAGE_PREFETCH_TARGET
+				)
 					break;
 			}
-			promptFreeImageUrls = uniqueStrings(promptFreeImageUrls, { limit: 60 });
+			promptFreeImageUrls = uniqueStrings(promptFreeImageUrls, {
+				limit: Math.max(24, PROMPT_TOPIC_FREE_IMAGE_PREFETCH_TARGET),
+			});
 			if (promptFreeImageUrls.length) {
 				logJob(jobId, "prompt topic free image pool ready", {
 					topic: label,
 					queries: promptImageQueries.length,
 					count: promptFreeImageUrls.length,
+					target: PROMPT_TOPIC_FREE_IMAGE_PREFETCH_TARGET,
 				});
 			}
 		}
@@ -7915,6 +8204,10 @@ const THUMBNAIL_INTENT_RULES = [
 	{
 		intent: "sports",
 		re: /\b(nfl|nba|nhl|mlb|ufc|f1|world cup|champions league|premier league|playoffs|draft pick|trade deadline|transfer window|goal scored|quarterback|linebacker|pitcher|striker)\b/i,
+	},
+	{
+		intent: "gaming",
+		re: /\b(video game|gaming|gameplay|game trailer|pc game|console game|playstation|xbox|nintendo|steam|rpg|mmo|open world|esports?)\b/i,
 	},
 	{
 		intent: "entertainment",
@@ -15466,7 +15759,39 @@ async function runLongVideoJob(
 		let liveContext = [];
 		for (const t of topicPicks) {
 			const extraTokens = Array.isArray(t.keywords) ? t.keywords : [];
-			const ctx = await fetchCseContext(t.topic, extraTokens);
+			const isPromptTopic = isUserPromptTopicPick(t);
+			const promptNewsContext = isPromptTopic
+				? await fetchPromptTopicNewsContext({
+						topic: t.topic,
+						searchHints: t.searchHints,
+						promptText: t.promptText,
+						limit: PROMPT_TOPIC_NEWS_CONTEXT_LIMIT,
+						jobId,
+					})
+				: [];
+			const needsLimitedCse =
+				!isPromptTopic ||
+				Boolean(t.topList?.count) ||
+				countContextSourceLinks(promptNewsContext) <
+					PROMPT_TOPIC_SOURCE_MIN_LINKS;
+			const ctx = needsLimitedCse
+				? await fetchCseContext(
+						t.topic,
+						extraTokens,
+						isPromptTopic
+							? {
+									maxQueries: PROMPT_TOPIC_CSE_QUERY_LIMIT,
+									num: PROMPT_TOPIC_CSE_RESULTS_PER_QUERY,
+									maxPages: 1,
+									limit: 6,
+								}
+							: {},
+					)
+				: [];
+			const sourceContext = uniqueContextItems(
+				[...promptNewsContext, ...(Array.isArray(ctx) ? ctx : [])],
+				{ limit: 8 },
+			);
 			const trendContext = uniqueStrings(
 				[
 					...(Array.isArray(t.trendStory?.searchPhrases)
@@ -15488,18 +15813,30 @@ async function runLongVideoJob(
 				].filter(Boolean),
 				{ limit: 8 },
 			);
-			const mergedContext = Array.isArray(ctx)
-				? ctx.concat(trendContext)
-				: trendContext;
+			const mergedContext = uniqueContextItems(
+				sourceContext.concat(trendContext),
+				{ limit: 14 },
+			);
 			topicContexts.push({ topic: t.topic, context: mergedContext });
 			liveContext = liveContext.concat(mergedContext || []);
+			if (isPromptTopic) {
+				logJob(jobId, "prompt topic context plan", {
+					topic: t.topic,
+					newsSources: countContextSourceLinks(promptNewsContext),
+					usedCse: Boolean(needsLimitedCse),
+					cseSources: countContextSourceLinks(ctx),
+					totalSources: countContextSourceLinks(sourceContext),
+				});
+			}
 		}
 		const cseImages = [];
 		logJob(jobId, "cse context", {
 			count: liveContext.length,
+			sourceLinks: countContextSourceLinks(liveContext),
 			byTopic: topicContexts.map((tc) => ({
 				topic: tc.topic,
 				count: Array.isArray(tc.context) ? tc.context.length : 0,
+				sourceLinks: countContextSourceLinks(tc.context),
 			})),
 		});
 		logJob(jobId, "cse images", { count: cseImages.length });
