@@ -469,6 +469,12 @@ const SYNC_SO_FREEZE_NOISE = clampNumber(0.0012, 0.0001, 0.01);
 const SYNC_SO_FREEZE_MIN_SEC = clampNumber(0.55, 0.2, 4);
 const SYNC_SO_MAX_FREEZE_RATIO = clampNumber(0.22, 0.05, 0.6);
 const SYNC_SO_MAX_FREEZE_SEC = clampNumber(1.1, 0.2, 4);
+const PRESENTER_MOTION_QA_ENABLED = true;
+const PRESENTER_MOTION_FREEZE_CHECK_MIN_SEC = clampNumber(0.5, 0.2, 3);
+const PRESENTER_MOTION_FREEZE_MIN_SEC = clampNumber(0.38, 0.15, 2);
+const PRESENTER_MOTION_FREEZE_NOISE = clampNumber(0.0009, 0.0001, 0.01);
+const PRESENTER_MOTION_MAX_FREEZE_RATIO = clampNumber(0.22, 0.05, 0.6);
+const PRESENTER_MOTION_MAX_FREEZE_SEC = clampNumber(1.1, 0.2, 3);
 const SYNC_SO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
 const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 
@@ -10676,6 +10682,111 @@ ${lines}
 `.trim();
 }
 
+function contextItemsToText(items = []) {
+	return (Array.isArray(items) ? items : [])
+		.map((item) => {
+			if (typeof item === "string") return item;
+			return [
+				item?.title,
+				item?.snippet,
+				item?.source,
+				getUrlHost(item?.link || ""),
+			]
+				.filter(Boolean)
+				.join(" ");
+		})
+		.filter(Boolean)
+		.join(" ");
+}
+
+function buildDynamicRetentionGuide({
+	topics = [],
+	topicContexts = [],
+	categoryGuide = {},
+	tonePlan = {},
+	topListPlan = null,
+	contentMode = "trends",
+} = {}) {
+	const topicText = (Array.isArray(topics) ? topics : [])
+		.map((topic, idx) => {
+			const label = [
+				topic?.displayTopic,
+				topic?.topic,
+				topic?.angle,
+				...(Array.isArray(topic?.keywords) ? topic.keywords : []),
+				contextItemsToText(topicContexts?.[idx]?.context || []),
+			]
+				.filter(Boolean)
+				.join(" ");
+			return label;
+		})
+		.join(" ");
+	const hay = `${topicText} ${contentMode || ""}`.toLowerCase();
+	const mood = String(tonePlan?.mood || "neutral").toLowerCase();
+	const isSensitive =
+		mood === "serious" ||
+		Boolean(categoryGuide?.isPolitics) ||
+		isSensitiveTopicText(topicText);
+	const isSports = Boolean(categoryGuide?.isSports);
+	const isEntertainment = isEntertainmentTopicText(topicText);
+	const isGaming =
+		/\b(video\s*game|gaming|gameplay|trailer|demo|console|playstation|xbox|nintendo|steam|rpg|studio|developer|patch|combat|open world)\b/i.test(
+			hay,
+		);
+	const hasSources = Array.isArray(topicContexts)
+		? topicContexts.some((tc) =>
+				(Array.isArray(tc?.context) ? tc.context : []).some(
+					(item) => item && typeof item !== "string" && item.link,
+				),
+			)
+		: false;
+
+	const lines = [
+		"- Retention should come from the facts and angle, not manufactured hype. Use a human creator voice: clear, opinion-aware, and curious.",
+		"- Vary the segment openings. Do not let multiple segments in a row start with the same connective style like \"That matters\", \"Still\", \"So\", or \"And\".",
+		"- Every 3-4 segments, add a natural pattern interrupt: a contrast, a viewer-facing question, a consequence, or a sharper read that makes the next beat feel earned.",
+		"- Keep the audience-oriented thread alive: why this matters, what changes if it is true, and what viewers are still waiting to see.",
+	];
+
+	if (topListPlan) {
+		lines.push(
+			"- For countdowns, make each rank justify why it belongs there; each lower rank should create anticipation for why the next one outranks it.",
+		);
+	} else {
+		lines.push(
+			"- For non-countdown stories, shape the arc as assumption -> complication -> evidence -> creator read -> unresolved test.",
+		);
+	}
+
+	if (isSensitive) {
+		lines.push(
+			"- For sensitive, legal, political, conflict, tragedy, or public-safety topics, pattern interrupts must be sober reframes, not jokes or casual bits.",
+		);
+	} else if (isGaming || isEntertainment) {
+		lines.push(
+			"- For entertainment, gaming, creator, music, film, TV, and culture topics, include 1-2 grounded creator reads that sound like a real viewer reacting, while keeping sourced facts separate.",
+		);
+		if (isGaming) {
+			lines.push(
+				"- For gaming topics, translate reporting into player-facing stakes: trust, gameplay proof, polish, systems, launch risk, community expectations, and whether the footage answers the doubt.",
+			);
+		}
+	} else if (isSports) {
+		lines.push(
+			"- For sports topics, rotate between turning point, matchup pressure, adjustment, consequence, and what the next test proves.",
+		);
+	}
+
+	if (hasSources) {
+		lines.push(
+			"- Use source attribution like a human host would: quick and close to the claim, then immediately explain why the claim matters.",
+		);
+	}
+
+	return `Dynamic retention and human-feel plan:
+${lines.join("\n")}`;
+}
+
 async function generateScript({
 	jobId,
 	topics = [],
@@ -10703,6 +10814,14 @@ async function generateScript({
 	const categoryGuide = buildCategoryScriptGuide(categoryLabel, safeTopics);
 	const topListPlan = resolveTopListPlan(safeTopics, categoryLabel);
 	const topListGuide = buildTopListGuideLines(topListPlan, segmentCount);
+	const retentionGuide = buildDynamicRetentionGuide({
+		topics: safeTopics,
+		topicContexts,
+		categoryGuide,
+		tonePlan,
+		topListPlan,
+		contentMode,
+	});
 	const briefLine = isPromptMode
 		? topicCount > 1
 			? "This is a multi-topic brief based on a user request."
@@ -10927,6 +11046,8 @@ ${trendSignalLines}
 
 Topic intent resolution (MUST follow; do NOT invent beyond this):
 ${topicIntentLines}
+
+${retentionGuide}
 
 Style rules (IMPORTANT):
 - If Countdown structure is present above, it overrides generic hook rules: segment 0 starts with the highest rank prefix, not a separate intro.
@@ -11705,6 +11826,15 @@ async function rewriteSegmentsForQuality({
 	const mood = tonePlan?.mood || "neutral";
 	const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
 	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
+	const topListPlan = resolveTopListPlan(topics, categoryLabel);
+	const retentionGuide = buildDynamicRetentionGuide({
+		topics,
+		topicContexts,
+		categoryGuide,
+		tonePlan,
+		topListPlan,
+		contentMode,
+	});
 	const trendSignalLabel = isPromptMode
 		? "Context signals (use if present; do NOT invent):"
 		: categoryGuide.isSports
@@ -11750,6 +11880,8 @@ ${topicSummaries.join("\n")}
 
 ${trendSignalLabel}
 ${trendSignalLines}
+
+${retentionGuide}
 
 Topic assignment by segment (do NOT change):
 ${topicLine}
@@ -13261,6 +13393,7 @@ async function analyzeLipsyncOutput({
 	expectedDurSec,
 	jobId,
 	label,
+	requireMotion = false,
 }) {
 	const durationSec = await probeDurationSeconds(videoPath);
 	const result = {
@@ -13285,21 +13418,43 @@ async function analyzeLipsyncOutput({
 		}
 	}
 
-	if (durationSec >= SYNC_SO_FREEZE_CHECK_MIN_SEC) {
+	const motionRequired = Boolean(requireMotion && PRESENTER_MOTION_QA_ENABLED);
+	const freezeCheckMinSec = motionRequired
+		? PRESENTER_MOTION_FREEZE_CHECK_MIN_SEC
+		: SYNC_SO_FREEZE_CHECK_MIN_SEC;
+	const freezeNoise = motionRequired
+		? PRESENTER_MOTION_FREEZE_NOISE
+		: SYNC_SO_FREEZE_NOISE;
+	const freezeMinSec = motionRequired
+		? PRESENTER_MOTION_FREEZE_MIN_SEC
+		: SYNC_SO_FREEZE_MIN_SEC;
+	const maxFreezeSec = motionRequired
+		? PRESENTER_MOTION_MAX_FREEZE_SEC
+		: SYNC_SO_MAX_FREEZE_SEC;
+	const maxFreezeRatio = motionRequired
+		? PRESENTER_MOTION_MAX_FREEZE_RATIO
+		: SYNC_SO_MAX_FREEZE_RATIO;
+
+	if (durationSec >= freezeCheckMinSec) {
 		try {
-			const freezeInfo = await detectFrozenVideo(videoPath);
+			const freezeInfo = await detectFrozenVideo(videoPath, {
+				noise: freezeNoise,
+				minFreezeSec: freezeMinSec,
+			});
 			result.maxFreezeSec = Number(freezeInfo.maxFreezeSec || 0);
 			result.freezeRatio = Number(freezeInfo.freezeRatio || 0);
 			if (
-				result.maxFreezeSec >= SYNC_SO_MAX_FREEZE_SEC ||
-				result.freezeRatio >= SYNC_SO_MAX_FREEZE_RATIO
+				result.maxFreezeSec >= maxFreezeSec ||
+				result.freezeRatio >= maxFreezeRatio
 			) {
 				result.issues.push("sync_output_frozen");
 			}
 		} catch (e) {
+			if (motionRequired) result.issues.push("sync_motion_check_failed");
 			if (jobId) {
 				logJob(jobId, "lipsync freeze check failed", {
 					label,
+					requireMotion: motionRequired,
 					error: e?.message || String(e),
 				});
 			}
@@ -13777,6 +13932,7 @@ async function renderLipsyncedSegment({
 				expectedDurSec: dur,
 				jobId,
 				label: safeLabel,
+				requireMotion: true,
 			});
 			logJob(jobId, "lipsync qa", {
 				label: safeLabel,
@@ -13785,6 +13941,7 @@ async function renderLipsyncedSegment({
 				modelId: attemptPlan.modelId,
 				pass: syncQa.pass,
 				issues: syncQa.issues,
+				motionRequired: true,
 				durationSec: Number((syncQa.durationSec || 0).toFixed(3)),
 				durationDeltaSec: Number((syncQa.durationDeltaSec || 0).toFixed(3)),
 				maxFreezeSec: Number((syncQa.maxFreezeSec || 0).toFixed(3)),
@@ -13816,7 +13973,7 @@ async function renderLipsyncedSegment({
 	}
 
 	if (!lipsynced) {
-		if (REQUIRE_LIPSYNC) {
+		if (REQUIRE_LIPSYNC || PRESENTER_MOTION_QA_ENABLED) {
 			throw lastErr || new Error("Lipsync failed");
 		}
 		logJob(jobId, "lipsync failed; using base video", {
@@ -13839,6 +13996,37 @@ async function renderLipsyncedSegment({
 	safeUnlink(withAudio);
 
 	return norm;
+}
+
+function buildSubtleStillMotionFilter({
+	idx = 0,
+	fps = DEFAULT_OUTPUT_FPS,
+	w = 1280,
+	h = 720,
+	mode = "blur",
+} = {}) {
+	const safeFps = Number(fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+	const W = makeEven(w);
+	const H = makeEven(h);
+	const soft = String(mode || "").toLowerCase() === "blur";
+	const zoomInMax = soft ? "1.024" : "1.045";
+	const zoomOutStart = soft ? "1.022" : "1.04";
+	const zoomInStep = soft ? "0.00009" : "0.00018";
+	const zoomOutStep = soft ? "0.000075" : "0.00015";
+	const driftX = soft ? "iw*0.004" : "iw*0.008";
+	const driftY = soft ? "ih*0.003" : "ih*0.006";
+	const modeIndex = Math.abs(Number(idx) || 0) % 4;
+
+	if (modeIndex === 1) {
+		return `zoompan=z='max(1.0,${zoomOutStart}-on*${zoomOutStep})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${safeFps}`;
+	}
+	if (modeIndex === 2) {
+		return `zoompan=z='min(${zoomInMax},zoom+${zoomInStep})':x='iw/2-(iw/zoom/2)+${driftX}':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${safeFps}`;
+	}
+	if (modeIndex === 3) {
+		return `zoompan=z='max(1.0,${zoomOutStart}-on*${zoomOutStep})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)+${driftY}':d=1:s=${W}x${H}:fps=${safeFps}`;
+	}
+	return `zoompan=z='min(${zoomInMax},zoom+${zoomInStep})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${safeFps}`;
 }
 
 async function createImageMontageClip({
@@ -13890,8 +14078,15 @@ async function createImageMontageClip({
 			filterParts.push(
 				`[${fg}]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos[${fg2}]`,
 			);
+			const motion = buildSubtleStillMotionFilter({
+				idx: Number.isFinite(labelNum) ? labelNum + idx : idx,
+				fps,
+				w,
+				h,
+				mode: "blur",
+			});
 			filterParts.push(
-				`[${bg2}][${fg2}]overlay=(W-w)/2:(H-h)/2,fps=${fps},${trim},setsar=1,format=yuv420p[${outLabel}]`,
+				`[${bg2}][${fg2}]overlay=(W-w)/2:(H-h)/2,${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`,
 			);
 		} else {
 			const scale =
