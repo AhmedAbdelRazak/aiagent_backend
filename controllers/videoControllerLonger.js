@@ -9199,12 +9199,17 @@ const SHORTS_OPEN_LOOP_HINTS = [
 	/\bhowever\b/i,
 	/\byet\b/i,
 	/\bstill\b/i,
+	/\bwhether\b/i,
+	/\bnot just\b/i,
 	/\bthe detail\b/i,
 	/\bthe twist\b/i,
 	/\bwhat people missed\b/i,
 	/\bwhat people ignore\b/i,
 	/\bthe question\b/i,
+	/\bthe unresolved\b/i,
 	/\bnot clear\b/i,
+	/\bnot proof\b/i,
+	/\bnot evidence\b/i,
 	/\bunclear\b/i,
 	/\bnot confirmed\b/i,
 ];
@@ -11733,6 +11738,150 @@ function analyzeScriptQuality({
 			speechAwkwardSegments: speakability.stats?.speechAwkwardSegments || [],
 		},
 	};
+}
+
+function buildShortSegmentExtension({
+	text = "",
+	segment = {},
+	topics = [],
+	categoryGuide = {},
+} = {}) {
+	const topic = topics?.[Number(segment?.topicIndex) || 0] || {};
+	const topicLabel = String(
+		segment?.topicLabel || topic?.displayTopic || topic?.topic || "the story",
+	).trim();
+	const isQuestion = /\?/.test(String(text || ""));
+	if (categoryGuide?.isHealth) {
+		return isQuestion
+			? "The answer depends on evidence, timing, and what investigators can verify next."
+			: "That distinction keeps the focus on evidence, timing, and what investigators can verify next.";
+	}
+	if (categoryGuide?.isPolitics || categoryGuide?.isSerious) {
+		return isQuestion
+			? "The answer depends on what the record actually supports next."
+			: "That distinction keeps the focus on what the record actually supports next.";
+	}
+	if (categoryGuide?.isSports) {
+		return isQuestion
+			? "The answer depends on the next adjustment and who handles the pressure."
+			: "That is the pressure point because the next adjustment changes how the matchup looks.";
+	}
+	if (/\b(video\s*game|gaming|gameplay|trailer|demo|studio|developer)\b/i.test(topicLabel)) {
+		return isQuestion
+			? "The answer depends on whether the next showing proves the promise."
+			: "That is the turn because the next showing changes how the promise reads.";
+	}
+	return isQuestion
+		? "The answer depends on the next detail viewers have not seen yet."
+		: "That is the turn because the next detail changes how the whole story reads.";
+}
+
+function repairShortScriptSegments({
+	script,
+	topics = [],
+	wordCaps = [],
+	categoryLabel = "",
+} = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return { script, changed: [] };
+	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
+	const changed = [];
+	const repairedSegments = segments.map((segment, idx) => {
+		const text = sanitizeSegmentText(segment?.text || "");
+		const words = countWords(text);
+		if (words >= QA_MIN_SEGMENT_WORDS) return { ...segment, text };
+		const extension = buildShortSegmentExtension({
+			text,
+			segment,
+			topics,
+			categoryGuide,
+		});
+		let updated = cleanupSpeechText(`${text} ${extension}`)
+			.replace(/\s+([,.!?])/g, "$1")
+			.replace(/\s{2,}/g, " ")
+			.trim();
+		const cap = Number(wordCaps?.[idx] || 0);
+		const softCap = cap
+			? Math.max(cap + 8, QA_MIN_SEGMENT_WORDS + 6, countWords(updated))
+			: 0;
+		if (softCap) updated = trimSegmentToCap(updated, softCap);
+		updated = sanitizeSegmentText(updated);
+		changed.push({
+			index: Number.isFinite(Number(segment?.index)) ? Number(segment.index) : idx,
+			fromWords: words,
+			toWords: countWords(updated),
+		});
+		return { ...segment, text: updated };
+	});
+	return { script: { ...script, segments: repairedSegments }, changed };
+}
+
+function repairEarlyCuriosityGap({
+	script,
+	shortsGuardrails = null,
+	topics = [],
+	wordCaps = [],
+	categoryLabel = "",
+} = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return { script, changed: false };
+	const guardrails = shortsGuardrails || analyzeShortsGuardrails(script);
+	if (!guardrails?.issues?.includes("early_curiosity_gap_missing")) {
+		return { script, changed: false };
+	}
+	const first = segments[0] || {};
+	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
+	const topic = topics?.[Number(first?.topicIndex) || 0] || {};
+	const topicLabel = String(
+		first?.topicLabel || topic?.displayTopic || topic?.topic || "this story",
+	).trim();
+	const baseText = sanitizeSegmentText(first.text || "");
+	const bridge = categoryGuide?.isHealth
+		? `The unresolved question is whether ${topicLabel} stays contained or the evidence points somewhere else.`
+		: `The unresolved question is what changes once the next detail lands.`;
+	const updatedText = sanitizeSegmentText(`${baseText} ${bridge}`);
+	const cap = Number(wordCaps?.[0] || 0);
+	const softCap = cap
+		? Math.max(cap + 12, countWords(updatedText), QA_MIN_SEGMENT_WORDS + 8)
+		: 0;
+	const finalText = softCap
+		? trimSegmentToCap(updatedText, softCap)
+		: updatedText;
+	const repairedSegments = segments.map((segment, idx) =>
+		idx === 0 ? { ...segment, text: sanitizeSegmentText(finalText) } : segment,
+	);
+	return { script: { ...script, segments: repairedSegments }, changed: true };
+}
+
+function repairResidualScriptQuality({
+	script,
+	topics = [],
+	wordCaps = [],
+	categoryLabel = "",
+	shortsGuardrails = null,
+} = {}) {
+	let current = script;
+	const repairs = [];
+	const shortRepair = repairShortScriptSegments({
+		script: current,
+		topics,
+		wordCaps,
+		categoryLabel,
+	});
+	current = shortRepair.script;
+	if (shortRepair.changed.length) {
+		repairs.push({ type: "short_segments", changed: shortRepair.changed });
+	}
+	const earlyRepair = repairEarlyCuriosityGap({
+		script: current,
+		shortsGuardrails,
+		topics,
+		wordCaps,
+		categoryLabel,
+	});
+	current = earlyRepair.script;
+	if (earlyRepair.changed) repairs.push({ type: "early_curiosity_gap" });
+	return { script: current, repairs };
 }
 
 function buildScriptLogText(script = {}) {
@@ -16598,6 +16747,37 @@ async function runLongVideoJob(
 			});
 		}
 
+		const residualRepair = repairResidualScriptQuality({
+			script,
+			topics: topicPicks,
+			wordCaps,
+			categoryLabel,
+			shortsGuardrails,
+		});
+		if (residualRepair.repairs.length) {
+			script = sanitizeScriptVisualCueLeaks(residualRepair.script, topicPicks);
+			qaResult = analyzeScriptQuality({
+				script,
+				topics: topicPicks,
+				topicContexts,
+				wordCaps,
+				categoryLabel,
+			});
+			shortsGuardrails = analyzeShortsGuardrails(script);
+			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
+			logJob(jobId, "script residual quality repaired", {
+				repairs: residualRepair.repairs,
+				qa: {
+					pass: qaResult.pass,
+					needsRewrite: qaResult.needsRewrite,
+					issues: qaResult.issues,
+					warnings: qaResult.warnings,
+					stats: qaResult.stats,
+				},
+				shortsGuardrails,
+			});
+		}
+
 		const shortsDetailsRaw = await ensureShortsDetails({
 			jobId,
 			script,
@@ -17546,9 +17726,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			wordCaps,
 			categoryLabel,
 		});
+		const finalShortsGuardrails = analyzeShortsGuardrails(script);
 		const finalEngagement = summarizeScriptEngagement(script);
 		logJob(jobId, "final script summary", {
 			qa: finalQa,
+			shortsGuardrails: finalShortsGuardrails,
 			engagement: finalEngagement,
 			narrationTargetSec: Number(narrationTargetSec || 0),
 			segmentCount: finalScriptSegments.length,
