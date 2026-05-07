@@ -2163,6 +2163,42 @@ const PROMPT_CONTROL_TOKENS = new Set([
 	"suggestions",
 ]);
 
+const PROMPT_INTENT_TOKENS = new Set([
+	"attract",
+	"audience",
+	"click",
+	"clickable",
+	"controversial",
+	"debate",
+	"engaging",
+	"hook",
+	"hooks",
+	"interesting",
+	"retention",
+	"spicy",
+	"thumbnail",
+	"trend",
+	"trending",
+	"viral",
+	"view",
+	"views",
+	"watch",
+	"watchable",
+]);
+
+const TOP_LIST_NUMBER_WORDS = Object.freeze({
+	one: 1,
+	two: 2,
+	three: 3,
+	four: 4,
+	five: 5,
+	six: 6,
+	seven: 7,
+	eight: 8,
+	nine: 9,
+	ten: 10,
+});
+
 const PROMPT_QUESTION_TOKENS = new Set([
 	"what",
 	"who",
@@ -2183,6 +2219,144 @@ const PROMPT_RECOMMENDATION_PATTERNS = [
 ];
 
 const PROMPT_SPLIT_RE = /[|;\n]+/;
+
+function parseTopListNumberToken(token = "") {
+	const raw = String(token || "")
+		.toLowerCase()
+		.trim();
+	if (!raw) return 0;
+	if (/^\d{1,2}$/.test(raw)) return Number(raw);
+	return TOP_LIST_NUMBER_WORDS[raw] || 0;
+}
+
+function stripCreatorIntentForTopic(text = "") {
+	let cleaned = String(text || "").trim();
+	if (!cleaned) return cleaned;
+
+	cleaned = cleaned
+		.replace(/\b(?:that|which)\s+(?:would|will|can|could|should)\s+/gi, " ")
+		.replace(
+			/\b(?:attract|gain|get|drive|bring|pull)\s+(?:thousands|millions|lots|many|more|tons)\s+of\s+views?\b/gi,
+			" ",
+		)
+		.replace(/\b(?:attract|gain|get|drive|bring|pull)\s+views?\b/gi, " ")
+		.replace(/\b(?:go|get|make it|become)\s+viral\b/gi, " ")
+		.replace(/\b(?:high|better)\s+retention\b/gi, " ")
+		.replace(/\b(?:for|with)\s+(?:youtube|views?|retention|engagement)\b/gi, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+
+	const bridge =
+		cleaned.match(
+			/^(.*?)\b(?:about|on|regarding|covering|focused\s+on|based\s+on)\b\s+(.+)$/i,
+		) || null;
+	if (bridge) {
+		const before = String(bridge[1] || "").toLowerCase();
+		const after = String(bridge[2] || "").trim();
+		const beforeTokens = tokenizeLabel(before);
+		const looksLikeIntent =
+			beforeTokens.length === 0 ||
+			beforeTokens.some(
+				(t) => PROMPT_CONTROL_TOKENS.has(t) || PROMPT_INTENT_TOKENS.has(t),
+			);
+		if (after && looksLikeIntent) cleaned = after;
+	}
+
+	return cleaned
+		.replace(
+			/^(?:controversial|spicy|viral|engaging|interesting|clickable|high\s+retention)\s+(?:topic|video|content)?\s*(?:about|on)?\s*/i,
+			"",
+		)
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function detectPromptAngle(text = "") {
+	const raw = String(text || "").toLowerCase();
+	const angles = [];
+	if (/\bcontrovers/i.test(raw))
+		angles.push("controversial but fair; surface the real debate");
+	if (/\bspicy|hot\s+take|provocative/i.test(raw))
+		angles.push("sharper creator framing without unsupported claims");
+	if (/\bviral|views?|retention|engag/i.test(raw))
+		angles.push("strong hook and high-retention structure");
+	if (/\blatest|update|updates|current|now|today/i.test(raw))
+		angles.push("latest updates and current context");
+	return uniqueStrings(angles, { limit: 4 }).join("; ");
+}
+
+function detectTopListRequest(text = "") {
+	const raw = cleanTopicLabel(text);
+	if (!raw) return null;
+	const match = raw.match(
+		/\b(?:top|best|worst|most|least)\s*[-_ ]*(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b/i,
+	);
+	if (!match) return null;
+	const count = clampNumber(parseTopListNumberToken(match[1]), 1, 10);
+	if (!count || count < 2) return null;
+	const after = raw.slice(match.index + match[0].length).trim();
+	const subject =
+		after.replace(/^(?:best|worst|most|least|controversial)\s+/i, "").trim() ||
+		raw;
+	return {
+		count,
+		subject: cleanTopicLabel(subject) || raw,
+		countdown: true,
+		label: `Top ${count}`,
+	};
+}
+
+function normalizeTopListTopic(topic = "", topList = null) {
+	const raw = cleanTopicLabel(topic);
+	if (!raw || !topList?.count) return raw;
+	if (new RegExp(`^top\\s*${topList.count}\\b`, "i").test(raw)) return raw;
+	const subject = cleanTopicLabel(topList.subject || raw);
+	return cleanTopicLabel(`Top ${topList.count} ${subject}`) || raw;
+}
+
+function buildPromptSearchHints(topic = "", promptText = "", topList = null) {
+	const cleanTopic = cleanTopicLabel(topic);
+	const original = cleanTopicLabel(promptText);
+	const base = cleanTopic || original;
+	const hints = [];
+	const push = (value) => {
+		const q = sanitizeOverlayQuery(value);
+		if (q) hints.push(q);
+	};
+	push(base);
+	push(`${base} latest updates`);
+	push(`${base} latest news`);
+	push(`${base} explained`);
+	push(`${base} controversy`);
+	if (topList?.count) {
+		push(`${base} ranking`);
+		push(`${base} best list`);
+		push(`${base} travel guide`);
+		push(`${topList.subject || base} top ${topList.count}`);
+	}
+	if (original && original.toLowerCase() !== base.toLowerCase()) push(original);
+	return uniqueStrings(hints, { limit: 12 });
+}
+
+function buildPromptImageSearchHints(topic = "", promptText = "", topList = null) {
+	const base = cleanTopicLabel(topic || promptText);
+	const hints = [];
+	const push = (value) => {
+		const q = sanitizeOverlayQuery(value);
+		if (q) hints.push(q);
+	};
+	push(`${base} photo`);
+	push(`${base} news photo`);
+	push(`${base} editorial photo`);
+	push(`${base} landmark photo`);
+	push(`${base} location photo`);
+	if (topList?.count) {
+		push(`${base} ranking photos`);
+		push(`${topList.subject || base} travel photos`);
+		push(`${topList.subject || base} skyline landmark`);
+	}
+	return uniqueStrings(hints, { limit: 12 });
+}
 
 function normalizeUrlCandidate(raw = "") {
 	const trimmed = String(raw || "").trim();
@@ -2252,7 +2426,7 @@ function extractPromptSubjectTokens(text = "") {
 
 function normalizePromptTopic(text = "") {
 	const stripped = stripPromptPreamble(text);
-	const base = stripped || String(text || "").trim();
+	const base = stripCreatorIntentForTopic(stripped || String(text || "").trim());
 	const cleaned = cleanTopicCandidate(base) || base.trim();
 	return cleaned.replace(/\s+/g, " ").trim();
 }
@@ -2296,8 +2470,11 @@ function resolvePreferredTopicHint(raw = "") {
 		? subjectTokens.filter((t) => !PROMPT_QUESTION_TOKENS.has(t))
 		: subjectTokens;
 	const mode = effectiveTokens.length ? "prompt" : "trends";
-	const topicCandidates =
-		mode === "prompt" ? splitPromptTopics(promptText) : [];
+	let topicCandidates = mode === "prompt" ? splitPromptTopics(promptText) : [];
+	topicCandidates = topicCandidates.map((topic) => {
+		const topList = detectTopListRequest(topic);
+		return topList ? normalizeTopListTopic(topic, topList) : topic;
+	});
 	return {
 		mode,
 		promptText,
@@ -2344,18 +2521,50 @@ async function selectTopics({
 			if (topics.length >= desired) break;
 			const normalized = normalizePromptTopic(candidate);
 			if (!normalized) continue;
-			const signature = topicSignature(normalized);
+			const topList = detectTopListRequest(normalized);
+			const finalTopic = topList
+				? normalizeTopListTopic(normalized, topList)
+				: normalized;
+			const signature = topicSignature(finalTopic);
 			if (signature && seen.has(signature)) continue;
 			if (signature) seen.add(signature);
-			const displayTopic = cleanTopicLabel(normalized) || normalized;
+			const displayTopic = cleanTopicLabel(finalTopic) || finalTopic;
+			const promptSearchHints = buildPromptSearchHints(
+				finalTopic,
+				promptInfo.promptText,
+				topList,
+			);
+			const promptImageHints = buildPromptImageSearchHints(
+				finalTopic,
+				promptInfo.promptText,
+				topList,
+			);
 			topics.push({
-				topic: normalized.slice(0, 120),
+				topic: finalTopic.slice(0, 120),
 				displayTopic,
 				reason: "preferredTopicHint",
-				angle: "",
-				keywords: topicTokensFromTitle(normalized).slice(0, 8),
+				angle: detectPromptAngle(promptInfo.promptText),
+				keywords: uniqueStrings(
+					[
+						...topicTokensFromTitle(finalTopic),
+						...promptSearchHints.flatMap((q) => topicTokensFromTitle(q)),
+					],
+					{ limit: 14 },
+				),
 				images: topics.length === 0 ? promptInfo.imageUrls : [],
 				source: "user_prompt",
+				promptText: promptInfo.promptText,
+				topList,
+				searchHints: promptSearchHints,
+				imageSearchHints: promptImageHints,
+				trendStory: {
+					searchPhrases: promptSearchHints,
+					imageSearchQueries: promptImageHints,
+					entityNames: topList?.subject ? [topList.subject] : [],
+					articles: [],
+					images: [],
+					potentialImages: [],
+				},
 			});
 		}
 		if (topics.length) {
@@ -2723,9 +2932,14 @@ async function fetchCseContext(topic, extraTokens = []) {
 	const baseTokens = [...topicTokensFromTitle(topic), ...extra];
 	const category = inferEntertainmentCategory(baseTokens);
 	const queries = [
+		`${topic}`,
 		`${topic} latest news`,
+		`${topic} latest updates`,
+		`${topic} current`,
 		`${topic} trending`,
 		`${topic} explained`,
+		`${topic} controversy`,
+		`${topic} facts`,
 		`${topic} timeline`,
 		`${topic} history`,
 		`${topic} report`,
@@ -3702,14 +3916,16 @@ function resolveSegmentImageQuery(seg, topics = []) {
 			topics?.[topicIndex]?.topic ||
 			"",
 	).trim();
+	const countdownLabel = cleanTopicLabel(seg?.countdownLabel || "");
+	const visualTopicLabel = countdownLabel || topicLabel;
 	const cueRaw = Array.isArray(seg?.overlayCues) ? seg.overlayCues[0] : null;
 	const fallbackQuery = buildOverlayQueryFallback(seg?.text || "", topicLabel);
 	const baseQuery = String(cueRaw?.query || "").trim();
 	const preferredQuery = isGenericOverlayQuery(baseQuery, topicLabel)
 		? fallbackQuery
 		: baseQuery || fallbackQuery;
-	const query = ensureTopicInQuery(preferredQuery, topicLabel);
-	return { query, topicLabel };
+	const query = ensureTopicInQuery(preferredQuery, visualTopicLabel);
+	return { query, topicLabel: visualTopicLabel || topicLabel };
 }
 
 function buildSegmentImageQueryVariants({
@@ -5267,14 +5483,56 @@ async function prepareImageSegments({
 				.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
 			{ limit: 8 },
 		);
+		let promptFreeImageUrls = [];
+		const isPromptTopic =
+			String(t.source || "").toLowerCase() === "user_prompt" ||
+			Boolean(t.promptText);
+		if (isPromptTopic && GOOGLE_IMAGES_SEARCH_ENABLED) {
+			const promptImageQueries = uniqueStrings(
+				[
+					...(Array.isArray(t.imageSearchHints) ? t.imageSearchHints : []),
+					...(Array.isArray(story.imageSearchQueries)
+						? story.imageSearchQueries
+						: []),
+					...buildTopicNearImageQueries(label, {
+						topicKeywords: keywordHints,
+						articleTitles,
+						category,
+					}),
+				],
+				{ limit: Math.max(3, GOOGLE_IMAGES_VARIANT_LIMIT) },
+			);
+			for (const imageQuery of promptImageQueries) {
+				const urls = await fetchGoogleImagesFromService(imageQuery, {
+					limit: Math.max(24, GOOGLE_IMAGES_RESULTS_PER_QUERY),
+					baseUrl,
+					jobId,
+				});
+				promptFreeImageUrls.push(...urls);
+				if (uniqueStrings(promptFreeImageUrls, { limit: 60 }).length >= 36)
+					break;
+			}
+			promptFreeImageUrls = uniqueStrings(promptFreeImageUrls, { limit: 60 });
+			if (promptFreeImageUrls.length) {
+				logJob(jobId, "prompt topic free image pool ready", {
+					topic: label,
+					queries: promptImageQueries.length,
+					count: promptFreeImageUrls.length,
+				});
+			}
+		}
 		const potentialUrls = uniqueStrings(
 			(Array.isArray(story.potentialImages) ? story.potentialImages : [])
 				.map((p) => p?.url)
 				.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
 			{ limit: 30 },
 		);
+		const mergedPotentialUrls = uniqueStrings(
+			[...potentialUrls, ...promptFreeImageUrls],
+			{ limit: 80 },
+		);
 		const potentialKeys = new Set(
-			potentialUrls.map((u) => normalizeImageUrlKey(u)),
+			mergedPotentialUrls.map((u) => normalizeImageUrlKey(u)),
 		);
 		const seedUrls = uniqueStrings(
 			[
@@ -5293,7 +5551,7 @@ async function prepareImageSegments({
 			keywordHints,
 			articleTitles,
 			articleUrls,
-			potentialUrls,
+			potentialUrls: mergedPotentialUrls,
 			seedUrls,
 			trustedSeedUrls: articleImageUrls,
 		});
@@ -9904,6 +10162,131 @@ function analyzeScriptSpeakability({
 	};
 }
 
+function resolveTopListPlan(topics = [], categoryLabel = "") {
+	const safeTopics = Array.isArray(topics) ? topics : [];
+	const explicit = safeTopics.find((t) => t?.topList?.count)?.topList || null;
+	const fromTopic =
+		explicit ||
+		detectTopListRequest(
+			safeTopics
+				.map((t) => t?.displayTopic || t?.topic || "")
+				.filter(Boolean)
+				.join(" "),
+		);
+	const categoryTop =
+		!fromTopic && String(categoryLabel || "").toLowerCase() === "top5"
+			? {
+					count: 5,
+					subject: safeTopics[0]?.displayTopic || safeTopics[0]?.topic || "",
+				}
+			: null;
+	const plan = fromTopic || categoryTop;
+	if (!plan?.count) return null;
+	const count = Math.max(2, Math.min(10, Math.floor(Number(plan.count) || 0)));
+	if (!count) return null;
+	return {
+		...plan,
+		count,
+		subject: cleanTopicLabel(plan.subject || safeTopics[0]?.displayTopic || ""),
+	};
+}
+
+function buildTopListSegmentPlan(segmentCount, topList = null) {
+	const total = Math.max(1, Math.floor(Number(segmentCount) || 1));
+	const count = Math.max(2, Math.min(10, Math.floor(Number(topList?.count) || 0)));
+	if (!count || total < count) return [];
+	const base = Math.floor(total / count);
+	let remainder = total - base * count;
+	let cursor = 0;
+	const out = [];
+	for (let i = 0; i < count; i++) {
+		const rank = count - i;
+		const size = base + (remainder > 0 ? 1 : 0);
+		remainder = Math.max(0, remainder - 1);
+		const startIndex = cursor;
+		const endIndex = Math.min(total - 1, cursor + Math.max(1, size) - 1);
+		out.push({ rank, startIndex, endIndex });
+		cursor = endIndex + 1;
+	}
+	return out;
+}
+
+function rankForTopListSegment(index, topListPlan = []) {
+	const idx = Number(index);
+	const hit = (topListPlan || []).find(
+		(item) => idx >= item.startIndex && idx <= item.endIndex,
+	);
+	return hit?.rank || null;
+}
+
+function stripCountdownPrefix(text = "") {
+	return String(text || "")
+		.replace(/^\s*#?\s*(?:number\s*)?\d{1,2}\s*[-:.)]\s*/i, "")
+		.trim();
+}
+
+function parseCountdownLabel(text = "") {
+	const raw = String(text || "").trim();
+	const match = raw.match(/^\s*#\s*\d{1,2}\s*[-:]\s*([^:.\n-]{2,80})/i);
+	if (!match) return "";
+	return cleanTopicLabel(match[1]).replace(/\s+$/, "").trim();
+}
+
+function enforceTopListCountdownStructure(segments = [], topList = null) {
+	if (!topList?.count || !Array.isArray(segments) || !segments.length)
+		return segments;
+	const plan = buildTopListSegmentPlan(segments.length, topList);
+	if (!plan.length) return segments;
+	const firstByRank = new Map(plan.map((p) => [p.rank, p.startIndex]));
+	return segments.map((seg, idx) => {
+		const rank = rankForTopListSegment(idx, plan);
+		if (!rank) return seg;
+		const isRankStart = firstByRank.get(rank) === idx;
+		let text = String(seg?.text || "").trim();
+		let countdownLabel = cleanTopicLabel(seg?.countdownLabel || "");
+		if (isRankStart) {
+			const alreadyCorrect = new RegExp(`^\\s*#\\s*${rank}\\s*[-:]`, "i").test(
+				text,
+			);
+			if (!countdownLabel) countdownLabel = parseCountdownLabel(text);
+			if (!alreadyCorrect) {
+				const body = stripCountdownPrefix(text);
+				text = `#${rank}- ${body}`.trim();
+			}
+		}
+		return {
+			...seg,
+			text,
+			countdownRank: rank,
+			countdownLabel,
+		};
+	});
+}
+
+function buildTopListGuideLines(topList = null, segmentCount = 0) {
+	if (!topList?.count) return "";
+	const plan = buildTopListSegmentPlan(segmentCount, topList);
+	if (!plan.length) return "";
+	const subject = cleanTopicLabel(topList.subject || "the topic");
+	const lines = plan
+		.map(
+			(item) =>
+				`- #${item.rank}: segments ${item.startIndex}-${item.endIndex}; segment ${item.startIndex} must start with "#${item.rank}- " followed by the ranked item name.`,
+		)
+		.join("\n");
+	return `
+Countdown structure:
+This is a Top ${topList.count} ranked countdown about ${subject}.
+Start the CONTENT immediately at #${topList.count}; do not add a separate content intro because the video intro is generated elsewhere.
+Use descending order only: #${topList.count} down to #1.
+${lines}
+- First segment for each rank names one concrete item; following segments for that rank add descriptive facts, tradeoffs, controversy, visuals, or why viewers may disagree.
+- #1 should feel like the payoff, with the strongest rationale and a short comment question.
+- Do not use a rank prefix on non-start segments for the same item.
+- Include countdownRank and countdownLabel in each segment object when possible.
+`.trim();
+}
+
 async function generateScript({
 	jobId,
 	topics = [],
@@ -9929,6 +10312,8 @@ async function generateScript({
 	const topicLabelFor = (t) => String(t?.displayTopic || t?.topic || "").trim();
 	const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
 	const categoryGuide = buildCategoryScriptGuide(categoryLabel, safeTopics);
+	const topListPlan = resolveTopListPlan(safeTopics, categoryLabel);
+	const topListGuide = buildTopListGuideLines(topListPlan, segmentCount);
 	const briefLine = isPromptMode
 		? topicCount > 1
 			? "This is a multi-topic brief based on a user request."
@@ -9946,14 +10331,20 @@ async function generateScript({
 	const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
 	const mood = tonePlan?.mood || "neutral";
 	const deepDiveGuide =
-		topicCount === 1
+		topListPlan
+			? `Ranked-countdown deep dive: spend the narration budget on ${topListPlan.count} clear picks in descending order, with each pick getting enough context, evidence, and visual detail to feel earned.`
+			: topicCount === 1
 			? "Single-topic deep dive: spend more time on background, timeline, key evidence, and implications while staying concise and non-repetitive."
 			: "";
 	const outroGuide = includeOutro
-		? "Last segment: clean wrap that naturally closes the story and leaves space for the closing line (no like/subscribe CTA)."
+		? topListPlan
+			? "Last segment: finish the #1 payoff and include one short ranking question; leave space for the separate closing line."
+			: "Last segment: clean wrap that naturally closes the story and leaves space for the closing line (no like/subscribe CTA)."
 		: "Last segment: wrap + CTA question.";
 	const toneGuide =
-		mood === "serious"
+		topListPlan
+			? `Segment 0 starts with #${topListPlan.count}- and a ranked item name; the countdown itself is the hook. ${outroGuide}`
+			: mood === "serious"
 			? `Segment 0: measured, serious tone, slower pacing. ${outroGuide}`
 			: mood === "excited"
 				? `Segment 0: confident, neutral hook with controlled energy (no shouty hype). ${outroGuide}`
@@ -10001,8 +10392,14 @@ async function generateScript({
 				.map((a) => a.title)
 				.filter(Boolean)
 				.slice(0, 3);
+			const angle = String(t.angle || "").trim();
+			const imageHints = Array.isArray(t.imageSearchHints)
+				? t.imageSearchHints.slice(0, 5)
+				: [];
 			return `Topic ${i + 1}: ${topicLabelFor(t) || t.topic}\n- Hints: ${
 				hints.length ? hints.join(", ") : "(none)"
+			}\n- User angle: ${angle || "(none)"}\n- Image search hints: ${
+				imageHints.length ? imageHints.join(", ") : "(none)"
 			}\n- Articles: ${articles.length ? articles.join(" | ") : "(none)"}`;
 		})
 		.join("\n\n");
@@ -10114,6 +10511,8 @@ ${safeTopics
 Segment allocation (follow exactly):
 ${topicPlanLines}
 
+${topListGuide}
+
 ${deepDiveGuide}
 
 Target narration duration (NOT counting intro/outro): ~${narrationTargetSec.toFixed(
@@ -10141,9 +10540,10 @@ Topic intent resolution (MUST follow; do NOT invent beyond this):
 ${topicIntentLines}
 
 Style rules (IMPORTANT):
+- If Countdown structure is present above, it overrides generic hook rules: segment 0 starts with the highest rank prefix, not a separate intro.
 - Keep pacing steady and conversational; no sudden speed-ups.
 - Slightly brisk, natural American delivery; avoid drawn-out phrasing.
-- Write for spoken delivery, not article copy. Never open a segment with a headline-style label followed by a colon.
+- Write for spoken delivery, not article copy. Never open a normal segment with a headline-style label followed by a colon; countdown prefixes like "#5- Paris" are allowed when Countdown structure is present.
 - Avoid abstract or unnatural phrases a real host would not say out loud, such as "loss circle" or stiff framing like "the angle today is".
 - Keep the delivery composed and natural, not shouty. The writing should feel sharp, engaging, and lightly provocative when the story supports it, but never reckless, insulting, or overhyped.
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
@@ -10211,7 +10611,7 @@ Style rules (IMPORTANT):
 - ONLY if a topic is marked as Fictional/Story, keep it in-universe and avoid real-world mourning language.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
 - Avoid phrasing like "sad news" unless it is a real-world tragedy.
-- Use the topic anchor phrase in the FIRST segment of each topic.
+- For non-countdown topics, use the topic anchor phrase in the FIRST segment of each topic. For countdown topics, use each ranked item's name instead.
 ${evidenceLine}
 - Category-specific guidance:
 ${categoryGuide.lines.join("\n")}
@@ -10220,6 +10620,7 @@ ${categoryGuide.lines.join("\n")}
 - If the line is happy, use a light smile; if very happy, a brief small smile with slight teeth (never a wide grin).
 - Keep expressions coherent across segments; avoid abrupt mood flips and avoid exaggerated expressions.
 - Each segment must include EXACTLY one overlayCues entry with a search query that matches that segment.
+- For Top N countdowns, set countdownRank on every segment to the rank being discussed and countdownLabel to the ranked item name. The first segment for each rank must start with "#rank- Item Name".
 - overlayCues.query must be 2-6 words, describe a real photo to search for, include the topic name or a key subject from that segment, no punctuation or hashtags.
 - overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
 - Treat overlayCues.query as the downstream image-search contract. It must stay within the topic and name a visible subject, place, action, object, institution, or scene from the segment/source context.
@@ -10261,6 +10662,8 @@ Return JSON ONLY:
 	  "topicLabel": "...",
 	  "text": "...",
 	  "expression": "neutral|warm|serious|excited|thoughtful",
+	  "countdownRank": 5,
+	  "countdownLabel": "ranked item name, only for Top N countdowns",
 	  "overlayCues": [ { "query":"...", "startPct":0.25, "endPct":0.75, "position":"topRight" } ]
 	}
   ]
@@ -10303,6 +10706,12 @@ Return JSON ONLY:
 				topicLabel,
 				text: String(s.text || "").trim(),
 				expression: normalizeExpression(s.expression, mood),
+				countdownRank: Number.isFinite(Number(s.countdownRank || s.rank))
+					? Number(s.countdownRank || s.rank)
+					: null,
+				countdownLabel: cleanTopicLabel(
+					s.countdownLabel || s.label || s.item || "",
+				),
 				overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
 			};
 		})
@@ -10336,14 +10745,16 @@ Return JSON ONLY:
 		}
 	}
 
-	segments = ensureTopicTransitions(segments, safeTopics);
-	segments = ensureTopicAnchors(segments, safeTopics, topicIntents);
-	segments = enforceTopicSpecificityGuards(
-		segments,
-		safeTopics,
-		topicContexts,
-		topicIntents,
-	);
+	if (!topListPlan) {
+		segments = ensureTopicTransitions(segments, safeTopics);
+		segments = ensureTopicAnchors(segments, safeTopics, topicIntents);
+		segments = enforceTopicSpecificityGuards(
+			segments,
+			safeTopics,
+			topicContexts,
+			topicIntents,
+		);
+	}
 	segments = enforceRealWorldFraming(segments, topicContextFlags);
 
 	// Enforce caps softly (avoid mid-sentence cutoffs; allow longer if needed).
@@ -10360,6 +10771,7 @@ Return JSON ONLY:
 		mood,
 		wordCaps,
 	);
+	segments = enforceTopListCountdownStructure(segments, topListPlan);
 
 	// Ensure clean segment endings and CTA consistency.
 	segments = enforceSegmentCompleteness(segments, mood, {
@@ -14994,6 +15406,9 @@ async function runLongVideoJob(
 				articleHosts,
 				articleUrls,
 				keywords: Array.isArray(t.keywords) ? t.keywords.slice(0, 10) : [],
+				angle: t.angle || "",
+				topList: t.topList || null,
+				source: t.source || "",
 			};
 		});
 		logJob(jobId, "topics chosen (detail)", { topics: topicChoiceDetails });
@@ -15006,8 +15421,11 @@ async function runLongVideoJob(
 					displayTopic: t.displayTopic || t.topic,
 					reason: t.reason || "",
 					angle: t.angle || "",
+					topList: t.topList || null,
 				})),
 				category: categoryLabel,
+				topicReason: topicPicks[0]?.reason || "",
+				topicAngle: topicPicks[0]?.angle || "",
 			},
 		});
 
@@ -15180,7 +15598,11 @@ async function runLongVideoJob(
 			18,
 			Number(narrationPlan?.targetSec || contentTargetSec) || 0,
 		);
-		const segmentCount = computeSegmentCount(narrationTargetSec);
+		const requestedTopListPlan = resolveTopListPlan(topicPicks, categoryLabel);
+		const segmentCountBase = computeSegmentCount(narrationTargetSec);
+		const segmentCount = requestedTopListPlan?.count
+			? Math.max(segmentCountBase, requestedTopListPlan.count)
+			: segmentCountBase;
 		const wordCaps = buildWordCaps(segmentCount, narrationTargetSec);
 		logJob(jobId, "narration target planned", {
 			requestedSec: Number(contentTargetSec || 0),
@@ -15189,6 +15611,9 @@ async function runLongVideoJob(
 			maxSec: narrationPlan?.maxSec,
 			mode: narrationPlan?.mode,
 			signal: narrationPlan?.signal,
+			segmentCountBase,
+			segmentCount,
+			topList: requestedTopListPlan || null,
 		});
 
 		let script = await generateScript({
@@ -15756,6 +16181,10 @@ async function runLongVideoJob(
 				voiceTonePlan?.mood,
 				s.topicLabel,
 			),
+			countdownRank: Number.isFinite(Number(s.countdownRank))
+				? Number(s.countdownRank)
+				: null,
+			countdownLabel: cleanTopicLabel(s.countdownLabel || ""),
 			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
 		}));
 		const smoothedExpressions = smoothExpressionPlan(
@@ -16212,6 +16641,10 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			topicLabel: s.topicLabel,
 			text: s.text,
 			expression: s.expression,
+			countdownRank: Number.isFinite(Number(s.countdownRank))
+				? Number(s.countdownRank)
+				: null,
+			countdownLabel: cleanTopicLabel(s.countdownLabel || ""),
 			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
 		}));
 		script.segments = finalScriptSegments;
@@ -16276,6 +16709,10 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				overlayCues: seg.overlayCues,
 				topicIndex: seg.topicIndex,
 				topicLabel: seg.topicLabel,
+				countdownRank: Number.isFinite(Number(seg.countdownRank))
+					? Number(seg.countdownRank)
+					: null,
+				countdownLabel: cleanTopicLabel(seg.countdownLabel || ""),
 				startSec,
 				endSec,
 				audioPath: a.wav,
@@ -17060,6 +17497,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							startSec: seg.startSec,
 							endSec: seg.endSec,
 							visualType: seg.visualType || "presenter",
+							countdownRank: seg.countdownRank || null,
+							countdownLabel: seg.countdownLabel || "",
 						}))
 					: [];
 				const shortsDetailsForDoc = script?.shortsDetails || null;
