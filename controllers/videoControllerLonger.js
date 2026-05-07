@@ -8126,6 +8126,7 @@ function buildThumbnailSignalsFromTopicPick(topicPick) {
 	return {
 		displayTopic,
 		keywords,
+		topList: t.topList || story.topList || null,
 		relatedQueries,
 		interestOverTime,
 		articleTitles,
@@ -8168,6 +8169,16 @@ const THUMBNAIL_GENERIC_HOOK_HEADLINES = new Set([
 	"TOP STORIES",
 	"TOP STORY",
 	"BREAKING",
+]);
+const THUMBNAIL_GENERIC_BADGES = new Set([
+	"NEW DETAILS",
+	"TOP STORY",
+	"TOP STORIES",
+	"BIG UPDATE",
+	"NEW UPDATE",
+	"UPDATE",
+	"JUST DROPPED",
+	"INSIDE LOOK",
 ]);
 const THUMBNAIL_PERSON_EXCLUDE_TOKENS = new Set([
 	"season",
@@ -8325,7 +8336,7 @@ function pickHookFromQueries({
 	const hay = `${rqTop.join(" ")} ${rqRising.join(" ")}`.toLowerCase();
 
 	if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
-		return { headline: "WHAT HAPPENED", badge: "NEW DETAILS" };
+		return { headline: "WHAT HAPPENED", badge: "TIMELINE" };
 	if (/\b(cause of death|dead|died|death)\b/.test(hay))
 		return { headline: "WHAT HAPPENED", badge: "WHAT WE KNOW" };
 	if (/\bwhy\b|\bexplained\b|\bmeaning\b/.test(hay))
@@ -8337,32 +8348,112 @@ function pickHookFromQueries({
 		if (/\bwhat happened\b|\bwhat happened to\b/.test(hay))
 			return { headline: "WHAT HAPPENED", badge: "WHAT CHANGED" };
 		if (/\bwhat she said\b|\bwhat he said\b/.test(hay))
-			return { headline: "WHAT SHE SAID", badge: "NEW DETAILS" };
+			return { headline: "WHAT SHE SAID", badge: "THE QUOTE" };
 		if (/\brecovery\b|\bhealth\b/.test(hay))
 			return { headline: "HEALTH NEWS", badge: "WHAT CHANGED" };
-		return { headline: "WHAT CHANGED", badge: "NEW DETAILS" };
+		return { headline: "WHAT CHANGED", badge: "WHAT CHANGED" };
 	}
 	if (intent === "legal")
 		return { headline: "LEGAL MOVE", badge: "COURT FILE" };
 	if (intent === "finance")
 		return {
 			headline: "MARKET MOVE",
-			badge: slope >= 15 ? "BIG SWING" : "NEW DETAILS",
+			badge: slope >= 15 ? "BIG SWING" : "MARKET WATCH",
 		};
 	if (intent === "sports") return { headline: "KEY MOMENT", badge: "BIG PLAY" };
 	if (intent === "entertainment")
 		return {
-			headline: "NEW DETAILS",
+			headline: "INSIDE STORY",
 			badge: slope >= 15 ? "JUST DROPPED" : "INSIDE LOOK",
 		};
 	if (intent === "politics")
-		return { headline: "POWER MOVE", badge: "NEW DETAILS" };
+		return { headline: "POWER MOVE", badge: "WHAT CHANGED" };
 	if (intent === "weather") return { headline: "STORM TRACK", badge: "ALERT" };
 
 	return {
 		headline: slope >= 15 ? "TRENDING NOW" : "WHAT CHANGED",
-		badge: slope >= 15 ? "JUST DROPPED" : "NEW DETAILS",
+		badge: slope >= 15 ? "TRENDING" : "BREAKDOWN",
 	};
+}
+
+function normalizeBadgeText(text = "") {
+	const clean = String(text || "")
+		.replace(/[?]+/g, "")
+		.trim()
+		.toUpperCase();
+	if (!clean) return "";
+	const words = clean.split(/\s+/).filter(Boolean).slice(0, 3);
+	let out = words.join(" ");
+	while (out.length > 18 && words.length > 1) {
+		words.pop();
+		out = words.join(" ");
+	}
+	return out.slice(0, 18).trim();
+}
+
+function deriveThumbnailBadgeFromSignals({
+	title = "",
+	signals = {},
+	intent = "general",
+	slope = 0,
+} = {}) {
+	const rq = signals.relatedQueries || { top: [], rising: [] };
+	const hay = [
+		title,
+		signals.displayTopic || "",
+		signals.angle || "",
+		signals.reason || "",
+		(rq.top || []).join(" "),
+		(rq.rising || []).join(" "),
+		(signals.articleTitles || []).join(" "),
+		(signals.searchPhrases || []).join(" "),
+		(signals.imageSearchQueries || []).join(" "),
+		(signals.keywords || []).join(" "),
+		signals.imageComment || "",
+	]
+		.join(" ")
+		.toLowerCase();
+
+	const topCount = Number(signals.topList?.count || 0);
+	if (Number.isFinite(topCount) && topCount >= 2) return `TOP ${topCount}`;
+	if (/\b(controversy|controversial|debate|backlash|divided|critics|supporters)\b/.test(hay))
+		return "THE DEBATE";
+	if (/\b(ranking|ranked|top\s+\d|best|worst|most|least)\b/.test(hay))
+		return "RANKED";
+	if (/\b(why|explained|breakdown|analysis|what it means)\b/.test(hay))
+		return "BREAKDOWN";
+	if (/\b(reaction|reacts?|responds?|fans)\b/.test(hay)) return "REACTION";
+	if (/\b(what she said|what he said|said|statement|interview)\b/.test(hay))
+		return "THE QUOTE";
+	if (/\b(release date|launch|delayed|delay|trailer|gameplay|demo)\b/.test(hay))
+		return intent === "gaming" ? "GAME WATCH" : "LATEST";
+	if (/\b(latest|update|updates|confirmed|announced|revealed)\b/.test(hay))
+		return "LATEST";
+	if (intent === "legal") return "COURT FILE";
+	if (intent === "finance") return "MARKET WATCH";
+	if (intent === "sports") return "BIG PLAY";
+	if (intent === "weather") return "ALERT";
+	if (intent === "gaming") return "GAME WATCH";
+	if (intent === "serious_update") return "WHAT CHANGED";
+	if (Number(slope) >= 15) return "TRENDING";
+	return "";
+}
+
+function resolveThumbnailBadgeText({
+	badge = "",
+	title = "",
+	signals = {},
+	intent = "general",
+	slope = 0,
+} = {}) {
+	const normalized = normalizeBadgeText(badge);
+	if (normalized && !THUMBNAIL_GENERIC_BADGES.has(normalized)) {
+		return normalized;
+	}
+	return normalizeBadgeText(
+		deriveThumbnailBadgeFromSignals({ title, signals, intent, slope }) ||
+			normalized,
+	);
 }
 
 function buildTopicImageQueries({ signals }) {
@@ -8425,6 +8516,13 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 		intent,
 		slope,
 	});
+	const resolvedBadge = resolveThumbnailBadgeText({
+		badge,
+		title,
+		signals,
+		intent,
+		slope,
+	});
 	let resolvedHeadline = clampHeadline(headline);
 	const storySpecificHeadline = buildPersonSpecificHeadline({ title, signals });
 	if (
@@ -8470,9 +8568,7 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 	return {
 		intent,
 		headline: resolvedHeadline,
-		badgeText: String(badge || "NEW DETAILS")
-			.trim()
-			.toUpperCase(),
+		badgeText: resolvedBadge,
 		imageQueries: buildTopicImageQueries({ signals, intent }),
 	};
 }

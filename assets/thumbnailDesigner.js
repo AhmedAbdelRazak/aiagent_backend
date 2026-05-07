@@ -988,6 +988,16 @@ const GENERIC_THUMBNAIL_HEADLINES = new Set([
 	"WHAT CHANGED",
 	"EXPLAINED",
 ]);
+const GENERIC_THUMBNAIL_BADGES = new Set([
+	"NEW DETAILS",
+	"TOP STORY",
+	"TOP STORIES",
+	"BIG UPDATE",
+	"NEW UPDATE",
+	"UPDATE",
+	"JUST DROPPED",
+	"INSIDE LOOK",
+]);
 
 function normalizeDisplayWords(text = "") {
 	return normalizeWhitespace(text)
@@ -1056,7 +1066,7 @@ function deriveHeadlineFromTitle({
 		buildSignificantPhrase(seoTitle, 4);
 	if (significant) return significant;
 	if (primaryTopic) return `${primaryTopic} NEWS`;
-	return intent === "legal" ? "NEW DETAILS" : "BIG UPDATE";
+	return intent === "legal" ? "CASE UPDATE" : "BIG UPDATE";
 }
 
 function normalizeHeadlineText(text = "", maxWords = 4) {
@@ -1070,14 +1080,63 @@ function normalizeHeadlineText(text = "", maxWords = 4) {
 	return out.toUpperCase();
 }
 
-function chooseBadgeText({ intent, overrideBadgeText = "" }) {
-	if (overrideBadgeText) return normalizeHeadlineText(overrideBadgeText, 3);
+function deriveBadgeTextFromContext({
+	intent,
+	title,
+	shortTitle,
+	seoTitle,
+	topics,
+} = {}) {
+	const primary = Array.isArray(topics) ? topics[0] || {} : {};
+	const context = buildContextText({ title, shortTitle, seoTitle, topics });
+	const topCount = Number(primary?.topList?.count || 0);
+	if (Number.isFinite(topCount) && topCount >= 2) return `TOP ${topCount}`;
+	if (/\b(controversy|controversial|debate|backlash|divided|critics|supporters)\b/.test(context))
+		return "THE DEBATE";
+	if (/\b(ranking|ranked|top\s+\d|best|worst|most|least)\b/.test(context))
+		return "RANKED";
+	if (/\b(why|explained|breakdown|analysis|what it means)\b/.test(context))
+		return "BREAKDOWN";
+	if (/\b(reaction|reacts?|responds?|fans)\b/.test(context)) return "REACTION";
+	if (/\b(what she said|what he said|said|statement|interview)\b/.test(context))
+		return "THE QUOTE";
+	if (/\b(release date|launch|delayed|delay|trailer|gameplay|demo)\b/.test(context))
+		return intent === "gaming" ? "GAME WATCH" : "LATEST";
+	if (/\b(latest|update|updates|confirmed|announced|revealed)\b/.test(context))
+		return "LATEST";
 	if (intent === "legal") return "COURT FILE";
 	if (intent === "business") return "MARKET WATCH";
-	if (intent === "tech") return "BIG UPDATE";
-	if (intent === "entertainment") return "TRENDING NOW";
+	if (intent === "finance") return "MARKET WATCH";
+	if (intent === "sports") return "BIG PLAY";
+	if (intent === "weather") return "ALERT";
+	if (intent === "gaming") return "GAME WATCH";
 	if (intent === "politics") return "WHAT CHANGED";
-	return "TOP STORY";
+	if (intent === "serious_update") return "WHAT CHANGED";
+	if (intent === "entertainment") return "SPOTLIGHT";
+	if (intent === "tech") return "TECH WATCH";
+	return "SPOTLIGHT";
+}
+
+function chooseBadgeText({
+	intent,
+	overrideBadgeText = "",
+	title,
+	shortTitle,
+	seoTitle,
+	topics,
+}) {
+	const override = normalizeHeadlineText(overrideBadgeText || "", 3);
+	if (override && !GENERIC_THUMBNAIL_BADGES.has(override)) return override;
+	return normalizeHeadlineText(
+		deriveBadgeTextFromContext({
+			intent,
+			title,
+			shortTitle,
+			seoTitle,
+			topics,
+		}) || override,
+		3,
+	);
 }
 
 function headlineHasTopic(headline = "", topicDisplay = "") {
@@ -1128,6 +1187,10 @@ function buildThumbnailTextPlan({
 	const badgeText = chooseBadgeText({
 		intent,
 		overrideBadgeText,
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
 	});
 	const sublineText =
 		primaryTopic && !headlineHasTopic(primaryHeadline, primaryTopic)
@@ -1222,8 +1285,8 @@ function buildThumbnailDesignerPrompt({
 	});
 	const artDirection = buildThumbnailArtDirection(intent);
 	const styleLine = buildStyleDirectionLine(styleProfile);
-	const suggestedHeadline = normalizeWhitespace(headline || "NEW DETAILS");
-	const suggestedBadge = normalizeWhitespace(badgeText || "JUST DROPPED");
+	const suggestedHeadline = normalizeWhitespace(headline || "MAIN STORY");
+	const suggestedBadge = normalizeWhitespace(badgeText || "SPOTLIGHT");
 	const suggestedSubline = normalizeWhitespace(sublineText || primaryTopic);
 	const textSafeWidth = THUMBNAIL_TOPIC_PANEL_W - 96;
 	const textSafeRight = THUMBNAIL_TOPIC_PANEL_W - 48;
@@ -1299,7 +1362,7 @@ No people, no body parts, no readable incidental text, no logos, and no watermar
 Leave the right side open enough for a presenter and keep the left side strong enough for a headline.
 Topic direction: ${topicFocus || "current trending story"}.
 Headline concept: ${headline || "BIG UPDATE"}.
-Badge concept: ${badgeText || "TOP STORY"}.
+Badge concept: ${badgeText || "SPOTLIGHT"}.
 ${sublineText ? `Subline concept: ${sublineText}.` : ""}
 Keep the scene bright, premium, high-contrast, editorial, and YouTube-friendly.
 Intent: ${intent}.
@@ -1611,9 +1674,35 @@ function renderLockedThumbnailTextOverlay({
 			minFontSize: 19,
 		},
 	);
-	const headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
-	const headlineStartY =
+	let headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
+	let headlineStartY =
 		headlineLines.length > 1 ? layout.headlineY - 28 : layout.headlineY;
+	if (headlineLines.length) {
+		const badgeHeadlineGap =
+			Number.isFinite(Number(layout.badgeHeadlineGapPx))
+				? Number(layout.badgeHeadlineGapPx)
+				: layout.badgeBox
+					? 28
+					: 18;
+		headlineStartY = Math.max(
+			headlineStartY,
+			layout.badgeY + badgeFontSize + badgeHeadlineGap,
+		);
+		const maxHeadlineBottom = layout.panelY + layout.panelH - 20;
+		const headlineGaps = Math.max(0, headlineLines.length - 1) * headlineLineGap;
+		const availableLineHeight = Math.floor(
+			(maxHeadlineBottom - headlineStartY - headlineGaps) /
+				Math.max(1, headlineLines.length),
+		);
+		if (
+			Number.isFinite(availableLineHeight) &&
+			availableLineHeight > 0 &&
+			availableLineHeight < headlineFontSize
+		) {
+			headlineFontSize = Math.max(46, availableLineHeight);
+			headlineLineGap = Math.max(8, Math.round(headlineFontSize * 0.1));
+		}
+	}
 	const shouldDrawSubline = Boolean(safeSubline && headlineLines.length <= 1);
 	const sublineY = Math.min(
 		layout.panelY + layout.panelH - sublineTagFontSize - 18,
