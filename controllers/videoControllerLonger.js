@@ -314,6 +314,35 @@ const DEFAULT_OUTPUT_RATIO = "1280:720";
 const DEFAULT_OUTPUT_FPS = 30;
 const DEFAULT_SCALE_MODE = "cover";
 const DEFAULT_IMAGE_SCALE_MODE = "blur";
+const IMAGE_MONTAGE_TIMEOUT_MS = clampNumber(
+	process.env.LONG_VIDEO_IMAGE_MONTAGE_TIMEOUT_MS ?? 90000,
+	30000,
+	240000,
+);
+const IMAGE_MONTAGE_STATIC_TIMEOUT_MS = clampNumber(
+	process.env.LONG_VIDEO_IMAGE_MONTAGE_STATIC_TIMEOUT_MS ?? 90000,
+	30000,
+	180000,
+);
+const IMAGE_PLATE_TIMEOUT_MS = clampNumber(
+	process.env.LONG_VIDEO_IMAGE_PLATE_TIMEOUT_MS ?? 45000,
+	15000,
+	90000,
+);
+const IMAGE_MONTAGE_MAX_IMAGES = clampNumber(
+	process.env.LONG_VIDEO_IMAGE_MONTAGE_MAX_IMAGES ?? 3,
+	1,
+	4,
+);
+const IMAGE_SEGMENT_RENDER_RESERVE = clampNumber(
+	process.env.LONG_VIDEO_IMAGE_SEGMENT_RENDER_RESERVE ?? 2,
+	0,
+	4,
+);
+const ALLOW_PAID_IMAGE_SEGMENT_FALLBACK = envFlag(
+	"LONG_VIDEO_ALLOW_PAID_IMAGE_SEGMENT_FALLBACK",
+	false,
+);
 const INTERMEDIATE_VIDEO_CRF = clampNumber(16, 12, 24);
 const FINAL_VIDEO_CRF = clampNumber(15, 10, 20);
 const INTERMEDIATE_PRESET = "fast";
@@ -6033,6 +6062,10 @@ async function prepareImageSegments({
 
 		const segDur = Math.max(0.2, Number(seg.endSec) - Number(seg.startSec));
 		const desiredCount = computeSegmentImageCount(segDur);
+		const renderTargetCount = Math.max(
+			desiredCount,
+			Math.min(desiredCount + IMAGE_SEGMENT_RENDER_RESERVE, 5),
+		);
 		const topicIndex = Number(seg.topicIndex) || 0;
 		const { query, topicLabel } = resolveSegmentImageQuery(seg, topics);
 		const meta = topicMetaByIndex.get(topicIndex) || {};
@@ -6119,7 +6152,7 @@ async function prepareImageSegments({
 			plannedAvailable,
 			baseRelevanceOpts,
 		);
-		if (relevantBeforeFallback.length < desiredCount) {
+		if (relevantBeforeFallback.length < renderTargetCount) {
 			const fallbackKey = `${query}||${effectiveTopicLabel}`;
 			fallbackUrls = fallbackCache.get(fallbackKey);
 			if (!fallbackUrls) {
@@ -6128,7 +6161,7 @@ async function prepareImageSegments({
 					topicLabel: effectiveTopicLabel,
 					limit: Math.max(
 						10,
-						desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+						renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 					),
 					articleUrls: meta.articleUrls,
 					seedUrls: trustedSeedUrls,
@@ -6173,11 +6206,11 @@ async function prepareImageSegments({
 		if (
 			GOOGLE_IMAGES_SEARCH_ENABLED &&
 			relevantBeforeGoogle.length <
-				desiredCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER)
+				renderTargetCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER)
 		) {
 			const googleTargetPool = Math.max(
-				desiredCount,
-				desiredCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER),
+				renderTargetCount,
+				renderTargetCount * Math.max(1, GOOGLE_IMAGES_MIN_POOL_MULTIPLIER),
 			);
 			const googleVariants = queryVariants.slice(
 				0,
@@ -6191,7 +6224,7 @@ async function prepareImageSegments({
 					urls = await fetchGoogleImagesFromService(gQuery, {
 						limit: Math.max(
 							12,
-							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+							renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 							GOOGLE_IMAGES_RESULTS_PER_QUERY,
 						),
 						baseUrl,
@@ -6251,9 +6284,9 @@ async function prepareImageSegments({
 			cseAvailable &&
 			(CSE_IMAGE_LAST_RESORT_ONLY
 				? availableBeforeCse.length <
-					Math.max(1, Math.min(CSE_IMAGE_FREE_POOL_FLOOR, desiredCount))
+					Math.max(1, Math.min(CSE_IMAGE_FREE_POOL_FLOOR, renderTargetCount))
 				: availableBeforeCse.length <
-					desiredCount * IMAGE_SEARCH_MIN_RANKED_POOL_MULTIPLIER);
+					renderTargetCount * IMAGE_SEARCH_MIN_RANKED_POOL_MULTIPLIER);
 
 		let segmentCseQueryCalls = 0;
 		let segmentCseTopicCalls = 0;
@@ -6269,7 +6302,10 @@ async function prepareImageSegments({
 					urls = await fetchCseImagesForQuery(
 						qVariant,
 						topicTokens,
-						Math.max(12, desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
+						Math.max(
+							12,
+							renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+						),
 						jobId,
 						{ maxPages: CSE_MAX_PAGES },
 					);
@@ -6298,7 +6334,7 @@ async function prepareImageSegments({
 					{
 						maxResults: Math.max(
 							12,
-							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+							renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 						),
 						maxPages: CSE_MAX_PAGES,
 					},
@@ -6343,13 +6379,13 @@ async function prepareImageSegments({
 		const usedUrlKeys = getUsedUrlKeys(topicIndex);
 		const picks = pickSegmentImageUrls(
 			candidates,
-			desiredCount,
+			renderTargetCount,
 			usedUrlKeys,
 			usedHosts,
 			{
 				maxPicks: Math.max(
-					desiredCount,
-					desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+					renderTargetCount,
+					renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 				),
 				requireTokens: segmentTokens,
 				preferTokens: topicTokens,
@@ -6365,7 +6401,7 @@ async function prepareImageSegments({
 			tmpDir,
 			jobId,
 			seg.index,
-			desiredCount,
+			renderTargetCount,
 		);
 		let localPaths = download.localPaths;
 		let pickedUrls = download.usedUrls;
@@ -6382,21 +6418,22 @@ async function prepareImageSegments({
 		logJob(jobId, "segment image picks", {
 			segment: seg.index,
 			desiredCount,
+			renderTargetCount,
 			picked: picks.length,
 			downloaded: localPaths.length,
 		});
 
-		if (localPaths.length < desiredCount) {
-			const missing = Math.max(0, desiredCount - localPaths.length);
+		if (localPaths.length < renderTargetCount) {
+			const missing = Math.max(0, renderTargetCount - localPaths.length);
 			const fallbackKey = `${query}||${effectiveTopicLabel}`;
-			const fallbackUrls =
+			fallbackUrls =
 				fallbackCache.get(fallbackKey) ||
 				(await fetchFallbackImageUrlsForSegment({
 					query,
 					topicLabel: effectiveTopicLabel,
 					limit: Math.max(
 						10,
-						desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+						renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 					),
 					articleUrls: meta.articleUrls,
 					seedUrls: trustedSeedUrls,
@@ -6409,13 +6446,13 @@ async function prepareImageSegments({
 			}
 			const fallbackPicks = pickSegmentImageUrls(
 				fallbackUrls,
-				missing || desiredCount,
+				missing || renderTargetCount,
 				usedUrlKeys,
 				usedHosts,
 				{
 					maxPicks: Math.max(
-						missing || desiredCount,
-						(missing || desiredCount) * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+						missing || renderTargetCount,
+						(missing || renderTargetCount) * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 					),
 					requireTokens: segmentTokens,
 					preferTokens: topicTokens,
@@ -6431,7 +6468,7 @@ async function prepareImageSegments({
 				tmpDir,
 				jobId,
 				seg.index,
-				missing || desiredCount,
+				missing || renderTargetCount,
 			);
 			localPaths = localPaths.concat(download.localPaths || []);
 			pickedUrls = pickedUrls.concat(download.usedUrls || []);
@@ -6446,6 +6483,7 @@ async function prepareImageSegments({
 			logJob(jobId, "segment image picks (fallback)", {
 				segment: seg.index,
 				desiredCount,
+				renderTargetCount,
 				picked: fallbackPicks.length,
 				downloaded: localPaths.length,
 			});
@@ -6475,7 +6513,7 @@ async function prepareImageSegments({
 					urls = await fetchGoogleImagesFromService(rescueQuery, {
 						limit: Math.max(
 							GOOGLE_IMAGES_RESULTS_PER_QUERY,
-							desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+							renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 						),
 						baseUrl,
 						jobId,
@@ -6486,13 +6524,13 @@ async function prepareImageSegments({
 			}
 			const rescuePicks = pickSegmentImageUrls(
 				rescueUrls,
-				desiredCount,
+				renderTargetCount,
 				usedUrlKeys,
 				usedHosts,
 				{
 					maxPicks: Math.max(
-						desiredCount,
-						desiredCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+						renderTargetCount,
+						renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 					),
 					preferTokens: topicTokens,
 					queryTokens,
@@ -6507,7 +6545,7 @@ async function prepareImageSegments({
 				tmpDir,
 				jobId,
 				seg.index,
-				desiredCount,
+				renderTargetCount,
 			);
 			localPaths = localPaths.concat(download.localPaths || []);
 			pickedUrls = pickedUrls.concat(download.usedUrls || []);
@@ -6522,6 +6560,7 @@ async function prepareImageSegments({
 			logJob(jobId, "segment image picks (google rescue)", {
 				segment: seg.index,
 				desiredCount,
+				renderTargetCount,
 				queries: rescueQueries,
 				candidates: rescueUrls.length,
 				picked: rescuePicks.length,
@@ -6529,8 +6568,8 @@ async function prepareImageSegments({
 			});
 		}
 
-		if (localPaths.length < desiredCount) {
-			const missing = Math.max(1, desiredCount - localPaths.length);
+		if (localPaths.length < renderTargetCount) {
+			const missing = Math.max(1, renderTargetCount - localPaths.length);
 			const alreadyPickedKeys = new Set(
 				pickedUrls.map((u) => normalizeImageUrlKey(u)),
 			);
@@ -6596,6 +6635,7 @@ async function prepareImageSegments({
 			logJob(jobId, "segment image picks (ratio rescue)", {
 				segment: seg.index,
 				desiredCount,
+				renderTargetCount,
 				missing,
 				candidates: relaxedPool.length,
 				picked: relaxedPicks.length,
@@ -6621,6 +6661,8 @@ async function prepareImageSegments({
 			segment: seg.index,
 			query,
 			topicLabel: effectiveTopicLabel,
+			desiredCount,
+			renderTargetCount,
 			planned: plannedSegmentUrls.length,
 			potential: potentialUrls.length,
 			seeded: seedUrls.length,
@@ -6656,7 +6698,7 @@ async function prepareImageSegments({
 		let cloudinaryUrls = [];
 		if (localPaths.length) {
 			cloudinaryUrls = await uploadSegmentImagesToCloudinary({
-				localPaths,
+				localPaths: localPaths.slice(0, desiredCount),
 				jobId,
 				segIndex: seg.index,
 				topicLabel: effectiveTopicLabel,
@@ -6679,6 +6721,8 @@ async function prepareImageSegments({
 			segment: seg.index,
 			imageCount: localPaths.length,
 			cloudinaryCount: cloudinaryUrls.length,
+			desiredCount,
+			renderTargetCount,
 			query,
 			topicLabel: effectiveTopicLabel,
 		});
@@ -14386,6 +14430,195 @@ function buildSubtleStillMotionFilter({
 	return `zoompan=z='min(${zoomInMax},zoom+${zoomInStep})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${safeFps}`;
 }
 
+async function createImageMontagePlateFrame({
+	jobId,
+	tmpDir,
+	output,
+	imgPath,
+	label,
+	idx = 0,
+	mode = "blur",
+}) {
+	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
+	const out = path.join(
+		tmpDir,
+		`seg_img_plate_${jobId}_${safeLabel}_${idx}.jpg`,
+	);
+	const w = makeEven(output.w);
+	const h = makeEven(output.h);
+	const blurMode = String(mode || "").toLowerCase() === "blur";
+	const simpleVf = `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=bicubic,crop=${w}:${h},setsar=1,format=yuv420p`;
+
+	if (!blurMode) {
+		await spawnBin(
+			ffmpegPath,
+			["-i", imgPath, "-vf", simpleVf, "-frames:v", "1", "-q:v", "3", "-y", out],
+			"image_plate",
+			{ timeoutMs: IMAGE_PLATE_TIMEOUT_MS },
+		);
+		return out;
+	}
+
+	const filter = [
+		"[0:v]split=2[bg][fg]",
+		`[bg]scale=${w}:${h}:force_original_aspect_ratio=increase:flags=bicubic,crop=${w}:${h},gblur=sigma=12[bg2]`,
+		`[fg]scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=bicubic[fg2]`,
+		`[bg2][fg2]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[v]`,
+	].join(";");
+
+	try {
+		await spawnBin(
+			ffmpegPath,
+			[
+				"-i",
+				imgPath,
+				"-filter_complex",
+				filter,
+				"-map",
+				"[v]",
+				"-frames:v",
+				"1",
+				"-q:v",
+				"3",
+				"-y",
+				out,
+			],
+			"image_plate",
+			{ timeoutMs: IMAGE_PLATE_TIMEOUT_MS },
+		);
+		return out;
+	} catch (e) {
+		safeUnlink(out);
+		const fallback = path.join(
+			tmpDir,
+			`seg_img_plate_${jobId}_${safeLabel}_${idx}_simple.jpg`,
+		);
+		await spawnBin(
+			ffmpegPath,
+			[
+				"-i",
+				imgPath,
+				"-vf",
+				simpleVf,
+				"-frames:v",
+				"1",
+				"-q:v",
+				"3",
+				"-y",
+				fallback,
+			],
+			"image_plate_simple",
+			{ timeoutMs: IMAGE_PLATE_TIMEOUT_MS },
+		);
+		return fallback;
+	}
+}
+
+async function prepareImageMontagePlateFrames({
+	jobId,
+	tmpDir,
+	output,
+	imagePaths = [],
+	label,
+	mode = "blur",
+}) {
+	const maxImages = Math.max(1, Math.floor(Number(IMAGE_MONTAGE_MAX_IMAGES) || 3));
+	const selected = imagePaths.filter(Boolean).slice(0, maxImages);
+	const plates = [];
+	for (let i = 0; i < selected.length; i++) {
+		plates.push(
+			await createImageMontagePlateFrame({
+				jobId,
+				tmpDir,
+				output,
+				imgPath: selected[i],
+				label,
+				idx: i,
+				mode,
+			}),
+		);
+	}
+	return plates;
+}
+
+async function createStaticImageFallbackClip({
+	jobId,
+	tmpDir,
+	output,
+	segDur,
+	imagePaths = [],
+	label,
+}) {
+	const sources = Array.isArray(imagePaths) ? imagePaths.filter(Boolean) : [];
+	if (!sources.length) throw new Error("No images for static image fallback");
+	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
+	const dur = Math.max(0.2, Number(segDur) || 0.2);
+	const w = makeEven(output.w);
+	const h = makeEven(output.h);
+	const fps = Number(output.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+	const errors = [];
+	for (let i = 0; i < sources.length; i++) {
+		const source = sources[i];
+		const raw = path.join(
+			tmpDir,
+			`seg_img_${jobId}_${safeLabel}_static_${i}.mp4`,
+		);
+		const labelNum = Number(label);
+		const motion = buildSubtleStillMotionFilter({
+			idx: Number.isFinite(labelNum) ? labelNum + i : i,
+			fps,
+			w,
+			h,
+			mode: "blur",
+		});
+		const vf = `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=bicubic,crop=${w}:${h},${motion},trim=0:${dur.toFixed(3)},setpts=PTS-STARTPTS,setsar=1,format=yuv420p`;
+		try {
+			await spawnBin(
+				ffmpegPath,
+				[
+					"-loop",
+					"1",
+					"-framerate",
+					String(fps),
+					"-i",
+					source,
+					"-t",
+					dur.toFixed(3),
+					"-vf",
+					vf,
+					"-c:v",
+					"libx264",
+					"-preset",
+					"ultrafast",
+					"-crf",
+					String(Math.max(INTERMEDIATE_VIDEO_CRF, 18)),
+					"-pix_fmt",
+					"yuv420p",
+					"-movflags",
+					"+faststart",
+					"-y",
+					raw,
+				],
+				"image_montage_static",
+				{ timeoutMs: IMAGE_MONTAGE_STATIC_TIMEOUT_MS },
+			);
+			if (i > 0) {
+				logJob(jobId, "image static fallback used alternate feed image", {
+					label: safeLabel,
+					index: i,
+				});
+			}
+			return raw;
+		} catch (e) {
+			safeUnlink(raw);
+			errors.push(e?.message || String(e));
+		}
+	}
+	throw new Error(
+		`image_static_fallback_failed: ${errors.slice(0, 3).join(" | ")}`,
+	);
+}
+
 async function createImageMontageClip({
 	jobId,
 	tmpDir,
@@ -14407,10 +14640,39 @@ async function createImageMontageClip({
 	)
 		.trim()
 		.toLowerCase();
-	const perDur = Math.max(0.2, dur / imagePaths.length);
+	let workingImagePaths = imagePaths
+		.filter(Boolean)
+		.slice(
+			0,
+			Math.max(1, Math.floor(Number(IMAGE_MONTAGE_MAX_IMAGES) || 3)),
+		);
+	if (!workingImagePaths.length) throw new Error("No usable images for segment");
+	let cleanupImagePaths = [];
+	let effectiveImageScaleMode = imageScaleMode;
+	if (imageScaleMode === "blur") {
+		try {
+			workingImagePaths = await prepareImageMontagePlateFrames({
+				jobId,
+				tmpDir,
+				output,
+				imagePaths: workingImagePaths,
+				label: safeLabel,
+				mode: "blur",
+			});
+			cleanupImagePaths = workingImagePaths.slice();
+			effectiveImageScaleMode = "plate";
+		} catch (e) {
+			logJob(jobId, "image montage plate prep failed; using simple path", {
+				label: safeLabel,
+				error: e.message,
+			});
+			effectiveImageScaleMode = "cover";
+		}
+	}
+	const perDur = Math.max(0.2, dur / workingImagePaths.length);
 	const labelNum = Number(label);
 	const useCrossfade =
-		imagePaths.length > 1 &&
+		workingImagePaths.length > 1 &&
 		perDur >= 1.4 &&
 		(!Number.isFinite(labelNum) || labelNum % 2 === 0);
 	const crossfadeDur = useCrossfade ? clampNumber(perDur * 0.2, 0.25, 0.6) : 0;
@@ -14419,11 +14681,22 @@ async function createImageMontageClip({
 	const filterParts = [];
 	const vLabels = [];
 
-	imagePaths.forEach((imgPath, idx) => {
-		inputs.push("-loop", "1", "-i", imgPath);
+	workingImagePaths.forEach((imgPath, idx) => {
+		inputs.push("-loop", "1", "-framerate", String(fps), "-i", imgPath);
 		const outLabel = `v${idx}`;
 		const trim = `trim=0:${perDur.toFixed(3)},setpts=PTS-STARTPTS`;
-		if (imageScaleMode === "blur") {
+		if (effectiveImageScaleMode === "plate") {
+			const motion = buildSubtleStillMotionFilter({
+				idx: Number.isFinite(labelNum) ? labelNum + idx : idx,
+				fps,
+				w,
+				h,
+				mode: "blur",
+			});
+			filterParts.push(
+				`[${idx}:v]${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`,
+			);
+		} else if (effectiveImageScaleMode === "blur") {
 			const bg = `bg${idx}`;
 			const fg = `fg${idx}`;
 			const bg2 = `bg2${idx}`;
@@ -14447,14 +14720,14 @@ async function createImageMontageClip({
 			);
 		} else {
 			const scale =
-				imageScaleMode === "contain"
+				effectiveImageScaleMode === "contain"
 					? `scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`
 					: `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}`;
 			const panX = idx % 2 === 0 ? "0" : "iw*0.03";
 			const panY = idx % 3 === 0 ? "0" : "ih*0.02";
 			const motionMode = idx % 3;
 			const motion =
-				imageScaleMode === "cover"
+				effectiveImageScaleMode === "cover"
 					? motionMode === 0
 						? `zoompan=z='min(1.08,zoom+0.0007)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps}`
 						: motionMode === 1
@@ -14468,10 +14741,10 @@ async function createImageMontageClip({
 		vLabels.push(`[${outLabel}]`);
 	});
 
-	if (useCrossfade && imagePaths.length > 1) {
+	if (useCrossfade && workingImagePaths.length > 1) {
 		let last = "v0";
 		let acc = perDur;
-		for (let i = 1; i < imagePaths.length; i++) {
+		for (let i = 1; i < workingImagePaths.length; i++) {
 			const out = `xf${i}`;
 			const offset = Math.max(0, acc - crossfadeDur);
 			filterParts.push(
@@ -14485,37 +14758,41 @@ async function createImageMontageClip({
 		filterParts.push(`[${last}]setsar=1,format=yuv420p[v]`);
 	} else {
 		filterParts.push(
-			`${vLabels.join("")}concat=n=${imagePaths.length}:v=1:a=0[v]`,
+			`${vLabels.join("")}concat=n=${workingImagePaths.length}:v=1:a=0[v]`,
 		);
 	}
 
 	const raw = path.join(tmpDir, `seg_img_${jobId}_${safeLabel}_raw.mp4`);
-	await spawnBin(
-		ffmpegPath,
-		[
-			...inputs,
-			"-filter_complex",
-			filterParts.join(";"),
-			"-map",
-			"[v]",
-			"-r",
-			String(fps),
-			"-c:v",
-			"libx264",
-			"-preset",
-			INTERMEDIATE_PRESET,
-			"-crf",
-			String(INTERMEDIATE_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-movflags",
-			"+faststart",
-			"-y",
-			raw,
-		],
-		"image_montage",
-		{ timeoutMs: 240000 },
-	);
+	try {
+		await spawnBin(
+			ffmpegPath,
+			[
+				...inputs,
+				"-filter_complex",
+				filterParts.join(";"),
+				"-map",
+				"[v]",
+				"-r",
+				String(fps),
+				"-c:v",
+				"libx264",
+				"-preset",
+				INTERMEDIATE_PRESET,
+				"-crf",
+				String(INTERMEDIATE_VIDEO_CRF),
+				"-pix_fmt",
+				"yuv420p",
+				"-movflags",
+				"+faststart",
+				"-y",
+				raw,
+			],
+			"image_montage",
+			{ timeoutMs: IMAGE_MONTAGE_TIMEOUT_MS },
+		);
+	} finally {
+		cleanupImagePaths.forEach((p) => safeUnlink(p));
+	}
 
 	const fit = path.join(tmpDir, `seg_img_${jobId}_${safeLabel}_fit.mp4`);
 	await fitVideoToDuration(raw, dur, fit);
@@ -14534,20 +14811,92 @@ async function renderImageSegment({
 	addFades = false,
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
-	const montage = await createImageMontageClip({
-		jobId,
-		tmpDir,
-		output,
-		segDur,
-		imagePaths,
-		label: safeLabel,
-	});
+	let montage;
+	try {
+		montage = await createImageMontageClip({
+			jobId,
+			tmpDir,
+			output,
+			segDur,
+			imagePaths,
+			label: safeLabel,
+		});
+	} catch (e) {
+		logJob(jobId, "image montage failed; using local static fallback", {
+			label: safeLabel,
+			error: e.message,
+		});
+		montage = await createStaticImageFallbackClip({
+			jobId,
+			tmpDir,
+			output,
+			segDur,
+			imagePaths,
+			label: safeLabel,
+		});
+	}
 
 	const withAudio = path.join(tmpDir, `img_${jobId}_${safeLabel}_audio.mp4`);
 	await mergeVideoWithAudio(montage, audioPath, withAudio);
 	safeUnlink(montage);
 
 	const norm = path.join(tmpDir, `img_${jobId}_${safeLabel}_norm.mp4`);
+	await normalizeClip(withAudio, norm, output, {
+		zoomOut: CAMERA_ZOOM_OUT,
+		addFades,
+	});
+	safeUnlink(withAudio);
+	return norm;
+}
+
+async function renderNoSyncVisualFallbackSegment({
+	jobId,
+	tmpDir,
+	output,
+	segDur,
+	audioPath,
+	label,
+	addFades = false,
+}) {
+	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
+	const dur = Math.max(0.2, Number(segDur) || 0.2);
+	const w = makeEven(output.w);
+	const h = makeEven(output.h);
+	const fps = Number(output.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+	const raw = path.join(tmpDir, `img_${jobId}_${safeLabel}_nosync_raw.mp4`);
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-f",
+			"lavfi",
+			"-i",
+			`color=c=0x111827:s=${w}x${h}:r=${fps}`,
+			"-t",
+			dur.toFixed(3),
+			"-vf",
+			"format=yuv420p",
+			"-c:v",
+			"libx264",
+			"-preset",
+			"ultrafast",
+			"-crf",
+			String(Math.max(INTERMEDIATE_VIDEO_CRF, 18)),
+			"-pix_fmt",
+			"yuv420p",
+			"-movflags",
+			"+faststart",
+			"-y",
+			raw,
+		],
+		"image_no_sync_fallback",
+		{ timeoutMs: IMAGE_MONTAGE_STATIC_TIMEOUT_MS },
+	);
+
+	const withAudio = path.join(tmpDir, `img_${jobId}_${safeLabel}_nosync_audio.mp4`);
+	await mergeVideoWithAudio(raw, audioPath, withAudio);
+	safeUnlink(raw);
+
+	const norm = path.join(tmpDir, `img_${jobId}_${safeLabel}_nosync_norm.mp4`);
 	await normalizeClip(withAudio, norm, output, {
 		zoomOut: CAMERA_ZOOM_OUT,
 		addFades,
@@ -18251,6 +18600,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					syncTier: unit.syncTier,
 				})),
 		});
+		const feedImageFallbackPaths = [];
+		const feedImageFallbackPathSet = new Set();
+		if (segmentImagePaths instanceof Map) {
+			for (const paths of segmentImagePaths.values()) {
+				for (const p of paths || []) {
+					if (!p || feedImageFallbackPathSet.has(p)) continue;
+					feedImageFallbackPathSet.add(p);
+					feedImageFallbackPaths.push(p);
+				}
+			}
+		}
+		let lastGoodFeedImagePaths = [];
 		for (const seg of renderUnits) {
 			const segDur = Math.max(0.2, Number(seg.segDur || 0));
 			logJob(jobId, "segment start", {
@@ -18265,34 +18626,122 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const baselineSource =
 				pickBaselineVariant(exprKey, seg.index) || baselineDefault;
 			let norm = null;
-			if (seg.visualType === "image") {
+			const plannedVisualType = seg.visualType || "presenter";
+			let actualVisualType = plannedVisualType;
+			let fallbackReason = "";
+			if (plannedVisualType === "image") {
 				const imagePaths = segmentImagePaths.get(seg.index) || [];
+				const primaryPathSet = new Set(imagePaths);
+				const renderFeedImageClip = (paths, labelSuffix = "") =>
+					renderImageSegment({
+						jobId,
+						tmpDir,
+						output,
+						segDur,
+						audioPath: seg.audioPath,
+						imagePaths: paths,
+						label: labelSuffix
+							? `${seg.index}_${labelSuffix}`
+							: String(seg.index),
+						addFades: ENABLE_SEGMENT_FADES,
+					});
 				if (imagePaths.length) {
 					try {
-						norm = await renderImageSegment({
+						norm = await renderFeedImageClip(imagePaths);
+						actualVisualType = "image";
+						lastGoodFeedImagePaths = imagePaths.slice(0, 5);
+					} catch (e) {
+						logJob(jobId, "image segment render failed; trying feed-image rescue", {
+							segment: seg.index,
+							feedImages: imagePaths.length,
+							error: e.message,
+						});
+						fallbackReason = "image_render_failed";
+					}
+				} else {
+					logJob(jobId, "image segment missing assets; trying feed-image rescue", {
+						segment: seg.index,
+					});
+					fallbackReason = "image_assets_missing";
+				}
+
+				if (!norm) {
+					const rescuePaths = [];
+					const rescuePathSet = new Set();
+					const addRescuePath = (p) => {
+						if (!p || rescuePathSet.has(p) || primaryPathSet.has(p)) return;
+						rescuePathSet.add(p);
+						rescuePaths.push(p);
+					};
+					lastGoodFeedImagePaths.forEach(addRescuePath);
+					feedImageFallbackPaths.forEach(addRescuePath);
+					if (rescuePaths.length) {
+						try {
+							norm = await renderFeedImageClip(
+								rescuePaths.slice(0, 8),
+								"feed_rescue",
+							);
+							actualVisualType = "image_rescue";
+							fallbackReason = fallbackReason
+								? `${fallbackReason}_rescued_with_feed_images`
+								: "image_rescued_with_feed_images";
+							lastGoodFeedImagePaths = rescuePaths.slice(0, 5);
+							logJob(jobId, "image segment feed-image rescue ready", {
+								segment: seg.index,
+								rescueImages: Math.min(rescuePaths.length, 8),
+							});
+						} catch (e) {
+							logJob(jobId, "image segment feed-image rescue failed", {
+								segment: seg.index,
+								rescueImages: Math.min(rescuePaths.length, 8),
+								error: e.message,
+							});
+						}
+					}
+				}
+
+				if (!norm) {
+					try {
+						logJob(jobId, "image segment feed images exhausted; using local no-sync fallback", {
+							segment: seg.index,
+						});
+						norm = await renderNoSyncVisualFallbackSegment({
 							jobId,
 							tmpDir,
 							output,
 							segDur,
 							audioPath: seg.audioPath,
-							imagePaths,
-							label: String(seg.index),
+							label: `${seg.index}_nosync`,
 							addFades: ENABLE_SEGMENT_FADES,
 						});
+						actualVisualType = "local_visual_fallback";
+						fallbackReason = fallbackReason
+							? `${fallbackReason}_used_no_sync_visual`
+							: "image_used_no_sync_visual";
 					} catch (e) {
-						logJob(jobId, "image segment failed; fallback to presenter", {
+						logJob(jobId, "image segment local no-sync fallback failed; fallback to presenter", {
 							segment: seg.index,
 							error: e.message,
 						});
+						actualVisualType = "presenter_fallback";
+						fallbackReason = fallbackReason || "image_render_unavailable";
 					}
-				} else {
-					logJob(jobId, "image segment missing assets; fallback to presenter", {
-						segment: seg.index,
-					});
 				}
 			}
 
 			if (!norm) {
+				if (
+					plannedVisualType === "image" &&
+					!ALLOW_PAID_IMAGE_SEGMENT_FALLBACK
+				) {
+					throw new Error(
+						`planned image segment ${seg.index} failed all local visual fallbacks`,
+					);
+				}
+				if (plannedVisualType === "image" && !fallbackReason) {
+					actualVisualType = "presenter_fallback";
+					fallbackReason = "image_render_unavailable";
+				}
 				norm = await renderLipsyncedSegment({
 					jobId,
 					tmpDir,
@@ -18312,7 +18761,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				segment: seg.index,
 				renderLabel: seg.renderLabel || String(seg.index),
 				renderSegments: seg.renderSegmentIndices || [seg.index],
-				visualType: seg.visualType || "presenter",
+				visualType: plannedVisualType,
+				actualVisualType,
+				...(fallbackReason ? { fallbackReason } : {}),
 			});
 		}
 
