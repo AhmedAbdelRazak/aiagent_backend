@@ -1548,6 +1548,151 @@ function normalizeCategoryLabel(label) {
 	return CATEGORY_LABEL_ALIASES[key] || raw;
 }
 
+const PROMPT_CATEGORY_RULES = [
+	{
+		label: "Health",
+		weight: 4,
+		patterns: [
+			/\b(public\s+health|world\s+health\s+organization|health|disease|outbreak|infection|infected|illness|hospital|symptoms?|transmission|pandemic|epidemic|vaccine|cdc|case\s+counts?|contact\s+tracing|mortality|treatment)\b/i,
+			/\b[a-z0-9-]*virus\b/i,
+		],
+	},
+	{
+		label: "Travel",
+		weight: 3,
+		patterns: [
+			/\b(top\s*\d+\s+)?(cities|city|countries|country|places|destinations?|travel|tourism|visit|vacation|hotels?|resorts?|beaches|landmarks?|airports?|cruise|road\s*trip)\b/i,
+			/\btop\s*\d+\s+citites\b/i,
+		],
+	},
+	{
+		label: "Gaming",
+		weight: 3,
+		patterns: [
+			/\b(video\s*games?|gaming|gameplay|console|playstation|xbox|nintendo|steam|rpg|trailer|demo|combat|open\s+world|patch|developer|studio|esports?)\b/i,
+		],
+	},
+	{
+		label: "Sports",
+		weight: 3,
+		patterns: [
+			/\b(sports?|nba|nfl|mlb|nhl|soccer|football|basketball|baseball|hockey|ufc|boxing|tennis|golf|matchup|playoffs?|tournament|score|standings|draft|coach|player)\b/i,
+		],
+	},
+	{
+		label: "Finance",
+		weight: 3,
+		patterns: [
+			/\b(stocks?|market|finance|bitcoin|crypto|inflation|fed|interest\s+rates?|earnings|revenue|profit|bank|economy|investment|investors?)\b/i,
+		],
+	},
+	{
+		label: "Technology",
+		weight: 3,
+		patterns: [
+			/\b(technology|tech|ai|artificial\s+intelligence|software|startup|app|iphone|android|robotics?|cybersecurity|chip|semiconductor|openai|google|microsoft|apple|tesla)\b/i,
+		],
+	},
+	{
+		label: "Politics",
+		weight: 3,
+		patterns: [
+			/\b(politics|political|election|president|prime\s+minister|senate|congress|parliament|governor|white\s+house|supreme\s+court|government|policy|lawmakers?|campaign|vote|diplomacy|sanctions|ceasefire|war)\b/i,
+		],
+	},
+	{
+		label: "Science",
+		weight: 2,
+		patterns: [
+			/\b(science|space|nasa|astronomy|physics|climate\s+science|researchers?|study|scientists?|discovery|experiment)\b/i,
+		],
+	},
+	{
+		label: "Business",
+		weight: 2,
+		patterns: [
+			/\b(business|company|companies|ceo|merger|acquisition|layoffs?|brand|retail|sales|industry|startup|deal)\b/i,
+		],
+	},
+	{
+		label: "FoodDrink",
+		weight: 2,
+		patterns: [
+			/\b(food|drink|restaurant|recipe|coffee|tea|meal|diet|cooking|chef|fast\s+food|beverage)\b/i,
+		],
+	},
+	{
+		label: "Education",
+		weight: 2,
+		patterns: [
+			/\b(education|school|college|university|students?|teachers?|learning|course|degree|campus)\b/i,
+		],
+	},
+	{
+		label: "Climate",
+		weight: 2,
+		patterns: [
+			/\b(climate|weather|storm|hurricane|wildfire|flood|heatwave|emissions|renewable|environment)\b/i,
+		],
+	},
+	{
+		label: "Fashion",
+		weight: 2,
+		patterns: [
+			/\b(fashion|style|outfit|runway|designer|makeup|beauty|skincare|luxury)\b/i,
+		],
+	},
+	{
+		label: "Pets and Animals",
+		weight: 2,
+		patterns: [
+			/\b(pets?|animals?|dogs?|cats?|wildlife|zoo|veterinary|vet|rescue)\b/i,
+		],
+	},
+	{
+		label: "Entertainment",
+		weight: 2,
+		patterns: [
+			/\b(movie|film|tv|series|streaming|celebrity|actor|actress|music|album|song|concert|trailer|box\s+office|netflix|disney|hollywood)\b/i,
+		],
+	},
+];
+
+function promptCategoryText({ topics = [], promptText = "" } = {}) {
+	const parts = [promptText];
+	for (const topic of Array.isArray(topics) ? topics : []) {
+		if (!topic) continue;
+		parts.push(
+			topic.displayTopic,
+			topic.topic,
+			topic.angle,
+			topic.reason,
+			topic.source,
+			topic.topList?.subject,
+			...(Array.isArray(topic.keywords) ? topic.keywords : []),
+			...(Array.isArray(topic.searchHints) ? topic.searchHints : []),
+			...(Array.isArray(topic.imageSearchHints) ? topic.imageSearchHints : []),
+		);
+	}
+	return parts.filter(Boolean).join(" ");
+}
+
+function inferPromptCategoryLabel({ topics = [], promptText = "" } = {}) {
+	const hay = promptCategoryText({ topics, promptText }).trim();
+	if (!hay) return "";
+	const scores = PROMPT_CATEGORY_RULES.map((rule, order) => {
+		let score = 0;
+		for (const pattern of rule.patterns || []) {
+			const matches = hay.match(new RegExp(pattern.source, pattern.flags || "i"));
+			if (matches) score += rule.weight || 1;
+		}
+		return { label: rule.label, score, order };
+	})
+		.filter((item) => item.score > 0)
+		.sort((a, b) => b.score - a.score || a.order - b.order);
+	return scores.length ? normalizeCategoryLabel(scores[0].label) : "";
+}
+
 const LANGUAGE_LABEL_MAP = {
 	en: "English",
 	es: "Spanish",
@@ -10398,13 +10543,39 @@ function isPoliticsCategoryLabel(categoryLabel = "", topics = []) {
 		: false;
 }
 
+function isHealthCategoryLabel(categoryLabel = "", topics = []) {
+	const normalized = normalizeCategoryLabel(categoryLabel).toLowerCase();
+	if (/\b(health|public health)\b/.test(normalized)) return true;
+	return Array.isArray(topics)
+		? topics.some((topic) => {
+				const label = [
+					topic?.displayTopic,
+					topic?.topic,
+					topic?.angle,
+					...(Array.isArray(topic?.keywords) ? topic.keywords : []),
+				]
+					.filter(Boolean)
+					.join(" ")
+					.toLowerCase();
+				return (
+					/\b(public\s+health|world\s+health\s+organization|health|disease|outbreak|infection|infected|illness|hospital|symptoms?|transmission|pandemic|epidemic|vaccine|cdc|case\s+counts?|contact\s+tracing|mortality|treatment)\b/.test(
+						label,
+					) || /\b[a-z0-9-]*virus\b/.test(label)
+				);
+			})
+		: false;
+}
+
 function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 	const isSports = isSportsCategoryLabel(categoryLabel, topics);
 	const isPolitics = isPoliticsCategoryLabel(categoryLabel, topics);
+	const isHealth = isHealthCategoryLabel(categoryLabel, topics);
 	if (isPolitics) {
 		return {
 			isSports: false,
 			isPolitics: true,
+			isHealth: false,
+			isSerious: true,
 			lines: [
 				"- For politics, diplomacy, war, courts, or public safety, keep the voice measured and specific. No jokes, hype, or overly casual creator filler.",
 				'- Avoid casual pivots like "real quick" and "here\'s the thing"; use precise transitions such as "the key question", "the pressure point", or "the unresolved part".',
@@ -10415,10 +10586,28 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 		};
 	}
 
+	if (isHealth) {
+		return {
+			isSports: false,
+			isPolitics: false,
+			isHealth: true,
+			isSerious: true,
+			lines: [
+				"- For health, disease, outbreak, or public-safety topics, keep the voice calm, precise, and useful. No jokes, hype, or creator filler.",
+				'- Avoid casual pivots like "real quick", "here\'s the thing", and "that\'s wild"; use measured transitions such as "the key distinction", "the public-health question", or "the unresolved test".',
+				"- Attribute medical or public-health claims close to the claim, and separate confirmed reporting from uncertainty, monitoring, and interpretation.",
+				"- Emphasize what is known, what is not known, and what viewers should watch next without implying panic or minimizing legitimate risk.",
+				"- Write for spoken delivery first. Translate keyword-style phrases into natural sentences a presenter would actually say.",
+			],
+		};
+	}
+
 	if (!isSports) {
 		return {
 			isSports: false,
 			isPolitics: false,
+			isHealth: false,
+			isSerious: false,
 			lines: [
 				"- Write for spoken delivery first. Translate keyword-style phrases into natural sentences a presenter would actually say.",
 				"- Attribute the reporting source, analyst, or outlet itself. Do not treat a platform host like YouTube, TikTok, Reddit, Instagram, or X as the authority.",
@@ -10431,6 +10620,8 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 	return {
 		isSports: true,
 		isPolitics: false,
+		isHealth: false,
+		isSerious: false,
 		lines: [
 			"- For sports topics, write like a sharp postgame or pregame breakdown, not a search-trends explainer.",
 			"- Open on the matchup tension, turning point, or strategic edge. Do NOT open on what people are searching for.",
@@ -10726,6 +10917,8 @@ function buildDynamicRetentionGuide({
 	const isSensitive =
 		mood === "serious" ||
 		Boolean(categoryGuide?.isPolitics) ||
+		Boolean(categoryGuide?.isHealth) ||
+		Boolean(categoryGuide?.isSerious) ||
 		isSensitiveTopicText(topicText);
 	const isSports = Boolean(categoryGuide?.isSports);
 	const isEntertainment = isEntertainmentTopicText(topicText);
@@ -11464,6 +11657,17 @@ function analyzeScriptQuality({
 		(s) => countWords(s.text) < QA_MIN_SEGMENT_WORDS,
 	);
 	if (shortSegments.length) warnings.push("short_segments_detected");
+	const veryShortWordLimit = Math.max(
+		6,
+		Math.floor(QA_MIN_SEGMENT_WORDS * 0.65),
+	);
+	const veryShortSegments = shortSegments.filter(
+		(s) => countWords(s.text) <= veryShortWordLimit,
+	);
+	const tooManyShortSegments =
+		shortSegments.length >= Math.max(2, Math.ceil(segments.length * 0.18));
+	if (veryShortSegments.length) warnings.push("very_short_segments_detected");
+	if (tooManyShortSegments) warnings.push("too_many_short_segments_detected");
 
 	const sourceTokensByTopic = new Map();
 	for (let i = 0; i < (topics || []).length; i++) {
@@ -11503,6 +11707,8 @@ function analyzeScriptQuality({
 		duplicatePairs.length > 0 ||
 		missingAttributionTopics.length > 0 ||
 		trendCoverage.missingTopics.length > 0 ||
+		veryShortSegments.length > 0 ||
+		tooManyShortSegments ||
 		speakability.needsRewrite;
 	const hasCritical = issues.length > 0;
 
@@ -11516,6 +11722,8 @@ function analyzeScriptQuality({
 			segmentCount: segments.length,
 			duplicatePairs,
 			shortSegments: shortSegments.map((s) => s.index),
+			veryShortSegments: veryShortSegments.map((s) => s.index),
+			tooManyShortSegments,
 			missingAttributionTopics,
 			missingTrendSignalTopics: trendCoverage.missingTopics,
 			searchMetaSegments: speakability.stats?.searchMetaSegments || [],
@@ -15836,8 +16044,14 @@ async function runLongVideoJob(
 		);
 		const effectiveVoiceId = String(ELEVEN_FIXED_VOICE_ID || "").trim();
 		const contentTargetSec = Number(targetDurationSec || 0);
-		const categoryLabel =
+		const requestedCategoryLabel =
 			normalizeCategoryLabel(category) || LONG_VIDEO_TRENDS_CATEGORY;
+		let categoryLabel = requestedCategoryLabel;
+		const promptTextForCategory = String(preferredTopicHint || "").trim();
+		const earlyPromptCategoryLabel = promptTextForCategory
+			? inferPromptCategoryLabel({ promptText: promptTextForCategory })
+			: "";
+		if (earlyPromptCategoryLabel) categoryLabel = earlyPromptCategoryLabel;
 		let introDurationSec = clampNumber(
 			DEFAULT_INTRO_SEC,
 			INTRO_MIN_SEC,
@@ -15884,6 +16098,16 @@ async function runLongVideoJob(
 			voiceIdLocked: effectiveVoiceId,
 			hasYouTubeTokens,
 		});
+		if (
+			earlyPromptCategoryLabel &&
+			earlyPromptCategoryLabel !== requestedCategoryLabel
+		) {
+			logJob(jobId, "prompt category inferred", {
+				stage: "request",
+				requestedCategory: requestedCategoryLabel,
+				inferredCategory: earlyPromptCategoryLabel,
+			});
+		}
 		if (hasProvidedVoiceoverUrl) {
 			logJob(jobId, "external narration locked", {
 				mode: "content_voiceover_url",
@@ -15951,6 +16175,24 @@ async function runLongVideoJob(
 		)
 			? "prompt"
 			: "trends";
+		if (contentMode === "prompt") {
+			const refinedPromptCategoryLabel = inferPromptCategoryLabel({
+				topics: topicPicks,
+				promptText: promptTextForCategory,
+			});
+			if (
+				refinedPromptCategoryLabel &&
+				refinedPromptCategoryLabel !== categoryLabel
+			) {
+				logJob(jobId, "prompt category inferred", {
+					stage: "topics",
+					requestedCategory: requestedCategoryLabel,
+					previousCategory: categoryLabel,
+					inferredCategory: refinedPromptCategoryLabel,
+				});
+				categoryLabel = refinedPromptCategoryLabel;
+			}
+		}
 		logJob(jobId, "topics selected", {
 			count: topicPicks.length,
 			topicCount,
@@ -16557,9 +16799,12 @@ async function runLongVideoJob(
 			scriptTitle: script.title,
 			languageLabel: lang,
 		});
-		const youtubeCategoryFinal = YT_CATEGORY_MAP[youtubeCategory]
-			? youtubeCategory
-			: LONG_VIDEO_YT_CATEGORY;
+		const youtubeCategoryFinal =
+			contentMode === "prompt" && YT_CATEGORY_MAP[categoryLabel]
+				? categoryLabel
+				: YT_CATEGORY_MAP[youtubeCategory]
+					? youtubeCategory
+					: LONG_VIDEO_YT_CATEGORY;
 		updateJob(jobId, {
 			meta: {
 				...JOBS.get(jobId)?.meta,
@@ -17110,6 +17355,22 @@ async function runLongVideoJob(
 						})`,
 				)
 				.join(", ");
+			const timingCategoryGuide = buildCategoryScriptGuide(
+				categoryLabel,
+				topicPicks,
+			);
+			const timingNeedsMeasuredTone = Boolean(
+				timingCategoryGuide?.isPolitics ||
+					timingCategoryGuide?.isHealth ||
+					timingCategoryGuide?.isSerious ||
+					voiceTonePlan?.mood === "serious",
+			);
+			const timingToneRule = timingNeedsMeasuredTone
+				? "- Keep the same topic and tone for a US audience; make it natural, measured, and category-appropriate."
+				: "- Keep the same topic and tone for a US audience; make it natural, sharp, and audience-friendly.";
+			const timingCasualRule = timingNeedsMeasuredTone
+				? '- Do not use casual filler pivots like "real quick", "here\'s the thing", "that\'s wild", or exaggerated reactions.'
+				: '- Keep it lightly conversational; use at most one friendly natural pivot per topic when it truly fits, and avoid repeated catchphrases.';
 
 			const rewritePrompt = `
 Rewrite this script to better fit ~${narrationTargetSec.toFixed(
@@ -17122,8 +17383,8 @@ Expressions by segment (keep these expressions, only adjust text): ${expressions
 Topic assignment by segment (do NOT change order): ${topicsLine}
 
 Rules:
-- Keep the same topic and tone (US audience, fun, not formal).
-- Keep it lightly casual: a few friendly, natural phrases like "real quick" or "here's the thing" (max 1 per topic).
+${timingToneRule}
+${timingCasualRule}
 - For entertainment topics (film, TV, music, awards), add ONE or TWO short grounded reactionary opinions per topic (brief clauses only). Keep them fair, specific, and clearly separate from sourced facts.
 - Keep EXACTLY ${segments.length} segments.
 - Preserve smooth transitions.
@@ -17152,6 +17413,8 @@ Rules:
 - Topic questions must be short and end with a single question mark.
 - Do NOT ask for likes or subscribe in content; the closing line handles thanks and likes.
 - Last segment ends with a clean wrap that leads into the closing line; do NOT mention the outro or transitions to it. Do NOT include a like/subscribe CTA.
+- Category-specific guidance:
+${timingCategoryGuide.lines.join("\n")}
 
 Return JSON ONLY: { "segments":[{"index":0,"text":"..."}] }
 
