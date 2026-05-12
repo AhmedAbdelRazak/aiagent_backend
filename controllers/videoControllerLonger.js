@@ -9,8 +9,8 @@
  *    - Avoid aresample async drift correction (removes "stutter" artifacts)
  *
  * 2) Presenter looks natural (less creepy):
- *    - Generate ONE stable Runway baseline talking-head clip (wide, calm)
- *    - Reuse/loop baseline for all segments (no per-segment Runway randomness)
+ *    - Generate stable expression-aware Runway baseline clips (wide, calm)
+ *    - Rotate baseline variants for presenter segments to avoid visible looping
  *    - Cap gestures; avoid hands; stabilize prompt
  *
  * 3) Presenter wardrobe adjustment (classy outfit):
@@ -462,7 +462,11 @@ const ALIGN_INTRO_OUTRO_ATEMPO = true;
 const ALLOW_NARRATION_OVERRUN = true;
 const MAX_NARRATION_OVERAGE_RATIO = clampNumber(1.5, 1.0, 1.8);
 const MAX_NARRATION_OVERAGE_SEC = clampNumber(30, 5, 60);
-const MAX_SUBTLE_VISUAL_EXPRESSIONS = clampNumber(1, 0, 2);
+const MAX_SUBTLE_VISUAL_EXPRESSIONS = clampNumber(
+	process.env.LONG_VIDEO_MAX_SUBTLE_VISUAL_EXPRESSIONS ?? 2,
+	0,
+	4,
+);
 const SUBTLE_VISUAL_EDGE_BUFFER = clampNumber(1, 0, 3);
 // Audio QA (quality-first voiceover)
 const AUDIO_QA_ENABLED = true;
@@ -511,9 +515,43 @@ const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 const ENABLE_WARDROBE_EDIT = true;
 const ENABLE_RUNWAY_BASELINE = true;
 const USE_MOTION_REF_BASELINE = true;
-const BASELINE_DUR_SEC = clampNumber(6, 6, 10);
-const BASELINE_VARIANTS = clampNumber(1, 1, 3);
-const CAMERA_ZOOM_OUT = clampNumber(0.96, 0.84, 1.0);
+const BASELINE_DUR_SEC = clampNumber(
+	process.env.LONG_VIDEO_BASELINE_DUR_SEC ?? 8,
+	6,
+	10,
+);
+const BASELINE_VARIANTS = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 2, 1, 3),
+);
+const CAMERA_ZOOM_OUT = clampNumber(
+	process.env.LONG_VIDEO_CAMERA_ZOOM_OUT ?? 0.96,
+	0.84,
+	1.0,
+);
+const ENABLE_DYNAMIC_CAMERA_MOTION = envFlag(
+	"LONG_VIDEO_DYNAMIC_CAMERA_MOTION",
+	true,
+);
+const CAMERA_PUNCH_ZOOM_PRESENTER_MAX = clampNumber(
+	process.env.LONG_VIDEO_CAMERA_PUNCH_ZOOM_PRESENTER_MAX ?? 1.07,
+	1.01,
+	1.09,
+);
+const CAMERA_PUNCH_ZOOM_IMAGE_MAX = clampNumber(
+	process.env.LONG_VIDEO_CAMERA_PUNCH_ZOOM_IMAGE_MAX ?? 1.085,
+	1.02,
+	1.14,
+);
+const CAMERA_SLOW_ZOOM_PRESENTER_MAX = clampNumber(
+	process.env.LONG_VIDEO_CAMERA_SLOW_ZOOM_PRESENTER_MAX ?? 1.03,
+	1.005,
+	1.055,
+);
+const CAMERA_SLOW_ZOOM_IMAGE_MAX = clampNumber(
+	process.env.LONG_VIDEO_CAMERA_SLOW_ZOOM_IMAGE_MAX ?? 1.045,
+	1.01,
+	1.095,
+);
 const ENABLE_SEGMENT_FADES = false;
 const ENABLE_SOFT_SEGMENT_TRANSITIONS = true;
 const SEGMENT_TRANSITION_SEC = clampNumber(0.12, 0, 0.35);
@@ -7000,14 +7038,12 @@ async function ensureLocalMotionReferenceVideo(tmpDir, jobId) {
 
 function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 	const handLine = intro
-		? "Hands stay low on the desk or just below frame, with at most one brief small emphasis gesture before settling again."
-		: "Hands stay low near the torso, usually lightly clasped or relaxed, with only brief small open-palm emphasis gestures before settling again.";
+		? "hands low on the desk or just below frame"
+		: "hands low near the torso, lightly clasped or relaxed";
 	return [
-		"Match the presenter's real reference behavior from motion_reference.mp4 and DemoVideo.mp4.",
-		"Face behavior: direct eye contact, friendly-neutral expression, natural unhurried blinks, mildly readable brow changes, and natural speech-ready jaw and lip behavior with no over-open vowels or reaction-face peaks.",
-		"Head behavior: mostly upright and centered with tiny neck-driven corrections, soft chin dips on emphasis, and one or two light conversational nods over the shot; no swaying, no forward lunges, no head tilts, and no looped nodding.",
-		`Body behavior: shoulders square and steady but not rigid, torso grounded in the seat with subtle breathing and small posture settling, ${handLine}`,
-		"Keep the emotional read composed and consistent from start to finish, but do not let the presenter feel frozen or statue-like.",
+		`Match DemoVideo.mp4 and motion_reference.mp4: upright seated posture, shoulders square, ${handLine}, calm direct eye contact, natural unhurried blinks, mild brow life, soft chin dips, subtle breathing and posture settling.`,
+		"Allow one brief side-thought glance then return to lens; warm beats may have a small authentic smile.",
+		"No swaying, lunging, head tilts, looped nodding, wide eyes, theatrical reactions, or frozen statue behavior.",
 	].join(" ");
 }
 
@@ -7257,19 +7293,19 @@ function buildBaselinePrompt(
 ) {
 	const expr = normalizeExpression(expression);
 	let expressionLine =
-		"Expression: calm and professional; neutral mouth, brows settled, no smile.";
+		"Expression: calm professional neutral, settled brows, relaxed eyes, no smile.";
 	if (expr === "warm")
 		expressionLine =
-			"Expression: friendly and approachable with only a trace micro-smile (closed mouth, no teeth), brows settled, and no reaction-face peaks.";
+			"Expression: friendly approachable warmth with a brief small natural smile like the reference, not a grin.";
 	if (expr === "excited")
 		expressionLine =
-			"Expression: engaged and attentive but restrained; neutral mouth or trace smile only, no grin, no raised-brow surprise, and no wide eyes.";
+			"Expression: engaged and attentive but restrained, tiny smile allowed, no raised-brow surprise or wide eyes.";
 	if (expr === "serious")
 		expressionLine =
-			"Expression: neutral and steady, brows settled, no frown, no exaggerated concern, soft eye contact.";
+			"Expression: neutral and steady, soft eye contact, no frown or exaggerated concern.";
 	if (expr === "thoughtful")
 		expressionLine =
-			"Expression: thoughtful and composed, neutral mouth, gentle eye focus, settled brows, no smile.";
+			"Expression: thoughtful and composed, neutral mouth, gentle eye focus, settled brows.";
 
 	const variantHint =
 		variant === 1
@@ -7277,28 +7313,24 @@ function buildBaselinePrompt(
 			: variant === 2
 				? "Allow a tiny shoulder-settling shift and one brief micro-lean recovery while keeping framing stable and the performance calm."
 				: "";
+	const variantLine = variantHint
+		? `Motion variation: ${variantHint}`
+		: "Motion variation: natural unique blink timing and tiny posture settling; avoid matching any prior clip exactly.";
 	const motionHint = motionRefVideo
 		? buildPresenterReferenceMotionHint()
 		: PRESENTER_MOTION_STYLE;
 
 	return `
-Photorealistic talking-head video of the SAME person as the reference image.
-Keep identity, studio background, lighting, and wardrobe consistent. ${STUDIO_EMPTY_PROMPT}
-Background must remain locked and static; no movement or people behind the presenter.
-Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
-Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
+Photorealistic talking-head video of the SAME man as the reference image. Preserve exact identity: shaved head, glasses, eye spacing, nose, beard line, mouth, jaw, skin texture, age, and face proportions; no beautifying, face morphing, or feature drift.
+Keep the same studio, lighting, wardrobe, desk, and static empty background; no extra people, reflections, text, screens, candles, flames, or moving background.
+Framing: medium shot, upper torso to mid torso, moderate headroom, camera at a comfortable distance.
 ${expressionLine}
-Motion: ${motionHint} ${variantHint}
-Mouth and jaw: natural speech-ready jaw and lip behavior with clearly readable but restrained openings, soft lip compression between phrases, and subtle conversational mouth preparation; avoid robotic, stiff, puppet-like, under-animated, or over-open mouth shapes.
-Smiles/laughter: tiny, brief smiles only; no laughs or exaggerated emotion.
-Facial consistency: keep the emotional read restrained and stable from shot start to finish; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
-Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
-Eyes: relaxed, comfortable, natural reflections and blink cadence; maintain steady camera contact; no staring, no glassy eyes, no frequent side glances, and no exaggerated widening.
-Avoid exaggerated eye expressions or wide-eyed looks.
-Wardrobe: keep clothing edges clean and believable with symmetrical shoulders, collar, lapels, and sleeves; no straps, scarves, shoulder drapes, floating fabric, or wardrobe glitches.
-Hands: resting on the desk or out of frame; minimal movement; do NOT cover the face.
-No extra people, no reflections or background figures, no text overlays, no screens, no charts, no logos except those already present in the reference, no camera shake, no mouth warping.
-Do NOT try to lip-sync.
+${variantLine}
+Motion: ${motionHint}
+Mouth and jaw: natural speech-ready movement with restrained openings and soft lip compression; do not lip-sync, over-open vowels, warp the mouth, or make puppet-like motion.
+Eyes: relaxed with natural reflections and blink cadence; direct lens contact; no glassy stare, wide eyes, frequent side glances, surprise, skepticism, smirks, or dramatic brow lifts.
+Wardrobe/hands: clean collar/lapels/sleeves; hands low or out of frame, never covering the face.
+No camera shake. Do NOT try to lip-sync.
 `.trim();
 }
 
@@ -8224,6 +8256,129 @@ function buildSubtleVideoExpressionPlan(
 		else plan[idx] = "neutral";
 	}
 	return plan;
+}
+
+const CAMERA_EMPHASIS_TEXT_TOKENS = [
+	"breaking",
+	"shocking",
+	"controversy",
+	"controversial",
+	"drama",
+	"scandal",
+	"backlash",
+	"heated",
+	"viral",
+	"explosive",
+	"pressure",
+	"major twist",
+	"lawsuit",
+	"charges",
+	"feud",
+	"clash",
+	"stakes",
+	"warning",
+	"alert",
+	"bombshell",
+];
+
+function textHasToken(text = "", tokens = []) {
+	const hay = String(text || "").toLowerCase();
+	if (!hay) return false;
+	return tokens.some((tok) => hay.includes(tok));
+}
+
+function isPoliticalTopicText(text = "") {
+	return textHasToken(text, POLITICAL_TONE_TOKENS);
+}
+
+function hasCameraEmphasisCue(text = "") {
+	return textHasToken(text, CAMERA_EMPHASIS_TEXT_TOKENS);
+}
+
+function inferCameraMotionPlan({
+	text = "",
+	topicLabel = "",
+	expression = "neutral",
+	mood = "neutral",
+	visualType = "presenter",
+	durationSec = 0,
+	index = 0,
+	categoryLabel = "",
+} = {}) {
+	if (!ENABLE_DYNAMIC_CAMERA_MOTION) return { mode: "steady" };
+	const dur = Math.max(0, Number(durationSec) || 0);
+	if (dur < 2.6) return { mode: "steady" };
+
+	const hay = [text, topicLabel, categoryLabel].filter(Boolean).join(" ");
+	const expr = normalizeExpression(expression, mood);
+	const isImage = String(visualType || "").toLowerCase() === "image";
+	const political = isPoliticalTopicText(hay);
+	const entertainment = isEntertainmentTopicText(hay);
+	const emphasis =
+		political ||
+		hasCameraEmphasisCue(hay) ||
+		(entertainment && hasEntertainmentReactionCue(text)) ||
+		["warm", "excited"].includes(expr);
+
+	if (emphasis && dur >= 3.2) {
+		const zoomInSec = political ? 0.42 : 0.5;
+		const zoomOutSec = political ? 1.15 : 1.3;
+		const startSec = Number(index) % 3 === 1 ? 0.25 : 0.15;
+		const availableHold = Math.max(0, dur - startSec - zoomInSec - zoomOutSec);
+		return {
+			mode: "punch",
+			reason: political ? "political_or_serious" : "emphasis",
+			maxZoom: isImage
+				? CAMERA_PUNCH_ZOOM_IMAGE_MAX
+				: CAMERA_PUNCH_ZOOM_PRESENTER_MAX,
+			startSec,
+			zoomInSec,
+			holdSec: Math.min(4, availableHold),
+			zoomOutSec,
+		};
+	}
+
+	if (dur >= 4.0) {
+		return {
+			mode: "slow",
+			reason: "calm_pacing",
+			maxZoom: isImage
+				? CAMERA_SLOW_ZOOM_IMAGE_MAX
+				: CAMERA_SLOW_ZOOM_PRESENTER_MAX,
+			startSec: 0,
+			zoomInSec: Math.max(1.5, dur * 0.55),
+			holdSec: 0,
+			zoomOutSec: Math.max(1.1, dur * 0.45),
+		};
+	}
+
+	return { mode: "steady" };
+}
+
+function cameraMotionKey(plan = {}) {
+	const mode = String(plan?.mode || "steady").toLowerCase();
+	if (mode === "steady") return "steady";
+	return `${mode}:${String(plan?.reason || "")}`;
+}
+
+function summarizeCameraMotionPlan(timeline = []) {
+	const counts = {};
+	const samples = [];
+	for (const seg of timeline || []) {
+		const motion = seg?.cameraMotion || {};
+		const mode = String(motion.mode || "steady").toLowerCase();
+		counts[mode] = (counts[mode] || 0) + 1;
+		if (mode !== "steady" && samples.length < 12) {
+			samples.push({
+				index: seg.index,
+				visualType: seg.visualType || "presenter",
+				mode,
+				reason: motion.reason || "",
+				maxZoom: Number((Number(motion.maxZoom) || 1).toFixed(3)),
+			});
+		}
+	}
+	return { counts, samples };
 }
 
 function shortTitleFromText(text = "") {
@@ -14008,16 +14163,109 @@ function buildScaleFilter({ w, h, mode }) {
 	return `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}`;
 }
 
+function buildDynamicCameraMotionFilter({
+	cameraMotion = null,
+	durationSec = 0,
+	fps = DEFAULT_OUTPUT_FPS,
+	w = 1280,
+	h = 720,
+	visualType = "presenter",
+} = {}) {
+	if (!ENABLE_DYNAMIC_CAMERA_MOTION || !cameraMotion) return "";
+	const mode = String(cameraMotion.mode || "steady").toLowerCase();
+	if (!["punch", "slow"].includes(mode)) return "";
+
+	const safeFps = Number(fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+	const dur = Math.max(0.2, Number(durationSec) || 0.2);
+	const frameCount = Math.max(2, Math.round(dur * safeFps));
+	const isImage = String(visualType || "").toLowerCase() === "image";
+	const defaultMax =
+		mode === "punch"
+			? isImage
+				? CAMERA_PUNCH_ZOOM_IMAGE_MAX
+				: CAMERA_PUNCH_ZOOM_PRESENTER_MAX
+			: isImage
+				? CAMERA_SLOW_ZOOM_IMAGE_MAX
+				: CAMERA_SLOW_ZOOM_PRESENTER_MAX;
+	const maxZoom = clampNumber(
+		cameraMotion.maxZoom || defaultMax,
+		1.001,
+		isImage ? 1.16 : 1.1,
+	);
+	const zoomDelta = Number((maxZoom - 1).toFixed(5));
+	if (zoomDelta <= 0) return "";
+
+	let startFrame = Math.max(
+		0,
+		Math.round((Number(cameraMotion.startSec) || 0) * safeFps),
+	);
+	startFrame = Math.min(startFrame, Math.max(0, frameCount - 2));
+
+	let inFrames = Math.max(
+		1,
+		Math.round((Number(cameraMotion.zoomInSec) || dur * 0.5) * safeFps),
+	);
+	let holdFrames = Math.max(
+		0,
+		Math.round((Number(cameraMotion.holdSec) || 0) * safeFps),
+	);
+	let outFrames = Math.max(
+		1,
+		Math.round((Number(cameraMotion.zoomOutSec) || dur * 0.4) * safeFps),
+	);
+
+	if (mode === "slow") {
+		startFrame = 0;
+		inFrames = Math.max(2, Math.min(frameCount - 1, inFrames));
+		holdFrames = 0;
+		outFrames = Math.max(2, frameCount - inFrames);
+	}
+
+	const peakFrame = Math.min(frameCount - 1, startFrame + inFrames);
+	const holdEndFrame = Math.min(frameCount - 1, peakFrame + holdFrames);
+	const outEndFrame = Math.min(frameCount - 1, holdEndFrame + outFrames);
+	const inDen = Math.max(1, peakFrame - startFrame);
+	const outDen = Math.max(1, outEndFrame - holdEndFrame);
+	const maxZoomText = maxZoom.toFixed(5);
+	const deltaText = zoomDelta.toFixed(5);
+	const zExpr =
+		`if(lte(on,${startFrame}),1,` +
+		`if(lte(on,${peakFrame}),1+${deltaText}*((on-${startFrame})/${inDen}),` +
+		`if(lte(on,${holdEndFrame}),${maxZoomText},` +
+		`if(lte(on,${outEndFrame}),${maxZoomText}-${deltaText}*((on-${holdEndFrame})/${outDen}),1))))`;
+
+	return `zoompan=z='${zExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${makeEven(
+		w,
+	)}x${makeEven(h)}:fps=${safeFps},setsar=1,format=yuv420p`;
+}
+
 async function normalizeClip(
 	inPath,
 	outPath,
 	outCfg,
-	{ zoomOut = 1.0, addFades = false, fadeOutOnly = false } = {},
+	{
+		zoomOut = 1.0,
+		addFades = false,
+		fadeOutOnly = false,
+		cameraMotion = null,
+	} = {},
 ) {
 	const w = makeEven(outCfg.w);
 	const h = makeEven(outCfg.h);
 	const fps = Number(outCfg.fps || DEFAULT_OUTPUT_FPS);
 	const scaleMode = outCfg.scaleMode || "cover";
+	let durSec = 0;
+	const needsDuration =
+		Boolean(cameraMotion && cameraMotion.mode !== "steady") ||
+		Boolean(addFades) ||
+		Boolean(fadeOutOnly);
+	if (needsDuration) {
+		try {
+			durSec = await probeDurationSeconds(inPath);
+		} catch (_) {
+			durSec = 0;
+		}
+	}
 
 	let vf =
 		scaleMode === "blur"
@@ -14043,6 +14291,16 @@ async function normalizeClip(
 			`[bg][fg]overlay=(W-w)/2:(H-h)/2`;
 	}
 
+	const cameraFilter = buildDynamicCameraMotionFilter({
+		cameraMotion,
+		durationSec: durSec,
+		fps,
+		w,
+		h,
+		visualType: cameraMotion?.visualType || "presenter",
+	});
+	if (cameraFilter) vf += `,${cameraFilter}`;
+
 	// Stable resample without async drift correction (keeps lipsync timing tight)
 	let af = `aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,volume=1.0`;
 
@@ -14056,13 +14314,6 @@ async function normalizeClip(
 	if (fadeIn || fadeOut) {
 		const vFadeDur = 0.06;
 		const aFadeDur = 0.04;
-
-		let durSec = 0;
-		try {
-			durSec = await probeDurationSeconds(inPath);
-		} catch (_) {
-			durSec = 0;
-		}
 
 		// IMPORTANT:
 		// ffmpeg's afade does NOT accept expressions like (D-0.04) for st.
@@ -14179,6 +14430,7 @@ async function renderLipsyncedSegment({
 	offsetSeed = 0,
 	addFades = false,
 	syncTier = "standard",
+	cameraMotion = null,
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	const dur = Math.max(0.2, Number(segDur) || 0.2);
@@ -14393,6 +14645,9 @@ async function renderLipsyncedSegment({
 	await normalizeClip(withAudio, norm, output, {
 		zoomOut: CAMERA_ZOOM_OUT,
 		addFades,
+		cameraMotion: cameraMotion
+			? { ...cameraMotion, visualType: "presenter" }
+			: null,
 	});
 	safeUnlink(withAudio);
 
@@ -14809,6 +15064,7 @@ async function renderImageSegment({
 	imagePaths = [],
 	label,
 	addFades = false,
+	cameraMotion = null,
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	let montage;
@@ -14844,6 +15100,7 @@ async function renderImageSegment({
 	await normalizeClip(withAudio, norm, output, {
 		zoomOut: CAMERA_ZOOM_OUT,
 		addFades,
+		cameraMotion: cameraMotion ? { ...cameraMotion, visualType: "image" } : null,
 	});
 	safeUnlink(withAudio);
 	return norm;
@@ -14857,6 +15114,7 @@ async function renderNoSyncVisualFallbackSegment({
 	audioPath,
 	label,
 	addFades = false,
+	cameraMotion = null,
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	const dur = Math.max(0.2, Number(segDur) || 0.2);
@@ -14900,6 +15158,7 @@ async function renderNoSyncVisualFallbackSegment({
 	await normalizeClip(withAudio, norm, output, {
 		zoomOut: CAMERA_ZOOM_OUT,
 		addFades,
+		cameraMotion: cameraMotion ? { ...cameraMotion, visualType: "image" } : null,
 	});
 	safeUnlink(withAudio);
 	return norm;
@@ -15028,6 +15287,12 @@ function canMergePresenterRun(currentRun, seg) {
 	) {
 		return false;
 	}
+	if (
+		cameraMotionKey(seg.cameraMotion) !==
+		cameraMotionKey(currentRun.cameraMotion)
+	) {
+		return false;
+	}
 	if (currentRun.segments.length >= PRESENTER_RUN_MERGE_MAX_SEGMENTS) {
 		return false;
 	}
@@ -15121,6 +15386,7 @@ async function buildRenderableTimelineUnits({
 				topicIndex: seg.topicIndex,
 				videoExpression: seg.videoExpression || seg.expression || "neutral",
 				expression: seg.expression || "neutral",
+				cameraMotion: seg.cameraMotion || { mode: "steady" },
 				segDur,
 				hasPremium: premiumPresenterSegmentSet.has(seg.index),
 				segments: [seg],
@@ -15142,6 +15408,7 @@ async function buildRenderableTimelineUnits({
 			topicIndex: seg.topicIndex,
 			videoExpression: seg.videoExpression || seg.expression || "neutral",
 			expression: seg.expression || "neutral",
+			cameraMotion: seg.cameraMotion || { mode: "steady" },
 			segDur,
 			hasPremium: premiumPresenterSegmentSet.has(seg.index),
 			segments: [seg],
@@ -18352,8 +18619,48 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		});
 		segments = segments.map((s) => ({
 			...s,
-			videoExpression: presenterPlanByIndex.get(s.index) || "neutral",
+			videoExpression: presenterPlanByIndex.has(s.index)
+				? presenterPlanByIndex.get(s.index) || "neutral"
+				: s.videoExpression || s.expression || "neutral",
 		}));
+		const segmentMetaByIndex = new Map(segments.map((s) => [s.index, s]));
+		timeline = timeline.map((seg) => {
+			const meta = segmentMetaByIndex.get(seg.index) || {};
+			const segDur = Math.max(
+				0.2,
+				Number(seg.endSec || 0) - Number(seg.startSec || 0),
+			);
+			const visualType = seg.visualType || "presenter";
+			const expression = meta.expression || seg.expression || "neutral";
+			const videoExpression =
+				meta.videoExpression || seg.videoExpression || expression;
+			const cameraMotion = inferCameraMotionPlan({
+				text: meta.text || seg.text || "",
+				topicLabel: seg.topicLabel || meta.topicLabel || "",
+				expression: videoExpression,
+				mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+				visualType,
+				durationSec: segDur,
+				index: seg.index,
+				categoryLabel,
+			});
+			return {
+				...seg,
+				text: meta.text || seg.text,
+				expression,
+				videoExpression,
+				cameraMotion,
+			};
+		});
+		const cameraMotionSummary = summarizeCameraMotionPlan(timeline);
+		logJob(jobId, "segment camera motion plan", cameraMotionSummary);
+		updateJob(jobId, {
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				timeline,
+				cameraMotion: cameraMotionSummary,
+			},
+		});
 
 		// Build topic-aligned overlays from segment cues (if no custom overlays provided)
 		if (
@@ -18385,7 +18692,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				baselinePresenterVideos.get("neutral") ||
 				[];
 			if (!list.length) return null;
-			const idx = Math.abs(Number(seed) || 0) % list.length;
+			const hash = crypto
+				.createHash("sha256")
+				.update(`${jobId}:${expr}:${seed}`)
+				.digest();
+			const idx = hash.readUInt32BE(0) % list.length;
 			return list[idx];
 		};
 		const pickBaselineDefault = () => {
@@ -18397,7 +18708,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const expressionsNeeded = Array.from(
 			new Set(
 				[
-					...segments.map((s) => s.videoExpression || s.expression),
+					...segments
+						.filter((s) => presenterSegSet.has(s.index))
+						.map((s) => s.videoExpression || s.expression),
 					introExpression,
 					outroExpression,
 				].filter(Boolean),
@@ -18550,6 +18863,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const introOffsetSeed = seedFromJobId(jobId) % 29;
 		const introBaseline =
 			pickBaselineVariant(introExpression, 0) || baselineDefault;
+		const introCameraMotion = inferCameraMotionPlan({
+			text: introTextFinal,
+			topicLabel: topicSummary,
+			expression: introExpression,
+			mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+			visualType: "presenter",
+			durationSec: introDurationSec,
+			index: -1,
+			categoryLabel,
+		});
 		const introBase = await renderLipsyncedSegment({
 			jobId,
 			tmpDir,
@@ -18560,6 +18883,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			label: "intro",
 			offsetSeed: introOffsetSeed,
 			addFades: true,
+			cameraMotion: introCameraMotion,
 		});
 		const introPath = path.join(tmpDir, `intro_${jobId}.mp4`);
 		const introTitle = buildIntroCardTitle({
@@ -18644,6 +18968,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							? `${seg.index}_${labelSuffix}`
 							: String(seg.index),
 						addFades: ENABLE_SEGMENT_FADES,
+						cameraMotion: seg.cameraMotion,
 					});
 				if (imagePaths.length) {
 					try {
@@ -18713,6 +19038,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							audioPath: seg.audioPath,
 							label: `${seg.index}_nosync`,
 							addFades: ENABLE_SEGMENT_FADES,
+							cameraMotion: seg.cameraMotion,
 						});
 						actualVisualType = "local_visual_fallback";
 						fallbackReason = fallbackReason
@@ -18753,6 +19079,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					offsetSeed: seg.index,
 					addFades: ENABLE_SEGMENT_FADES,
 					syncTier: seg.syncTier || "standard",
+					cameraMotion: seg.cameraMotion,
 				});
 			}
 
@@ -18771,6 +19098,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const outroOffsetSeed = introOffsetSeed + 7;
 		const outroBaseline =
 			pickBaselineVariant(outroExpression, 1) || baselineDefault;
+		const outroCameraMotion = inferCameraMotionPlan({
+			text: outroTextFinal,
+			topicLabel: topicSummary,
+			expression: outroExpression,
+			mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+			visualType: "presenter",
+			durationSec: outroDurationSec,
+			index: timeline.length + 1,
+			categoryLabel,
+		});
 		const outroTalk = await renderLipsyncedSegment({
 			jobId,
 			tmpDir,
@@ -18782,6 +19119,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			offsetSeed: outroOffsetSeed,
 			addFades: false,
 			syncTier: "hero",
+			cameraMotion: outroCameraMotion,
 		});
 
 		// Calm tail after the outro line (silent + fade-out).
@@ -19021,6 +19359,15 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							startSec: seg.startSec,
 							endSec: seg.endSec,
 							visualType: seg.visualType || "presenter",
+							expression: seg.expression || "neutral",
+							videoExpression: seg.videoExpression || seg.expression || "neutral",
+							cameraMotion: seg.cameraMotion
+								? {
+										mode: seg.cameraMotion.mode || "steady",
+										reason: seg.cameraMotion.reason || "",
+										maxZoom: Number(seg.cameraMotion.maxZoom) || 1,
+									}
+								: { mode: "steady" },
 							countdownRank: seg.countdownRank || null,
 							countdownLabel: seg.countdownLabel || "",
 						}))
