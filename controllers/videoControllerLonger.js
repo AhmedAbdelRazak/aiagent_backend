@@ -21,7 +21,7 @@
  *    - After lipsync, apply a subtle zoom-out with blurred background padding
  *
  * 5) Professional intro/outro structure:
- *    - Intro 15-20s with a story hook + agenda-style voiced greeting
+ *    - Intro 8-12s with a quick story hook + compact voiced greeting
  *    - Outro 3-6s with engagement question + like CTA
  *    - Final fade-out for a clean finish
  *
@@ -307,7 +307,7 @@ const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"human, credible seated presenter motion; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
+	"locked-off tripod talking-head shot with a fixed frame; background edges stay perfectly locked with no camera shake, reframing, breathing zoom, rolling wobble, or drifting crop; human, credible seated presenter motion; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -392,10 +392,22 @@ const CSE_MAX_PAGES = 5;
 const CSE_MAX_IMAGE_RESULTS = 40;
 const CSE_RELAXED_MIN_IMAGE_SHORT_EDGE = 480;
 
-// Intro (seconds)
-const DEFAULT_INTRO_SEC = 17;
-const INTRO_MIN_SEC = clampNumber(15, 12, 20);
-const INTRO_MAX_SEC = clampNumber(20, 15, 22);
+// Intro (seconds). Keep the opening tight so the content rhythm starts quickly.
+const INTRO_MIN_SEC = clampNumber(
+	process.env.LONG_VIDEO_INTRO_MIN_SEC ?? 8,
+	6,
+	14,
+);
+const INTRO_MAX_SEC = clampNumber(
+	process.env.LONG_VIDEO_INTRO_MAX_SEC ?? 12,
+	INTRO_MIN_SEC,
+	16,
+);
+const DEFAULT_INTRO_SEC = clampNumber(
+	process.env.LONG_VIDEO_DEFAULT_INTRO_SEC ?? 10.5,
+	INTRO_MIN_SEC,
+	INTRO_MAX_SEC,
+);
 // Outro (seconds)
 const OUTRO_MIN_SEC = clampNumber(3, 3, 6);
 const OUTRO_MAX_SEC = clampNumber(6, 3, 6);
@@ -451,8 +463,16 @@ const LEAD_SILENCE_MIN_SEC = clampNumber(0.04, 0.02, 0.2);
 const LEAD_SILENCE_THRESHOLD_DB = clampNumber(-45, -60, -35);
 const GLOBAL_ATEMPO_MIN = 0.95;
 const GLOBAL_ATEMPO_MAX = 1.07;
-const INTRO_ATEMPO_MIN = clampNumber(0.88, 0.85, 1.05);
-const INTRO_ATEMPO_MAX = clampNumber(1.12, 1.0, 1.2);
+const INTRO_ATEMPO_MIN = clampNumber(
+	process.env.LONG_VIDEO_INTRO_ATEMPO_MIN ?? 0.95,
+	0.85,
+	1.05,
+);
+const INTRO_ATEMPO_MAX = clampNumber(
+	process.env.LONG_VIDEO_INTRO_ATEMPO_MAX ?? 1.18,
+	1.0,
+	1.25,
+);
 const OUTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
 const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
@@ -532,25 +552,57 @@ const ENABLE_DYNAMIC_CAMERA_MOTION = envFlag(
 	"LONG_VIDEO_DYNAMIC_CAMERA_MOTION",
 	true,
 );
+const ENABLE_PRESENTER_DYNAMIC_CAMERA_MOTION = envFlag(
+	"LONG_VIDEO_PRESENTER_DYNAMIC_CAMERA_MOTION",
+	false,
+);
+const ENABLE_IMAGE_DYNAMIC_CAMERA_MOTION = envFlag(
+	"LONG_VIDEO_IMAGE_DYNAMIC_CAMERA_MOTION",
+	false,
+);
+const ENABLE_STILL_IMAGE_MOTION = envFlag(
+	"LONG_VIDEO_STILL_IMAGE_MOTION",
+	false,
+);
+const STILL_IMAGE_ZOOM_MAX = clampNumber(
+	process.env.LONG_VIDEO_STILL_IMAGE_ZOOM_MAX ?? 1.006,
+	1.0,
+	1.04,
+);
+const STILL_IMAGE_ZOOM_STEP = clampNumber(
+	process.env.LONG_VIDEO_STILL_IMAGE_ZOOM_STEP ?? 0.000018,
+	0,
+	0.0002,
+);
+const ENABLE_PRESENTER_DESHAKE = envFlag(
+	"LONG_VIDEO_PRESENTER_DESHAKE",
+	true,
+);
+const PRESENTER_DESHAKE_RX = normalizeDeshakeRange(
+	process.env.LONG_VIDEO_PRESENTER_DESHAKE_RX ?? 16,
+);
+const PRESENTER_DESHAKE_RY = normalizeDeshakeRange(
+	process.env.LONG_VIDEO_PRESENTER_DESHAKE_RY ?? 16,
+);
 const CAMERA_PUNCH_ZOOM_PRESENTER_MAX = clampNumber(
-	process.env.LONG_VIDEO_CAMERA_PUNCH_ZOOM_PRESENTER_MAX ?? 1.07,
-	1.01,
-	1.09,
+	process.env.LONG_VIDEO_CAMERA_PUNCH_ZOOM_PRESENTER_MAX ?? 1.035,
+	1.005,
+	1.07,
 );
 const CAMERA_PUNCH_ZOOM_IMAGE_MAX = clampNumber(
-	process.env.LONG_VIDEO_CAMERA_PUNCH_ZOOM_IMAGE_MAX ?? 1.085,
-	1.02,
-	1.14,
+	process.env.LONG_VIDEO_CAMERA_PUNCH_ZOOM_IMAGE_MAX ?? 1.025,
+	1.005,
+	1.08,
 );
 const CAMERA_SLOW_ZOOM_PRESENTER_MAX = clampNumber(
-	process.env.LONG_VIDEO_CAMERA_SLOW_ZOOM_PRESENTER_MAX ?? 1.03,
-	1.005,
-	1.055,
+	process.env.LONG_VIDEO_CAMERA_SLOW_ZOOM_PRESENTER_MAX ?? 1.012,
+	1.001,
+	1.04,
 );
 const CAMERA_SLOW_ZOOM_IMAGE_MAX = clampNumber(
-	process.env.LONG_VIDEO_CAMERA_SLOW_ZOOM_IMAGE_MAX ?? 1.045,
-	1.01,
-	1.095,
+	process.env.LONG_VIDEO_CAMERA_SLOW_ZOOM_IMAGE_MAX ?? 1.012,
+	1.001,
+	1.05,
 );
 const ENABLE_SEGMENT_FADES = false;
 const ENABLE_SOFT_SEGMENT_TRANSITIONS = true;
@@ -796,6 +848,11 @@ function clampNumber(n, min, max) {
 	const x = Number(n);
 	if (!Number.isFinite(x)) return min;
 	return Math.max(min, Math.min(max, x));
+}
+
+function normalizeDeshakeRange(value) {
+	const clamped = clampNumber(value, 0, 64);
+	return Math.max(0, Math.min(64, Math.round(clamped / 16) * 16));
 }
 
 function envFlag(name, fallback = false) {
@@ -7041,9 +7098,9 @@ function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 		? "hands low on the desk or just below frame"
 		: "hands low near the torso, lightly clasped or relaxed";
 	return [
-		`Match DemoVideo.mp4 and motion_reference.mp4: upright seated posture, shoulders square, ${handLine}, calm direct eye contact, natural unhurried blinks, mild brow life, soft chin dips, subtle breathing and posture settling.`,
+		`Match DemoVideo.mp4 and motion_reference.mp4: locked tripod camera with a perfectly stable frame, upright seated posture, shoulders square, ${handLine}, calm direct eye contact, natural unhurried blinks, mild brow life, soft chin dips, subtle breathing and posture settling.`,
 		"Allow one brief side-thought glance then return to lens; warm beats may have a small authentic smile.",
-		"No swaying, lunging, head tilts, looped nodding, wide eyes, theatrical reactions, or frozen statue behavior.",
+		"No camera shake, background drift, swaying, lunging, head tilts, looped nodding, wide eyes, theatrical reactions, or frozen statue behavior.",
 	].join(" ");
 }
 
@@ -7330,7 +7387,7 @@ Motion: ${motionHint}
 Mouth and jaw: natural speech-ready movement with restrained openings and soft lip compression; do not lip-sync, over-open vowels, warp the mouth, or make puppet-like motion.
 Eyes: relaxed with natural reflections and blink cadence; direct lens contact; no glassy stare, wide eyes, frequent side glances, surprise, skepticism, smirks, or dramatic brow lifts.
 Wardrobe/hands: clean collar/lapels/sleeves; hands low or out of frame, never covering the face.
-No camera shake. Do NOT try to lip-sync.
+Camera/framing: locked tripod shot; no camera shake, no frame vibration, no reframing, no breathing zoom, no drifting background edges, no rolling wobble. Do NOT try to lip-sync.
 `.trim();
 }
 
@@ -8312,6 +8369,9 @@ function inferCameraMotionPlan({
 	const hay = [text, topicLabel, categoryLabel].filter(Boolean).join(" ");
 	const expr = normalizeExpression(expression, mood);
 	const isImage = String(visualType || "").toLowerCase() === "image";
+	if (isImage && !ENABLE_IMAGE_DYNAMIC_CAMERA_MOTION) return { mode: "steady" };
+	if (!isImage && !ENABLE_PRESENTER_DYNAMIC_CAMERA_MOTION)
+		return { mode: "steady" };
 	const political = isPoliticalTopicText(hay);
 	const entertainment = isEntertainmentTopicText(hay);
 	const emphasis =
@@ -10203,6 +10263,7 @@ function buildIntroCardTitle({ title = "", shortTitle = "" } = {}) {
 }
 
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
+	void jobId;
 	const fallbackLabel = shortTopicLabel(shortTitle || "today's topic", 6);
 	const topicLabels = buildIntroTopicLabels(topics, 6);
 	const safeLabels = (topicLabels.length ? topicLabels : [fallbackLabel]).map(
@@ -10212,17 +10273,18 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	const sensitive = isSensitiveTopicText(
 		`${shortTitle || ""} ${safeLabels.join(" ")} ${mood || ""}`,
 	);
-	const introLead = pickIntroLead({
-		sensitive,
-		topicCount: safeLabels.length,
-		jobId,
-	});
 	const profile = inferIntroAgendaProfile({ topics, shortTitle });
-	const agenda = formatAgendaList(profile.beats);
-	const line =
+	const agenda = formatAgendaList((profile.beats || []).slice(0, 3));
+	const opening = `Hi guys, it's ${INTRO_HOST_NAME}.`;
+	const topicPhrase =
 		safeLabels.length <= 1
-			? `${introLead} ${safeLabels[0] || topicList}. I'll walk through ${agenda}, so stay with me.`
-			: `${introLead} ${topicList}. I'll walk you through ${agenda}, so stay with me.`;
+			? `${sensitive ? "A focused update" : "Quick breakdown"} on ${
+					safeLabels[0] || topicList
+				}`
+			: `${sensitive ? "A focused rundown" : "Quick rundown"} on ${topicList}`;
+	const line = `${opening} ${topicPhrase}: ${
+		agenda || "what changed and what comes next"
+	}.`;
 	return sanitizeIntroOutroLine(line);
 }
 
@@ -14280,6 +14342,19 @@ async function normalizeClip(
 
 	vf += `,fps=${fps},format=yuv420p`;
 
+	const visualType = String(
+		cameraMotion?.visualType || "presenter",
+	).toLowerCase();
+	let deshakeFilter = "";
+	if (
+		visualType === "presenter" &&
+		ENABLE_PRESENTER_DESHAKE &&
+		(PRESENTER_DESHAKE_RX > 0 || PRESENTER_DESHAKE_RY > 0)
+	) {
+		deshakeFilter = `deshake=rx=${PRESENTER_DESHAKE_RX}:ry=${PRESENTER_DESHAKE_RY}:edge=mirror`;
+		vf += `,${deshakeFilter}`;
+	}
+
 	// Subtle motion: slight zoom-out with blurred padding (no invalid crop).
 	if (zoomOut && zoomOut !== 1.0) {
 		const zw = Math.max(2, makeEven(w * zoomOut));
@@ -14336,37 +14411,50 @@ async function normalizeClip(
 		}
 	}
 
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-y",
-			"-i",
-			inPath,
-			"-vf",
-			vf,
-			"-af",
-			af,
-			"-r",
-			String(fps),
-			"-c:v",
-			"libx264",
-			"-preset",
-			INTERMEDIATE_PRESET,
-			"-crf",
-			String(INTERMEDIATE_VIDEO_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-c:a",
-			"aac",
-			"-b:a",
-			AUDIO_BITRATE,
-			"-movflags",
-			"+faststart",
-			outPath,
-		],
-		"normalize_clip",
-		{ timeoutMs: 240000 },
-	);
+	const runNormalize = (videoFilter) =>
+		spawnBin(
+			ffmpegPath,
+			[
+				"-y",
+				"-i",
+				inPath,
+				"-vf",
+				videoFilter,
+				"-af",
+				af,
+				"-r",
+				String(fps),
+				"-c:v",
+				"libx264",
+				"-preset",
+				INTERMEDIATE_PRESET,
+				"-crf",
+				String(INTERMEDIATE_VIDEO_CRF),
+				"-pix_fmt",
+				"yuv420p",
+				"-c:a",
+				"aac",
+				"-b:a",
+				AUDIO_BITRATE,
+				"-movflags",
+				"+faststart",
+				outPath,
+			],
+			"normalize_clip",
+			{ timeoutMs: 240000 },
+		);
+
+	try {
+		await runNormalize(vf);
+	} catch (err) {
+		if (!deshakeFilter) throw err;
+		console.warn(
+			`[LongVideo] presenter deshake fallback: ${
+				err?.message || "unknown error"
+			}`,
+		);
+		await runNormalize(vf.replace(`,${deshakeFilter}`, ""));
+	}
 }
 
 async function createSyncFallbackInput(
@@ -14664,23 +14752,22 @@ function buildSubtleStillMotionFilter({
 	const safeFps = Number(fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
 	const W = makeEven(w);
 	const H = makeEven(h);
+	if (!ENABLE_STILL_IMAGE_MOTION || STILL_IMAGE_ZOOM_MAX <= 1.0005) {
+		return `fps=${safeFps}`;
+	}
+
 	const soft = String(mode || "").toLowerCase() === "blur";
-	const zoomInMax = soft ? "1.024" : "1.045";
-	const zoomOutStart = soft ? "1.022" : "1.04";
-	const zoomInStep = soft ? "0.00009" : "0.00018";
-	const zoomOutStep = soft ? "0.000075" : "0.00015";
-	const driftX = soft ? "iw*0.004" : "iw*0.008";
-	const driftY = soft ? "ih*0.003" : "ih*0.006";
+	const zoomInMax = Math.min(
+		soft ? STILL_IMAGE_ZOOM_MAX : STILL_IMAGE_ZOOM_MAX + 0.004,
+		1.025,
+	).toFixed(5);
+	const zoomOutStart = Math.min(Number(zoomInMax), 1.018).toFixed(5);
+	const zoomInStep = Math.max(0, STILL_IMAGE_ZOOM_STEP).toFixed(7);
+	const zoomOutStep = Math.max(0, STILL_IMAGE_ZOOM_STEP * 0.82).toFixed(7);
 	const modeIndex = Math.abs(Number(idx) || 0) % 4;
 
-	if (modeIndex === 1) {
+	if (modeIndex === 1 || modeIndex === 3) {
 		return `zoompan=z='max(1.0,${zoomOutStart}-on*${zoomOutStep})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${safeFps}`;
-	}
-	if (modeIndex === 2) {
-		return `zoompan=z='min(${zoomInMax},zoom+${zoomInStep})':x='iw/2-(iw/zoom/2)+${driftX}':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${safeFps}`;
-	}
-	if (modeIndex === 3) {
-		return `zoompan=z='max(1.0,${zoomOutStart}-on*${zoomOutStep})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)+${driftY}':d=1:s=${W}x${H}:fps=${safeFps}`;
 	}
 	return `zoompan=z='min(${zoomInMax},zoom+${zoomInStep})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${safeFps}`;
 }
@@ -14978,17 +15065,13 @@ async function createImageMontageClip({
 				effectiveImageScaleMode === "contain"
 					? `scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`
 					: `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}`;
-			const panX = idx % 2 === 0 ? "0" : "iw*0.03";
-			const panY = idx % 3 === 0 ? "0" : "ih*0.02";
-			const motionMode = idx % 3;
-			const motion =
-				effectiveImageScaleMode === "cover"
-					? motionMode === 0
-						? `zoompan=z='min(1.08,zoom+0.0007)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps=${fps}`
-						: motionMode === 1
-							? `zoompan=z='min(1.06,zoom+0.0006)':x='iw/2-(iw/zoom/2)+${panX}':y='ih/2-(ih/zoom/2)+${panY}':d=1:fps=${fps}`
-							: `fps=${fps}`
-					: `fps=${fps}`;
+			const motion = buildSubtleStillMotionFilter({
+				idx: Number.isFinite(labelNum) ? labelNum + idx : idx,
+				fps,
+				w,
+				h,
+				mode: effectiveImageScaleMode,
+			});
 			filterParts.push(
 				`[${idx}:v]${scale},${motion},${trim},setsar=1,format=yuv420p[${outLabel}]`,
 			);
@@ -15713,7 +15796,7 @@ async function concatClips(clips, outPath, outCfg) {
 }
 
 /* ---------------------------------------------------------------
- * Intro motion (optional, 15-20s)
+ * Intro motion (optional, compact 8-12s by default)
  * ------------------------------------------------------------- */
 
 async function createPresenterIntroMotion({
