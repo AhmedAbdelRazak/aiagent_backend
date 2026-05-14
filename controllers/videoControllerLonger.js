@@ -307,7 +307,7 @@ const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"locked-off tripod talking-head shot with a fixed frame; background edges stay perfectly locked with no camera shake, reframing, breathing zoom, rolling wobble, or drifting crop; human, credible seated presenter motion; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, or exaggerated expression";
+	"locked-off tripod talking-head shot with a fixed frame; background edges stay perfectly locked with no camera shake, reframing, breathing zoom, rolling wobble, or drifting crop; human, credible seated presenter motion in the host's understated style; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, exaggerated sadness, exaggerated excitement, or repeated gesture patterns";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -378,10 +378,10 @@ const FINAL_GOP_SECONDS = 2;
 const FINAL_COLOR_SPACE = "bt709";
 const FINAL_COLOR_RANGE = "tv";
 const WATERMARK_TEXT = "https://serenejannat.com";
-const WATERMARK_FONT_SIZE_PCT = 0.042;
+const WATERMARK_FONT_SIZE_PCT = 0.03;
 const WATERMARK_MARGIN_PCT = 0.035;
-const WATERMARK_OPACITY = 0.55;
-const WATERMARK_SHADOW_OPACITY = 0.3;
+const WATERMARK_OPACITY = 0.34;
+const WATERMARK_SHADOW_OPACITY = 0.18;
 const WATERMARK_SHADOW_PX = 2;
 const CSE_PREFERRED_IMG_SIZE = "xlarge";
 const CSE_FALLBACK_IMG_SIZE = "large";
@@ -422,9 +422,9 @@ const INTRO_SUBTITLE_Y_PCT = clampNumber(0.58, 0.3, 0.7);
 const FINAL_FADE_OUT_SEC = clampNumber(0.5, 0, 1.2);
 
 // Script pacing
-const SCRIPT_VOICE_WPS = 2.75; // used only for word caps
-// Slightly faster default pacing (~5% more words).
-const SCRIPT_PACE_BIAS = clampNumber(1.05, 0.85, 1.35);
+const SCRIPT_VOICE_WPS = 2.65; // used only for word caps; target ~160 wpm
+// Brisk news-presenter cadence: fast enough to feel alive, still coherent.
+const SCRIPT_PACE_BIAS = clampNumber(1.02, 0.85, 1.35);
 const SEGMENT_TARGET_SEC = 8;
 const MAX_SEGMENTS = 45;
 const SCRIPT_TOLERANCE_SEC = clampNumber(4.5, 2, 5);
@@ -476,7 +476,7 @@ const INTRO_ATEMPO_MAX = clampNumber(
 const OUTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
 const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
-const VOICE_SPEED_BOOST = clampNumber(1.04, 0.98, 1.08);
+const VOICE_SPEED_BOOST = clampNumber(1.015, 0.98, 1.08);
 const FORCE_NEUTRAL_VOICEOVER = true;
 const ALIGN_INTRO_OUTRO_ATEMPO = true;
 const ALLOW_NARRATION_OVERRUN = true;
@@ -517,17 +517,21 @@ const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
 const REQUIRE_LIPSYNC = true;
 // Short presenter beats are still visible enough that a static lip-sync output
 // should retry instead of passing duration-only QA.
-const SYNC_SO_FREEZE_CHECK_MIN_SEC = clampNumber(0.9, 0.5, 12);
-const SYNC_SO_FREEZE_NOISE = clampNumber(0.0012, 0.0001, 0.01);
-const SYNC_SO_FREEZE_MIN_SEC = clampNumber(0.55, 0.2, 4);
-const SYNC_SO_MAX_FREEZE_RATIO = clampNumber(0.22, 0.05, 0.6);
-const SYNC_SO_MAX_FREEZE_SEC = clampNumber(1.1, 0.2, 4);
+const SYNC_SO_FREEZE_CHECK_MIN_SEC = clampNumber(0.6, 0.3, 12);
+const SYNC_SO_FREEZE_NOISE = clampNumber(0.0018, 0.0001, 0.01);
+const SYNC_SO_FREEZE_MIN_SEC = clampNumber(0.38, 0.15, 4);
+const SYNC_SO_MAX_FREEZE_RATIO = clampNumber(0.16, 0.05, 0.6);
+const SYNC_SO_MAX_FREEZE_SEC = clampNumber(0.75, 0.2, 4);
 const PRESENTER_MOTION_QA_ENABLED = true;
-const PRESENTER_MOTION_FREEZE_CHECK_MIN_SEC = clampNumber(0.5, 0.2, 3);
-const PRESENTER_MOTION_FREEZE_MIN_SEC = clampNumber(0.38, 0.15, 2);
-const PRESENTER_MOTION_FREEZE_NOISE = clampNumber(0.0009, 0.0001, 0.01);
-const PRESENTER_MOTION_MAX_FREEZE_RATIO = clampNumber(0.22, 0.05, 0.6);
-const PRESENTER_MOTION_MAX_FREEZE_SEC = clampNumber(1.1, 0.2, 3);
+const REQUIRE_REAL_PRESENTER_VIDEO = envFlag(
+	"LONG_VIDEO_REQUIRE_REAL_PRESENTER_VIDEO",
+	true,
+);
+const PRESENTER_MOTION_FREEZE_CHECK_MIN_SEC = clampNumber(0.35, 0.2, 3);
+const PRESENTER_MOTION_FREEZE_MIN_SEC = clampNumber(0.24, 0.12, 2);
+const PRESENTER_MOTION_FREEZE_NOISE = clampNumber(0.0025, 0.0001, 0.01);
+const PRESENTER_MOTION_MAX_FREEZE_RATIO = clampNumber(0.1, 0.03, 0.6);
+const PRESENTER_MOTION_MAX_FREEZE_SEC = clampNumber(0.55, 0.15, 3);
 const SYNC_SO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
 const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 
@@ -562,7 +566,7 @@ const ENABLE_IMAGE_DYNAMIC_CAMERA_MOTION = envFlag(
 );
 const ENABLE_STILL_IMAGE_MOTION = envFlag(
 	"LONG_VIDEO_STILL_IMAGE_MOTION",
-	false,
+	true,
 );
 const STILL_IMAGE_ZOOM_MAX = clampNumber(
 	process.env.LONG_VIDEO_STILL_IMAGE_ZOOM_MAX ?? 1.006,
@@ -3719,6 +3723,7 @@ async function fetchCseImages(
 	const seen = new Set();
 	for (const c of pool) {
 		if (!c?.url) continue;
+		if (isDisfavoredImageSourceUrl(c.url)) continue;
 		const key = normalizeImageUrlKey(c.url);
 		if (seen.has(key)) continue;
 		seen.add(key);
@@ -4113,8 +4118,31 @@ const GENERIC_NEAR_IMAGE_MODIFIERS = [
 	"event photo",
 	"press photo",
 	"official photo",
+	"official portrait",
 	"location photo",
 ];
+
+function buildCategoryImageQueryModifiers(category = "", topicLabel = "") {
+	const hay = `${category || ""} ${topicLabel || ""}`.toLowerCase();
+	if (/\b(sports?|nba|nfl|mlb|nhl|wnba|basketball|football|baseball|hockey|soccer|ufc|boxing)\b/.test(hay)) {
+		return [
+			"game photo",
+			"team photo",
+			"official team photo",
+			"press conference",
+		];
+	}
+	if (/\b(movie|film|tv|television|series|streaming|episode)\b/.test(hay)) {
+		return ["official still", "cast photo", "premiere photo"];
+	}
+	if (/\b(music|album|song|concert|tour|artist|singer|rapper)\b/.test(hay)) {
+		return ["official portrait", "performance photo", "red carpet photo"];
+	}
+	if (isSensitiveTopicText(topicLabel)) {
+		return ["official portrait", "official statement", "tribute photo"];
+	}
+	return [];
+}
 
 function isUsefulVisualPhraseToken(token = "", topicTokens = new Set()) {
 	const t = String(token || "").toLowerCase();
@@ -4157,7 +4185,7 @@ function buildDynamicVisualPhrasesFromTexts(
 
 function buildTopicNearImageQueries(
 	topicLabel = "",
-	{ topicKeywords = [], articleTitles = [] } = {},
+	{ topicKeywords = [], articleTitles = [], category = "" } = {},
 ) {
 	const base = cleanTopicCandidate(topicLabel);
 	const rawContextTexts = [
@@ -4173,7 +4201,13 @@ function buildTopicNearImageQueries(
 
 	if (base) {
 		push(base);
-		for (const modifier of GENERIC_NEAR_IMAGE_MODIFIERS) {
+		for (const modifier of uniqueStrings(
+			[
+				...GENERIC_NEAR_IMAGE_MODIFIERS,
+				...buildCategoryImageQueryModifiers(category, topicLabel),
+			],
+			{ limit: 10 },
+		)) {
 			push(`${base} ${modifier}`);
 		}
 	}
@@ -4312,6 +4346,7 @@ async function fetchCseImagesForQuery(
 	const seen = new Set();
 	for (const c of pool) {
 		if (!c?.url) continue;
+		if (isDisfavoredImageSourceUrl(c.url)) continue;
 		const key = normalizeImageUrlKey(c.url);
 		if (seen.has(key)) continue;
 		seen.add(key);
@@ -4558,6 +4593,25 @@ function getUrlHost(url = "") {
 	}
 }
 
+const DISFAVORED_STOCK_IMAGE_HOST_RE =
+	/(^|\.)((alamy|gettyimages|istockphoto|shutterstock|depositphotos|dreamstime|wireimage|agefotostock|123rf|bigstockphoto|pond5|pixtal)\.com|media\.gettyimages\.com|c8\.alamy\.com|c7\.alamy\.com)$/i;
+const DISFAVORED_IMAGE_PATH_RE =
+	/\b(watermark|watermarked|preview|comp|sample|stock-photo|stock_image|stockimage|gettyimages|alamy|shutterstock|istockphoto)\b/i;
+
+function isDisfavoredImageSourceUrl(url = "") {
+	const raw = String(url || "");
+	if (!raw) return false;
+	const host = getUrlHost(raw);
+	if (host && DISFAVORED_STOCK_IMAGE_HOST_RE.test(host)) return true;
+	try {
+		const parsed = new URL(sanitizeImageUrl(raw));
+		const hay = `${parsed.pathname} ${parsed.search}`.toLowerCase();
+		return DISFAVORED_IMAGE_PATH_RE.test(hay);
+	} catch {
+		return DISFAVORED_IMAGE_PATH_RE.test(raw.toLowerCase());
+	}
+}
+
 function sanitizeImageUrl(raw = "") {
 	let url = String(raw || "").trim();
 	if (!url) return "";
@@ -4623,6 +4677,7 @@ function scoreImageUrlQuality(url = "") {
 	if (/\b(thumbnail|thumb|small|sprite|avatar|profile|logo|icon)\b/.test(lower))
 		score -= 4;
 	if (isLikelyThumbnailUrl(raw)) score -= 8;
+	if (isDisfavoredImageSourceUrl(raw)) score -= 25;
 	const host = getUrlHost(raw);
 	if (/\b(cnn|bbc|cnbc|nytimes|reuters|apnews|cbsnews|usatoday)\./i.test(host))
 		score += 2;
@@ -4633,6 +4688,20 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 	const key = normalizeImageUrlKey(url);
 	const trustedUrlKeys = getTrustedImageUrlKeys(opts);
 	const qualityScore = scoreImageUrlQuality(url);
+	if (
+		isDisfavoredImageSourceUrl(url) &&
+		!opts?.allowDisfavoredStockImages
+	) {
+		return {
+			trusted: false,
+			accepted: false,
+			score: -100,
+			qualityScore,
+			topicScore: 0,
+			segmentScore: 0,
+			queryScore: 0,
+		};
+	}
 	if (trustedUrlKeys.has(key)) {
 		return {
 			trusted: true,
@@ -4673,16 +4742,20 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 }
 
 function filterRelevantImageCandidatePool(pool = [], opts = {}) {
-	if (opts?.enforceRelevance === false) return pool;
+	const cleanPool = (Array.isArray(pool) ? pool : []).filter(
+		(url) =>
+			!isDisfavoredImageSourceUrl(url) || opts?.allowDisfavoredStockImages,
+	);
+	if (opts?.enforceRelevance === false) return cleanPool;
 	const relevanceTokens = getImageUrlRelevanceTokens(opts);
 	const hasSignals =
 		relevanceTokens.topicTokens.length ||
 		relevanceTokens.segmentTokens.length ||
 		relevanceTokens.queryTokens.length ||
 		getTrustedImageUrlKeys(opts).size;
-	if (!hasSignals) return pool;
+	if (!hasSignals) return cleanPool;
 
-	const scored = pool
+	const scored = cleanPool
 		.map((url) => ({ url, ...scoreImageUrlRelevance(url, opts) }))
 		.filter((entry) => entry.accepted);
 	if (!scored.length) return [];
@@ -7381,6 +7454,7 @@ function buildBaselinePrompt(
 Photorealistic talking-head video of the SAME man as the reference image. Preserve exact identity: shaved head, glasses, eye spacing, nose, beard line, mouth, jaw, skin texture, age, and face proportions; no beautifying, face morphing, or feature drift.
 Keep the same studio, lighting, wardrobe, desk, and static empty background; no extra people, reflections, text, screens, candles, flames, or moving background.
 Framing: medium shot, upper torso to mid torso, moderate headroom, camera at a comfortable distance.
+This must be a real moving presenter video, not a still image, frozen photo, looping freeze-frame, or camera-only zoom. The face, eyes, jaw, shoulders, and breathing must show continuous subtle human motion.
 ${expressionLine}
 ${variantLine}
 Motion: ${motionHint}
@@ -10836,6 +10910,19 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 	const isSports = isSportsCategoryLabel(categoryLabel, topics);
 	const isPolitics = isPoliticsCategoryLabel(categoryLabel, topics);
 	const isHealth = isHealthCategoryLabel(categoryLabel, topics);
+	const topicText = (Array.isArray(topics) ? topics : [])
+		.map((topic) =>
+			[
+				topic?.displayTopic,
+				topic?.topic,
+				topic?.angle,
+				...(Array.isArray(topic?.keywords) ? topic.keywords : []),
+			]
+				.filter(Boolean)
+				.join(" "),
+		)
+		.join(" ");
+	const isSensitiveSportsStory = isSports && isSensitiveTopicText(topicText);
 	if (isPolitics) {
 		return {
 			isSports: false,
@@ -10890,6 +10977,11 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 		isSerious: false,
 		lines: [
 			"- For sports topics, write like a sharp postgame or pregame breakdown, not a search-trends explainer.",
+			...(isSensitiveSportsStory
+				? [
+						"- If the sports story involves death, injury, discipline, or legal issues, split the human/community impact from the basketball or competitive implication, and keep both sourced.",
+					]
+				: []),
 			"- Open on the matchup tension, turning point, or strategic edge. Do NOT open on what people are searching for.",
 			"- Use natural sports language: pace, shot quality, rebounding, turnovers, foul trouble, coverage change, rotation pressure, late-game execution, and momentum swing.",
 			'- If a source is a preview, recap, or analyst hit, attribute the analyst and outlet. Say "Jon Rothstein on CBS Sports" rather than "According to YouTube".',
@@ -10935,6 +11027,15 @@ const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
 	/\bthe\s+angle\s+today\s+is\b/i,
 ];
 
+const SCRIPT_STOCK_PHRASE_PATTERNS = [
+	/\bthat\s+is\s+the\s+turn\b/i,
+	/\bnext\s+detail\s+changes\s+how\b/i,
+	/\bthe\s+next\s+detail\s+changes\s+how\b/i,
+	/\bthe\s+confirmed\s+picture\s+is\s+still\s+narrow\b/i,
+	/\bthe\s+answer\s+depends\s+on\s+the\s+next\s+detail\s+viewers\s+have\s+not\s+seen\s+yet\b/i,
+	/\bwhat\s+changes\s+once\s+the\s+next\s+detail\s+lands\b/i,
+];
+
 const SCRIPT_SERIOUS_CASUAL_PATTERNS = [
 	/\breal\s+quick\b/i,
 	/\bhere(?:'s| is)\s+the\s+thing\b/i,
@@ -10948,6 +11049,34 @@ const SCRIPT_INCOMPLETE_SENTENCE_PATTERNS = [
 	/\b(?:centers\s+on|focuses\s+on|points\s+to|starts\s+with|ends\s+with)\s*$/i,
 ];
 
+function analyzeRepeatedScriptPhrases(segments = []) {
+	const stockPhraseSegments = [];
+	const sentenceMap = new Map();
+	for (let i = 0; i < (segments || []).length; i++) {
+		const seg = segments[i] || {};
+		const text = String(seg.text || "");
+		if (SCRIPT_STOCK_PHRASE_PATTERNS.some((rx) => rx.test(text))) {
+			stockPhraseSegments.push(i);
+		}
+		for (const sentence of splitSentences(text)) {
+			const key = normalizeQaText(sentence);
+			if (countWords(key) < 7) continue;
+			const list = sentenceMap.get(key) || [];
+			list.push(i);
+			sentenceMap.set(key, list);
+		}
+	}
+
+	const repeatedSentenceGroups = [];
+	for (const [sentence, indices] of sentenceMap.entries()) {
+		const uniqueIndices = Array.from(new Set(indices));
+		if (uniqueIndices.length < 2) continue;
+		repeatedSentenceGroups.push({ sentence, segments: uniqueIndices });
+	}
+
+	return { stockPhraseSegments, repeatedSentenceGroups };
+}
+
 function analyzeScriptSpeakability({
 	script,
 	topics = [],
@@ -10960,6 +11089,7 @@ function analyzeScriptSpeakability({
 	const platformAttributionSegments = [];
 	const bettingPromoSegments = [];
 	const speechAwkwardSegments = [];
+	const repeatedPhrases = analyzeRepeatedScriptPhrases(segments);
 
 	for (let i = 0; i < segments.length; i++) {
 		const seg = segments[i] || {};
@@ -10995,12 +11125,18 @@ function analyzeScriptSpeakability({
 	if (bettingPromoSegments.length) warnings.push("sportsbook_framing_detected");
 	if (speechAwkwardSegments.length)
 		warnings.push("tts_awkward_symbol_phrasing_detected");
+	if (repeatedPhrases.stockPhraseSegments.length)
+		warnings.push("stock_transition_phrase_detected");
+	if (repeatedPhrases.repeatedSentenceGroups.length)
+		warnings.push("repeated_sentence_detected");
 
 	const needsRewrite =
 		platformAttributionSegments.length > 0 ||
 		searchMetaSegments.length >= (isSports ? 1 : 2) ||
 		bettingPromoSegments.length > 0 ||
-		speechAwkwardSegments.length > 0;
+		speechAwkwardSegments.length > 0 ||
+		repeatedPhrases.stockPhraseSegments.length > 0 ||
+		repeatedPhrases.repeatedSentenceGroups.length > 0;
 
 	return {
 		needsRewrite,
@@ -11010,6 +11146,8 @@ function analyzeScriptSpeakability({
 			platformAttributionSegments,
 			bettingPromoSegments,
 			speechAwkwardSegments,
+			stockPhraseSegments: repeatedPhrases.stockPhraseSegments,
+			repeatedSentenceGroups: repeatedPhrases.repeatedSentenceGroups,
 		},
 	};
 }
@@ -11205,6 +11343,7 @@ function buildDynamicRetentionGuide({
 		"- Vary the segment openings. Do not let multiple segments in a row start with the same connective style like \"That matters\", \"Still\", \"So\", or \"And\".",
 		"- Every 3-4 segments, add a natural pattern interrupt: a contrast, a viewer-facing question, a consequence, or a sharper read that makes the next beat feel earned.",
 		"- Keep the audience-oriented thread alive: why this matters, what changes if it is true, and what viewers are still waiting to see.",
+		"- Make viewers feel included by naming the shared fan/viewer question, community reaction, or practical consequence without flattering them or forcing a catchphrase.",
 	];
 
 	if (topListPlan) {
@@ -11312,7 +11451,7 @@ async function generateScript({
 		topListPlan
 			? `Segment 0 starts with #${topListPlan.count}- and a ranked item name; the countdown itself is the hook. ${outroGuide}`
 			: mood === "serious"
-			? `Segment 0: measured, serious tone, slower pacing. ${outroGuide}`
+			? `Segment 0: measured news-presenter cadence, clear pauses on confirmed facts. ${outroGuide}`
 			: mood === "excited"
 				? `Segment 0: confident, neutral hook with controlled energy (no shouty hype). ${outroGuide}`
 				: `Segment 0: confident, neutral hook. ${outroGuide}`;
@@ -11511,7 +11650,7 @@ ${retentionGuide}
 Style rules (IMPORTANT):
 - If Countdown structure is present above, it overrides generic hook rules: segment 0 starts with the highest rank prefix, not a separate intro.
 - Keep pacing steady and conversational; no sudden speed-ups.
-- Slightly brisk, natural American delivery; avoid drawn-out phrasing.
+- Brisk, coherent American news-presenter delivery; avoid drawn-out phrasing, rushed clutter, or choppy sentence fragments.
 - Write for spoken delivery, not article copy. Never open a normal segment with a headline-style label followed by a colon; countdown prefixes like "#5- Paris" are allowed when Countdown structure is present.
 - Avoid abstract or unnatural phrases a real host would not say out loud, such as "loss circle" or stiff framing like "the angle today is".
 - Keep the delivery composed and natural, not shouty. The writing should feel sharp, engaging, and lightly provocative when the story supports it, but never reckless, insulting, or overhyped.
@@ -11542,6 +11681,8 @@ Style rules (IMPORTANT):
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
 - No redundancy: do not restate the same fact or idea in different words.
 - Do not repeat a word or short phrase back-to-back.
+- Do not use stock transition templates such as "that is the turn", "the next detail changes how...", or "the confirmed picture is still narrow"; write a fresh human bridge tied to the actual topic.
+- Do not reuse the same sentence across multiple segments, even if the idea is similar.
 - Avoid exclamation points unless the script explicitly calls for excitement.
 - Each segment should be 1-2 sentences. Do NOT switch topics mid-sentence.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
@@ -11576,6 +11717,8 @@ Style rules (IMPORTANT):
 - If you include the entertainment reactionary aside, set expression to "warm" for that segment.
 - If the topic is sad or serious, use neutral (no exaggerated sadness).
 - If the topic is political or a real-world tragedy, keep expression neutral (no smiles).
+- For death, injury, legal, health, or public-safety stories: start from confirmed reporting, name uncertainty plainly, avoid speculation, and keep the audience connection human rather than dramatic.
+- If the title asks "what it means", answer both the human/community impact and the practical stakes; do not stop at "details are limited" unless no sourced implication exists.
 - ONLY if a topic is about a TV show, film, or fictional character, frame it as plot/character discussion, not real-life tragedy.
 - ONLY if a topic is marked as Fictional/Story, keep it in-universe and avoid real-world mourning language.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
@@ -11593,6 +11736,7 @@ ${categoryGuide.lines.join("\n")}
 - overlayCues.query must be 2-6 words, describe a real photo to search for, include the topic name or a key subject from that segment, no punctuation or hashtags.
 - overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
 - Treat overlayCues.query as the downstream image-search contract. It must stay within the topic and name a visible subject, place, action, object, institution, or scene from the segment/source context.
+- Prefer official, public-facing, source-related visual subjects for overlayCues.query, such as official portraits, team photos, press conferences, venues, event stills, or source article subjects. Avoid stock-agency wording.
 - Do NOT include overlayCues.query, image-search hints, visual cue labels, or anchor-image language in the spoken segment text. Those are metadata only.
 - If exact photos are scarce, broaden only to adjacent visible context directly implied by the topic or source context; never use unrelated people, places, brands, or generic scenery.
 - overlayCues.startPct and endPct must be between 0.2 and 0.85, with endPct at least 0.2 greater than startPct.
@@ -11997,6 +12141,8 @@ function analyzeScriptQuality({
 				speakability.stats?.platformAttributionSegments || [],
 			bettingPromoSegments: speakability.stats?.bettingPromoSegments || [],
 			speechAwkwardSegments: speakability.stats?.speechAwkwardSegments || [],
+			stockPhraseSegments: speakability.stats?.stockPhraseSegments || [],
+			repeatedSentenceGroups: speakability.stats?.repeatedSentenceGroups || [],
 		},
 	};
 }
@@ -12006,35 +12152,96 @@ function buildShortSegmentExtension({
 	segment = {},
 	topics = [],
 	categoryGuide = {},
+	segmentIndex = 0,
 } = {}) {
 	const topic = topics?.[Number(segment?.topicIndex) || 0] || {};
 	const topicLabel = String(
 		segment?.topicLabel || topic?.displayTopic || topic?.topic || "the story",
 	).trim();
 	const isQuestion = /\?/.test(String(text || ""));
+	const seed =
+		(Number.isFinite(Number(segmentIndex)) ? Number(segmentIndex) : 0) +
+		(Number(segment?.topicIndex) || 0);
+	const pick = (items) => items[Math.abs(seed) % items.length] || items[0];
+	const sensitive = isSensitiveTopicText(`${topicLabel} ${text}`);
+	if (sensitive) {
+		return pick(
+			isQuestion
+				? [
+						"The responsible answer has to come from confirmed reporting, not the rumor cycle.",
+						"The next useful update is the one that separates confirmed facts from speculation.",
+						"The human part matters here, so the wording has to stay precise.",
+					]
+				: [
+						"Keep the focus on what is confirmed, what remains unclear, and who is directly affected.",
+						"That restraint gives viewers a clearer line between fact, context, and speculation.",
+						"The strongest read here is careful: name the verified facts and leave the unknowns open.",
+					],
+		);
+	}
 	if (categoryGuide?.isHealth) {
-		return isQuestion
-			? "The answer depends on evidence, timing, and what investigators can verify next."
-			: "That distinction keeps the focus on evidence, timing, and what investigators can verify next.";
+		return pick(
+			isQuestion
+				? [
+						"The answer depends on evidence, timing, and what investigators can verify next.",
+						"The next useful detail is the one health officials can actually verify.",
+					]
+				: [
+						"That keeps the focus on evidence, timing, and what investigators can verify next.",
+						"The important line is what is known now versus what still needs confirmation.",
+					],
+		);
 	}
 	if (categoryGuide?.isPolitics || categoryGuide?.isSerious) {
-		return isQuestion
-			? "The answer depends on what the record actually supports next."
-			: "That distinction keeps the focus on what the record actually supports next.";
+		return pick(
+			isQuestion
+				? [
+						"The answer depends on what the record actually supports next.",
+						"The next key point is whether the evidence catches up to the claim.",
+					]
+				: [
+						"That keeps the focus on what the record actually supports, not the loudest interpretation.",
+						"The useful line is evidence first, interpretation second.",
+					],
+		);
 	}
 	if (categoryGuide?.isSports) {
-		return isQuestion
-			? "The answer depends on the next adjustment and who handles the pressure."
-			: "That is the pressure point because the next adjustment changes how the matchup looks.";
+		return pick(
+			isQuestion
+				? [
+						"The answer depends on the next adjustment and who handles the pressure.",
+						"The real test is what changes when the next game puts pressure on the rotation.",
+					]
+				: [
+						"The pressure point is the next adjustment: rotation, matchup, and who earns trust late.",
+						"For fans, the interesting part is how this changes the next decision on the floor.",
+					],
+		);
 	}
 	if (/\b(video\s*game|gaming|gameplay|trailer|demo|studio|developer)\b/i.test(topicLabel)) {
-		return isQuestion
-			? "The answer depends on whether the next showing proves the promise."
-			: "That is the turn because the next showing changes how the promise reads.";
+		return pick(
+			isQuestion
+				? [
+						"The answer depends on whether the next showing proves the promise.",
+						"The next test is whether the footage answers the doubt instead of selling around it.",
+					]
+				: [
+						"The useful read is whether the next showing proves the promise or exposes the gap.",
+						"For players, the difference is simple: footage has to answer the doubt.",
+					],
+		);
 	}
-	return isQuestion
-		? "The answer depends on the next detail viewers have not seen yet."
-		: "That is the turn because the next detail changes how the whole story reads.";
+	return pick(
+		isQuestion
+			? [
+					"The answer depends on the next confirmed detail viewers have not seen yet.",
+					"The missing piece is the detail that turns interest into a real conclusion.",
+				]
+			: [
+					"The next useful beat is the detail that changes what viewers should actually think.",
+					"That keeps the story moving toward evidence, consequence, and a clearer viewer takeaway.",
+				],
+	);
 }
 
 function repairShortScriptSegments({
@@ -12056,6 +12263,7 @@ function repairShortScriptSegments({
 			segment,
 			topics,
 			categoryGuide,
+			segmentIndex: idx,
 		});
 		let updated = cleanupSpeechText(`${text} ${extension}`)
 			.replace(/\s+([,.!?])/g, "$1")
@@ -12097,9 +12305,14 @@ function repairEarlyCuriosityGap({
 		first?.topicLabel || topic?.displayTopic || topic?.topic || "this story",
 	).trim();
 	const baseText = sanitizeSegmentText(first.text || "");
-	const bridge = categoryGuide?.isHealth
-		? `The unresolved question is whether ${topicLabel} stays contained or the evidence points somewhere else.`
-		: `The unresolved question is what changes once the next detail lands.`;
+	const sensitive = isSensitiveTopicText(`${topicLabel} ${baseText}`);
+	const bridge = sensitive
+		? `The important line is what has been confirmed about ${topicLabel}, and what still needs careful attribution.`
+		: categoryGuide?.isHealth
+			? `The unresolved question is whether ${topicLabel} stays contained or the evidence points somewhere else.`
+			: categoryGuide?.isSports
+				? `The next pressure point is how ${topicLabel} changes the rotation, matchup, or locker room response.`
+				: `The unresolved part is the consequence viewers should watch next.`;
 	const updatedText = sanitizeSegmentText(`${baseText} ${bridge}`);
 	const cap = Number(wordCaps?.[0] || 0);
 	const softCap = cap
@@ -12512,12 +12725,16 @@ Rules:
 - No redundancy: each segment adds a new detail or angle with concrete, interesting facts.
 - Add one fresh, concrete detail or implication per segment when possible.
 - Structure each topic around one clear angle; keep facts in service of that angle.
+- Remove stock bridge phrases like "that is the turn", "the next detail changes how...", or repeated "the answer depends..." phrasing. Replace them with topic-specific, human transitions.
+- Do not reuse any sentence verbatim across segments.
 - Preserve curiosity gaps: open with tension and delay the payoff by at least one sentence or segment.
 - Keep at least one clip-ready line per topic that ends with an open loop.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening controlled, but make segment 0 genuinely hooky and curiosity-driven instead of flat.
 - Keep the overall delivery controlled and professional; avoid excited phrasing and exclamation points, but let the writing feel sharp and engaging.
 - If the story is controversial, surface what people are arguing about, what the reporting supports, and what still is not fully settled.
+- For death, injury, legal, health, or public-safety stories, keep the rewrite sober: confirmed facts first, uncertainty clearly labeled, no emotional overacting, and one human/community implication when sourced.
+- If the headline promises "what it means", include a practical implication, not only a caution that details are limited.
 - Add at least one short attribution per topic when sources are available (e.g., "According to Variety..."). Put the attribution near the controversial or factual claim it supports.
 - Attribute the outlet or analyst, not the hosting platform. Never use phrases like "According to YouTube" or "According to TikTok".
 - Rewrite keyword-style phrasing into natural spoken language that a presenter and ElevenLabs voice can deliver cleanly.
@@ -14081,6 +14298,33 @@ async function analyzeLipsyncOutput({
 
 	result.pass = !result.issues.length;
 	return result;
+}
+
+async function assertPresenterVideoHasMotion({ videoPath, jobId, label }) {
+	if (!REQUIRE_REAL_PRESENTER_VIDEO || !PRESENTER_MOTION_QA_ENABLED) {
+		return { pass: true, issues: [] };
+	}
+	const qa = await analyzeLipsyncOutput({
+		videoPath,
+		expectedDurSec: null,
+		jobId,
+		label,
+		requireMotion: true,
+	});
+	logJob(jobId, "presenter source motion qa", {
+		label,
+		pass: qa.pass,
+		issues: qa.issues,
+		durationSec: Number((qa.durationSec || 0).toFixed(3)),
+		maxFreezeSec: Number((qa.maxFreezeSec || 0).toFixed(3)),
+		freezeRatio: Number((qa.freezeRatio || 0).toFixed(3)),
+	});
+	if (!qa.pass) {
+		throw new Error(
+			`presenter_motion_qa_failed:${label}:${qa.issues.join(",") || "unknown"}`,
+		);
+	}
+	return qa;
 }
 
 async function requestSyncSoJob({ videoPath, audioPath, jobId, modelId }) {
@@ -15832,6 +16076,7 @@ async function createPresenterIntroMotion({
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
+This must be a real moving presenter video, not a still photo, freeze-frame, or camera-only zoom; show continuous subtle human face, eye, jaw, shoulder, and breathing motion.
 Action: calm intro delivery with hands resting on the desk; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Expression: ${introFace}. Calm and neutral, composed and professional with a very subtle, light smile (barely noticeable, not constant).
@@ -15848,6 +16093,7 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 Photorealistic talking-head video of the SAME person as the reference image.
 Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
 Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
+This must be a real moving presenter video, not a still photo, freeze-frame, or camera-only zoom; show continuous subtle human face, eye, jaw, shoulder, and breathing motion.
 Action: small, natural intro posture with hands resting; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
 Expression: ${introFace}. Calm and neutral; very subtle, light smile only (barely noticeable), not constant.
@@ -15892,6 +16138,11 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 			outUrl = await runIntroPrompt(fallbackPrompt, "fallback");
 		} catch (e2) {
 			logJob(jobId, "intro motion failed (fallback)", { error: e2.message });
+			if (REQUIRE_REAL_PRESENTER_VIDEO) {
+				throw new Error(
+					"intro_motion_required: Runway intro motion failed and static intro fallback is disabled.",
+				);
+			}
 
 			const outCfg = parseRatio(outputRatio);
 			const outMp4Fallback = path.join(
@@ -15942,6 +16193,11 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 		`intro_motion_${jobId}.mp4`,
 	);
 	await downloadToFile(outUrl, outMp4, 120000, 2);
+	await assertPresenterVideoHasMotion({
+		videoPath: outMp4,
+		jobId,
+		label: "intro_motion",
+	});
 	return outMp4;
 }
 
@@ -18245,8 +18501,8 @@ async function runLongVideoJob(
 					voiceTonePlan?.mood === "serious",
 			);
 			const timingToneRule = timingNeedsMeasuredTone
-				? "- Keep the same topic and tone for a US audience; make it natural, measured, and category-appropriate."
-				: "- Keep the same topic and tone for a US audience; make it natural, sharp, and audience-friendly.";
+				? "- Keep the same topic and tone for a US audience; use a brisk but measured news-presenter cadence."
+				: "- Keep the same topic and tone for a US audience; make it natural, sharp, brisk, and audience-friendly.";
 			const timingCasualRule = timingNeedsMeasuredTone
 				? '- Do not use casual filler pivots like "real quick", "here\'s the thing", "that\'s wild", or exaggerated reactions.'
 				: '- Keep it lightly conversational; use at most one friendly natural pivot per topic when it truly fits, and avoid repeated catchphrases.';
@@ -18276,6 +18532,8 @@ ${timingCasualRule}
 - Improve clarity and specificity; avoid vague filler phrasing or repeating the question.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
 - No redundancy: do not restate the same fact or idea in different words.
+- Remove stock bridge phrases like "that is the turn", "the next detail changes how...", or repeated "the answer depends..." phrasing.
+- Do not reuse any sentence verbatim across segments.
 - Add one fresh, concrete detail or implication per segment when possible.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening controlled, but make segment 0 feel hooky and curiosity-driven instead of bland.
@@ -18283,6 +18541,8 @@ ${timingCasualRule}
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Preserve source attributions already in the text; keep at least one brief attribution per topic when possible, and keep attribution close to any disputed or controversial claim.
 - If the story is controversial, say what people are divided over and what the reporting actually supports.
+- For death, injury, legal, health, or public-safety stories, keep confirmed facts and unknown details clearly separated; include human/community stakes without dramatic language.
+- If the headline promises "what it means", include a practical implication when the provided context supports one.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
@@ -18566,7 +18826,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const visualType = presenterPosSet.has(idx) ? "presenter" : "image";
 			if (visualType === "presenter") presenterSegments.push(seg.index);
 			else imageSegments.push(seg.index);
-			return { ...seg, visualType };
+			return { ...seg, plannedVisualType: visualType, visualType };
 		});
 		logJob(jobId, "segment visual plan", {
 			totalSegments,
@@ -18592,9 +18852,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		const finalPresenterSegments = [];
 		const finalImageSegments = [];
+		const imageFallbackToPresenterSegments = [];
 		for (const seg of timeline) {
 			if (seg.visualType === "image") finalImageSegments.push(seg.index);
-			else finalPresenterSegments.push(seg.index);
+			else {
+				finalPresenterSegments.push(seg.index);
+				if (seg.plannedVisualType === "image")
+					imageFallbackToPresenterSegments.push(seg.index);
+			}
 		}
 		logJob(jobId, "segment visual plan final", {
 			totalSegments,
@@ -18603,6 +18868,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			imageCount: finalImageSegments.length,
 			presenterSegments: finalPresenterSegments,
 			imageSegments: finalImageSegments,
+			imageFallbackToPresenterSegments,
 		});
 		const premiumPresenterSegments = [];
 		if (finalPresenterSegments.length) {
@@ -18803,6 +19069,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			expressionsNeeded.unshift("neutral");
 
 		if (presenterIsVideo) {
+			await assertPresenterVideoHasMotion({
+				videoPath: presenterLocal,
+				jobId,
+				label: "provided_presenter_video",
+			});
 			pushBaselineVariant("neutral", presenterLocal);
 			logJob(jobId, "presenter is video; baseline uses provided video");
 		} else if (
@@ -18884,11 +19155,20 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							jobId,
 							`baseline_sync_${expr}_v${v + 1}`,
 						);
+						const motionQa = await assertPresenterVideoHasMotion({
+							videoPath: syncReady,
+							jobId,
+							label: `baseline_${expr}_v${v + 1}`,
+						});
 						pushBaselineVariant(expr, syncReady);
 						logJob(jobId, "baseline presenter ready", {
 							expression: expr,
 							variant: v + 1,
 							path: path.basename(syncReady),
+							motionQa: {
+								maxFreezeSec: Number((motionQa.maxFreezeSec || 0).toFixed(3)),
+								freezeRatio: Number((motionQa.freezeRatio || 0).toFixed(3)),
+							},
 						});
 					} catch (e) {
 						logJob(jobId, "runway baseline failed (expression)", {
@@ -18901,6 +19181,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			}
 		}
 		if (!baselinePresenterVideos.size) {
+			if (REQUIRE_REAL_PRESENTER_VIDEO) {
+				throw new Error(
+					"presenter_motion_required: Runway presenter motion did not produce a valid moving presenter video. Static presenter fallback is disabled.",
+				);
+			}
 			// Fallback: convert image to a simple still video
 			const still = path.join(tmpDir, `baseline_still_${jobId}.mp4`);
 			await spawnBin(
