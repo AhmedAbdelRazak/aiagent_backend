@@ -1,4 +1,4 @@
-/** @format */
+﻿/** @format */
 /**
  * videoControllerLonger.js (DROP-IN REPLACEMENT - QUALITY + STABILITY)
  *
@@ -22,7 +22,7 @@
  *
  * 5) Professional intro/outro structure:
  *    - Intro 8-12s with a quick story hook + compact voiced greeting
- *    - Outro 3-6s with engagement question + like CTA
+ *    - Outro CTA beat with topic question + silent light-smile tail
  *    - Final fade-out for a clean finish
  *
  * 6-8) Script is "spicy" (American audience) + smooth transitions:
@@ -409,10 +409,26 @@ const DEFAULT_INTRO_SEC = clampNumber(
 	INTRO_MAX_SEC,
 );
 // Outro (seconds)
-const OUTRO_MIN_SEC = clampNumber(3, 3, 6);
-const OUTRO_MAX_SEC = clampNumber(6, 3, 6);
-const DEFAULT_OUTRO_SEC = clampNumber(4.8, OUTRO_MIN_SEC, OUTRO_MAX_SEC);
-const OUTRO_SMILE_TAIL_SEC = clampNumber(1.0, 0.6, 2.0);
+const OUTRO_MIN_SEC = clampNumber(
+	process.env.LONG_VIDEO_OUTRO_MIN_SEC ?? 4.2,
+	3,
+	7,
+);
+const OUTRO_MAX_SEC = clampNumber(
+	process.env.LONG_VIDEO_OUTRO_MAX_SEC ?? 7.2,
+	OUTRO_MIN_SEC,
+	9,
+);
+const DEFAULT_OUTRO_SEC = clampNumber(
+	process.env.LONG_VIDEO_DEFAULT_OUTRO_SEC ?? 6.0,
+	OUTRO_MIN_SEC,
+	OUTRO_MAX_SEC,
+);
+const OUTRO_SMILE_TAIL_SEC = clampNumber(
+	process.env.LONG_VIDEO_OUTRO_SMILE_TAIL_SEC ?? 1.25,
+	0.8,
+	2.4,
+);
 const INTRO_VIDEO_BLUR_SIGMA = clampNumber(2.6, 0, 8);
 const INTRO_TEXT_FADE_IN_START = clampNumber(0.5, 0, 1.5);
 const INTRO_TEXT_FADE_IN_DUR = clampNumber(0.55, 0.15, 1.2);
@@ -526,6 +542,10 @@ const PRESENTER_MOTION_QA_ENABLED = true;
 const REQUIRE_REAL_PRESENTER_VIDEO = envFlag(
 	"LONG_VIDEO_REQUIRE_REAL_PRESENTER_VIDEO",
 	true,
+);
+const ALLOW_STATIC_PRESENTER_FALLBACK = envFlag(
+	"LONG_VIDEO_ALLOW_STATIC_PRESENTER_FALLBACK",
+	false,
 );
 const PRESENTER_MOTION_FREEZE_CHECK_MIN_SEC = clampNumber(0.35, 0.2, 3);
 const PRESENTER_MOTION_FREEZE_MIN_SEC = clampNumber(0.24, 0.12, 2);
@@ -840,6 +860,18 @@ const ENABLE_LONG_VIDEO_OVERLAYS = false;
 
 const LONG_VIDEO_KEEP_TMP = false;
 
+const ENABLE_TOPIC_DETAIL_CARDS = envFlag(
+	"LONG_VIDEO_TOPIC_DETAIL_CARDS",
+	true,
+);
+const TOPIC_DETAIL_CARD_MAX_PER_TOPIC = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_TOPIC_DETAIL_CARD_MAX_PER_TOPIC ?? 1, 0, 3),
+);
+const TITLE_PROMISE_QA_ENABLED = envFlag(
+	"LONG_VIDEO_TITLE_PROMISE_QA",
+	true,
+);
+
 const LONG_VIDEO_CONTROLLER_FINGERPRINT = (() => {
 	try {
 		const src = fs.readFileSync(__filename, "utf8");
@@ -860,6 +892,8 @@ function getLongVideoRuntimeProfile() {
 		baselineDurSec: BASELINE_DUR_SEC,
 		baselineVariants: BASELINE_VARIANTS,
 		requireLipsync: REQUIRE_LIPSYNC,
+		requireRealPresenterVideo: REQUIRE_REAL_PRESENTER_VIDEO,
+		allowStaticPresenterFallback: ALLOW_STATIC_PRESENTER_FALLBACK,
 		enableRunwayBaseline: ENABLE_RUNWAY_BASELINE,
 		useMotionRefBaseline: USE_MOTION_REF_BASELINE,
 		feedVideoEnabled: FEED_VIDEO_ENABLED,
@@ -2495,11 +2529,24 @@ function computeFlexibleNarrationTargetSec({
 }) {
 	const requested = Math.max(18, Number(requestedSec) || 0);
 	const topicCount = Math.max(1, topics.length || 1);
+	const promptDirected = (Array.isArray(topics) ? topics : []).some((t) =>
+		isUserPromptTopicPick(t),
+	);
 	const maxMultiplier = clampNumber(
 		process.env.LONG_VIDEO_FLEX_MAX_MULTIPLIER ?? 2,
 		1,
 		2.5,
 	);
+	const effectiveMaxMultiplier = promptDirected
+		? Math.min(
+				maxMultiplier,
+				clampNumber(
+					process.env.LONG_VIDEO_PROMPT_MAX_MULTIPLIER ?? 1.15,
+					1,
+					1.5,
+				),
+			)
+		: maxMultiplier;
 	const minMultiplier = clampNumber(
 		process.env.LONG_VIDEO_FLEX_MIN_MULTIPLIER ?? 0.5,
 		0.25,
@@ -2516,8 +2563,10 @@ function computeFlexibleNarrationTargetSec({
 		0.9,
 	);
 
-	const minSec = Math.max(18, Math.round(requested * 0.5));
-	const maxSec = Math.max(minSec, Math.round(requested * maxMultiplier));
+	const minSec = promptDirected
+		? Math.max(18, Math.round(requested * 0.95))
+		: Math.max(18, Math.round(requested * 0.5));
+	const maxSec = Math.max(minSec, Math.round(requested * effectiveMaxMultiplier));
 
 	let totalSignal = 0;
 	for (let i = 0; i < topicCount; i++) {
@@ -2544,7 +2593,21 @@ function computeFlexibleNarrationTargetSec({
 	const normalized = clampNumber(avgSignal / fullSignal, 0, 1);
 
 	let multiplier = 1;
-	if (normalized <= neutralSignal) {
+	if (promptDirected) {
+		multiplier = normalized > neutralSignal
+			? 1 +
+				(effectiveMaxMultiplier - 1) *
+					Math.pow(
+						clampNumber(
+							(normalized - neutralSignal) /
+								Math.max(0.01, 1 - neutralSignal),
+							0,
+							1,
+						),
+						1.35,
+					)
+			: 1;
+	} else if (normalized <= neutralSignal) {
 		const t = clampNumber(normalized / neutralSignal, 0, 1);
 		multiplier = minMultiplier + (1 - minMultiplier) * Math.pow(t, 0.85);
 	} else {
@@ -2553,7 +2616,7 @@ function computeFlexibleNarrationTargetSec({
 			0,
 			1,
 		);
-		multiplier = 1 + (maxMultiplier - 1) * Math.pow(t, 1.35);
+		multiplier = 1 + (effectiveMaxMultiplier - 1) * Math.pow(t, 1.35);
 	}
 
 	let target = Math.round(requested * multiplier);
@@ -2574,6 +2637,8 @@ function computeFlexibleNarrationTargetSec({
 			neutralSignal: Number(neutralSignal.toFixed(2)),
 			minMultiplier: Number(minMultiplier.toFixed(2)),
 			maxMultiplier: Number(maxMultiplier.toFixed(2)),
+			effectiveMaxMultiplier: Number(effectiveMaxMultiplier.toFixed(2)),
+			promptDirected,
 		},
 	};
 }
@@ -2721,6 +2786,12 @@ const PROMPT_CONTROL_TOKENS = new Set([
 	"videos",
 	"content",
 	"script",
+	"seo",
+	"metadata",
+	"title",
+	"titles",
+	"youtube",
+	"friendly",
 	"long",
 	"short",
 	"create",
@@ -2733,6 +2804,7 @@ const PROMPT_CONTROL_TOKENS = new Set([
 	"give",
 	"show",
 	"tell",
+	"add",
 	"need",
 	"want",
 	"please",
@@ -2755,6 +2827,7 @@ const PROMPT_CONTROL_TOKENS = new Set([
 	"anything",
 	"something",
 	"random",
+	"best",
 	"trending",
 	"latest",
 	"update",
@@ -2821,7 +2894,13 @@ const PROMPT_RECOMMENDATION_PATTERNS = [
 	/\btopic\s+idea\b/i,
 ];
 
-const PROMPT_SPLIT_RE = /[|;\n]+/;
+const PROMPT_SPLIT_RE = /[|;]+/;
+const PROMPT_BRIEF_LABEL_RE =
+	/^\s*(title|headline|opening\s*line|hook|why\s+it\s+can\s+work|why\s+it\s+works|angle|tone|must\s+include|avoid|ending|end|sources?|stats?|facts?|thumbnail(?:\s*text)?|visuals?|b[-\s]?roll|feed\s*(?:images?|videos?)?|(?:\d+\s*[-\s]*)?minute\s*structure|structure|outline)\s*:\s*(.*)$/i;
+const PROMPT_BRIEF_SINGLE_LABEL_RE =
+	/\b(title|headline|opening\s*line|hook|why\s+it\s+can\s+work|why\s+it\s+works|must\s+include|avoid|ending|stats?|facts?|visuals?|b[-\s]?roll|thumbnail(?:\s*text)?|(?:\d+\s*[-\s]*)?minute\s*structure|structure|outline)\s*:/i;
+const PROMPT_BRIEF_STRUCTURE_LINE_RE =
+	/^\s*(?:minute|part|section|beat)\s*\d{1,2}\s*:\s*(.+)$/i;
 
 function parseTopListNumberToken(token = "") {
 	const raw = String(token || "")
@@ -2874,6 +2953,253 @@ function stripCreatorIntentForTopic(text = "") {
 		.trim();
 }
 
+function stripPromptHeadingNumber(text = "") {
+	return String(text || "")
+		.trim()
+		.replace(/^\s*(?:topic\s*)?(?:#?\d{1,2}|[A-Z])[\).:-]\s*/i, "")
+		.trim();
+}
+
+function stripOuterQuotes(text = "") {
+	return String(text || "")
+		.trim()
+		.replace(/^["'\u201c\u201d\u2018\u2019]+|["'\u201c\u201d\u2018\u2019]+$/g, "")
+		.trim();
+}
+
+function isSeoTitleRequestText(text = "") {
+	const raw = normalizeWhitespace(text).toLowerCase();
+	if (!raw) return false;
+	const hasTitle = /\btitles?\b/.test(raw);
+	const hasSeoIntent =
+		/\bseo(?:[-\s]?friendly)?\b/.test(raw) ||
+		/\bsearch(?:able| optimized| friendly)?\b/.test(raw) ||
+		/\byoutube\b/.test(raw);
+	const hasAction =
+		/\b(add|create|generate|write|choose|pick|make|give|use|find|recommend)\b/.test(
+			raw,
+		) || /\bbest\b/.test(raw);
+	return hasTitle && hasSeoIntent && hasAction;
+}
+
+function stripSeoTitleRequestText(text = "") {
+	let cleaned = String(text || "");
+	if (!cleaned.trim()) return "";
+	const requestFragment =
+		/(^|[\n.?!]\s*)(?:please\s+)?(?:add|create|generate|write|choose|pick|make|give|use|find|recommend)\b[^.?!\n]{0,160}\b(?:seo(?:[-\s]?friendly)?|search(?:able| optimized| friendly)?|youtube)\b[^.?!\n]{0,100}\btitles?\b[^.?!\n]*(?=$|[\n.?!])/gi;
+	const titleFirstFragment =
+		/(^|[\n.?!]\s*)(?:please\s+)?(?:add|create|generate|write|choose|pick|make|give|use|find|recommend)\b[^.?!\n]{0,100}\btitles?\b[^.?!\n]{0,160}\b(?:seo(?:[-\s]?friendly)?|search(?:able| optimized| friendly)?|youtube)\b[^.?!\n]*(?=$|[\n.?!])/gi;
+	cleaned = cleaned.replace(requestFragment, "$1");
+	cleaned = cleaned.replace(titleFirstFragment, "$1");
+	return cleaned.replace(/\s+/g, " ").trim();
+}
+
+function isLikelyPromptTitleLine(line = "") {
+	const raw = stripOuterQuotes(stripPromptHeadingNumber(line));
+	if (!raw || isSeoTitleRequestText(raw)) return false;
+	const words = countWords(raw);
+	if (words < 2 || words > 16) return false;
+	if (/[?]$/.test(raw)) return false;
+	if (/^(please|i\s+(?:want|need|would)|can\s+you|could\s+you|add|create|generate|write|make|give|use|find|recommend)\b/i.test(raw))
+		return false;
+	const tokens = tokenizeLabel(raw);
+	const controlCount = tokens.filter((t) => PROMPT_CONTROL_TOKENS.has(t)).length;
+	return controlCount <= Math.max(1, Math.floor(tokens.length * 0.35));
+}
+
+function normalizePromptThumbnailText(text = "") {
+	const raw = stripOuterQuotes(text)
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!raw) return "";
+	const normalized = normalizeBadgeText(raw);
+	if (normalized) return normalized;
+	return raw.replace(/[?]+/g, "").trim().toUpperCase().slice(0, 18);
+}
+
+function parseStructuredPromptBrief(promptText = "") {
+	const raw = String(promptText || "").trim();
+	if (!raw) {
+		return {
+			isStructured: false,
+			primaryTopic: "",
+			title: "",
+			titleLocked: false,
+			openingLine: "",
+			briefLines: [],
+			factLines: [],
+			searchHints: [],
+			imageHints: [],
+			seoTitleInstructions: [],
+			wantsSeoTitle: false,
+			thumbnailText: "",
+			structureLines: [],
+		};
+	}
+
+	const lines = raw
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	const fields = {};
+	const unlabeled = [];
+	const factLines = [];
+	const seoTitleInstructions = [];
+	const structureLines = [];
+	for (const originalLine of lines) {
+		let line = originalLine;
+		const lineWithoutSeoInstruction = stripSeoTitleRequestText(line);
+		if (
+			isSeoTitleRequestText(line) &&
+			lineWithoutSeoInstruction !== normalizeWhitespace(line)
+		) {
+			seoTitleInstructions.push(originalLine);
+			line = lineWithoutSeoInstruction;
+			if (!line) continue;
+		}
+		const match = line.match(PROMPT_BRIEF_LABEL_RE);
+		if (match) {
+			const key = String(match[1] || "")
+				.toLowerCase()
+				.replace(/\s+/g, "_")
+				.replace(/-/g, "_");
+			const value = String(match[2] || "").trim();
+			if ((key === "title" || key === "headline") && isSeoTitleRequestText(value)) {
+				seoTitleInstructions.push(value || originalLine);
+				continue;
+			}
+			if (key === "thumbnail" || key === "thumbnail_text") {
+				fields.thumbnail_text = fields.thumbnail_text
+					? `${fields.thumbnail_text} ${value}`.trim()
+					: value;
+				continue;
+			}
+			if (
+				key === "structure" ||
+				key === "outline" ||
+				/minute_structure$/i.test(key)
+			) {
+				if (value) structureLines.push(value);
+				continue;
+			}
+			fields[key] = fields[key] ? `${fields[key]} ${value}`.trim() : value;
+			if (/\d|%|\$|\b(?:reported|according to|ftc|census|bls|fed|federal reserve|labor department|commerce department)\b/i.test(value)) {
+				factLines.push(value);
+			}
+			continue;
+		}
+		if (isSeoTitleRequestText(line)) {
+			seoTitleInstructions.push(originalLine);
+			continue;
+		}
+		const structureMatch = line.match(PROMPT_BRIEF_STRUCTURE_LINE_RE);
+		if (structureMatch) {
+			structureLines.push(line);
+			continue;
+		}
+		unlabeled.push(line);
+		if (/\d|%|\$|\b(?:reported|according to|ftc|census|bls|fed|federal reserve|labor department|commerce department)\b/i.test(line)) {
+			factLines.push(line);
+		}
+	}
+
+	const explicitTitle = stripOuterQuotes(fields.title || fields.headline || "");
+	const heading =
+		unlabeled.find((line) => isLikelyPromptTitleLine(line)) || "";
+	const promptHeading = stripOuterQuotes(stripPromptHeadingNumber(heading));
+	const inferredTitle = promptHeading;
+	const title = stripOuterQuotes(explicitTitle || inferredTitle);
+	const titleLocked = Boolean(title && (explicitTitle || inferredTitle));
+	const openingLine = stripOuterQuotes(fields.opening_line || fields.hook || "");
+	const thumbnailText = normalizePromptThumbnailText(fields.thumbnail_text || "");
+	const primaryTopic =
+		cleanTopicLabel(title || stripPromptHeadingNumber(heading)) ||
+		normalizePromptTopic(stripSeoTitleRequestText(raw)).slice(0, 120);
+	const briefLines = uniqueStrings(
+		[
+			...(title ? [`Requested title: ${title}`] : []),
+			...(promptHeading && promptHeading !== title
+				? [`Prompt topic heading: ${promptHeading}`]
+				: []),
+			...seoTitleInstructions.map(
+				(line) => `SEO title instruction: ${line}`,
+			),
+			...(thumbnailText ? [`Thumbnail text: ${thumbnailText}`] : []),
+			...(openingLine ? [`Requested opening line: ${openingLine}`] : []),
+			...structureLines.map((line) => `Requested structure: ${line}`),
+			...(fields.why_it_can_work
+				? [`Why it can work: ${fields.why_it_can_work}`]
+				: []),
+			...(fields.why_it_works ? [`Why it works: ${fields.why_it_works}`] : []),
+			...(fields.angle ? [`Angle: ${fields.angle}`] : []),
+			...(fields.tone ? [`Tone: ${fields.tone}`] : []),
+			...(fields.must_include ? [`Must include: ${fields.must_include}`] : []),
+			...(fields.avoid ? [`Avoid: ${fields.avoid}`] : []),
+			...(fields.ending || fields.end
+				? [`Ending: ${fields.ending || fields.end}`]
+				: []),
+			...(fields.visuals ? [`Visuals: ${fields.visuals}`] : []),
+			...(fields.b_roll ? [`B-roll: ${fields.b_roll}`] : []),
+			...factLines.map((line) => `Fact/stat to verify: ${line}`),
+		],
+		{ limit: 18 },
+	);
+	const searchHints = uniqueStrings(
+		[
+			primaryTopic,
+			title,
+			promptHeading,
+			...factLines,
+			...(fields.sources ? [fields.sources] : []),
+			...(fields.stats ? [fields.stats] : []),
+			...(fields.facts ? [fields.facts] : []),
+		].filter(Boolean),
+		{ limit: 10 },
+	);
+	const imageHints = uniqueStrings(
+		[
+			primaryTopic ? `${primaryTopic} news photo` : "",
+			primaryTopic ? `${primaryTopic} public warning` : "",
+			primaryTopic ? `${primaryTopic} chart` : "",
+			promptHeading ? `${promptHeading} news photo` : "",
+			...(thumbnailText ? [`${primaryTopic} ${thumbnailText}`] : []),
+			...(fields.visuals ? [fields.visuals] : []),
+			...(fields.feed_images ? [fields.feed_images] : []),
+			...(fields.feed_videos ? [fields.feed_videos] : []),
+		].filter(Boolean),
+		{ limit: 10 },
+	);
+	const isStructured =
+		PROMPT_BRIEF_SINGLE_LABEL_RE.test(raw) ||
+		briefLines.length >= 2 ||
+		(lines.length >= 3 && factLines.length > 0);
+	return {
+		isStructured,
+		primaryTopic,
+		title,
+		titleLocked,
+		openingLine,
+		briefLines,
+		factLines,
+		searchHints,
+		imageHints,
+		seoTitleInstructions: uniqueStrings(seoTitleInstructions, { limit: 4 }),
+		wantsSeoTitle: seoTitleInstructions.length > 0,
+		thumbnailText,
+		structureLines: uniqueStrings(structureLines, { limit: 12 }),
+		raw: raw.slice(0, 5000),
+	};
+}
+
+function shouldTreatPromptAsSingleBrief(promptText = "") {
+	const raw = String(promptText || "").trim();
+	if (!raw) return false;
+	if (PROMPT_BRIEF_SINGLE_LABEL_RE.test(raw)) return true;
+	if (raw.length >= 220 && /[.?!]\s+/.test(raw)) return true;
+	const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+	return lines.length >= 3 && lines.some((line) => /\d|%|\$/.test(line));
+}
+
 function detectPromptAngle(text = "") {
 	const raw = String(text || "").toLowerCase();
 	const angles = [];
@@ -2885,6 +3211,12 @@ function detectPromptAngle(text = "") {
 		angles.push("strong hook and high-retention structure");
 	if (/\blatest|update|updates|current|now|today/i.test(raw))
 		angles.push("latest updates and current context");
+	if (/\bemotional|suffering|struggling|feel their|care about|human\b/i.test(raw))
+		angles.push("empathetic human framing without exaggeration");
+	if (/\bhope|hopeful|optimistic|better|recovery|resilience\b/i.test(raw))
+		angles.push("end with realistic hope grounded in facts");
+	if (/\bstats?|statistics|data|charts?|numbers|reported\b/i.test(raw))
+		angles.push("support key claims with stats and source attribution");
 	return uniqueStrings(angles, { limit: 4 }).join("; ");
 }
 
@@ -2917,6 +3249,38 @@ function normalizeTopListTopic(topic = "", topList = null) {
 	return cleanTopicLabel(`Top ${topList.count} ${subject}`) || raw;
 }
 
+function buildPromptFactSearchQueries(promptText = "", topic = "") {
+	const brief = parseStructuredPromptBrief(promptText);
+	const raw = String(promptText || "");
+	const lines = raw
+		.split(/\r?\n/)
+		.map((line) => normalizeWhitespace(line))
+		.filter(Boolean);
+	const statLines = lines.filter(
+		(line) =>
+			/\d|%|\$/.test(line) ||
+			/\b(ftc|census|bls|fed|federal reserve|labor department|commerce department|reported|according to)\b/i.test(
+				line,
+			),
+	);
+	return uniqueStrings(
+		[
+			...brief.searchHints,
+			...statLines,
+			topic && /\bscam|fraud\b/i.test(`${topic} ${raw}`)
+				? `${topic} FTC social media scam losses`
+				: "",
+			topic && /\beconomic|economy|rent|grocery|inflation|americans\b/i.test(`${topic} ${raw}`)
+				? `${topic} BLS Census Federal Reserve household costs`
+				: "",
+		]
+			.filter(Boolean)
+			.map((q) => sanitizeOverlayQuery(q).slice(0, 140))
+			.filter(Boolean),
+		{ limit: 8 },
+	);
+}
+
 function buildPromptSearchHints(topic = "", promptText = "", topList = null) {
 	const cleanTopic = cleanTopicLabel(topic);
 	const original = cleanTopicLabel(promptText);
@@ -2927,6 +3291,7 @@ function buildPromptSearchHints(topic = "", promptText = "", topList = null) {
 		if (q) hints.push(q);
 	};
 	push(base);
+	for (const q of buildPromptFactSearchQueries(promptText, base)) push(q);
 	push(`${base} latest updates`);
 	push(`${base} latest news`);
 	push(`${base} explained`);
@@ -2943,6 +3308,7 @@ function buildPromptSearchHints(topic = "", promptText = "", topList = null) {
 
 function buildPromptImageSearchHints(topic = "", promptText = "", topList = null) {
 	const base = cleanTopicLabel(topic || promptText);
+	const brief = parseStructuredPromptBrief(promptText);
 	const hints = [];
 	const push = (value) => {
 		const q = sanitizeOverlayQuery(value);
@@ -2958,6 +3324,18 @@ function buildPromptImageSearchHints(topic = "", promptText = "", topList = null
 		push(`${topList.subject || base} travel photos`);
 		push(`${topList.subject || base} skyline landmark`);
 	}
+	if (/\bscam|fraud\b/i.test(`${base} ${promptText}`)) {
+		push(`${base} phone scam warning`);
+		push(`${base} social media scam`);
+		push(`${base} consumer protection`);
+	}
+	if (/\beconomic|economy|rent|grocery|inflation|americans\b/i.test(`${base} ${promptText}`)) {
+		push(`${base} grocery prices`);
+		push(`${base} rent prices`);
+		push(`${base} household budget`);
+		push(`${base} inflation chart`);
+	}
+	for (const q of brief.imageHints || []) push(q);
 	return uniqueStrings(hints, { limit: 12 });
 }
 
@@ -3035,15 +3413,23 @@ function extractPromptSubjectTokens(text = "") {
 }
 
 function normalizePromptTopic(text = "") {
-	const stripped = stripPromptPreamble(text);
-	const base = stripCreatorIntentForTopic(stripped || String(text || "").trim());
+	const withoutProductionInstructions = stripSeoTitleRequestText(text);
+	const stripped = stripPromptPreamble(withoutProductionInstructions);
+	const base = stripCreatorIntentForTopic(
+		stripped || withoutProductionInstructions || "",
+	);
 	const cleaned = cleanTopicCandidate(base) || base.trim();
 	return cleaned.replace(/\s+/g, " ").trim();
 }
 
-function splitPromptTopics(text = "") {
+function splitPromptTopics(text = "", opts = {}) {
 	const raw = String(text || "").trim();
 	if (!raw) return [];
+	const brief = parseStructuredPromptBrief(raw);
+	if (opts.singleBrief || brief.isStructured || shouldTreatPromptAsSingleBrief(raw)) {
+		const topic = normalizePromptTopic(brief.primaryTopic || raw);
+		return topic ? [topic] : [];
+	}
 	const parts = raw
 		.split(PROMPT_SPLIT_RE)
 		.map((chunk) => normalizePromptTopic(chunk))
@@ -3069,6 +3455,7 @@ function resolvePreferredTopicHint(raw = "") {
 	const imageUrls = promptUrls.filter((u) => !videoUrls.includes(u));
 	const cleanedPrompt = stripUrlsFromText(original);
 	const promptText = String(cleanedPrompt || "").trim();
+	const brief = parseStructuredPromptBrief(promptText);
 	if (!promptText) {
 		return {
 			mode: "none",
@@ -3076,6 +3463,7 @@ function resolvePreferredTopicHint(raw = "") {
 			topicCandidates: [],
 			imageUrls,
 			videoUrls,
+			brief,
 		};
 	}
 	const subjectTokens = extractPromptSubjectTokens(promptText);
@@ -3084,7 +3472,9 @@ function resolvePreferredTopicHint(raw = "") {
 		? subjectTokens.filter((t) => !PROMPT_QUESTION_TOKENS.has(t))
 		: subjectTokens;
 	const mode = effectiveTokens.length ? "prompt" : "trends";
-	let topicCandidates = mode === "prompt" ? splitPromptTopics(promptText) : [];
+	const singleBrief = brief.isStructured || shouldTreatPromptAsSingleBrief(promptText);
+	let topicCandidates =
+		mode === "prompt" ? splitPromptTopics(promptText, { singleBrief }) : [];
 	topicCandidates = topicCandidates.map((topic) => {
 		const topList = detectTopListRequest(topic);
 		return topList ? normalizeTopListTopic(topic, topList) : topic;
@@ -3095,6 +3485,8 @@ function resolvePreferredTopicHint(raw = "") {
 		topicCandidates,
 		imageUrls,
 		videoUrls,
+		brief,
+		singleBrief,
 	};
 }
 
@@ -3129,11 +3521,15 @@ async function selectTopics({
 	if (promptInfo.mode === "prompt") {
 		const topics = [];
 		const seen = new Set();
-		const candidates = promptInfo.topicCandidates.length
+		const promptBrief = promptInfo.brief || parseStructuredPromptBrief(promptInfo.promptText);
+		const candidates = promptInfo.singleBrief
+			? [promptBrief.primaryTopic || promptInfo.topicCandidates[0] || promptInfo.promptText]
+			: promptInfo.topicCandidates.length
 			? promptInfo.topicCandidates
 			: [promptInfo.promptText];
+		const candidateLimit = promptInfo.singleBrief ? 1 : desired;
 		for (const candidate of candidates) {
-			if (topics.length >= desired) break;
+			if (topics.length >= candidateLimit) break;
 			const normalized = normalizePromptTopic(candidate);
 			if (!normalized) continue;
 			const topList = detectTopListRequest(normalized);
@@ -3154,6 +3550,10 @@ async function selectTopics({
 				promptInfo.promptText,
 				topList,
 			);
+			const exactPromptSearchHints = buildPromptFactSearchQueries(
+				promptInfo.promptText,
+				finalTopic,
+			);
 			topics.push({
 				topic: finalTopic.slice(0, 120),
 				displayTopic,
@@ -3170,13 +3570,39 @@ async function selectTopics({
 				videos: topics.length === 0 ? promptInfo.videoUrls : [],
 				source: "user_prompt",
 				promptText: promptInfo.promptText,
+				promptBrief: {
+					...promptBrief,
+					searchHints: uniqueStrings(
+						[
+							...(promptBrief.searchHints || []),
+							...exactPromptSearchHints,
+						],
+						{ limit: 14 },
+					),
+					imageHints: uniqueStrings(
+						[
+							...(promptBrief.imageHints || []),
+							...promptImageHints,
+						],
+						{ limit: 14 },
+					),
+				},
 				topList,
 				searchHints: promptSearchHints,
 				imageSearchHints: promptImageHints,
 				trendStory: {
-					searchPhrases: promptSearchHints,
+					searchPhrases: uniqueStrings(
+						[...promptSearchHints, ...exactPromptSearchHints],
+						{ limit: 16 },
+					),
 					imageSearchQueries: promptImageHints,
-					entityNames: topList?.subject ? [topList.subject] : [],
+					entityNames: uniqueStrings(
+						[
+							...(topList?.subject ? [topList.subject] : []),
+							...(promptBrief.title ? [promptBrief.title] : []),
+						],
+						{ limit: 6 },
+					),
 					articles: [],
 					images: [],
 					videos: topics.length === 0 ? promptInfo.videoUrls : [],
@@ -3188,8 +3614,11 @@ async function selectTopics({
 		if (topics.length) {
 			logJob(null, "preferred topic hint used (prompt mode)", {
 				topics: topics.map((t) => t.displayTopic || t.topic),
+				singleBrief: Boolean(promptInfo.singleBrief),
+				requestedTitle: promptBrief.title || "",
+				openingLine: promptBrief.openingLine || "",
 			});
-			if (promptInfo.topicCandidates.length > topics.length) {
+			if (!promptInfo.singleBrief && promptInfo.topicCandidates.length > topics.length) {
 				logJob(null, "preferred topic hint truncated to fit duration", {
 					requested: promptInfo.topicCandidates.length,
 					used: topics.length,
@@ -3627,9 +4056,9 @@ async function fetchPromptTopicNewsContext({
 	const queries = uniqueStrings(
 		[
 			topicLabel,
+			...(Array.isArray(searchHints) ? searchHints : []),
 			`${topicLabel} latest updates`,
 			`${topicLabel} latest news`,
-			...(Array.isArray(searchHints) ? searchHints : []),
 		],
 		{ limit: PROMPT_TOPIC_NEWS_QUERY_LIMIT },
 	);
@@ -4606,9 +5035,9 @@ function buildOverlayQueryFallback(text = "", topic = "") {
 function cleanImageQueryHint(hint = "", topicLabel = "") {
 	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
 	const cleaned = String(hint || "")
-		.replace(/[’‘]/g, "'")
-		.replace(/[“”]/g, '"')
-		.replace(/[●•].*$/g, " ")
+		.replace(/[â€™â€˜]/g, "'")
+		.replace(/[â€œâ€]/g, '"')
+		.replace(/[â—â€¢].*$/g, " ")
 		.replace(/\b\d+\s*(?:minute|minutes|hour|hours|day|days|week|weeks)\s+ago\b.*$/i, " ")
 		.replace(/^live\s+updates?\s*:\s*/i, " ")
 		.replace(/\s+/g, " ")
@@ -7009,9 +7438,193 @@ async function fetchFallbackImageUrlsForSegment({
 	return uniqueStrings(urls, { limit: target });
 }
 
+function wrapDetailCardLine(text = "", maxChars = 42, maxLines = 2) {
+	const words = normalizeWhitespace(text)
+		.split(/\s+/)
+		.filter(Boolean);
+	if (!words.length) return [];
+	const lines = [];
+	let line = "";
+	for (const word of words) {
+		const next = line ? `${line} ${word}` : word;
+		if (next.length <= maxChars) {
+			line = next;
+			continue;
+		}
+		if (line) lines.push(line);
+		line = word;
+		if (lines.length >= maxLines) break;
+	}
+	if (line && lines.length < maxLines) lines.push(line);
+	if (lines.length > maxLines) lines.length = maxLines;
+	const lastIdx = lines.length - 1;
+	if (lastIdx >= 0 && words.join(" ").length > lines.join(" ").length + 4) {
+		lines[lastIdx] = `${lines[lastIdx].replace(/[.,;:!?]+$/, "")}...`;
+	}
+	return lines;
+}
+
+function extractTopicStatCardBullets(topic = {}, contextItems = []) {
+	const promptBrief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
+	const candidates = [];
+	const push = (value, source = "") => {
+		let text = normalizeWhitespace(value)
+			.replace(/^User supplied fact\/stat to verify:\s*/i, "")
+			.replace(/\s*\(?source:\s*[^)]+\)?\s*$/i, "")
+			.trim();
+		if (!text) return;
+		if (!/(\d|%|\$|\bmillion\b|\bbillion\b|\btrillion\b|\bnearly\b|\babout\b|\broughly\b)/i.test(text))
+			return;
+		text = compactEvidenceText(text, 118);
+		const src = source ? formatHumanTitle(source.replace(/^www\./i, ""), 32) : "";
+		candidates.push(src ? `${src}: ${text}` : text);
+	};
+	for (const line of promptBrief?.factLines || []) push(line);
+	for (const item of Array.isArray(contextItems) ? contextItems : []) {
+		if (typeof item === "string") {
+			push(item);
+			continue;
+		}
+		const source = getUrlHost(item?.link || "") || item?.source || "";
+		push(`${item?.title || ""} ${item?.snippet || ""}`, source);
+	}
+	return uniqueStrings(candidates, { limit: 4 });
+}
+
+function buildTopicDetailCardPlan(topic = {}, contextItems = []) {
+	if (!ENABLE_TOPIC_DETAIL_CARDS || TOPIC_DETAIL_CARD_MAX_PER_TOPIC <= 0)
+		return null;
+	const coverage = analyzeTitlePromiseCoverage({
+		topics: [topic],
+		topicContexts: [{ topic: topic?.topic || "", context: contextItems }],
+	});
+	const bullets = uniqueStrings(
+		[
+			...(coverage.obligations || [])
+				.map((item) => item.repairSentence)
+				.filter((line) => line && countWords(line) >= 4),
+			...extractTopicStatCardBullets(topic, contextItems),
+		],
+		{ limit: 4 },
+	);
+	if (!bullets.length) return null;
+	const title =
+		formatHumanTitle(
+			topic?.displayTopic || topic?.topic || topic?.rawTitle || "Key Details",
+			62,
+		) || "Key Details";
+	return { title, bullets };
+}
+
+async function createTopicDetailCardImage({
+	tmpDir,
+	jobId,
+	topicIndex = 0,
+	title = "",
+	bullets = [],
+	output,
+} = {}) {
+	const outCfg = output && typeof output === "object" ? output : parseRatio();
+	const w = makeEven(outCfg.w || 1280);
+	const h = makeEven(outCfg.h || 720);
+	const isVertical = h > w;
+	const card = path.join(
+		tmpDir,
+		`topic_detail_card_${jobId}_${topicIndex}_${crypto.randomUUID()}.jpg`,
+	);
+	const fontFile = resolveFontFile();
+	const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
+	const marginX = Math.round(w * (isVertical ? 0.08 : 0.095));
+	const titleY = Math.round(h * (isVertical ? 0.16 : 0.18));
+	const headingSize = Math.max(22, Math.round(h * (isVertical ? 0.026 : 0.032)));
+	const titleSize = Math.max(30, Math.round(h * (isVertical ? 0.041 : 0.052)));
+	const bodySize = Math.max(23, Math.round(h * (isVertical ? 0.028 : 0.038)));
+	const lineGap = Math.round(bodySize * 1.35);
+	const maxChars = isVertical ? 27 : 48;
+	const titleLines = wrapDetailCardLine(title, isVertical ? 22 : 34, 2);
+	const bodyLines = [];
+	for (const bullet of bullets.slice(0, 4)) {
+		const wrapped = wrapDetailCardLine(
+			bullet.replace(/\.$/, ""),
+			maxChars,
+			isVertical ? 3 : 2,
+		);
+		if (!wrapped.length) continue;
+		wrapped.forEach((line, idx) => {
+			bodyLines.push(`${idx === 0 ? "- " : "  "}${line}`);
+		});
+	}
+
+	const filters = [
+		"format=yuv420p",
+		`drawbox=x=0:y=0:w=iw:h=ih:color=0x111827:t=fill`,
+		`drawbox=x=${Math.round(w * 0.055)}:y=${Math.round(
+			h * 0.16,
+		)}:w=${Math.max(6, Math.round(w * 0.009))}:h=${Math.round(
+			h * 0.68,
+		)}:color=0x38bdf8:t=fill`,
+		`drawbox=x=${Math.round(w * 0.055)}:y=${Math.round(
+			h * 0.16,
+		)}:w=${Math.max(6, Math.round(w * 0.009))}:h=${Math.round(
+			h * 0.22,
+		)}:color=0xfacc15:t=fill`,
+		`drawtext=text='${escapeDrawtext("KEY DETAILS")}'${fontOpt}:fontsize=${headingSize}:fontcolor=0x93c5fd:x=${marginX}:y=${Math.round(
+			h * 0.105,
+		)}:line_spacing=6`,
+	];
+	let y = titleY;
+	for (const line of titleLines) {
+		filters.push(
+			`drawtext=text='${escapeDrawtext(
+				line,
+			)}'${fontOpt}:fontsize=${titleSize}:fontcolor=white:x=${marginX}:y=${y}:line_spacing=8`,
+		);
+		y += Math.round(titleSize * 1.22);
+	}
+	y += Math.round(h * 0.045);
+	for (const line of bodyLines.slice(0, isVertical ? 9 : 8)) {
+		filters.push(
+			`drawtext=text='${escapeDrawtext(
+				line,
+			)}'${fontOpt}:fontsize=${bodySize}:fontcolor=0xe5e7eb:x=${marginX}:y=${y}:line_spacing=8`,
+		);
+		y += lineGap;
+	}
+	filters.push(
+		`drawtext=text='${escapeDrawtext(
+			CHANNEL_NAME,
+		)}'${fontOpt}:fontsize=${Math.max(
+			18,
+			Math.round(h * 0.024),
+		)}:fontcolor=white@0.52:x=${marginX}:y=h-th-${Math.round(h * 0.08)}`,
+	);
+
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-f",
+			"lavfi",
+			"-i",
+			`color=c=0x111827:s=${w}x${h}:r=1`,
+			"-frames:v",
+			"1",
+			"-vf",
+			filters.join(","),
+			"-q:v",
+			"2",
+			"-y",
+			card,
+		],
+		"topic_detail_card",
+		{ timeoutMs: IMAGE_PLATE_TIMEOUT_MS },
+	);
+	return card;
+}
+
 async function prepareImageSegments({
 	timeline = [],
 	topics = [],
+	topicContexts = [],
 	tmpDir,
 	jobId,
 	baseUrl,
@@ -7042,6 +7655,7 @@ async function prepareImageSegments({
 	const usedUrlsGlobal = new Set();
 	const usedFeedVideoUrlsGlobal = new Set();
 	const usedUrlsByTopic = new Map();
+	const detailCardCountByTopic = new Map();
 	const topicMetaByIndex = new Map();
 	const imageSegmentTotal = timeline.filter((seg) => seg.visualType === "image")
 		.length;
@@ -7065,6 +7679,7 @@ async function prepareImageSegments({
 	for (let i = 0; i < (topics || []).length; i++) {
 		const t = topics[i] || {};
 		const story = t.trendStory || {};
+		const contextItems = topicContextItemsAt(topicContexts, i);
 		const label = String(t.displayTopic || t.topic || "").trim();
 		const keywordHints = uniqueStrings(
 			[
@@ -7189,6 +7804,7 @@ async function prepareImageSegments({
 			trustedSeedUrls: articleImageUrls,
 			videoUrls,
 			potentialVideos,
+			detailCard: buildTopicDetailCardPlan(t, contextItems),
 		});
 	}
 
@@ -7887,6 +8503,40 @@ async function prepareImageSegments({
 			});
 		}
 
+		const detailCardPlan = meta.detailCard || null;
+		const detailCardsUsed = detailCardCountByTopic.get(topicIndex) || 0;
+		let detailCardPath = "";
+		if (
+			detailCardPlan &&
+			detailCardsUsed < TOPIC_DETAIL_CARD_MAX_PER_TOPIC &&
+			segDur >= 2.2
+		) {
+			try {
+				detailCardPath = await createTopicDetailCardImage({
+					tmpDir,
+					jobId,
+					topicIndex,
+					title: detailCardPlan.title,
+					bullets: detailCardPlan.bullets,
+					output: outputCfg,
+				});
+				detailCardCountByTopic.set(topicIndex, detailCardsUsed + 1);
+				const keepImageCount = Math.max(0, renderTargetCount - 1);
+				localPaths = [detailCardPath, ...localPaths.slice(0, keepImageCount)];
+				logJob(jobId, "topic detail card added", {
+					segment: seg.index,
+					topicLabel: effectiveTopicLabel,
+					bullets: detailCardPlan.bullets.length,
+				});
+			} catch (e) {
+				logJob(jobId, "topic detail card failed", {
+					segment: seg.index,
+					topicLabel: effectiveTopicLabel,
+					error: e.message,
+				});
+			}
+		}
+
 		let pickedPlanned = 0;
 		let pickedPotential = 0;
 		let pickedCse = 0;
@@ -7921,6 +8571,7 @@ async function prepareImageSegments({
 			pickedCse,
 			pickedSeed,
 			pickedFallback,
+			detailCard: Boolean(detailCardPath),
 		});
 
 		imageSourceSummary.segments += 1;
@@ -7971,6 +8622,7 @@ async function prepareImageSegments({
 			segment: seg.index,
 			imageCount: localPaths.length,
 			feedVideoCount: feedVideoDownload.localPaths?.length || 0,
+			detailCard: Boolean(detailCardPath),
 			cloudinaryCount: cloudinaryUrls.length,
 			desiredCount,
 			renderTargetCount,
@@ -9189,6 +9841,489 @@ function buildTopicIntentSummary(topicObj, contextItems = []) {
 		evidence,
 		hasContext: Boolean(contextStrings.length),
 	};
+}
+
+const TITLE_PROMISE_RULES = Object.freeze([
+	{
+		key: "price",
+		label: "price or cost",
+		request:
+			/\b(price|pricing|cost|retail|retails|how much|cheap|expensive|affordable)\b/i,
+		evidence:
+			/(?:US\$|\$|USD|EUR|GBP|\u00a3|\u20ac)\s*\d{2,6}|\b\d{2,6}\s*(?:dollars?|usd|euros?|eur|pounds?|gbp)\b|\b(?:price|pricing|cost)\s+(?:is|has)\s+not\s+(?:confirmed|disclosed|announced)\b/i,
+		coverage:
+			/(?:US\$|\$|USD|EUR|GBP|\u00a3|\u20ac)\s*\d{2,6}|\b(?:price|priced|pricing|retail|retails|costs?|dollars?|usd|euros?|eur|pounds?|gbp|not confirmed|not disclosed|has not been announced|hasn't been announced)\b/i,
+	},
+	{
+		key: "release",
+		label: "release date or launch timing",
+		request:
+			/\b(release date|release details|release|launch|launches|launched|drop|drops|dropped|debut|premiere|available as of|coming out|when (?:is|does|will|can))\b/i,
+		evidence:
+			/\b(?:available|availability|launch(?:es|ed|ing)?|release(?:s|d)?|drop(?:s|ped|ping)?|debut(?:s|ed)?|starts?|from|on|as of)\b.{0,80}\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:,\s*\d{4})?\b/i,
+		coverage:
+			/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:,\s*\d{4})?\b|\b(?:release date|launch date|available|availability|drops?|not confirmed|not disclosed|has not been announced|hasn't been announced)\b/i,
+	},
+	{
+		key: "availability",
+		label: "availability or where to get it",
+		request:
+			/\b(availability|available|where to buy|how to buy|stores?|shop|online|limited|one per|per person|drop details|release details)\b/i,
+		evidence:
+			/\b(?:selected|select|worldwide|stores?|online|available|availability|limited|one\s+(?:watch|piece|item)?\s*per\s+person|per\s+store|per\s+day|waitlist|queue|sell\s*out|shortage)\b/i,
+		coverage:
+			/\b(?:selected|select|worldwide|stores?|online|available|availability|limited|one\s+(?:watch|piece|item)?\s*per\s+person|per\s+store|per\s+day|waitlist|queue|sell\s*out|not confirmed|not disclosed)\b/i,
+	},
+	{
+		key: "expect",
+		label: "what to expect next",
+		request:
+			/\b(what to expect|what happens next|what comes next|what's next|watch for|outlook|next steps?|next move|will happen)\b/i,
+		evidence: /./,
+		coverage:
+			/\b(?:expect|watch for|next|could|likely|look for|should|will|open question|unresolved|what happens|what changes)\b/i,
+	},
+	{
+		key: "meaning",
+		label: "meaning, impact, or practical stakes",
+		request:
+			/\b(what it means|what this means|why it matters|impact|implication|stakes?|so what|practical)\b/i,
+		evidence: /./,
+		coverage:
+			/\b(?:means|matters|impact|implication|stakes?|practical|for fans|for viewers|for buyers|for the team|for the case|for the brand|changes)\b/i,
+	},
+]);
+
+function compactEvidenceText(text = "", maxChars = 180) {
+	const cleaned = normalizeWhitespace(text)
+		.replace(/\s+([,.!?])/g, "$1")
+		.trim();
+	if (cleaned.length <= maxChars) return cleaned;
+	return `${cleaned.slice(0, Math.max(0, maxChars - 1)).trimEnd()}...`;
+}
+
+function topicContextItemsAt(topicContexts = [], index = 0) {
+	if (!Array.isArray(topicContexts)) return [];
+	const direct = topicContexts[index];
+	if (Array.isArray(direct?.context)) return direct.context;
+	return [];
+}
+
+function buildTitlePromiseRequestText(topicObj = {}, script = null) {
+	const story = topicObj?.trendStory || {};
+	const articles = Array.isArray(story.articles) ? story.articles : [];
+	const parts = [
+		script?.title,
+		script?.shortTitle,
+		topicObj?.displayTopic,
+		topicObj?.topic,
+		topicObj?.rawTitle,
+		topicObj?.seoTitle,
+		topicObj?.youtubeShortTitle,
+		topicObj?.promptText,
+		topicObj?.angle,
+		...(Array.isArray(topicObj?.keywords) ? topicObj.keywords : []),
+		...(Array.isArray(topicObj?.searchHints) ? topicObj.searchHints : []),
+		...(Array.isArray(story.searchPhrases) ? story.searchPhrases : []),
+		...(Array.isArray(story.entityNames) ? story.entityNames : []),
+		...articles.map((a) => a?.title),
+	];
+	return normalizeWhitespace(parts.filter(Boolean).join(" "));
+}
+
+function buildTitlePromiseEvidenceText(topicObj = {}, contextItems = []) {
+	const story = topicObj?.trendStory || {};
+	const articles = Array.isArray(story.articles) ? story.articles : [];
+	const contextParts = (Array.isArray(contextItems) ? contextItems : []).map((c) =>
+		typeof c === "string"
+			? c
+			: `${c?.title || ""} ${c?.snippet || ""} ${c?.source || ""} ${
+					c?.link || ""
+				}`,
+	);
+	const parts = [
+		topicObj?.displayTopic,
+		topicObj?.topic,
+		topicObj?.promptText,
+		topicObj?.angle,
+		...(Array.isArray(story.searchPhrases) ? story.searchPhrases : []),
+		...(Array.isArray(story.entityNames) ? story.entityNames : []),
+		...articles.map((a) => `${a?.title || ""} ${a?.snippet || ""}`),
+		...contextParts,
+	];
+	return normalizeWhitespace(parts.filter(Boolean).join(" "));
+}
+
+function buildScriptCoverageTextForTopic(script = {}, topicIndex = 0) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	const topicSegments = segments.filter(
+		(s) => Number(s?.topicIndex || 0) === Number(topicIndex || 0),
+	);
+	const useSegments = topicSegments.length ? topicSegments : segments;
+	return normalizeWhitespace(
+		[
+			script?.title,
+			script?.shortTitle,
+			...useSegments.map((s) => s?.text),
+		]
+			.filter(Boolean)
+			.join(" "),
+	);
+}
+
+function extractPriceValues(text = "") {
+	const matches =
+		String(text || "").match(
+			/(?:US\$|\$|USD|EUR|GBP|\u00a3|\u20ac)\s*\d{2,6}(?:[,.]\d{2})?|\b\d{2,6}\s*(?:dollars?|usd|euros?|eur|pounds?|gbp)\b/gi,
+		) || [];
+	return uniqueStrings(
+		matches.map((m) => normalizeWhitespace(m).replace(/\s+/g, " ")),
+		{ limit: 4 },
+	);
+}
+
+function extractDateValues(text = "") {
+	const month =
+		"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+	const rx = new RegExp(`\\b${month}\\s+\\d{1,2}(?:,\\s*\\d{4})?\\b`, "gi");
+	return uniqueStrings(
+		(String(text || "").match(rx) || []).map((m) => formatHumanTitle(m, 32)),
+		{ limit: 3 },
+	);
+}
+
+function extractAvailabilityPhrases(text = "") {
+	const hay = String(text || "");
+	const phrases = [];
+	const push = (value) => {
+		const cleaned = compactEvidenceText(value, 72);
+		if (cleaned) phrases.push(cleaned);
+	};
+	const selectedStore = hay.match(/\b(?:selected|select)\s+[^.]{0,35}\bstores?\b/i);
+	if (selectedStore) push(selectedStore[0]);
+	const onePer = hay.match(
+		/\bone\s+(?:watch|piece|item)?\s*per\s+person(?:\s*,?\s*(?:per|and per)\s+day)?(?:\s*,?\s*(?:per|and per)\s+store)?\b/i,
+	);
+	if (onePer) push(onePer[0]);
+	const online = hay.match(/\baccessories\s+are\s+available\s+online\b/i);
+	if (online) push(online[0]);
+	if (!phrases.length && /\bavailable\b/i.test(hay)) push("availability is limited by the sourced details");
+	return uniqueStrings(phrases, { limit: 3 });
+}
+
+function formatEvidenceList(items = []) {
+	const list = uniqueStrings(items.filter(Boolean), { limit: 4 });
+	if (!list.length) return "";
+	if (list.length === 1) return list[0];
+	if (list.length === 2) return `${list[0]} and ${list[1]}`;
+	return `${list.slice(0, -1).join(", ")}, and ${list[list.length - 1]}`;
+}
+
+function buildPromiseRepairSentence({ key, topicLabel, evidenceText, hasEvidence }) {
+	const label = cleanTopicLabel(topicLabel || "the story") || "the story";
+	const prices = extractPriceValues(evidenceText);
+	const dates = extractDateValues(evidenceText);
+	const availability = extractAvailabilityPhrases(evidenceText);
+	if (key === "price") {
+		if (prices.length) return `Reported pricing is ${formatEvidenceList(prices)}.`;
+		if (!hasEvidence)
+			return `The sourced context does not confirm a price yet, so any number should be treated as speculation.`;
+	}
+	if (key === "release") {
+		if (dates.length && availability.length)
+			return `The key release detail is ${formatEvidenceList(
+				dates.slice(0, 1),
+			)} with ${formatEvidenceList(availability.slice(0, 2))}.`;
+		if (dates.length)
+			return `The key release timing in the sourced context is ${formatEvidenceList(
+				dates.slice(0, 2),
+			)}.`;
+		if (!hasEvidence)
+			return `The sourced context does not confirm a release date yet, so the timing should stay clearly labeled.`;
+	}
+	if (key === "availability") {
+		if (availability.length)
+			return `Availability is constrained around ${formatEvidenceList(
+				availability,
+			)}.`;
+		if (!hasEvidence)
+			return `The sourced context does not confirm exact availability yet, so the buying details should stay cautious.`;
+	}
+	if (key === "expect") {
+		if (availability.length)
+			return `What viewers should expect next is tight access first, then a louder reaction once buyers compare the idea with the real product.`;
+		return `What to expect next is more reaction around ${label} as the practical details become clearer.`;
+	}
+	if (key === "meaning") {
+		return `The practical meaning is the part viewers can use: what changes for the people, buyers, fans, or institutions tied to ${label}.`;
+	}
+	return "";
+}
+
+function analyzeTitlePromiseCoverage({
+	script = null,
+	topics = [],
+	topicContexts = [],
+} = {}) {
+	if (!TITLE_PROMISE_QA_ENABLED) return { obligations: [], missing: [] };
+	const obligations = [];
+	const missing = [];
+	const safeTopics = Array.isArray(topics) && topics.length ? topics : [];
+	for (let i = 0; i < safeTopics.length; i++) {
+		const topic = safeTopics[i] || {};
+		const label = cleanTopicLabel(topic.displayTopic || topic.topic || "");
+		const contextItems = topicContextItemsAt(topicContexts, i);
+		const requestText = buildTitlePromiseRequestText(
+			topic,
+			safeTopics.length === 1 ? script : null,
+		);
+		const evidenceText = buildTitlePromiseEvidenceText(topic, contextItems);
+		const scriptText = script ? buildScriptCoverageTextForTopic(script, i) : "";
+		for (const rule of TITLE_PROMISE_RULES) {
+			if (!rule.request.test(requestText)) continue;
+			const hasEvidence = rule.evidence.test(evidenceText);
+			const repairSentence = buildPromiseRepairSentence({
+				key: rule.key,
+				topicLabel: label,
+				evidenceText,
+				hasEvidence,
+			});
+			const obligation = {
+				topicIndex: i,
+				topicLabel: label,
+				key: rule.key,
+				label: rule.label,
+				hasEvidence,
+				evidenceHint: compactEvidenceText(repairSentence || evidenceText, 160),
+				repairSentence,
+			};
+			obligations.push(obligation);
+			if (script && !rule.coverage.test(scriptText)) {
+				missing.push(obligation);
+			}
+		}
+	}
+	return { obligations, missing };
+}
+
+function buildTitlePromisePromptBlock({
+	script = null,
+	topics = [],
+	topicContexts = [],
+} = {}) {
+	const coverage = analyzeTitlePromiseCoverage({ script, topics, topicContexts });
+	if (!coverage.obligations.length) {
+		return "Title-promise obligations:\n- None detected.";
+	}
+	const lines = coverage.obligations.slice(0, 8).map((item) => {
+		const support = item.hasEvidence
+			? `Use this sourced detail: ${item.evidenceHint || "(see context)"}`
+			: "If the context does not confirm it, say that clearly instead of skipping it or inventing.";
+		return `- Topic ${item.topicIndex + 1} (${item.topicLabel || "topic"}): the request/title promises ${item.label}. ${support}`;
+	});
+	return `Title-promise obligations (MUST satisfy in spoken narration, preferably in the first third of that topic):\n${lines.join(
+		"\n",
+	)}`;
+}
+
+function repairTitlePromiseCoverage({
+	script = {},
+	topics = [],
+	topicContexts = [],
+	wordCaps = [],
+	log = null,
+} = {}) {
+	const coverage = analyzeTitlePromiseCoverage({ script, topics, topicContexts });
+	if (!coverage.missing.length || !Array.isArray(script?.segments)) {
+		return { script, repairs: [], coverage };
+	}
+	const segments = script.segments.map((s) => ({ ...s }));
+	const usedTargets = new Set();
+	const repairs = [];
+	for (const item of coverage.missing) {
+		const sentence = sanitizeSegmentText(item.repairSentence || "");
+		if (!sentence || countWords(sentence) < 4) continue;
+		const topicSegments = segments
+			.map((s, idx) => ({ s, idx }))
+			.filter(({ s }) => Number(s.topicIndex || 0) === Number(item.topicIndex));
+		if (!topicSegments.length) continue;
+		const preferredOffset =
+			item.key === "expect" || item.key === "meaning"
+				? Math.max(0, topicSegments.length - 2)
+				: 0;
+		const candidates = [
+			...topicSegments.slice(preferredOffset),
+			...topicSegments.slice(0, preferredOffset),
+		];
+		const target =
+			candidates.find(({ idx }) => !usedTargets.has(idx)) || candidates[0];
+		if (!target) continue;
+		usedTargets.add(target.idx);
+		const oldText = String(target.s.text || "").trim();
+		if (normalizeQaText(oldText).includes(normalizeQaText(sentence))) continue;
+		const cap = Math.max(
+			Number(wordCaps[target.idx] || 0) || countWords(oldText) + 12,
+			countWords(sentence) + 12,
+		);
+		const combined =
+			item.key === "expect" || item.key === "meaning"
+				? `${oldText} ${sentence}`.trim()
+				: `${sentence} ${oldText}`.trim();
+		target.s.text = sanitizeSegmentText(trimSegmentToCap(combined, cap + 8));
+		repairs.push({
+			topicIndex: item.topicIndex,
+			segmentIndex: target.s.index,
+			key: item.key,
+			sentence,
+		});
+	}
+	const repairedScript = { ...script, segments };
+	if (log && repairs.length) log("script title-promise repaired", { repairs });
+	return { script: repairedScript, repairs, coverage };
+}
+
+function primaryPromptBrief(topics = []) {
+	const list = Array.isArray(topics) ? topics : [];
+	return (
+		list.map((t) => t?.promptBrief).find((brief) => brief && brief.isStructured) ||
+		list.map((t) => t?.promptBrief).find(Boolean) ||
+		null
+	);
+}
+
+function shouldLockPromptBriefTitle(brief = null) {
+	return Boolean(brief?.title && brief?.titleLocked);
+}
+
+function collectPromptSeoTitleInstructions(topics = []) {
+	const lines = [];
+	for (const topic of Array.isArray(topics) ? topics : []) {
+		const brief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
+		if (Array.isArray(brief?.seoTitleInstructions)) {
+			lines.push(...brief.seoTitleInstructions);
+		}
+	}
+	return uniqueStrings(lines, { limit: 5 });
+}
+
+function primaryPromptThumbnailText(topics = []) {
+	for (const topic of Array.isArray(topics) ? topics : []) {
+		const brief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
+		const thumbnailText = normalizePromptThumbnailText(brief?.thumbnailText || "");
+		if (thumbnailText) return thumbnailText;
+	}
+	return "";
+}
+
+function buildPromptBriefInstructionBlock(topics = []) {
+	const promptTopics = (Array.isArray(topics) ? topics : []).filter((t) =>
+		isUserPromptTopicPick(t),
+	);
+	if (!promptTopics.length) return "Frontend prompt brief:\n- None.";
+	const lines = [];
+	for (let i = 0; i < promptTopics.length; i++) {
+		const topic = promptTopics[i] || {};
+		const brief = topic.promptBrief || parseStructuredPromptBrief(topic.promptText);
+		const label = topic.displayTopic || topic.topic || `Topic ${i + 1}`;
+		lines.push(`- Topic ${i + 1}: ${label}`);
+		if (shouldLockPromptBriefTitle(brief))
+			lines.push(`  Requested title: ${brief.title}`);
+		if (brief?.wantsSeoTitle)
+			lines.push(
+				"  Title instruction: generate the strongest SEO-friendly YouTube title supported by the script; do not use the instruction sentence itself as the title.",
+			);
+		if (brief?.thumbnailText)
+			lines.push(`  Thumbnail badge/text must include: ${brief.thumbnailText}`);
+		if (brief?.openingLine)
+			lines.push(`  Requested opening line: "${brief.openingLine}"`);
+		if (Array.isArray(brief?.structureLines) && brief.structureLines.length) {
+			lines.push(
+				"  Requested structure: preserve this order; if the requested video duration is longer or shorter, scale the depth proportionally instead of changing the topic.",
+			);
+			for (const line of brief.structureLines.slice(0, 8)) {
+				lines.push(`  - ${line}`);
+			}
+		}
+		for (const line of (brief?.briefLines || []).slice(0, 8)) {
+			lines.push(`  ${line}`);
+		}
+		if (brief?.raw) {
+			lines.push(
+				`  Full frontend prompt summary: ${compactEvidenceText(
+					brief.raw,
+					700,
+				)}`,
+			);
+		}
+	}
+	return `Frontend prompt brief (MUST follow; keep the same topic and expand within it for the requested duration):\n${lines.join(
+		"\n",
+	)}`;
+}
+
+function normalizeOpeningForCompare(text = "") {
+	return normalizeQaText(text)
+		.replace(/\b(the|a|an)\b/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function combineOpeningLineWithSegment({
+	openingLine = "",
+	text = "",
+	cap = 0,
+} = {}) {
+	let opening = sanitizeSegmentText(stripOuterQuotes(openingLine));
+	const current = sanitizeSegmentText(text);
+	if (!opening) return current;
+	if (!endsWithTerminalPunctuation(opening)) opening = `${opening}.`;
+	const openingKey = normalizeOpeningForCompare(opening);
+	const currentKey = normalizeOpeningForCompare(current);
+	if (openingKey && currentKey.includes(openingKey)) return current;
+	const sentences = splitSentences(current).filter(Boolean);
+	let rest = sentences
+		.filter((sentence) => {
+			const key = normalizeOpeningForCompare(sentence);
+			return !openingKey || !key || overlapRatio(tokenizeQaText(openingKey), tokenizeQaText(key)) < 0.75;
+		})
+		.join(" ")
+		.trim();
+	const maxWords = Math.max(
+		countWords(opening) + 8,
+		Number(cap || 0) || countWords(opening) + countWords(rest),
+	);
+	if (rest && countWords(opening) + countWords(rest) > maxWords) {
+		rest = trimSegmentToCap(rest, Math.max(8, maxWords - countWords(opening)));
+	}
+	return sanitizeSegmentText(`${opening}${rest ? ` ${rest}` : ""}`.trim());
+}
+
+function applyPromptBriefToScript({ script = {}, topics = [], wordCaps = [] } = {}) {
+	if (!script || !Array.isArray(script.segments)) return script;
+	const brief = primaryPromptBrief(topics);
+	if (!brief) return script;
+	const next = {
+		...script,
+		segments: script.segments.map((s) => ({ ...s })),
+	};
+	if (shouldLockPromptBriefTitle(brief)) {
+		next.title = formatHumanTitle(brief.title, 120) || next.title;
+		next.shortTitle = shortTitleFromText(brief.title).slice(0, 60);
+	}
+	if (brief.openingLine && next.segments.length) {
+		const firstIdx = next.segments.findIndex((s) => Number(s.topicIndex || 0) === 0);
+		const idx = firstIdx >= 0 ? firstIdx : 0;
+		const cap = Math.max(
+			Number(wordCaps[next.segments[idx].index] || wordCaps[idx] || 0) || 0,
+			countWords(brief.openingLine) + 16,
+		);
+		next.segments[idx].text = combineOpeningLineWithSegment({
+			openingLine: brief.openingLine,
+			text: next.segments[idx].text,
+			cap,
+		});
+	}
+	return next;
 }
 
 function inferTonePlan({ topic, topics, angle, liveContext }) {
@@ -11540,37 +12675,59 @@ function buildTopicEngagementQuestion({
 	return `Which of these topics still feels unresolved to you: ${list}?`;
 }
 
+function buildOutroEngagementQuestionForLabel(topicLabel = "", mood = "neutral") {
+	const label = selectEngagementLabel({
+		topicLabel,
+		maxWords: 5,
+	});
+	const hay = `${topicLabel || ""} ${label || ""}`.toLowerCase();
+	if (/\bscam|fraud|phishing|fake|identity theft|con\b/.test(hay)) {
+		return "what red flag would make you pause first?";
+	}
+	if (/\beconom|inflation|rent|grocery|groceries|prices|debt|wages?|cost of living|utility|utilities\b/.test(hay)) {
+		return "which cost is hitting people hardest right now?";
+	}
+	if (/\bwatch|collab|release|price|product|brand|drop\b/.test(hay)) {
+		return "does this make the idea feel more exciting or less special?";
+	}
+	if (isSportsLikeTopicLabel(hay)) {
+		return "what was the real turning point?";
+	}
+	if (mood === "serious") {
+		return "which detail still feels unresolved to you?";
+	}
+	return "what detail still feels unresolved to you?";
+}
+
+function buildOutroEngagementQuestion({
+	topics = [],
+	shortTitle = "",
+	mood = "neutral",
+} = {}) {
+	const topicLabels = (topics || [])
+		.map((t) => shortTopicLabel(t?.displayTopic || t?.topic || t, 5))
+		.filter(Boolean);
+	const label =
+		topicLabels[0] ||
+		(shortTitle ? shortTopicLabel(shortTitle, 5) : "") ||
+		"this story";
+	return buildOutroEngagementQuestionForLabel(label, mood);
+}
+
 function buildOutroLine({
 	topics = [],
 	shortTitle,
 	mood = "neutral",
 	includeQuestion = true,
 }) {
-	const question = includeQuestion
-		? buildTopicEngagementQuestion({
-				topics,
-				shortTitle,
-				mood,
-				compact: true,
-			})
-		: "";
-	let line = includeQuestion
-		? `${question} Thank you for watching, and see you next time.`
-		: "Thank you for watching, and see you next time.";
-	if (includeQuestion) {
-		if (countWords(line) > 18) {
-			line = `${question} Thank you for watching. See you next time.`;
-		}
-		if (countWords(line) > 14) {
-			line = `${question} Thank you for watching.`;
-		}
-	} else {
-		if (countWords(line) > 12) {
-			line = "Thank you for watching and See you next time.";
-		}
-		if (countWords(line) < 12) {
-			line = "Thank you for watching and see you next time.";
-		}
+	void includeQuestion;
+	const question = buildOutroEngagementQuestion({ topics, shortTitle, mood });
+	let line = `If this helped, please like and subscribe, and tell me: ${question}`;
+	if (countWords(line) > 20) {
+		line = `Please like and subscribe, and tell me: ${question}`;
+	}
+	if (countWords(line) > 18) {
+		line = `Please like, subscribe, and tell me: ${question}`;
 	}
 	return sanitizeIntroOutroLine(line);
 }
@@ -11913,7 +13070,9 @@ function ensureTopicEngagementQuestions(
 	topics = [],
 	mood = "neutral",
 	wordCapsByIndex = [],
+	opts = {},
 ) {
+	const skipFinalTopicQuestion = Boolean(opts?.skipFinalTopicQuestion);
 	const lastByTopic = new Map();
 	for (let i = 0; i < (segments || []).length; i++) {
 		const seg = segments[i];
@@ -11930,6 +13089,7 @@ function ensureTopicEngagementQuestions(
 				? Number(seg.topicIndex)
 				: 0;
 		if (lastByTopic.get(topicIndex) !== i) return seg;
+		if (skipFinalTopicQuestion) return seg;
 
 		const text = String(seg.text || "").trim();
 		if (/\?/.test(text)) return seg;
@@ -12133,7 +13293,7 @@ const SCRIPT_BETTING_PROMO_PATTERNS = [
 const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
 	/\bvs\.?\b/i,
 	/\b\d{1,3}\s*[\u2013-]\s*\d{1,3}\b/,
-	/^\s*[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+){1,7}\s*:/,
+	/^\s*[A-Z][A-Za-z'â€™.-]+(?:\s+[A-Z][A-Za-z'â€™.-]+){1,7}\s*:/,
 	/\bloss\s+circle\b/i,
 	/\bthe\s+angle\s+today\s+is\b/i,
 ];
@@ -12145,6 +13305,9 @@ const SCRIPT_STOCK_PHRASE_PATTERNS = [
 	/\bthe\s+confirmed\s+picture\s+is\s+still\s+narrow\b/i,
 	/\bthe\s+answer\s+depends\s+on\s+the\s+next\s+detail\s+viewers\s+have\s+not\s+seen\s+yet\b/i,
 	/\bwhat\s+changes\s+once\s+the\s+next\s+detail\s+lands\b/i,
+	/\bthe\s+next\s+useful\s+(?:beat|detail|update)\b/i,
+	/\bdetail\s+that\s+changes\s+what\s+viewers\s+should\s+actually\s+think\b/i,
+	/\bwhat\s+viewers\s+should\s+actually\s+think\b/i,
 ];
 
 const SCRIPT_SERIOUS_CASUAL_PATTERNS = [
@@ -12555,7 +13718,7 @@ async function generateScript({
 			: "";
 	const outroGuide = includeOutro
 		? topListPlan
-			? "Last segment: finish the #1 payoff and include one short ranking question; leave space for the separate closing line."
+			? "Last segment: finish the #1 payoff with a clean takeaway or open loop; leave space for the separate closing question."
 			: "Last segment: clean wrap that naturally closes the story and leaves space for the closing line (no like/subscribe CTA)."
 		: "Last segment: wrap + CTA question.";
 	const toneGuide =
@@ -12567,7 +13730,7 @@ async function generateScript({
 				? `Segment 0: confident, neutral hook with controlled energy (no shouty hype). ${outroGuide}`
 				: `Segment 0: confident, neutral hook. ${outroGuide}`;
 	const ctaLine = includeOutro
-		? "End the LAST segment of EACH topic with one short, topic-specific engagement question for comments. Do NOT add like/subscribe in content; the closing line only says thank you and see you next time."
+		? "Do NOT add like/subscribe or comment CTAs inside the content segments. Let the final content segment land with a clear takeaway, hope line, tension line, or open loop; the separate closing line handles the question."
 		: "Last segment ends with ONE short CTA question (comment + subscribe).";
 
 	const topicPlanLines = topicRanges
@@ -12710,6 +13873,11 @@ async function generateScript({
 					})
 					.join("\n")
 			: "- (none)";
+	const titlePromiseGuide = buildTitlePromisePromptBlock({
+		topics: safeTopics,
+		topicContexts,
+	});
+	const promptBriefGuide = buildPromptBriefInstructionBlock(safeTopics);
 
 	const prompt = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
@@ -12750,11 +13918,15 @@ ${topicContextGuide}
 Topic notes:
 ${topicHintLines}
 
+${promptBriefGuide}
+
 ${trendSignalLabel}
 ${trendSignalLines}
 
 Topic intent resolution (MUST follow; do NOT invent beyond this):
 ${topicIntentLines}
+
+${titlePromiseGuide}
 
 ${retentionGuide}
 
@@ -12784,6 +13956,8 @@ Style rules (IMPORTANT):
 - Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
 - Use specific nouns (people, places, titles) over vague phrases like "big news" or "fans are excited".
 - Keep the opening controlled, but make segment 0 feel like a real hook instead of a bland recap.
+- If the frontend prompt includes an Opening line, use that exact line as the first spoken sentence of segment 0 unless it would be unsafe or factually false.
+- If the frontend prompt includes a Title, use it as the script title unless source verification clearly requires a more precise version.
 - Prioritize genuinely interesting facts (history, timeline, behind-the-scenes, credible rumors, estimates) without overstating.
 - If you mention a rumor or estimate, label it clearly as unconfirmed and attribute it (\"reports suggest\", \"according to [source]\").
 - Include at least one brief source attribution per topic using the provided context (e.g., \"According to Variety...\"). Put attribution close to the claim when the point is sensitive, disputed, or potentially controversial.
@@ -12816,7 +13990,7 @@ Style rules (IMPORTANT):
 - Each segment should naturally flow into the next with a quick transition phrase.
 - Each segment ends with a complete sentence and strong terminal punctuation. Do NOT end with "and", "but", "so", "because", "with", "to", "for", "that", or an open parenthetical.
 - Let each segment land fully. If a line needs one more clause to sound finished in spoken delivery, use it instead of clipping the thought.
-- Before the engagement question, end with a short tension line; avoid soft wrap-ups or reflective closing phrases.
+- Before the final closing line, end the content with a short tension line, hope line, or open loop; avoid soft wrap-ups or reflective closing phrases.
 - No long lists. If you must list, cap at 3 items.
 - If you are unsure about a detail, say "reports suggest" or "early signs".
 - ${ctaLine}
@@ -12830,6 +14004,7 @@ Style rules (IMPORTANT):
 - If the topic is political or a real-world tragedy, keep expression neutral (no smiles).
 - For death, injury, legal, health, or public-safety stories: start from confirmed reporting, name uncertainty plainly, avoid speculation, and keep the audience connection human rather than dramatic.
 - If the title asks "what it means", answer both the human/community impact and the practical stakes; do not stop at "details are limited" unless no sourced implication exists.
+- If the request, script title, or final title promises price, release details, availability, or what to expect, the spoken script must directly answer that promise with sourced details when available. If the source context does not confirm a detail, say it is not confirmed instead of skipping it.
 - ONLY if a topic is about a TV show, film, or fictional character, frame it as plot/character discussion, not real-life tragedy.
 - ONLY if a topic is marked as Fictional/Story, keep it in-universe and avoid real-world mourning language.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
@@ -12994,6 +14169,7 @@ Return JSON ONLY:
 		safeTopics,
 		mood,
 		wordCaps,
+		{ skipFinalTopicQuestion: includeOutro },
 	);
 	segments = enforceTopListCountdownStructure(segments, topListPlan);
 
@@ -13028,13 +14204,23 @@ Return JSON ONLY:
 	segments = segments.map((s, i) => ({ ...s, expression: smoothed[i] }));
 
 	const fallbackTitle = safeTopics.map((t) => t.topic).join(" | ");
-	const finalTitle =
+	let finalTitle =
 		formatHumanTitle(String(parsed.title || fallbackTitle).trim(), 120) ||
 		formatHumanTitle(fallbackTitle, 120) ||
 		"Quick Update";
-	const finalShortTitle = shortTitleFromText(
+	let finalShortTitle = shortTitleFromText(
 		String(parsed.shortTitle || "").trim() || finalTitle,
 	).slice(0, 60);
+	const promptAlignedScript = applyPromptBriefToScript({
+		script: { title: finalTitle, shortTitle: finalShortTitle, segments },
+		topics: safeTopics,
+		wordCaps,
+	});
+	finalTitle = promptAlignedScript.title || finalTitle;
+	finalShortTitle = promptAlignedScript.shortTitle || finalShortTitle;
+	segments = Array.isArray(promptAlignedScript.segments)
+		? promptAlignedScript.segments
+		: segments;
 	const rawShortsDetails =
 		parsed.shortsDetails || parsed.shorts_details || parsed.shorts || null;
 	const normalizedShortsDetails = normalizeShortsDetails(rawShortsDetails, {
@@ -13223,11 +14409,19 @@ function analyzeScriptQuality({
 	for (const warning of speakability.warnings || []) {
 		if (!warnings.includes(warning)) warnings.push(warning);
 	}
+	const titlePromiseCoverage = analyzeTitlePromiseCoverage({
+		script,
+		topics,
+		topicContexts,
+	});
+	if (titlePromiseCoverage.missing.length)
+		warnings.push("title_promise_missing_details");
 
 	const needsRewrite =
 		duplicatePairs.length > 0 ||
 		missingAttributionTopics.length > 0 ||
 		trendCoverage.missingTopics.length > 0 ||
+		titlePromiseCoverage.missing.length > 0 ||
 		veryShortSegments.length > 0 ||
 		tooManyShortSegments ||
 		speakability.needsRewrite;
@@ -13254,6 +14448,13 @@ function analyzeScriptQuality({
 			speechAwkwardSegments: speakability.stats?.speechAwkwardSegments || [],
 			stockPhraseSegments: speakability.stats?.stockPhraseSegments || [],
 			repeatedSentenceGroups: speakability.stats?.repeatedSentenceGroups || [],
+			titlePromiseMissing: titlePromiseCoverage.missing.map((item) => ({
+				topicIndex: item.topicIndex,
+				key: item.key,
+				label: item.label,
+				hasEvidence: item.hasEvidence,
+				evidenceHint: item.evidenceHint,
+			})),
 		},
 	};
 }
@@ -13811,6 +15012,15 @@ async function rewriteSegmentsForQuality({
 		)
 		.join(", ");
 	const trendSignalLines = buildTrendSignalLines(topics);
+	const titlePromiseGuide = buildTitlePromisePromptBlock({
+		script,
+		topics,
+		topicContexts,
+	});
+	const promptBriefGuide = buildPromptBriefInstructionBlock(topics);
+	const rewriteCtaRule = includeOutro
+		? "- Do NOT add engagement questions, like requests, subscribe requests, or comment CTAs inside the content; the separate closing line handles that. End with a clean takeaway, hopeful implication, or open loop."
+		: "- End the last segment of each topic with a short engagement question. Do NOT add like/subscribe CTAs.";
 
 	const rewritePrompt = `
 Improve this script for clarity, interesting facts, and attribution.
@@ -13822,6 +15032,10 @@ ${topicSummaries.join("\n")}
 
 ${trendSignalLabel}
 ${trendSignalLines}
+
+${titlePromiseGuide}
+
+${promptBriefGuide}
 
 ${retentionGuide}
 
@@ -13842,10 +15056,13 @@ Rules:
 - Keep at least one clip-ready line per topic that ends with an open loop.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening controlled, but make segment 0 genuinely hooky and curiosity-driven instead of flat.
+- Preserve any frontend-requested opening line as the first spoken sentence of segment 0.
+- Preserve any frontend-requested title unless a factual correction is necessary.
 - Keep the overall delivery controlled and professional; avoid excited phrasing and exclamation points, but let the writing feel sharp and engaging.
 - If the story is controversial, surface what people are arguing about, what the reporting supports, and what still is not fully settled.
 - For death, injury, legal, health, or public-safety stories, keep the rewrite sober: confirmed facts first, uncertainty clearly labeled, no emotional overacting, and one human/community implication when sourced.
 - If the headline promises "what it means", include a practical implication, not only a caution that details are limited.
+- If the request, script title, or final title promises price, release details, availability, or what to expect, directly answer that promise with sourced details when available. If context does not confirm a detail, say that clearly instead of skipping it.
 - Add at least one short attribution per topic when sources are available (e.g., "According to Variety..."). Put the attribution near the controversial or factual claim it supports.
 - Attribute the outlet or analyst, not the hosting platform. Never use phrases like "According to YouTube" or "According to TikTok".
 - Rewrite keyword-style phrasing into natural spoken language that a presenter and ElevenLabs voice can deliver cleanly.
@@ -13859,8 +15076,7 @@ Rules:
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
 - Keep it conversational and clear; no filler words.
 - For entertainment topics, allow brief grounded opinionated framing when it helps explain why people are divided, but keep it fair and separate from sourced facts.
-- End the last segment of each topic with a short engagement question.
-- Do NOT add like/subscribe CTAs.
+${rewriteCtaRule}
 - Category-specific guidance:
 ${categoryGuide.lines.join("\n")}
 
@@ -13909,7 +15125,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		topicIntents,
 	);
 	updated = enforceRealWorldFraming(updated, topicContextFlags);
-	updated = ensureTopicEngagementQuestions(updated, topics, mood, wordCaps);
+	updated = ensureTopicEngagementQuestions(updated, topics, mood, wordCaps, {
+		skipFinalTopicQuestion: includeOutro,
+	});
 	updated = enforceSegmentCompleteness(updated, mood, {
 		includeCta: !includeOutro,
 	});
@@ -13925,7 +15143,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		text: sanitizeSegmentText(s.text),
 	}));
 
-	return { ...script, segments: updated };
+	return applyPromptBriefToScript({
+		script: { ...script, segments: updated },
+		topics,
+		wordCaps,
+	});
 }
 
 /* ---------------------------------------------------------------
@@ -14327,16 +15549,38 @@ async function uploadToYouTube(
 	return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
-async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
+async function buildSeoMetadata({
+	topics = [],
+	scriptTitle,
+	scriptText = "",
+	languageLabel,
+	lockTitle = false,
+	titleInstructions = [],
+}) {
 	let seoTitle = String(scriptTitle || "").trim();
 	const topicLine = topics
 		.map((t) => t.displayTopic || t.topic)
 		.filter(Boolean)
 		.join(" | ");
+	const scriptSupport = normalizeWhitespace(scriptText).slice(0, 2200);
+	const titleInstructionLines = uniqueStrings(
+		(Array.isArray(titleInstructions) ? titleInstructions : [titleInstructions])
+			.map((line) => normalizeWhitespace(line))
+			.filter(Boolean),
+		{ limit: 5 },
+	);
+	const frontendTitleGuide = titleInstructionLines.length
+		? `\nFrontend title guidance: ${titleInstructionLines.join(" ")}\nTreat this as an instruction to generate a strong title, not as the literal title text.`
+		: "";
 
-	if (process.env.CHATGPT_API_TOKEN) {
+	if (process.env.CHATGPT_API_TOKEN && !lockTitle) {
 		try {
-			const titlePrompt = `Write ONE SEO-friendly YouTube title (max 90 characters) for a long-form news brief covering: ${topicLine}. Use natural search phrasing, clean punctuation, and human headline case. No quotes, no hashtags. If you use an emoji, use at most one and place it naturally.`;
+			const titlePrompt = `Write ONE SEO-friendly YouTube title (max 90 characters) for a long-form news brief covering: ${topicLine}.
+Use natural search phrasing, clean punctuation, and human headline case. No quotes, no hashtags.
+The title must be fully supported by the script excerpt below. Do NOT promise price, release date, availability, allegations, scores, or "what to expect" unless the script explicitly covers that detail. If the script is mostly analysis/reaction, title it as analysis/reaction.
+${frontendTitleGuide}
+Script excerpt:
+${scriptSupport || "(none)"}`;
 			const titleResp = await openai.chat.completions.create({
 				model: CHAT_MODEL,
 				messages: [{ role: "user", content: titlePrompt }],
@@ -14353,7 +15597,10 @@ async function buildSeoMetadata({ topics = [], scriptTitle, languageLabel }) {
 	let seoDescription = "";
 	if (process.env.CHATGPT_API_TOKEN) {
 		try {
-			const descPrompt = `Write a YouTube description (max 180 words) for a long-form news brief titled "${seoTitle}". Make the first 2 lines keyword-rich for search. Use short sentences. Add a friendly CTA to comment and like (not pushy). End with 5-7 relevant hashtags.`;
+			const descPrompt = `Write a YouTube description (max 180 words) for a long-form news brief titled "${seoTitle}".
+Make the first 2 lines keyword-rich for search. Use short sentences. Add a friendly CTA to comment and like (not pushy). End with 5-7 relevant hashtags.
+Only mention facts that are supported by this script excerpt:
+${scriptSupport || "(none)"}`;
 			const descResp = await openai.chat.completions.create({
 				model: CHAT_MODEL,
 				messages: [{ role: "user", content: descPrompt }],
@@ -15877,6 +17124,11 @@ async function renderLipsyncedSegment({
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	const dur = Math.max(0.2, Number(segDur) || 0.2);
+	if (!baselineSource || !fs.existsSync(baselineSource)) {
+		throw new Error(
+			`presenter_baseline_missing:${safeLabel || "segment"}: moving presenter source is required`,
+		);
+	}
 	const baselineDur = Math.max(
 		2,
 		(await probeDurationSecondsCached(baselineSource)) || BASELINE_DUR_SEC,
@@ -18627,12 +19879,48 @@ async function runLongVideoJob(
 		const topicContexts = [];
 		let liveContext = [];
 		for (const t of topicPicks) {
-			const extraTokens = Array.isArray(t.keywords) ? t.keywords : [];
+			const promptBrief = t.promptBrief || null;
+			const extraTokens = uniqueStrings(
+				[
+					...(Array.isArray(t.keywords) ? t.keywords : []),
+					...(Array.isArray(promptBrief?.searchHints)
+						? promptBrief.searchHints.flatMap((q) => topicTokensFromTitle(q))
+						: []),
+				],
+				{ limit: 24 },
+			);
 			const isPromptTopic = isUserPromptTopicPick(t);
+			const promptBriefContext = isPromptTopic
+				? uniqueStrings(
+						[
+							...(Array.isArray(promptBrief?.briefLines)
+								? promptBrief.briefLines
+								: []),
+							...(Array.isArray(promptBrief?.factLines)
+								? promptBrief.factLines.map((line) => `User supplied fact/stat to verify: ${line}`)
+								: []),
+							promptBrief?.openingLine
+								? `User requested opening line: ${promptBrief.openingLine}`
+								: "",
+							promptBrief?.title
+								? `User requested title: ${promptBrief.title}`
+								: "",
+						].filter(Boolean),
+						{ limit: 18 },
+					)
+				: [];
 			const promptNewsContext = isPromptTopic
 				? await fetchPromptTopicNewsContext({
 						topic: t.topic,
-						searchHints: t.searchHints,
+						searchHints: uniqueStrings(
+							[
+								...(Array.isArray(promptBrief?.searchHints)
+									? promptBrief.searchHints
+									: []),
+								...(Array.isArray(t.searchHints) ? t.searchHints : []),
+							],
+							{ limit: 16 },
+						),
 						promptText: t.promptText,
 						limit: PROMPT_TOPIC_NEWS_CONTEXT_LIMIT,
 						jobId,
@@ -18658,8 +19946,12 @@ async function runLongVideoJob(
 					)
 				: [];
 			const sourceContext = uniqueContextItems(
-				[...promptNewsContext, ...(Array.isArray(ctx) ? ctx : [])],
-				{ limit: 8 },
+				[
+					...promptBriefContext,
+					...promptNewsContext,
+					...(Array.isArray(ctx) ? ctx : []),
+				],
+				{ limit: isPromptTopic ? 12 : 8 },
 			);
 			const trendContext = uniqueStrings(
 				[
@@ -18837,6 +20129,11 @@ async function runLongVideoJob(
 			contentMode,
 		});
 		script = sanitizeScriptVisualCueLeaks(script, topicPicks);
+		script = applyPromptBriefToScript({
+			script,
+			topics: topicPicks,
+			wordCaps,
+		});
 
 		let qaResult = analyzeScriptQuality({
 			script,
@@ -18874,6 +20171,11 @@ async function runLongVideoJob(
 					contentMode,
 				});
 				script = sanitizeScriptVisualCueLeaks(script, topicPicks);
+				script = applyPromptBriefToScript({
+					script,
+					topics: topicPicks,
+					wordCaps,
+				});
 			} catch (e) {
 				logJob(jobId, "script qa rewrite failed", {
 					attempt: qaAttempt + 1,
@@ -18918,6 +20220,11 @@ async function runLongVideoJob(
 			log: (message, payload) => logJob(jobId, message, payload),
 		});
 		script = sanitizeScriptVisualCueLeaks(script, topicPicks);
+		script = applyPromptBriefToScript({
+			script,
+			topics: topicPicks,
+			wordCaps,
+		});
 		if (attributionFix.didInsert) {
 			qaResult = analyzeScriptQuality({
 				script,
@@ -18943,6 +20250,11 @@ async function runLongVideoJob(
 		});
 		if (residualRepair.repairs.length) {
 			script = sanitizeScriptVisualCueLeaks(residualRepair.script, topicPicks);
+			script = applyPromptBriefToScript({
+				script,
+				topics: topicPicks,
+				wordCaps,
+			});
 			qaResult = analyzeScriptQuality({
 				script,
 				topics: topicPicks,
@@ -18954,6 +20266,45 @@ async function runLongVideoJob(
 			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
 			logJob(jobId, "script residual quality repaired", {
 				repairs: residualRepair.repairs,
+				qa: {
+					pass: qaResult.pass,
+					needsRewrite: qaResult.needsRewrite,
+					issues: qaResult.issues,
+					warnings: qaResult.warnings,
+					stats: qaResult.stats,
+				},
+				shortsGuardrails,
+			});
+		}
+
+		const titlePromiseRepair = repairTitlePromiseCoverage({
+			script,
+			topics: topicPicks,
+			topicContexts,
+			wordCaps,
+			log: (message, payload) => logJob(jobId, message, payload),
+		});
+		if (titlePromiseRepair.repairs.length) {
+			script = sanitizeScriptVisualCueLeaks(
+				titlePromiseRepair.script,
+				topicPicks,
+			);
+			script = applyPromptBriefToScript({
+				script,
+				topics: topicPicks,
+				wordCaps,
+			});
+			qaResult = analyzeScriptQuality({
+				script,
+				topics: topicPicks,
+				topicContexts,
+				wordCaps,
+				categoryLabel,
+			});
+			shortsGuardrails = analyzeShortsGuardrails(script);
+			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
+			logJob(jobId, "script title-promise repair result", {
+				repairs: titlePromiseRepair.repairs,
 				qa: {
 					pass: qaResult.pass,
 					needsRewrite: qaResult.needsRewrite,
@@ -19086,10 +20437,17 @@ async function runLongVideoJob(
 				script.shortTitle || shortTitleFromText(thumbTitle),
 			).trim();
 			const thumbLog = (message, payload) => logJob(jobId, message, payload);
-			const hookPlan = buildThumbnailHookPlan({
+			const promptThumbnailText = primaryPromptThumbnailText(topicPicks);
+			let hookPlan = buildThumbnailHookPlan({
 				title: thumbTitle,
 				topicPicks,
 			});
+			if (promptThumbnailText) {
+				hookPlan = {
+					...(hookPlan || {}),
+					badgeText: promptThumbnailText,
+				};
+			}
 			if (hookPlan) thumbLog("thumbnail hook plan (computed)", hookPlan);
 			await ensureThumbnailSeedImages({
 				topics: topicPicks,
@@ -19164,7 +20522,10 @@ async function runLongVideoJob(
 		const seoMeta = await buildSeoMetadata({
 			topics: topicPicks,
 			scriptTitle: script.title,
+			scriptText: buildScriptLogText(script),
 			languageLabel: lang,
+			lockTitle: shouldLockPromptBriefTitle(primaryPromptBrief(topicPicks)),
+			titleInstructions: collectPromptSeoTitleInstructions(topicPicks),
 		});
 		const youtubeCategoryFinal =
 			contentMode === "prompt" && YT_CATEGORY_MAP[categoryLabel]
@@ -19184,14 +20545,6 @@ async function runLongVideoJob(
 
 		// 6) Orchestrator plan (intro/outro) + voice prep
 		const introOutroMood = voiceTonePlan?.mood || "neutral";
-		const lastSegmentText =
-			script?.segments && script.segments.length
-				? script.segments[script.segments.length - 1].text || ""
-				: "";
-		const lastSegmentHasQuestion = /\?/.test(String(lastSegmentText || ""));
-		const includeOutroQuestion = !(
-			topicPicks.length === 1 && lastSegmentHasQuestion
-		);
 		const introLine = buildIntroLine({
 			topics: topicPicks,
 			shortTitle: script.shortTitle || script.title,
@@ -19202,7 +20555,6 @@ async function runLongVideoJob(
 			topics: topicPicks,
 			shortTitle: script.shortTitle || script.title,
 			mood: introOutroMood,
-			includeQuestion: includeOutroQuestion,
 		});
 		const introText =
 			sanitizeIntroOutroLine(introLine) || String(introLine || "").trim();
@@ -19211,7 +20563,7 @@ async function runLongVideoJob(
 		let introTextFinal = introText;
 		let outroTextFinal = outroText;
 		const introExpression = "neutral";
-		const outroExpression = "neutral";
+		const outroExpression = "warm";
 
 		logJob(jobId, "orchestrator plan", {
 			mood: introOutroMood,
@@ -19739,6 +21091,12 @@ async function runLongVideoJob(
 			const timingCasualRule = timingNeedsMeasuredTone
 				? '- Do not use casual filler pivots like "real quick", "here\'s the thing", "that\'s wild", or exaggerated reactions.'
 				: '- Keep it lightly conversational; use at most one friendly natural pivot per topic when it truly fits, and avoid repeated catchphrases.';
+			const timingPromiseGuide = buildTitlePromisePromptBlock({
+				script: { ...script, segments },
+				topics: topicPicks,
+				topicContexts,
+			});
+			const timingPromptBriefGuide = buildPromptBriefInstructionBlock(topicPicks);
 
 			const rewritePrompt = `
 Rewrite this script to better fit ~${narrationTargetSec.toFixed(
@@ -19749,6 +21107,10 @@ Quality first: do not remove key details or clarity just to hit the target.
 Per-segment word caps (updated): ${capsLine2}
 Expressions by segment (keep these expressions, only adjust text): ${expressionsLine}
 Topic assignment by segment (do NOT change order): ${topicsLine}
+
+${timingPromiseGuide}
+
+${timingPromptBriefGuide}
 
 Rules:
 ${timingToneRule}
@@ -19770,21 +21132,22 @@ ${timingCasualRule}
 - Add one fresh, concrete detail or implication per segment when possible.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening controlled, but make segment 0 feel hooky and curiosity-driven instead of bland.
+- Preserve any frontend-requested opening line as the first spoken sentence of segment 0.
+- Preserve any frontend-requested title unless a factual correction is necessary.
 - Keep the overall delivery calm and professional; avoid excited phrasing and exclamation points, but let the writing feel sharp and engaging. For entertainment topics only, allow brief grounded reactionary asides.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Preserve source attributions already in the text; keep at least one brief attribution per topic when possible, and keep attribution close to any disputed or controversial claim.
 - If the story is controversial, say what people are divided over and what the reporting actually supports.
 - For death, injury, legal, health, or public-safety stories, keep confirmed facts and unknown details clearly separated; include human/community stakes without dramatic language.
 - If the headline promises "what it means", include a practical implication when the provided context supports one.
+- If the request, script title, or final title promises price, release details, availability, or what to expect, preserve those concrete details while adjusting length. If context does not confirm the detail, preserve the clear "not confirmed" wording.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - Do NOT start segment 0 with transition phrases like "And now", "Now", "Next up", or "Let's talk about".
-- End the LAST segment of EACH topic with one short, topic-specific engagement question for comments.
-- Topic questions must be short and end with a single question mark.
-- Do NOT ask for likes or subscribe in content; the closing line handles thanks and likes.
-- Last segment ends with a clean wrap that leads into the closing line; do NOT mention the outro or transitions to it. Do NOT include a like/subscribe CTA.
+- Do NOT ask engagement questions, likes, subscribes, or comments inside content; the separate closing line handles that.
+- Last segment ends with a clean takeaway, hopeful implication, tension line, or open loop that leads into the closing line. Do NOT mention the outro or transitions to it.
 - Category-specific guidance:
 ${timingCategoryGuide.lines.join("\n")}
 
@@ -19826,6 +21189,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				topicPicks,
 				voiceTonePlan?.mood,
 				adjustedCaps,
+				{ skipFinalTopicQuestion: true },
 			);
 			const fillerLimited = limitFillerAndEmotesAcrossSegments(withQuestions, {
 				maxFillers: MAX_FILLER_WORDS_PER_VIDEO,
@@ -19834,11 +21198,29 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
 				noFillerSegmentIndices: [0, 1, 2],
 			});
-			segments.splice(0, segments.length, ...fillerLimited);
+			const timingPromiseRepair = repairTitlePromiseCoverage({
+				script: { ...script, segments: fillerLimited },
+				topics: topicPicks,
+				topicContexts,
+				wordCaps: adjustedCaps,
+				log: (message, payload) => logJob(jobId, message, payload),
+			});
+			const timingReadySegments = timingPromiseRepair.repairs.length
+				? timingPromiseRepair.script.segments
+				: fillerLimited;
+			segments.splice(0, segments.length, ...timingReadySegments);
 			segments = segments.map((s) => ({
 				...s,
 				text: sanitizeSegmentText(s.text),
 			}));
+		}
+
+		const finalPromptBrief = primaryPromptBrief(topicPicks);
+		if (shouldLockPromptBriefTitle(finalPromptBrief)) {
+			script.title = formatHumanTitle(finalPromptBrief.title, 120) || script.title;
+			script.shortTitle =
+				shortTitleFromText(finalPromptBrief.title).slice(0, 60) ||
+				script.shortTitle;
 		}
 
 		if (
@@ -20073,6 +21455,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const imagePrep = await prepareImageSegments({
 			timeline,
 			topics: topicPicks,
+			topicContexts,
 			tmpDir,
 			jobId,
 			baseUrl,
@@ -20426,7 +21809,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			}
 		}
 		if (!baselinePresenterVideos.size) {
-			if (REQUIRE_REAL_PRESENTER_VIDEO) {
+			if (REQUIRE_REAL_PRESENTER_VIDEO || !ALLOW_STATIC_PRESENTER_FALLBACK) {
 				throw new Error(
 					"presenter_motion_required: Runway presenter motion did not produce a valid moving presenter video. Static presenter fallback is disabled.",
 				);
@@ -20774,7 +22157,10 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		// Calm tail after the outro line (silent + fade-out).
 		const tailBaseline =
-			pickBaselineVariant("neutral", 2) || outroBaseline || baselineDefault;
+			pickBaselineVariant("warm", 2) ||
+			pickBaselineVariant("neutral", 2) ||
+			outroBaseline ||
+			baselineDefault;
 		const tailBaselineDur = await probeDurationSeconds(tailBaseline);
 		const tailStart = Math.max(0, tailBaselineDur - OUTRO_SMILE_TAIL_SEC);
 		const tailRaw = path.join(tmpDir, `outro_tail_raw_${jobId}.mp4`);
