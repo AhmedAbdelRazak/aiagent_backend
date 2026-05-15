@@ -15176,6 +15176,26 @@ function buildLocalFallbackScript({
 		"What helps is making the next step specific enough that both people know how to say yes.",
 		"The goal is not a crowded social life. It is a few relationships with enough repetition to feel real.",
 		"That is the hopeful part: connection can be rebuilt, but it needs structure instead of wishful thinking.",
+		"A useful way to read the problem is to separate loneliness from failure.",
+		"Many people are not rejecting connection. They are protecting the little energy they have left.",
+		"That makes low-friction plans more powerful than dramatic promises.",
+		"A clear invitation removes guesswork, which is often what makes reaching out feel heavy.",
+		"The pattern changes when connection becomes part of the week instead of a special event.",
+		"Shared activities help because the activity carries the first awkward minutes.",
+		"Following up once is normal, not desperate, when the tone stays kind and specific.",
+		"People often need familiarity before they can relax enough to become themselves.",
+		"That means the first meeting is not the full test of the friendship.",
+		"The better test is whether both people make the next step a little easier.",
+		"Some attempts will fade, and that can be information instead of a personal verdict.",
+		"Not every connection has to become deep to be valuable.",
+		"Weak ties still matter because familiar faces can become real support over time.",
+		"The most realistic approach is to make one repeatable plan and let trust accumulate.",
+		"That is how connection starts feeling less like performance and more like ordinary care.",
+		"A small routine can do what motivation alone cannot do.",
+		"Once the next plan is obvious, friendship stops depending on perfect timing.",
+		"The practical move is to lower the friction before the feeling disappears.",
+		"That gives people a way back into connection without pretending modern life is easy.",
+		"The hopeful ending is not instant closeness. It is proof that closeness can be rebuilt.",
 	];
 	const friendshipBeats = [
 		"More contact tools did not automatically create more closeness. They mostly made it easier to send a message.",
@@ -15192,8 +15212,45 @@ function buildLocalFallbackScript({
 		"The people who build community usually are not luckier. They are willing to initiate more than once.",
 		"Over time, the repeated invitations become the proof that the relationship is safe.",
 		"So the practical answer is not to chase everyone. It is to choose a few people and create a rhythm.",
+		"A text that says, want to walk Saturday morning, is easier to answer than we should hang out sometime.",
+		"Putting people on the calendar before life gets loud can protect the relationship from disappearing.",
+		"Shared activities help because nobody has to carry the whole conversation alone.",
+		"A small group can be easier than one-on-one when direct conversation feels too exposed.",
+		"The first invitation is not a contract. It is just a signal that you are open.",
+		"Following up once is normal, especially when the plan is clear and easy to decline.",
+		"Notice who gives energy back, even if they are busy.",
+		"Weak ties matter because they create the familiar faces that deeper friendship often grows from.",
+		"The goal is a rhythm people can trust, not a perfect social performance.",
+		"Friendship feels lighter when the next plan is already obvious.",
+		"Try making the invite concrete, kind, and easy to answer.",
+		"If someone says no, offer one alternate and then let the pattern reveal itself.",
+		"The deeper change is treating connection like care, not proof of your value.",
+		"You do not need everyone. You need a few repeated yeses.",
+		"Modern life scatters people, so structure has to do some of what proximity used to do.",
+		"That structure is not fake. It recreates the conditions friendship used to get for free.",
+		"One recurring plan can matter more than five vague intentions.",
+		"Awkwardness often means the relationship is new, not that it is doomed.",
+		"Instead of asking whether you are interesting enough, ask whether the plan is easy enough.",
+		"The clearest repair is boring in the best way: repeat, notice, follow through.",
+		"Some people will not meet you halfway, and that tells you where not to spend your energy.",
+		"The people who do respond are the ones worth building around.",
+		"A real social life usually starts with small predictable contact before it becomes emotionally deep.",
+		"The hopeful part is that friendship does not need a dramatic reset. It needs another ordinary chance.",
 	];
 	const beats = socialConnection ? friendshipBeats : genericBeats;
+	const continuationBeats = socialConnection
+		? [
+				"Another practical test is whether the next invitation removes pressure instead of adding it.",
+				"Another useful move is to make the setting simple enough that showing up is the main effort.",
+				"Another honest detail is that comfort often appears after the calendar creates repetition.",
+				"Another realistic step is to keep the door open without chasing people who never answer.",
+			]
+		: [
+				"Another useful angle is to turn the pattern into one action people can actually repeat.",
+				"Another practical test is whether the next step makes the pressure easier to understand.",
+				"Another grounded detail is that small routines often change behavior before big motivation arrives.",
+				"Another clear move is to make the next choice specific enough that it can be tested.",
+			];
 	const segments = [];
 	for (let i = 0; i < Math.max(1, Number(segmentCount) || 12); i += 1) {
 		const range =
@@ -15201,7 +15258,10 @@ function buildLocalFallbackScript({
 		const topicIndex = Math.max(0, Number(range?.topicIndex || 0));
 		const topicLabel = topicLabelFor(safeTopics[topicIndex] || safeTopics[0]);
 		const cap = wordCaps[i] || 24;
-		let text = beats[i % beats.length];
+		let text =
+			beats[i] ||
+			continuationBeats[i % continuationBeats.length] ||
+			`The practical next step is to make ${topicLabel} easier to act on today.`;
 		if (i === 0 && brief?.openingLine) {
 			text = combineOpeningLineWithSegment({
 				openingLine: brief.openingLine,
@@ -16090,16 +16150,40 @@ function buildShortSegmentExtension({
 			.map((item) => normalizeQaText(item))
 			.filter(Boolean),
 	);
+	const buildUniqueFallback = () => {
+		const label = cleanTopicLabel(topicLabel) || "the issue";
+		const genericFallbacks = [
+			`A better move is to lower the friction around ${label} so the next step feels ordinary.`,
+			`The practical test is whether ${label} becomes easier to act on after the first small choice.`,
+			`That gives the segment a different job: name the pressure, then make the next move specific.`,
+			`The useful detail is the repeatable action, because that is what turns insight into progress.`,
+			`This matters because people need a step they can try without turning the whole thing into a verdict.`,
+			`The clearer frame is to make the decision smaller, kinder, and easier to repeat.`,
+			`That keeps the point grounded in daily behavior instead of another vague piece of advice.`,
+			`The better takeaway is not intensity; it is one specific action that can happen again.`,
+			`A useful next step is to remove guesswork before motivation fades.`,
+			`That makes the advice more humane because it gives people a path, not just pressure.`,
+			`The strongest version is practical: choose the next contact point and make it easy to answer.`,
+			`This shifts the focus from proving yourself to creating conditions where trust can grow.`,
+		];
+		const start = Math.abs(seed) % genericFallbacks.length;
+		for (let offset = 0; offset < genericFallbacks.length; offset++) {
+			const candidate = genericFallbacks[(start + offset) % genericFallbacks.length];
+			const key = normalizeQaText(candidate);
+			if (key && !avoid.has(key)) return candidate;
+		}
+		return `The practical next step around ${label} is to make one low-pressure plan and notice what becomes easier.`;
+	};
 	const pick = (items) => {
 		const list = (Array.isArray(items) ? items : []).filter(Boolean);
-		if (!list.length) return "";
+		if (!list.length) return buildUniqueFallback();
 		const start = Math.abs(seed) % list.length;
 		for (let offset = 0; offset < list.length; offset++) {
 			const candidate = list[(start + offset) % list.length];
 			const key = normalizeQaText(candidate);
 			if (key && !avoid.has(key)) return candidate;
 		}
-		return list[start] || list[0];
+		return buildUniqueFallback();
 	};
 	const sensitive = isSensitiveTopicText(`${topicLabel} ${text}`);
 	if (sensitive) {
@@ -16157,6 +16241,17 @@ function buildShortSegmentExtension({
 						"That keeps the advice realistic: send the clear invite, accept a little awkwardness, and let routine do some work.",
 						"That is where hope comes in, because friendship often returns through ordinary repetition, not one perfect conversation.",
 						"The pressure softens when reaching out becomes normal maintenance, not a test of your worth.",
+						"A concrete plan lowers the emotional stakes because everyone knows what yes actually means.",
+						"The first few moments can be stiff, but shared rhythm usually arrives after people have somewhere to return.",
+						"Treat the follow-up as care, not a courtroom verdict on whether you are wanted.",
+						"A recurring walk or meal gives the friendship a place to land before it has to feel deep.",
+						"That makes the work feel smaller: choose the person, name the plan, and let repetition carry some weight.",
+						"The healthier measure is not instant chemistry; it is whether the next contact feels a little easier.",
+						"Connection becomes less fragile when it has a routine to protect it from busy weeks.",
+						"The kindest strategy is to make the invitation specific and the response easy.",
+						"That leaves room for normal life while still giving the relationship a real chance.",
+						"The useful shift is to build around people who return some effort, even imperfectly.",
+						"That turns friendship from a performance into a pattern people can keep choosing.",
 					],
 		);
 	}
@@ -22655,39 +22750,41 @@ async function runLongVideoJob(
 			wordCaps,
 			categoryLabel,
 		});
-		const blockingQa = blockingScriptQualityIssues(qaResult);
-		if (blockingQa.length) {
+		for (let repairPass = 0; repairPass < 3; repairPass += 1) {
+			const blockingQa = blockingScriptQualityIssues(qaResult);
+			if (!blockingQa.length) break;
 			const finalArtifactRepair = repairBlockingScriptArtifacts({
 				script,
 				topics: topicPicks,
 				wordCaps,
 				categoryLabel,
 			});
-			if (finalArtifactRepair.changed.length) {
-				script = applyLongVideoScriptGuards({
-					script: finalArtifactRepair.script,
-					topics: topicPicks,
-					wordCaps,
-					priorVideoPlan,
-				});
-				qaResult = analyzeScriptQuality({
-					script,
-					topics: topicPicks,
-					topicContexts,
-					wordCaps,
-					categoryLabel,
-				});
-				logJob(jobId, "script final artifact repair", {
-					repairs: finalArtifactRepair.changed,
-					qa: {
-						pass: qaResult.pass,
-						needsRewrite: qaResult.needsRewrite,
-						issues: qaResult.issues,
-						warnings: qaResult.warnings,
-						stats: qaResult.stats,
-					},
-				});
-			}
+			if (!finalArtifactRepair.changed.length) break;
+			script = applyLongVideoScriptGuards({
+				script: finalArtifactRepair.script,
+				topics: topicPicks,
+				wordCaps,
+				priorVideoPlan,
+			});
+			qaResult = analyzeScriptQuality({
+				script,
+				topics: topicPicks,
+				topicContexts,
+				wordCaps,
+				categoryLabel,
+			});
+			logJob(jobId, "script final artifact repair", {
+				repairPass: repairPass + 1,
+				blocking: blockingQa,
+				repairs: finalArtifactRepair.changed,
+				qa: {
+					pass: qaResult.pass,
+					needsRewrite: qaResult.needsRewrite,
+					issues: qaResult.issues,
+					warnings: qaResult.warnings,
+					stats: qaResult.stats,
+				},
+			});
 		}
 		const remainingBlockingQa = blockingScriptQualityIssues(qaResult);
 		if (remainingBlockingQa.length) {
