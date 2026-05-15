@@ -241,6 +241,13 @@ function buildTopicContext({ title, topics = [], categoryLabel = "" }) {
 function inferPresentationMode({ title, topics, categoryLabel }) {
 	const context = buildTopicContext({ title, topics, categoryLabel });
 	if (
+		/\b(broke|paycheck|paycheque|rent|renter|renters|grocer(?:y|ies)|bills?|subscriptions?|automatic withdrawals?|inflation|cost of living|living paycheck|financial stress|money stress|budget|savings?|debt|fixed costs?|feel behind)\b/.test(
+			context,
+		)
+	) {
+		return "approachable";
+	}
+	if (
 		/\b(arrest|court|trial|lawsuit|legal|investigation|crime|murder|victim|charged|hearing|government|policy|finance|business|election|president|prime minister|congress|senate|parliament|governor|white house|supreme court|iran|israel|hezbollah|hamas|gaza|ukraine|russia|china|taiwan|middle east|peace proposal|peace talks|ceasefire|diplomacy|diplomatic|sanctions|foreign minister|state department|united nations|health|public health|world health organization|disease|outbreak|infection|infected|illness|hospital|symptom|transmission|pandemic|epidemic|vaccine|cdc|case count|contact tracing|mortality|treatment)\b/.test(
 			context,
 		) ||
@@ -271,6 +278,8 @@ function normalizeOutfitKey(value = "") {
 function inferOutfitModeFromValue(value = "") {
 	const key = normalizeOutfitKey(value);
 	if (!key) return "";
+	if (key.startsWith("approachable_") || /\bapproachable\b/.test(key))
+		return "approachable";
 	if (key.startsWith("formal_") || /\bformal\b/.test(key)) return "formal";
 	if (key.startsWith("modern_") || /\bmodern\b/.test(key)) return "modern";
 	if (
@@ -318,6 +327,44 @@ function normalizeRecentOutfitHistory(recentOutfits = []) {
 }
 
 const OUTFIT_VARIANTS_BY_MODE = {
+	approachable: [
+		{
+			id: "approachable_charcoal_long_sleeve_crew",
+			label: "charcoal long-sleeve crew shirt",
+			promptLine:
+				"a clean charcoal long-sleeve crew shirt with quality cotton texture, neat fit, and an approachable everyday presenter look",
+		},
+		{
+			id: "approachable_deep_navy_button_shirt",
+			label: "deep navy casual button-up shirt",
+			promptLine:
+				"a deep navy casual button-up shirt with sleeves worn naturally, soft fabric texture, and a relatable polished on-camera presence",
+		},
+		{
+			id: "approachable_slate_overshirt_white_tee",
+			label: "slate overshirt with clean white tee",
+			promptLine:
+				"a slate cotton overshirt layered over a plain clean white crew-neck tee with modest casual styling and believable everyday polish",
+		},
+		{
+			id: "approachable_black_knit_polo",
+			label: "black knit polo shirt",
+			promptLine:
+				"a simple black knit polo shirt with subtle texture, clean collar, relaxed fit, and a calm trustworthy presenter style",
+		},
+		{
+			id: "approachable_olive_workshirt_dark_tee",
+			label: "muted olive work shirt with dark tee",
+			promptLine:
+				"a muted olive casual work shirt over a plain dark tee with soft cotton texture, sleeves neat, and grounded relatable styling",
+		},
+		{
+			id: "approachable_heather_gray_heavyweight_tee",
+			label: "heather gray heavyweight t-shirt",
+			promptLine:
+				"a heather gray heavyweight crew-neck t-shirt with a crisp neckline, premium cotton texture, and clean understated everyday styling",
+		},
+	],
 	formal: [
 		{
 			id: "formal_charcoal_peak_lapel_black_open_collar",
@@ -519,12 +566,15 @@ function buildWardrobePrompt({
 	const recentLine = recentLabels.length
 		? `Use a clearly different wardrobe look from these recent outfits: ${recentLabels.join("; ")}.`
 		: "Use a clearly fresh wardrobe change.";
+	const isApproachable = outfitDirection?.mode === "approachable";
 	return [
 		"Edit this exact presenter photo.",
 		"Keep the same presenter, same face, same glasses, same beard, same hair, same expression, same pose, same framing, same desk, same studio background, and same lighting.",
 		"Change only the visible upper-body clothing.",
 		`Replace the full visible outfit with ${outfitDirection.promptLine}.`,
-		"The new outfit must look dark, classy, polished, and photorealistic.",
+		isApproachable
+			? "The new outfit must look clean, relatable, modest, polished, and photorealistic; it must not look expensive, flashy, or overly formal."
+			: "The new outfit must look dark, classy, polished, and photorealistic.",
 		recentLine,
 		"Make the clothing clean, symmetrical, and believable from collar to lower torso.",
 		"Do not leave parts of the original outfit visible.",

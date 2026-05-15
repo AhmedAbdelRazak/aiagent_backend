@@ -404,7 +404,7 @@ const INTRO_MAX_SEC = clampNumber(
 	16,
 );
 const DEFAULT_INTRO_SEC = clampNumber(
-	process.env.LONG_VIDEO_DEFAULT_INTRO_SEC ?? 10.5,
+	process.env.LONG_VIDEO_DEFAULT_INTRO_SEC ?? 8.5,
 	INTRO_MIN_SEC,
 	INTRO_MAX_SEC,
 );
@@ -549,8 +549,8 @@ const ALLOW_STATIC_PRESENTER_FALLBACK = envFlag(
 );
 const PRESENTER_MOTION_FREEZE_CHECK_MIN_SEC = clampNumber(0.35, 0.2, 3);
 const PRESENTER_MOTION_FREEZE_MIN_SEC = clampNumber(0.24, 0.12, 2);
-const PRESENTER_MOTION_FREEZE_NOISE = clampNumber(0.0025, 0.0001, 0.01);
-const PRESENTER_MOTION_MAX_FREEZE_RATIO = clampNumber(0.1, 0.03, 0.6);
+const PRESENTER_MOTION_FREEZE_NOISE = clampNumber(0.006, 0.0001, 0.01);
+const PRESENTER_MOTION_MAX_FREEZE_RATIO = clampNumber(0.08, 0.03, 0.6);
 const PRESENTER_MOTION_MAX_FREEZE_SEC = clampNumber(0.55, 0.15, 3);
 const SYNC_SO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
 const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
@@ -636,19 +636,19 @@ const SEGMENT_TRANSITION_MIN_CLIP_SEC = clampNumber(1.6, 0.5, 5);
 
 // Music
 const MUSIC_VOLUME = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_VOLUME ?? 0.09,
-	0.03,
+	process.env.LONG_VIDEO_MUSIC_VOLUME ?? 0.032,
+	0.006,
 	0.5,
 );
 const MUSIC_DUCK_THRESHOLD = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_DUCK_THRESHOLD ?? 0.06,
-	0.02,
+	process.env.LONG_VIDEO_MUSIC_DUCK_THRESHOLD ?? 0.025,
+	0.006,
 	0.3,
 );
 const MUSIC_DUCK_RATIO = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_DUCK_RATIO ?? 8,
+	process.env.LONG_VIDEO_MUSIC_DUCK_RATIO ?? 14,
 	2,
-	16,
+	20,
 );
 const MUSIC_DUCK_ATTACK = clampNumber(
 	process.env.LONG_VIDEO_MUSIC_DUCK_ATTACK ?? 12,
@@ -666,8 +666,16 @@ const MUSIC_DUCK_MAKEUP = clampNumber(
 	3,
 );
 
-const DEFAULT_MUSIC_URL = "";
-const DEFAULT_MUSIC_PATH = "";
+const DEFAULT_MUSIC_URL = String(
+	process.env.LONG_VIDEO_DEFAULT_MUSIC_URL || "",
+).trim();
+const DEFAULT_MUSIC_PATH = String(
+	process.env.LONG_VIDEO_DEFAULT_MUSIC_PATH || "",
+).trim();
+const MUSIC_USE_DEFAULT_FIRST = envFlag(
+	"LONG_VIDEO_MUSIC_DEFAULT_FIRST",
+	false,
+);
 
 // Overlays
 // Larger overlays by default; cap size relative to frame width.
@@ -2714,6 +2722,538 @@ async function loadRecentPresenterOutfits({ userId, limit = 10 }) {
 	}
 }
 
+const PRIOR_LONG_VIDEO_LOOKBACK_LIMIT = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_PRIOR_LOOKBACK_LIMIT ?? 80, 10, 200),
+);
+const PRIOR_LONG_VIDEO_MAX_MATCHES = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_PRIOR_MAX_MATCHES ?? 3, 1, 6),
+);
+const PRIOR_LONG_VIDEO_SIMILARITY_THRESHOLD = clampNumber(
+	process.env.LONG_VIDEO_PRIOR_SIMILARITY_THRESHOLD ?? 0.38,
+	0.18,
+	0.9,
+);
+const PRIOR_LONG_VIDEO_NOVELTY_REWRITE_ATTEMPTS = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_PRIOR_NOVELTY_REWRITES ?? 2, 1, 4),
+);
+
+function noveltyTokenSet(text = "") {
+	const tokens = tokenizeLabel(text || "").filter(
+		(t) =>
+			t.length >= 3 &&
+			!TOPIC_STOP_WORDS.has(t) &&
+			!GENERIC_TOPIC_TOKENS.has(t),
+	);
+	return new Set(tokens);
+}
+
+function tokenSetSimilarity(a, b) {
+	const setA = a instanceof Set ? a : noveltyTokenSet(a);
+	const setB = b instanceof Set ? b : noveltyTokenSet(b);
+	if (!setA.size || !setB.size) return 0;
+	let overlap = 0;
+	for (const token of setA) {
+		if (setB.has(token)) overlap += 1;
+	}
+	const union = new Set([...setA, ...setB]).size || 1;
+	const jaccard = overlap / union;
+	const overlapCoeff = overlap / Math.min(setA.size, setB.size);
+	return Number((jaccard * 0.35 + overlapCoeff * 0.65).toFixed(4));
+}
+
+function priorVideoTopicText(video = {}) {
+	return normalizeWhitespace(
+		[
+			video.seoTitle,
+			video.topic,
+			...(Array.isArray(video.topics) ? video.topics : []),
+			video.longVideoMeta?.promptTopic || "",
+			video.longVideoMeta?.noveltyPlan?.noveltyAngle || "",
+		]
+			.filter(Boolean)
+			.join(" "),
+	);
+}
+
+function compactScriptExcerpt(script = "", maxChars = 900) {
+	const text = normalizeWhitespace(script || "");
+	if (!text) return "";
+	const sentences = splitSentences(text).filter((s) => countWords(s) >= 5);
+	const selected = uniqueStrings(
+		[
+			...sentences.slice(0, 4),
+			...sentences.filter((s) =>
+				/\b(step|rent|grocer|bill|subscription|paycheck|budget|debt|saving|hope|system|pressure|inflation|automatic|withdrawal)\b/i.test(
+					s,
+				),
+			),
+			...sentences.slice(-3),
+		],
+		{ limit: 10 },
+	);
+	return compactEvidenceText(selected.join(" "), maxChars);
+}
+
+function summarizePriorVideoForNovelty(video = {}, similarity = 0) {
+	const id = String(video._id || "").trim();
+	const title = formatHumanTitle(video.seoTitle || video.topic || "Previous video", 90);
+	const url = String(video.youtubeLink || video.outputUrl || "").trim();
+	const createdAt = video.createdAt
+		? dayjs(video.createdAt).format("YYYY-MM-DD")
+		: "";
+	return {
+		id,
+		title,
+		url,
+		createdAt,
+		category: String(video.category || "").trim(),
+		similarity: Number((Number(similarity) || 0).toFixed(3)),
+		excerpt: compactScriptExcerpt(video.script || "", 1100),
+	};
+}
+
+async function loadSimilarPriorLongVideos({
+	userId,
+	topics = [],
+	promptText = "",
+	categoryLabel = "",
+	jobId,
+}) {
+	if (!userId) return [];
+	const topicLine = (Array.isArray(topics) ? topics : [])
+		.map((t) => t?.displayTopic || t?.topic || "")
+		.filter(Boolean)
+		.join(" ");
+	const targetText = normalizeWhitespace(
+		`${promptText || ""} ${topicLine} ${categoryLabel || ""}`,
+	);
+	const targetSet = noveltyTokenSet(targetText);
+	if (!targetSet.size) return [];
+	try {
+		const docs = await Video.find({
+			user: userId,
+			isLongVideo: true,
+			status: "SUCCEEDED",
+			$or: [
+				{ youtubeLink: { $exists: true, $ne: "" } },
+				{ outputUrl: { $exists: true, $ne: "" } },
+			],
+		})
+			.sort({ createdAt: -1 })
+			.limit(PRIOR_LONG_VIDEO_LOOKBACK_LIMIT)
+			.select({
+				seoTitle: 1,
+				topic: 1,
+				topics: 1,
+				script: 1,
+				youtubeLink: 1,
+				outputUrl: 1,
+				category: 1,
+				createdAt: 1,
+				longVideoMeta: 1,
+			})
+			.lean();
+		const scored = [];
+		for (const doc of docs || []) {
+			const candidateText = priorVideoTopicText(doc);
+			const baseScore = tokenSetSimilarity(targetSet, noveltyTokenSet(candidateText));
+			const categoryBoost =
+				categoryLabel &&
+				String(doc.category || "").toLowerCase() ===
+					String(categoryLabel || "").toLowerCase()
+					? 0.04
+					: 0;
+			const score = Math.min(1, baseScore + categoryBoost);
+			if (score < PRIOR_LONG_VIDEO_SIMILARITY_THRESHOLD) continue;
+			scored.push({ doc, score });
+		}
+		scored.sort((a, b) => b.score - a.score);
+		const matches = scored
+			.slice(0, PRIOR_LONG_VIDEO_MAX_MATCHES)
+			.map(({ doc, score }) => summarizePriorVideoForNovelty(doc, score));
+		if (matches.length) {
+			logJob(jobId, "prior similar long videos found", {
+				count: matches.length,
+				matches: matches.map((v) => ({
+					id: v.id,
+					title: v.title,
+					similarity: v.similarity,
+					hasUrl: Boolean(v.url),
+				})),
+			});
+		}
+		return matches;
+	} catch (e) {
+		logJob(jobId, "prior similar long video lookup failed", {
+			error: e.message,
+		});
+		return [];
+	}
+}
+
+function fallbackPriorVideoNoveltyPlan({ priorVideos = [], topics = [] } = {}) {
+	const primary = priorVideos[0] || {};
+	const topicLabel =
+		(Array.isArray(topics) ? topics[0]?.displayTopic || topics[0]?.topic : "") ||
+		primary.title ||
+		"this topic";
+	const refs = priorVideos.map((v) => ({
+		id: v.id,
+		title: v.title,
+		url: v.url,
+		createdAt: v.createdAt,
+		similarity: v.similarity,
+	}));
+	return {
+		hasPriorVideos: refs.length > 0,
+		requiredNewnessPct: 65,
+		shouldMentionPrior: refs.length > 0,
+		spokenReferenceLine: refs.length
+			? `If you saw the earlier breakdown on ${shortTopicLabel(
+					topicLabel,
+					6,
+				)}, this one goes deeper into what to do next.`
+			: "",
+		noveltyAngle:
+			"Treat this as a follow-up with fresh examples, different sequencing, and more practical audience value.",
+		avoidRepeating: [
+			"Do not reuse the same payoff order or the same examples from the prior video.",
+			"Do not repeat full sentences or stock bridges from the prior video.",
+			"Do not make the same video with only minor wording changes.",
+		],
+		newAngles: [
+			"Open with a sharper audience tension.",
+			"Use different examples and visual scenes.",
+			"Add more concrete diagnosis and action steps.",
+			"End with a new practical takeaway instead of the same wrap-up.",
+		],
+		segmentPlan: [],
+		visualDifferentiators: [
+			"Use different household-money visuals than the previous video.",
+			"Avoid reused thumbnail-like B-roll.",
+		],
+		descriptionReferenceNote:
+			"Related previous video(s) are listed below because this episode is a follow-up.",
+		priorVideos: refs,
+	};
+}
+
+function normalizePriorVideoNoveltyPlan(plan = {}, fallback = {}) {
+	const refs = Array.isArray(fallback.priorVideos) ? fallback.priorVideos : [];
+	const normalized = {
+		...fallback,
+		...(plan && typeof plan === "object" ? plan : {}),
+	};
+	normalized.hasPriorVideos = Boolean(refs.length);
+	normalized.requiredNewnessPct = Math.max(
+		60,
+		Math.min(80, Number(normalized.requiredNewnessPct) || 65),
+	);
+	normalized.shouldMentionPrior = refs.length
+		? normalized.shouldMentionPrior !== false
+		: false;
+	normalized.spokenReferenceLine = sanitizeSegmentText(
+		normalizeWhitespace(normalized.spokenReferenceLine || ""),
+	);
+	if (normalized.spokenReferenceLine && countWords(normalized.spokenReferenceLine) > 28) {
+		normalized.spokenReferenceLine = trimSegmentToCap(
+			normalized.spokenReferenceLine,
+			28,
+		);
+	}
+	normalized.priorVideos = refs;
+	for (const key of [
+		"avoidRepeating",
+		"newAngles",
+		"segmentPlan",
+		"visualDifferentiators",
+	]) {
+		normalized[key] = uniqueStrings(
+			(Array.isArray(normalized[key]) ? normalized[key] : [normalized[key]])
+				.map((line) => normalizeWhitespace(line))
+				.filter(Boolean),
+			{ limit: key === "segmentPlan" ? 10 : 8 },
+		);
+	}
+	normalized.noveltyAngle = normalizeWhitespace(normalized.noveltyAngle || "");
+	normalized.descriptionReferenceNote = normalizeWhitespace(
+		normalized.descriptionReferenceNote || fallback.descriptionReferenceNote || "",
+	);
+	return normalized;
+}
+
+async function buildPriorVideoNoveltyPlan({
+	jobId,
+	promptText = "",
+	topics = [],
+	topicContexts = [],
+	categoryLabel = "",
+	priorVideos = [],
+}) {
+	const fallback = fallbackPriorVideoNoveltyPlan({ priorVideos, topics });
+	if (!priorVideos.length) return fallback;
+	if (!process.env.CHATGPT_API_TOKEN) return fallback;
+	const topicLine = (Array.isArray(topics) ? topics : [])
+		.map((t) => t?.displayTopic || t?.topic || "")
+		.filter(Boolean)
+		.join(" | ");
+	const contextLine = (Array.isArray(topicContexts) ? topicContexts : [])
+		.map((tc) => {
+			const items = Array.isArray(tc?.context) ? tc.context : [];
+			return `${tc?.topic || ""}: ${items
+				.map((item) =>
+					typeof item === "string"
+						? item
+						: `${item?.title || ""} ${item?.snippet || ""}`,
+				)
+				.filter(Boolean)
+				.slice(0, 4)
+				.join(" | ")}`;
+		})
+		.join("\n");
+	const priorBlock = priorVideos
+		.map(
+			(v, i) => `Previous video ${i + 1}
+Title: ${v.title}
+Date: ${v.createdAt || "(unknown)"}
+URL: ${v.url || "(local/no public URL)"}
+Similarity: ${v.similarity}
+Script excerpt: ${v.excerpt || "(no script excerpt)"}`,
+		)
+		.join("\n\n");
+	const prompt = `
+You are planning a new long-form YouTube video as a professional content strategist.
+
+The user may send the same topic more than once. The goal is NOT to block the topic.
+The goal is to make the new video feel like a fresh follow-up: at least 60-70% new value, examples, structure, wording, and visual direction, while preserving any mandatory user lines.
+
+New requested topic(s): ${topicLine || "(none)"}
+Category: ${categoryLabel || "General"}
+Frontend prompt:
+${promptText || "(none)"}
+
+Fresh context:
+${contextLine || "(none)"}
+
+Already-published similar videos:
+${priorBlock}
+
+Return JSON only:
+{
+  "requiredNewnessPct": 65,
+  "shouldMentionPrior": true,
+  "spokenReferenceLine": "one natural presenter line, max 28 words, that references the earlier video without sounding repetitive",
+  "noveltyAngle": "one sentence describing the fresh angle for this new video",
+  "avoidRepeating": ["specific old angles, examples, structure, or phrases to avoid"],
+  "newAngles": ["fresh angles/examples/sections to include"],
+  "segmentPlan": ["short plan beats for this new video"],
+  "visualDifferentiators": ["how visuals should feel different from prior videos"],
+  "descriptionReferenceNote": "short note to put above related previous-video links"
+}
+`.trim();
+	try {
+		const resp = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: prompt }],
+		});
+		const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
+		const plan = normalizePriorVideoNoveltyPlan(parsed, fallback);
+		logJob(jobId, "prior video novelty plan", {
+			hasPriorVideos: plan.hasPriorVideos,
+			requiredNewnessPct: plan.requiredNewnessPct,
+			shouldMentionPrior: plan.shouldMentionPrior,
+			noveltyAngle: plan.noveltyAngle,
+			avoidRepeating: plan.avoidRepeating?.slice(0, 4),
+			newAngles: plan.newAngles?.slice(0, 4),
+		});
+		return plan;
+	} catch (e) {
+		logJob(jobId, "prior video novelty plan failed; using fallback", {
+			error: e.message,
+		});
+		return fallback;
+	}
+}
+
+function buildPriorVideoScriptGuide(priorVideoPlan = null) {
+	if (!priorVideoPlan?.hasPriorVideos) {
+		return "Prior-video novelty plan:\n- No similar published long videos found for this user/topic.";
+	}
+	const refs = Array.isArray(priorVideoPlan.priorVideos)
+		? priorVideoPlan.priorVideos
+		: [];
+	const lines = [
+		"Prior-video novelty plan:",
+		`- Similar published long videos exist. This new script must feel like a fresh follow-up with at least ${priorVideoPlan.requiredNewnessPct || 65}% new content value.`,
+		"- Preserve any required user-supplied lines, but change the structure, examples, explanations, visual cues, and payoff enough that returning viewers do not feel they are watching the same video.",
+	];
+	if (priorVideoPlan.shouldMentionPrior && priorVideoPlan.spokenReferenceLine) {
+		lines.push(
+			`- Mention the earlier video ONCE, naturally, preferably in segment 1 after the hook: "${priorVideoPlan.spokenReferenceLine}"`,
+		);
+	}
+	if (priorVideoPlan.noveltyAngle)
+		lines.push(`- Fresh angle: ${priorVideoPlan.noveltyAngle}`);
+	if (priorVideoPlan.avoidRepeating?.length) {
+		lines.push("- Avoid repeating:");
+		for (const item of priorVideoPlan.avoidRepeating.slice(0, 6)) {
+			lines.push(`  - ${item}`);
+		}
+	}
+	if (priorVideoPlan.newAngles?.length) {
+		lines.push("- Include fresh material such as:");
+		for (const item of priorVideoPlan.newAngles.slice(0, 8)) {
+			lines.push(`  - ${item}`);
+		}
+	}
+	if (priorVideoPlan.segmentPlan?.length) {
+		lines.push("- Follow-up content plan:");
+		for (const item of priorVideoPlan.segmentPlan.slice(0, 10)) {
+			lines.push(`  - ${item}`);
+		}
+	}
+	if (priorVideoPlan.visualDifferentiators?.length) {
+		lines.push("- Visual differentiation:");
+		for (const item of priorVideoPlan.visualDifferentiators.slice(0, 6)) {
+			lines.push(`  - ${item}`);
+		}
+	}
+	if (refs.length) {
+		lines.push("- Previous references:");
+		for (const ref of refs.slice(0, 3)) {
+			lines.push(
+				`  - ${ref.title}${ref.createdAt ? ` (${ref.createdAt})` : ""}${
+					ref.url ? ` - ${ref.url}` : ""
+				}`,
+			);
+		}
+	}
+	return lines.join("\n");
+}
+
+function applyPriorVideoReferenceToScript({
+	script = {},
+	priorVideoPlan = null,
+	wordCaps = [],
+} = {}) {
+	if (
+		!priorVideoPlan?.hasPriorVideos ||
+		!priorVideoPlan.shouldMentionPrior ||
+		!priorVideoPlan.spokenReferenceLine ||
+		!Array.isArray(script?.segments) ||
+		!script.segments.length
+	) {
+		return script;
+	}
+	const line = sanitizeSegmentText(priorVideoPlan.spokenReferenceLine);
+	if (!line) return script;
+	const fullKey = normalizeQaText(script.segments.map((s) => s.text || "").join(" "));
+	if (fullKey.includes(normalizeQaText(line))) return script;
+	const segments = script.segments.map((s) => ({ ...s }));
+	const targetIdx = segments.length > 1 ? 1 : 0;
+	const current = sanitizeSegmentText(segments[targetIdx].text || "");
+	const cap = Math.max(
+		Number(wordCaps[segments[targetIdx].index] || wordCaps[targetIdx] || 0) || 0,
+		countWords(current) + countWords(line),
+		24,
+	);
+	const combined =
+		targetIdx === 0
+			? sanitizeSegmentText(`${current} ${line}`)
+			: sanitizeSegmentText(`${line} ${current}`);
+	segments[targetIdx].text = trimSegmentToCap(combined, cap + 10);
+	segments[targetIdx].expression = segments[targetIdx].expression || "thoughtful";
+	return { ...script, segments };
+}
+
+function estimatePriorNovelty(script = {}, priorVideoPlan = null) {
+	if (!priorVideoPlan?.hasPriorVideos || !Array.isArray(priorVideoPlan.priorVideos))
+		return null;
+	const scriptText = buildScriptLogText(script);
+	const scriptSet = noveltyTokenSet(scriptText);
+	if (!scriptSet.size) return null;
+	let maxSimilarity = 0;
+	let closest = null;
+	for (const prior of priorVideoPlan.priorVideos) {
+		const score = tokenSetSimilarity(scriptSet, noveltyTokenSet(prior.excerpt || prior.title));
+		if (score > maxSimilarity) {
+			maxSimilarity = score;
+			closest = prior;
+		}
+	}
+	return {
+		noveltyPct: Number(Math.max(0, (1 - maxSimilarity) * 100).toFixed(1)),
+		maxSimilarity: Number(maxSimilarity.toFixed(3)),
+		closestTitle: closest?.title || "",
+	};
+}
+
+function buildPriorVideoDescriptionBlock(priorVideoPlan = null) {
+	if (!priorVideoPlan?.hasPriorVideos) return "";
+	const refs = (Array.isArray(priorVideoPlan.priorVideos)
+		? priorVideoPlan.priorVideos
+		: []
+	).filter((ref) => ref?.url);
+	if (!refs.length) return "";
+	const note =
+		priorVideoPlan.descriptionReferenceNote ||
+		"Related previous video(s) mentioned in this follow-up:";
+	const lines = [note];
+	for (const ref of refs.slice(0, 3)) {
+		lines.push(`- ${ref.title}: ${ref.url}`);
+	}
+	return lines.join("\n");
+}
+
+function compactPriorVideoPlanForMeta(priorVideoPlan = null) {
+	if (!priorVideoPlan?.hasPriorVideos) return null;
+	return {
+		hasPriorVideos: true,
+		requiredNewnessPct: priorVideoPlan.requiredNewnessPct || 65,
+		shouldMentionPrior: Boolean(priorVideoPlan.shouldMentionPrior),
+		spokenReferenceLine: priorVideoPlan.spokenReferenceLine || "",
+		noveltyAngle: priorVideoPlan.noveltyAngle || "",
+		avoidRepeating: Array.isArray(priorVideoPlan.avoidRepeating)
+			? priorVideoPlan.avoidRepeating.slice(0, 8)
+			: [],
+		newAngles: Array.isArray(priorVideoPlan.newAngles)
+			? priorVideoPlan.newAngles.slice(0, 8)
+			: [],
+		visualDifferentiators: Array.isArray(priorVideoPlan.visualDifferentiators)
+			? priorVideoPlan.visualDifferentiators.slice(0, 8)
+			: [],
+		priorVideos: Array.isArray(priorVideoPlan.priorVideos)
+			? priorVideoPlan.priorVideos.slice(0, 5).map((ref) => ({
+					id: ref.id || "",
+					title: ref.title || "",
+					url: ref.url || "",
+					createdAt: ref.createdAt || "",
+					similarity: Number(ref.similarity) || 0,
+				}))
+			: [],
+	};
+}
+
+function applyLongVideoScriptGuards({
+	script,
+	topics = [],
+	wordCaps = [],
+	priorVideoPlan = null,
+} = {}) {
+	let guarded = sanitizeScriptVisualCueLeaks(script, topics);
+	guarded = applyPromptBriefToScript({
+		script: guarded,
+		topics,
+		wordCaps,
+	});
+	guarded = applyPriorVideoReferenceToScript({
+		script: guarded,
+		priorVideoPlan,
+		wordCaps,
+	});
+	return guarded;
+}
+
 const DEFAULT_LONG_VIDEO_CONTROLLER_CONFIG = Object.freeze({
 	controllerLabel: "long-video",
 	statusPathBase: "/api/long-video",
@@ -3946,6 +4486,19 @@ function isLikelyThumbnailUrl(u = "") {
 	if (url.startsWith("data:image/")) return true;
 	if (url.includes("encrypted-tbn0") || url.includes("tbn:")) return true;
 	if (url.includes("gstatic.com/images?q=tbn")) return true;
+	const host = getUrlHost(url);
+	if (/\b(ytimg\.com|img\.youtube\.com)\b/i.test(host)) return true;
+	if (
+		/\b(maxresdefault|hqdefault|mqdefault|sddefault)\.(?:jpg|jpeg|png|webp)(?:[?#]|$)/i.test(
+			url,
+		)
+	) {
+		return true;
+	}
+	if (/\/vi(?:_webp)?\/[^/]+\/[^/?#]+\.(?:jpg|jpeg|png|webp)(?:[?#]|$)/i.test(url))
+		return true;
+	if (/\b(video[-_]?thumbnail|youtube[-_]?thumbnail)\b/i.test(url))
+		return true;
 	return false;
 }
 
@@ -6153,7 +6706,7 @@ function getUrlHost(url = "") {
 const DISFAVORED_STOCK_IMAGE_HOST_RE =
 	/(^|\.)((alamy|gettyimages|istockphoto|shutterstock|depositphotos|dreamstime|wireimage|agefotostock|123rf|bigstockphoto|pond5|pixtal)\.com|media\.gettyimages\.com|c8\.alamy\.com|c7\.alamy\.com)$/i;
 const DISFAVORED_IMAGE_PATH_RE =
-	/\b(watermark|watermarked|preview|comp|sample|stock-photo|stock_image|stockimage|gettyimages|alamy|shutterstock|istockphoto)\b/i;
+	/\b(watermark|watermarked|preview|comp|sample|stock-photo|stock_image|stockimage|gettyimages|alamy|shutterstock|istockphoto|maxresdefault|hqdefault|mqdefault|sddefault|youtube-thumbnail|video-thumbnail)\b/i;
 
 function isDisfavoredImageSourceUrl(url = "") {
 	const raw = String(url || "");
@@ -6301,7 +6854,8 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 function filterRelevantImageCandidatePool(pool = [], opts = {}) {
 	const cleanPool = (Array.isArray(pool) ? pool : []).filter(
 		(url) =>
-			!isDisfavoredImageSourceUrl(url) || opts?.allowDisfavoredStockImages,
+			!isLikelyThumbnailUrl(url) &&
+			(!isDisfavoredImageSourceUrl(url) || opts?.allowDisfavoredStockImages),
 	);
 	if (opts?.enforceRelevance === false) return cleanPool;
 	const relevanceTokens = getImageUrlRelevanceTokens(opts);
@@ -7628,18 +8182,48 @@ function wrapDetailCardLine(text = "", maxChars = 42, maxLines = 2) {
 	return lines;
 }
 
+function isDisplaySafeDetailCardBullet(text = "") {
+	const clean = normalizeWhitespace(text);
+	if (!clean || countWords(clean) < 4) return false;
+	const lower = clean.toLowerCase();
+	if (
+		/^(requested|frontend prompt|prompt brief|title instruction|seo title|thumbnail|visuals?|avoid|tone|audience|outro|opening line|must include|minute\s+\d+|\d+\s*[- ]?minute\s*structure|structure|why it can work)\b/i.test(
+			clean,
+		)
+	) {
+		return false;
+	}
+	if (
+		/\b(requested structure|requested title|requested opening|requested outro|thumbnail badge|user supplied|must include this line|the practical meaning is the part viewers can use|what viewers should actually think|title promise|repair sentence)\b/i.test(
+			lower,
+		)
+	) {
+		return false;
+	}
+	if (/[{}[\]<>]|=>|```/.test(clean)) return false;
+	return true;
+}
+
+function cleanDetailCardBulletText(text = "") {
+	return normalizeWhitespace(text)
+		.replace(/^[-*]\s*/, "")
+		.replace(/^User supplied fact\/stat to verify:\s*/i, "")
+		.replace(/\s*\(?source:\s*[^)]+\)?\s*$/i, "")
+		.replace(/\b(?:requested|must include)\s+structure\b.*$/i, "")
+		.trim();
+}
+
 function extractTopicStatCardBullets(topic = {}, contextItems = []) {
 	const promptBrief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
 	const candidates = [];
 	const push = (value, source = "") => {
-		let text = normalizeWhitespace(value)
-			.replace(/^User supplied fact\/stat to verify:\s*/i, "")
-			.replace(/\s*\(?source:\s*[^)]+\)?\s*$/i, "")
-			.trim();
+		let text = cleanDetailCardBulletText(value);
 		if (!text) return;
+		if (!isDisplaySafeDetailCardBullet(text)) return;
 		if (!/(\d|%|\$|\bmillion\b|\bbillion\b|\btrillion\b|\bnearly\b|\babout\b|\broughly\b)/i.test(text))
 			return;
 		text = compactEvidenceText(text, 118);
+		if (!isDisplaySafeDetailCardBullet(text)) return;
 		const src = source ? formatHumanTitle(source.replace(/^www\./i, ""), 32) : "";
 		candidates.push(src ? `${src}: ${text}` : text);
 	};
@@ -7658,17 +8242,10 @@ function extractTopicStatCardBullets(topic = {}, contextItems = []) {
 function buildTopicDetailCardPlan(topic = {}, contextItems = []) {
 	if (!ENABLE_TOPIC_DETAIL_CARDS || TOPIC_DETAIL_CARD_MAX_PER_TOPIC <= 0)
 		return null;
-	const coverage = analyzeTitlePromiseCoverage({
-		topics: [topic],
-		topicContexts: [{ topic: topic?.topic || "", context: contextItems }],
-	});
 	const bullets = uniqueStrings(
-		[
-			...(coverage.obligations || [])
-				.map((item) => item.repairSentence)
-				.filter((line) => line && countWords(line) >= 4),
-			...extractTopicStatCardBullets(topic, contextItems),
-		],
+		extractTopicStatCardBullets(topic, contextItems).filter(
+			isDisplaySafeDetailCardBullet,
+		),
 		{ limit: 4 },
 	);
 	if (!bullets.length) return null;
@@ -8669,10 +9246,12 @@ async function prepareImageSegments({
 
 		const detailCardPlan = meta.detailCard || null;
 		const detailCardsUsed = detailCardCountByTopic.get(topicIndex) || 0;
+		const detailCardEligibleByTime = Number(seg.startSec || 0) >= 35;
 		let detailCardPath = "";
 		if (
 			detailCardPlan &&
 			detailCardsUsed < TOPIC_DETAIL_CARD_MAX_PER_TOPIC &&
+			detailCardEligibleByTime &&
 			segDur >= 2.2
 		) {
 			try {
@@ -10558,6 +11137,104 @@ function insertPromptMustIncludeLine({
 	return combined;
 }
 
+function promptTopicHaystack(topics = [], extra = "") {
+	const topicText = (Array.isArray(topics) ? topics : [])
+		.map((topic) =>
+			[
+				topic?.topic,
+				topic?.displayTopic,
+				topic?.promptText,
+				topic?.category,
+				...(Array.isArray(topic?.keywords) ? topic.keywords : []),
+			]
+				.filter(Boolean)
+				.join(" "),
+		)
+		.join(" ");
+	return normalizeWhitespace(`${topicText} ${extra || ""}`).toLowerCase();
+}
+
+function isPersonalFinanceCostOfLivingTopic({
+	topics = [],
+	categoryLabel = "",
+	text = "",
+} = {}) {
+	const hay = promptTopicHaystack(topics, `${categoryLabel || ""} ${text || ""}`);
+	if (
+		/\b(broke|paycheck|paycheque|rent|renter|renters|grocer(?:y|ies)|bills?|subscriptions?|automatic withdrawals?|inflation|cost of living|living paycheck|financial stress|money stress|budget|savings?|debt|fixed costs?|feel behind)\b/i.test(
+			hay,
+		)
+	) {
+		return true;
+	}
+	return (
+		/\bfinance|personal finance|education\b/i.test(categoryLabel || "") &&
+		/\b(job|work|income|pay|cost|money|budget|rent|bill)\b/i.test(hay)
+	);
+}
+
+function isWeakPromptOpeningSegment(text = "", topicLabel = "") {
+	const clean = normalizeWhitespace(text);
+	if (!clean) return true;
+	const topicKey = normalizeQaText(topicLabel);
+	const qa = normalizeQaText(clean);
+	if (countWords(clean) < 16) return true;
+	if (topicKey && qa.startsWith(topicKey.slice(0, Math.min(topicKey.length, 40))))
+		return true;
+	return /\b(starts with one contradiction|quick breakdown|what happened|key reporting|this story is bigger|that gives the story|that'?s the takeaway)\b/i.test(
+		clean,
+	);
+}
+
+function strengthenPromptOpeningRetention({
+	script = {},
+	topics = [],
+	wordCaps = [],
+	categoryLabel = "",
+} = {}) {
+	if (!script || !Array.isArray(script.segments)) return script;
+	const brief = primaryPromptBrief(topics);
+	if (!brief || !isPersonalFinanceCostOfLivingTopic({ topics, categoryLabel }))
+		return script;
+	const segments = script.segments.map((s) => ({ ...s }));
+	const firstIdx = segments.findIndex((s) => Number(s.topicIndex || 0) === 0);
+	const startIdx = firstIdx >= 0 ? firstIdx : 0;
+	if (segments[startIdx]) {
+		segments[startIdx].expression = "warm";
+	}
+	const secondIdx = startIdx + 1;
+	const second = segments[secondIdx];
+	if (!second) return { ...script, segments };
+	const topic =
+		topics?.[Number(second.topicIndex || 0)] ||
+		topics?.[0] ||
+		{};
+	const topicLabel = String(
+		second.topicLabel || topic?.displayTopic || topic?.topic || "",
+	).trim();
+	const protectedLines = collectPromptMustIncludeLines(topics)
+		.map((line) => normalizeQaText(line))
+		.filter(Boolean);
+	const secondQa = normalizeQaText(second.text || "");
+	if (protectedLines.some((line) => line && secondQa.includes(line))) {
+		second.expression = second.expression || "thoughtful";
+		return { ...script, segments };
+	}
+	if (!isWeakPromptOpeningSegment(second.text || "", topicLabel)) {
+		second.expression = second.expression || "thoughtful";
+		return { ...script, segments };
+	}
+	const replacement =
+		"Here is the tension: a paycheck can be real and still disappear after rent, groceries, bills, and automatic payments clear. That is why this feels personal, not just financial.";
+	const cap = Math.max(
+		Number(wordCaps[second.index] || wordCaps[secondIdx] || 0) || 0,
+		countWords(replacement) + 4,
+	);
+	second.text = sanitizeSegmentText(trimSegmentToCap(replacement, cap + 4));
+	second.expression = "thoughtful";
+	return { ...script, segments };
+}
+
 function applyPromptBriefToScript({ script = {}, topics = [], wordCaps = [] } = {}) {
 	if (!script || !Array.isArray(script.segments)) return script;
 	const brief = primaryPromptBrief(topics);
@@ -10604,7 +11281,7 @@ function applyPromptBriefToScript({ script = {}, topics = [], wordCaps = [] } = 
 			cap,
 		});
 	}
-	return next;
+	return strengthenPromptOpeningRetention({ script: next, topics, wordCaps });
 }
 
 function inferTonePlan({ topic, topics, angle, liveContext }) {
@@ -12885,6 +13562,16 @@ function buildIntroCardTitle({ title = "", shortTitle = "" } = {}) {
 
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	void jobId;
+	if (
+		isPersonalFinanceCostOfLivingTopic({
+			topics,
+			text: `${shortTitle || ""} ${mood || ""}`,
+		})
+	) {
+		return sanitizeIntroOutroLine(
+			`Hi guys, it's ${INTRO_HOST_NAME}. If payday hits and relief disappears, this is the hidden math behind that squeeze, and the first move that helps.`,
+		);
+	}
 	const fallbackLabel = shortTopicLabel(shortTitle || "today's topic", 6);
 	const topicLabels = buildIntroTopicLabels(topics, 6);
 	const safeLabels = (topicLabels.length ? topicLabels : [fallbackLabel]).map(
@@ -14032,6 +14719,7 @@ async function generateScript({
 	categoryLabel = "",
 	includeOutro = false,
 	contentMode = "trends",
+	priorVideoPlan = null,
 }) {
 	if (!process.env.CHATGPT_API_TOKEN)
 		throw new Error("CHATGPT_API_TOKEN missing");
@@ -14238,6 +14926,7 @@ async function generateScript({
 		topicContexts,
 	});
 	const promptBriefGuide = buildPromptBriefInstructionBlock(safeTopics);
+	const priorVideoGuide = buildPriorVideoScriptGuide(priorVideoPlan);
 
 	const prompt = `
 Current date: ${dayjs().format("YYYY-MM-DD")}
@@ -14279,6 +14968,8 @@ Topic notes:
 ${topicHintLines}
 
 ${promptBriefGuide}
+
+${priorVideoGuide}
 
 ${trendSignalLabel}
 ${trendSignalLines}
@@ -14580,6 +15271,14 @@ Return JSON ONLY:
 	finalShortTitle = promptAlignedScript.shortTitle || finalShortTitle;
 	segments = Array.isArray(promptAlignedScript.segments)
 		? promptAlignedScript.segments
+		: segments;
+	const priorAlignedScript = applyPriorVideoReferenceToScript({
+		script: { title: finalTitle, shortTitle: finalShortTitle, segments },
+		priorVideoPlan,
+		wordCaps,
+	});
+	segments = Array.isArray(priorAlignedScript.segments)
+		? priorAlignedScript.segments
 		: segments;
 	const rawShortsDetails =
 		parsed.shortsDetails || parsed.shorts_details || parsed.shorts || null;
@@ -15513,6 +16212,137 @@ function ensureTopicAttributions({
 	return { segments, didInsert: inserted.length > 0, inserted };
 }
 
+async function rewriteSegmentsForPriorNovelty({
+	jobId,
+	script,
+	topics = [],
+	topicContexts = [],
+	wordCaps = [],
+	tonePlan,
+	categoryLabel = "",
+	includeOutro = true,
+	priorVideoPlan = null,
+}) {
+	if (!priorVideoPlan?.hasPriorVideos) return script;
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return script;
+	const mood = tonePlan?.mood || "neutral";
+	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
+	const priorGuide = buildPriorVideoScriptGuide(priorVideoPlan);
+	const promptBriefGuide = buildPromptBriefInstructionBlock(topics);
+	const contextLines =
+		Array.isArray(topicContexts) && topicContexts.length
+			? topicContexts
+					.map((tc, idx) => {
+						const items = Array.isArray(tc.context) ? tc.context : [];
+						const hints = items
+							.map((item) =>
+								typeof item === "string"
+									? item
+									: `${item?.title || ""} ${item?.snippet || ""}`,
+							)
+							.filter(Boolean)
+							.slice(0, 5);
+						return `Topic ${idx + 1} (${tc.topic || topics?.[idx]?.topic || ""}): ${
+							hints.length ? hints.join(" | ") : "(none)"
+						}`;
+					})
+					.join("\n")
+			: "- (none)";
+	const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
+	const ctaRule = includeOutro
+		? "Do not add like/subscribe/comment CTAs inside content segments; the separate outro handles that."
+		: "The final segment may include one short engagement question.";
+	const rewritePrompt = `
+Rewrite this script as a genuinely fresh follow-up to previous videos on a similar topic.
+
+${priorGuide}
+
+Frontend prompt requirements:
+${promptBriefGuide}
+
+Fresh context:
+${contextLines}
+
+Mood: ${mood}
+Category: ${categoryLabel || "General"}
+Per-segment word caps: ${capsLine}
+
+Rules:
+- Keep EXACTLY ${segments.length} segments and the same indexes.
+- Keep topicIndex/topicLabel assignments.
+- Preserve any frontend-requested opening line as the first spoken sentence of segment 0.
+- Preserve any mandatory "must include" lines, but change surrounding content so the video is not a duplicate.
+- Make roughly ${priorVideoPlan.requiredNewnessPct || 65}% of the content feel new: examples, ordering, explanations, visuals implied by overlayCues, practical advice, and payoff.
+- If a prior-video reference line is specified, include it exactly once and naturally.
+- Avoid repeating the same sentence, same stock bridge, or same step order from earlier videos.
+- Use different concrete examples where possible.
+- Keep the tone empathetic, useful, and creator-like.
+- ${ctaRule}
+- Category-specific guidance:
+${categoryGuide.lines.join("\n")}
+
+Return JSON ONLY:
+{ "segments":[{"index":0,"text":"...","expression":"neutral|warm|thoughtful|serious|excited"}] }
+
+Current script:
+${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
+`.trim();
+	try {
+		const resp = await openai.chat.completions.create({
+			model: CHAT_MODEL,
+			messages: [{ role: "user", content: rewritePrompt }],
+		});
+		const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
+		if (!parsed || !Array.isArray(parsed.segments)) return script;
+		const byIndex = new Map();
+		for (const seg of parsed.segments) {
+			const idx = Number(seg?.index);
+			if (!Number.isFinite(idx)) continue;
+			const text = sanitizeSegmentText(seg?.text || "");
+			if (!text) continue;
+			byIndex.set(idx, {
+				text,
+				expression: normalizeExpression(seg?.expression, mood),
+			});
+		}
+		const updated = segments.map((s, i) => {
+			const next = byIndex.get(Number(s.index)) || byIndex.get(i);
+			if (!next) return s;
+			const cap = wordCaps[i] || wordCaps[s.index] || 24;
+			return {
+				...s,
+				text: sanitizeSegmentText(trimSegmentToCap(next.text, cap + 8)),
+				expression: next.expression || s.expression || "neutral",
+			};
+		});
+		const nextScript = applyPriorVideoReferenceToScript({
+			script: { ...script, segments: updated },
+			priorVideoPlan,
+			wordCaps,
+		});
+		logJob(jobId, "prior novelty rewrite applied", {
+			segments: updated.length,
+			estimate: estimatePriorNovelty(nextScript, priorVideoPlan),
+		});
+		const promptAligned = applyPromptBriefToScript({
+			script: nextScript,
+			topics,
+			wordCaps,
+		});
+		return applyPriorVideoReferenceToScript({
+			script: promptAligned,
+			priorVideoPlan,
+			wordCaps,
+		});
+	} catch (e) {
+		logJob(jobId, "prior novelty rewrite failed (continuing)", {
+			error: e.message,
+		});
+		return script;
+	}
+}
+
 async function rewriteSegmentsForQuality({
 	jobId,
 	script,
@@ -15525,6 +16355,7 @@ async function rewriteSegmentsForQuality({
 	categoryLabel = "",
 	includeOutro = true,
 	contentMode = "trends",
+	priorVideoPlan = null,
 }) {
 	const segments = Array.isArray(script?.segments) ? script.segments : [];
 	if (!segments.length) return script;
@@ -15580,6 +16411,7 @@ async function rewriteSegmentsForQuality({
 		topicContexts,
 	});
 	const promptBriefGuide = buildPromptBriefInstructionBlock(topics);
+	const priorVideoGuide = buildPriorVideoScriptGuide(priorVideoPlan);
 	const rewriteCtaRule = includeOutro
 		? "- Do NOT add engagement questions, like requests, subscribe requests, or comment CTAs inside the content; the separate closing line handles that. End with a clean takeaway, hopeful implication, or open loop."
 		: "- End the last segment of each topic with a short engagement question. Do NOT add like/subscribe CTAs.";
@@ -15598,6 +16430,8 @@ ${trendSignalLines}
 ${titlePromiseGuide}
 
 ${promptBriefGuide}
+
+${priorVideoGuide}
 
 ${retentionGuide}
 
@@ -15705,9 +16539,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		text: sanitizeSegmentText(s.text),
 	}));
 
-	return applyPromptBriefToScript({
+	const promptAligned = applyPromptBriefToScript({
 		script: { ...script, segments: updated },
 		topics,
+		wordCaps,
+	});
+	return applyPriorVideoReferenceToScript({
+		script: promptAligned,
+		priorVideoPlan,
 		wordCaps,
 	});
 }
@@ -16118,6 +16957,7 @@ async function buildSeoMetadata({
 	languageLabel,
 	lockTitle = false,
 	titleInstructions = [],
+	priorVideoPlan = null,
 }) {
 	let seoTitle = String(scriptTitle || "").trim();
 	const topicLine = topics
@@ -16134,6 +16974,12 @@ async function buildSeoMetadata({
 	const frontendTitleGuide = titleInstructionLines.length
 		? `\nFrontend title guidance: ${titleInstructionLines.join(" ")}\nTreat this as an instruction to generate a strong title, not as the literal title text.`
 		: "";
+	const priorDescriptionBlock = buildPriorVideoDescriptionBlock(priorVideoPlan);
+	const priorSeoGuide = priorVideoPlan?.hasPriorVideos
+		? `\nThis is a fresh follow-up to similar previously published video(s). Do not make the title or description sound like the same episode again. Fresh angle: ${
+				priorVideoPlan.noveltyAngle || "new examples and practical value"
+			}.`
+		: "";
 
 	if (process.env.CHATGPT_API_TOKEN && !lockTitle) {
 		try {
@@ -16141,6 +16987,7 @@ async function buildSeoMetadata({
 Use natural search phrasing, clean punctuation, and human headline case. No quotes, no hashtags.
 The title must be fully supported by the script excerpt below. Do NOT promise price, release date, availability, allegations, scores, or "what to expect" unless the script explicitly covers that detail. If the script is mostly analysis/reaction, title it as analysis/reaction.
 ${frontendTitleGuide}
+${priorSeoGuide}
 Script excerpt:
 ${scriptSupport || "(none)"}`;
 			const titleResp = await openai.chat.completions.create({
@@ -16161,6 +17008,7 @@ ${scriptSupport || "(none)"}`;
 		try {
 			const descPrompt = `Write a YouTube description (max 180 words) for a long-form news brief titled "${seoTitle}".
 Make the first 2 lines keyword-rich for search. Use short sentences. Add a friendly CTA to comment and like (not pushy). End with 5-7 relevant hashtags.
+${priorVideoPlan?.hasPriorVideos ? "This is a follow-up, so mention that the video adds a fresh angle without inventing details. A related-video links block will be appended separately." : ""}
 Only mention facts that are supported by this script excerpt:
 ${scriptSupport || "(none)"}`;
 			const descResp = await openai.chat.completions.create({
@@ -16170,14 +17018,20 @@ ${scriptSupport || "(none)"}`;
 			const descRaw = String(descResp.choices?.[0]?.message?.content || "")
 				.trim()
 				.replace(/\n{3,}/g, "\n\n");
+			const referenceBlock = priorDescriptionBlock
+				? `\n\n${priorDescriptionBlock}`
+				: "";
 			seoDescription = ensureClickableLinks(
-				`${MERCH_INTRO}${descRaw}\n\n${BRAND_CREDIT}`,
+				`${MERCH_INTRO}${descRaw}${referenceBlock}\n\n${BRAND_CREDIT}`,
 			);
 		} catch {}
 	}
 	if (!seoDescription) {
+		const referenceBlock = priorDescriptionBlock
+			? `\n\n${priorDescriptionBlock}`
+			: "";
 		seoDescription = ensureClickableLinks(
-			`${MERCH_INTRO}${seoTitle}\n\nTell me your take and tap like if this helped.\n\n${BRAND_CREDIT}`,
+			`${MERCH_INTRO}${seoTitle}\n\nTell me your take and tap like if this helped.${referenceBlock}\n\n${BRAND_CREDIT}`,
 		);
 	}
 
@@ -17907,6 +18761,11 @@ async function renderLipsyncedSegment({
 			: null,
 	});
 	safeUnlink(withAudio);
+	await assertPresenterVideoHasMotion({
+		videoPath: norm,
+		jobId,
+		label: `rendered_presenter_${safeLabel}`,
+	});
 
 	return norm;
 }
@@ -19828,8 +20687,78 @@ async function jamendoSearchTracks({
 			shareurl: t.shareurl,
 			duration: Number(t.duration || 0),
 		}))
-		.filter((t) => t.audio && t.duration >= 30)
-		.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+		.filter((t) => t.audio && t.duration >= 30);
+}
+
+function buildBackgroundMusicSearchPlan({
+	topic = "",
+	categoryLabel = "",
+	mood = "neutral",
+	topics = [],
+} = {}) {
+	const personalFinance = isPersonalFinanceCostOfLivingTopic({
+		topics,
+		categoryLabel,
+		text: topic,
+	});
+	const serious = String(mood || "").toLowerCase() === "serious";
+	if (personalFinance || serious) {
+		return {
+			fuzzytags:
+				"documentary, calm, ambient, corporate, piano, hopeful, instrumental",
+			speed: ["low", "medium"],
+			preferTerms: [
+				"ambient",
+				"piano",
+				"documentary",
+				"corporate",
+				"hope",
+				"calm",
+				"soft",
+				"acoustic",
+				"minimal",
+			],
+			avoidTerms: [
+				"salsa",
+				"dance",
+				"party",
+				"club",
+				"latin",
+				"techno",
+				"house",
+				"trance",
+				"dubstep",
+				"metal",
+				"rap",
+				"hip hop",
+			],
+		};
+	}
+	return {
+		fuzzytags: `cinematic, upbeat, modern, instrumental, ${String(
+			topic || "",
+		).slice(0, 40)}`,
+		speed: ["medium", "high"],
+		preferTerms: ["cinematic", "modern", "upbeat", "energy", "inspire"],
+		avoidTerms: ["salsa", "polka", "christmas", "lullaby"],
+	};
+}
+
+function scoreJamendoMusicCandidate(track = {}, plan = {}) {
+	const hay = normalizeWhitespace(
+		`${track.name || ""} ${track.artist || ""} ${track.shareurl || ""}`,
+	).toLowerCase();
+	let score = 0;
+	for (const term of plan.preferTerms || []) {
+		if (term && hay.includes(String(term).toLowerCase())) score += 4;
+	}
+	for (const term of plan.avoidTerms || []) {
+		if (term && hay.includes(String(term).toLowerCase())) score -= 12;
+	}
+	const duration = Number(track.duration || 0);
+	if (duration >= 90 && duration <= 360) score += 2;
+	if (duration > 480) score -= 1;
+	return score;
 }
 
 async function validateMusicFile(filePath) {
@@ -19840,9 +20769,31 @@ async function validateMusicFile(filePath) {
 	return true;
 }
 
+async function tryResolveDefaultBackgroundMusic(jobId) {
+	if (DEFAULT_MUSIC_PATH && fs.existsSync(DEFAULT_MUSIC_PATH)) {
+		if (await validateMusicFile(DEFAULT_MUSIC_PATH)) {
+			logJob(jobId, "music ready (default path)", { path: DEFAULT_MUSIC_PATH });
+			return DEFAULT_MUSIC_PATH;
+		}
+	}
+	if (DEFAULT_MUSIC_URL) {
+		const out = path.join(TMP_ROOT, `music_default_${jobId}.mp3`);
+		await downloadToFile(DEFAULT_MUSIC_URL, out, 35000, 2);
+		if (await validateMusicFile(out)) {
+			logJob(jobId, "music ready (default url)", { path: path.basename(out) });
+			return out;
+		}
+		safeUnlink(out);
+	}
+	return null;
+}
+
 async function resolveBackgroundMusic({
 	jobId,
 	topic,
+	categoryLabel = "",
+	mood = "neutral",
+	topics = [],
 	disableMusic,
 	requestedMusicUrl,
 }) {
@@ -19861,32 +20812,30 @@ async function resolveBackgroundMusic({
 		throw new Error("Requested musicUrl downloaded but is not valid audio");
 	}
 
-	// 2) Default env fallback (preferred)
-	if (DEFAULT_MUSIC_PATH && fs.existsSync(DEFAULT_MUSIC_PATH)) {
-		if (await validateMusicFile(DEFAULT_MUSIC_PATH)) {
-			logJob(jobId, "music ready (default path)", { path: DEFAULT_MUSIC_PATH });
-			return DEFAULT_MUSIC_PATH;
-		}
-	}
-	if (DEFAULT_MUSIC_URL) {
-		const out = path.join(TMP_ROOT, `music_default_${jobId}.mp3`);
-		await downloadToFile(DEFAULT_MUSIC_URL, out, 35000, 2);
-		if (await validateMusicFile(out)) {
-			logJob(jobId, "music ready (default url)", { path: path.basename(out) });
-			return out;
-		}
-		safeUnlink(out);
+	// 2) Optional fixed fallback first, only when explicitly enabled.
+	if (MUSIC_USE_DEFAULT_FIRST) {
+		const defaultMusic = await tryResolveDefaultBackgroundMusic(jobId);
+		if (defaultMusic) return defaultMusic;
 	}
 
-	// 3) Jamendo based on topic (fallback)
-	const tags = `cinematic, upbeat, modern, instrumental, ${String(
-		topic || "",
-	).slice(0, 40)}`;
-	const speeds = ["medium", "high"];
+	// 3) Jamendo based on topic/mood, preferred for organic long-video music.
+	const musicPlan = buildBackgroundMusicSearchPlan({
+		topic,
+		categoryLabel,
+		mood,
+		topics,
+	});
 	const candidates = await jamendoSearchTracks({
-		fuzzytags: tags,
-		speed: speeds,
+		fuzzytags: musicPlan.fuzzytags,
+		speed: musicPlan.speed,
 		instrumentalOnly: true,
+	});
+	candidates.sort((a, b) => {
+		const scoreDelta =
+			scoreJamendoMusicCandidate(b, musicPlan) -
+			scoreJamendoMusicCandidate(a, musicPlan);
+		if (scoreDelta) return scoreDelta;
+		return Math.min(Number(b.duration || 0), 360) - Math.min(Number(a.duration || 0), 360);
 	});
 
 	for (let i = 0; i < Math.min(10, candidates.length); i++) {
@@ -19901,6 +20850,11 @@ async function resolveBackgroundMusic({
 					artist: c.artist,
 					duration: c.duration,
 					shareurl: c.shareurl,
+					musicPlan: {
+						fuzzytags: musicPlan.fuzzytags,
+						speed: musicPlan.speed,
+						score: scoreJamendoMusicCandidate(c, musicPlan),
+					},
 				});
 				return out;
 			}
@@ -19909,6 +20863,9 @@ async function resolveBackgroundMusic({
 			// try next
 		}
 	}
+
+	const defaultMusic = await tryResolveDefaultBackgroundMusic(jobId);
+	if (defaultMusic) return defaultMusic;
 
 	throw new Error(
 		"Background music is required but could not be resolved. Provide JAMENDO_CLIENT_ID or musicUrl or LONG_VIDEO_DEFAULT_MUSIC_URL/PATH.",
@@ -20649,6 +21606,31 @@ async function runLongVideoJob(
 			})),
 		});
 
+		const priorVideos = await loadSimilarPriorLongVideos({
+			userId: user?._id,
+			topics: topicPicks,
+			promptText: promptTextForCategory || topicSummary,
+			categoryLabel,
+			jobId,
+		});
+		if (!priorVideos.length) {
+			logJob(jobId, "prior similar long videos found", { count: 0 });
+		}
+		const priorVideoPlan = await buildPriorVideoNoveltyPlan({
+			jobId,
+			promptText: promptTextForCategory || topicSummary,
+			topics: topicPicks,
+			topicContexts,
+			categoryLabel,
+			priorVideos,
+		});
+		updateJob(jobId, {
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				noveltyPlan: compactPriorVideoPlanForMeta(priorVideoPlan),
+			},
+		});
+
 		// 5) Script (content duration excludes intro/outro)
 		const lang = languageLabel || String(language || "en");
 		const narrationPlan = computeFlexibleNarrationTargetSec({
@@ -20691,13 +21673,52 @@ async function runLongVideoJob(
 			categoryLabel,
 			includeOutro: true,
 			contentMode,
+			priorVideoPlan,
 		});
-		script = sanitizeScriptVisualCueLeaks(script, topicPicks);
-		script = applyPromptBriefToScript({
+		script = applyLongVideoScriptGuards({
 			script,
 			topics: topicPicks,
 			wordCaps,
+			priorVideoPlan,
 		});
+		if (priorVideoPlan?.hasPriorVideos) {
+			let noveltyEstimate = null;
+			for (
+				let noveltyAttempt = 0;
+				noveltyAttempt < PRIOR_LONG_VIDEO_NOVELTY_REWRITE_ATTEMPTS;
+				noveltyAttempt++
+			) {
+				script = await rewriteSegmentsForPriorNovelty({
+					jobId,
+					script,
+					topics: topicPicks,
+					topicContexts,
+					wordCaps,
+					tonePlan: voiceTonePlan,
+					categoryLabel,
+					includeOutro: true,
+					priorVideoPlan,
+				});
+				script = applyLongVideoScriptGuards({
+					script,
+					topics: topicPicks,
+					wordCaps,
+					priorVideoPlan,
+				});
+				noveltyEstimate = estimatePriorNovelty(script, priorVideoPlan);
+				logJob(jobId, "prior novelty estimate", {
+					attempt: noveltyAttempt + 1,
+					estimate: noveltyEstimate,
+				});
+				if (
+					!noveltyEstimate ||
+					Number(noveltyEstimate.noveltyPct || 0) >=
+						(Number(priorVideoPlan.requiredNewnessPct) || 65) - 5
+				) {
+					break;
+				}
+			}
+		}
 
 		let qaResult = analyzeScriptQuality({
 			script,
@@ -20733,12 +21754,13 @@ async function runLongVideoJob(
 					categoryLabel,
 					includeOutro: true,
 					contentMode,
+					priorVideoPlan,
 				});
-				script = sanitizeScriptVisualCueLeaks(script, topicPicks);
-				script = applyPromptBriefToScript({
+				script = applyLongVideoScriptGuards({
 					script,
 					topics: topicPicks,
 					wordCaps,
+					priorVideoPlan,
 				});
 			} catch (e) {
 				logJob(jobId, "script qa rewrite failed", {
@@ -20783,11 +21805,11 @@ async function runLongVideoJob(
 			wordCaps,
 			log: (message, payload) => logJob(jobId, message, payload),
 		});
-		script = sanitizeScriptVisualCueLeaks(script, topicPicks);
-		script = applyPromptBriefToScript({
+		script = applyLongVideoScriptGuards({
 			script,
 			topics: topicPicks,
 			wordCaps,
+			priorVideoPlan,
 		});
 		if (attributionFix.didInsert) {
 			qaResult = analyzeScriptQuality({
@@ -20813,11 +21835,11 @@ async function runLongVideoJob(
 			shortsGuardrails,
 		});
 		if (residualRepair.repairs.length) {
-			script = sanitizeScriptVisualCueLeaks(residualRepair.script, topicPicks);
-			script = applyPromptBriefToScript({
-				script,
+			script = applyLongVideoScriptGuards({
+				script: residualRepair.script,
 				topics: topicPicks,
 				wordCaps,
+				priorVideoPlan,
 			});
 			qaResult = analyzeScriptQuality({
 				script,
@@ -20849,14 +21871,11 @@ async function runLongVideoJob(
 			log: (message, payload) => logJob(jobId, message, payload),
 		});
 		if (titlePromiseRepair.repairs.length) {
-			script = sanitizeScriptVisualCueLeaks(
-				titlePromiseRepair.script,
-				topicPicks,
-			);
-			script = applyPromptBriefToScript({
-				script,
+			script = applyLongVideoScriptGuards({
+				script: titlePromiseRepair.script,
 				topics: topicPicks,
 				wordCaps,
+				priorVideoPlan,
 			});
 			qaResult = analyzeScriptQuality({
 				script,
@@ -20896,14 +21915,11 @@ async function runLongVideoJob(
 				categoryLabel,
 			});
 			if (finalArtifactRepair.changed.length) {
-				script = sanitizeScriptVisualCueLeaks(
-					finalArtifactRepair.script,
-					topicPicks,
-				);
-				script = applyPromptBriefToScript({
-					script,
+				script = applyLongVideoScriptGuards({
+					script: finalArtifactRepair.script,
 					topics: topicPicks,
 					wordCaps,
+					priorVideoPlan,
 				});
 				qaResult = analyzeScriptQuality({
 					script,
@@ -20955,6 +21971,7 @@ async function runLongVideoJob(
 			qa: qaResult,
 			shortsGuardrails,
 			engagement: scriptEngagement,
+			novelty: estimatePriorNovelty(script, priorVideoPlan),
 			sources: topicSourceSummary,
 		});
 		logJob(jobId, `script text (post QA)\n${buildScriptLogText(script)}`);
@@ -21148,6 +22165,7 @@ async function runLongVideoJob(
 			languageLabel: lang,
 			lockTitle: shouldLockPromptBriefTitle(primaryPromptBrief(topicPicks)),
 			titleInstructions: collectPromptSeoTitleInstructions(topicPicks),
+			priorVideoPlan,
 		});
 		const promptYoutubeCategoryLabel = resolveYoutubeCategoryLabelForPrompt({
 			categoryLabel,
@@ -21189,7 +22207,13 @@ async function runLongVideoJob(
 			sanitizeIntroOutroLine(outroLine) || String(outroLine || "").trim();
 		let introTextFinal = introText;
 		let outroTextFinal = outroText;
-		const introExpression = "neutral";
+		const introExpression = isPersonalFinanceCostOfLivingTopic({
+			topics: topicPicks,
+			categoryLabel,
+			text: script.title,
+		})
+			? "warm"
+			: "neutral";
 		const outroExpression = "warm";
 
 		logJob(jobId, "orchestrator plan", {
@@ -21380,6 +22404,9 @@ async function runLongVideoJob(
 		const musicLocalPath = await resolveBackgroundMusic({
 			jobId,
 			topic: topicTitles[0] || topicSummary,
+			categoryLabel,
+			mood: voiceTonePlan?.mood || tonePlan?.mood || "neutral",
+			topics: topicPicks,
 			disableMusic,
 			requestedMusicUrl: musicUrl,
 		});
@@ -23053,6 +24080,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					localFilePath: localFilePath || "",
 					youtubeLink,
 					longVideoMeta: {
+						promptTopic: promptTextForCategory || topicSummary,
+						noveltyPlan: compactPriorVideoPlanForMeta(priorVideoPlan),
 						segments: script?.segments || [],
 						timeline: timelineForMeta,
 					},
