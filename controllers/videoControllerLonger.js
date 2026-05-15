@@ -588,7 +588,7 @@ const PRESENTER_RENDER_MOTION_NEAR_PASS_ENABLED = envFlag(
 	true,
 );
 const PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO = clampNumber(
-	process.env.LONG_VIDEO_RENDER_MOTION_MAX_FREEZE_RATIO ?? 0.22,
+	process.env.LONG_VIDEO_RENDER_MOTION_MAX_FREEZE_RATIO ?? 0.24,
 	PRESENTER_MOTION_MAX_FREEZE_RATIO,
 	0.35,
 );
@@ -690,19 +690,19 @@ const SEGMENT_TRANSITION_MIN_CLIP_SEC = clampNumber(1.6, 0.5, 5);
 
 // Music
 const MUSIC_VOLUME = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_VOLUME ?? 0.032,
-	0.006,
+	process.env.LONG_VIDEO_MUSIC_VOLUME ?? 0.09,
+	0.03,
 	0.5,
 );
 const MUSIC_DUCK_THRESHOLD = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_DUCK_THRESHOLD ?? 0.025,
-	0.006,
+	process.env.LONG_VIDEO_MUSIC_DUCK_THRESHOLD ?? 0.06,
+	0.02,
 	0.3,
 );
 const MUSIC_DUCK_RATIO = clampNumber(
-	process.env.LONG_VIDEO_MUSIC_DUCK_RATIO ?? 14,
+	process.env.LONG_VIDEO_MUSIC_DUCK_RATIO ?? 8,
 	2,
-	20,
+	16,
 );
 const MUSIC_DUCK_ATTACK = clampNumber(
 	process.env.LONG_VIDEO_MUSIC_DUCK_ATTACK ?? 12,
@@ -762,6 +762,26 @@ const OPENING_PRESENTER_SYNC_RETRIES = Math.floor(clampNumber(
 	0,
 	3,
 ));
+const MIN_ACTUAL_PRESENTER_SEGMENTS = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_SEGMENTS ??
+		FORCE_OPENING_PRESENTER_COUNT,
+	0,
+	20,
+));
+const MIN_ACTUAL_PRESENTER_PLAN_RATIO = clampNumber(
+	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_PLAN_RATIO ?? 0.4,
+	0,
+	1,
+);
+const MIN_ACTUAL_PRESENTER_DURATION_RATIO = clampNumber(
+	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_DURATION_RATIO ?? 0.08,
+	0,
+	0.5,
+);
+const REQUIRE_FORCED_OPENING_PRESENTERS = envFlag(
+	"LONG_VIDEO_REQUIRE_FORCED_OPENING_PRESENTERS",
+	true,
+);
 const FEED_VIDEO_ENABLED = envFlag("LONG_VIDEO_FEED_VIDEO_ENABLED", true);
 const FEED_VIDEO_SEARCH_ENABLED = envFlag(
 	"LONG_VIDEO_FEED_VIDEO_SEARCH",
@@ -4595,6 +4615,70 @@ function isLikelyThumbnailUrl(u = "") {
 	if (/\b(video[-_]?thumbnail|youtube[-_]?thumbnail)\b/i.test(url))
 		return true;
 	return false;
+}
+
+function localPathKey(filePath = "") {
+	try {
+		return path.resolve(String(filePath || "")).toLowerCase();
+	} catch {
+		return String(filePath || "").trim().toLowerCase();
+	}
+}
+
+function isReservedThumbnailVisualPath(filePath = "", thumbnailPath = "") {
+	const raw = String(filePath || "").trim();
+	if (!raw) return false;
+	if (thumbnailPath && localPathKey(raw) === localPathKey(thumbnailPath)) {
+		return true;
+	}
+	const base = path.basename(raw).toLowerCase();
+	if (/^(thumb|thumbnail|yt_thumb|youtube_thumb)[_-]/i.test(base)) {
+		return true;
+	}
+	return /\b(youtube[-_]?thumbnail|video[-_]?thumbnail)\b/i.test(base);
+}
+
+function isActualPresenterVisualType(visualType = "") {
+	const type = String(visualType || "").toLowerCase();
+	return type === "presenter" || type === "presenter_fallback";
+}
+
+function summarizePresenterCoverage(renderSummary = []) {
+	const entries = Array.isArray(renderSummary) ? renderSummary : [];
+	const presenterEntries = entries.filter((entry) =>
+		String(entry?.plannedVisualType || "").toLowerCase() === "presenter",
+	);
+	const actualPresenterEntries = entries.filter((entry) =>
+		isActualPresenterVisualType(entry?.actualVisualType),
+	);
+	const sumDuration = (list) =>
+		list.reduce(
+			(sum, entry) => sum + Math.max(0, Number(entry?.durationSec || 0)),
+			0,
+		);
+	const totalDurationSec = sumDuration(entries);
+	const plannedPresenterDurationSec = sumDuration(presenterEntries);
+	const actualPresenterDurationSec = sumDuration(actualPresenterEntries);
+	const forcedOpeningMisses = entries
+		.filter(
+			(entry) =>
+				entry?.mustUsePresenter &&
+				!isActualPresenterVisualType(entry?.actualVisualType),
+		)
+		.map((entry) => entry.label || entry.segment)
+		.filter((label) => label !== undefined && label !== null);
+	return {
+		totalUnits: entries.length,
+		plannedPresenterUnits: presenterEntries.length,
+		actualPresenterUnits: actualPresenterEntries.length,
+		totalDurationSec,
+		plannedPresenterDurationSec,
+		actualPresenterDurationSec,
+		actualPresenterDurationRatio: totalDurationSec
+			? actualPresenterDurationSec / totalDurationSec
+			: 0,
+		forcedOpeningMisses,
+	};
 }
 
 async function fetchGoogleImagesFromService(
@@ -21205,12 +21289,40 @@ function buildBackgroundMusicSearchPlan({
 		};
 	}
 	return {
-		fuzzytags: `cinematic, upbeat, modern, instrumental, ${String(
+		fuzzytags: `calm, ambient, soft, piano, acoustic, hopeful, instrumental, ${String(
 			topic || "",
 		).slice(0, 40)}`,
-		speed: ["medium", "high"],
-		preferTerms: ["cinematic", "modern", "upbeat", "energy", "inspire"],
-		avoidTerms: ["salsa", "polka", "christmas", "lullaby"],
+		speed: ["low", "medium"],
+		preferTerms: [
+			"calm",
+			"ambient",
+			"soft",
+			"piano",
+			"acoustic",
+			"hope",
+			"warm",
+			"minimal",
+			"documentary",
+		],
+		avoidTerms: [
+			"salsa",
+			"polka",
+			"christmas",
+			"lullaby",
+			"dance",
+			"party",
+			"club",
+			"techno",
+			"house",
+			"trance",
+			"dubstep",
+			"metal",
+			"rap",
+			"hip hop",
+			"epic",
+			"trailer",
+			"energetic",
+		],
 	};
 }
 
@@ -23761,23 +23873,37 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			limit = 12,
 		} = {}) => {
 			const excluded = new Set(
-				(Array.isArray(exclude) ? exclude : [exclude]).filter(Boolean),
+				(Array.isArray(exclude) ? exclude : [exclude])
+					.filter(Boolean)
+					.map(localPathKey),
 			);
 			const paths = [];
 			const seen = new Set();
 			const addPath = (p) => {
-				if (!p || excluded.has(p) || seen.has(p)) return;
+				if (!p || isReservedThumbnailVisualPath(p, thumbnailPath)) return;
+				const key = localPathKey(p);
+				if (excluded.has(key) || seen.has(key)) return;
 				if (!fs.existsSync(p)) return;
-				seen.add(p);
+				seen.add(key);
 				paths.push(p);
 			};
-			addPath(thumbnailPath);
 			if (segmentImagePaths instanceof Map) {
 				for (const group of segmentImagePaths.values()) {
 					for (const p of group || []) addPath(p);
 				}
 			}
 			return paths.slice(0, Math.max(1, Number(limit) || 12));
+		};
+		const rotateFallbackPathsForLabel = (paths = [], label = "") => {
+			const clean = (Array.isArray(paths) ? paths : []).filter(Boolean);
+			if (clean.length <= 1) return clean;
+			const hash = crypto
+				.createHash("sha1")
+				.update(`${jobId}:${label}`)
+				.digest()
+				.readUInt32BE(0);
+			const offset = hash % clean.length;
+			return clean.slice(offset).concat(clean.slice(0, offset));
 		};
 		const feedImageFallbackPaths = collectGlobalVisualFallbackPaths({
 			limit: 14,
@@ -23794,8 +23920,10 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const imagePaths = [];
 			const seen = new Set();
 			const addImagePath = (p) => {
-				if (!p || seen.has(p) || !fs.existsSync(p)) return;
-				seen.add(p);
+				if (!p || isReservedThumbnailVisualPath(p, thumbnailPath)) return;
+				const key = localPathKey(p);
+				if (seen.has(key) || !fs.existsSync(p)) return;
+				seen.add(key);
 				imagePaths.push(p);
 			};
 			(Array.isArray(preferredImagePaths)
@@ -23807,11 +23935,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				limit: 10,
 			}).forEach(addImagePath);
 			if (imagePaths.length) {
+				const fallbackImages = rotateFallbackPathsForLabel(imagePaths, label);
 				try {
 					logJob(jobId, "non-presenter visual fallback using images", {
 						label,
 						reason,
-						images: Math.min(imagePaths.length, 8),
+						images: Math.min(fallbackImages.length, 8),
 					});
 					return await renderImageSegment({
 						jobId,
@@ -23819,7 +23948,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						output,
 						segDur,
 						audioPath,
-						imagePaths: imagePaths.slice(0, 8),
+						imagePaths: fallbackImages.slice(0, 8),
 						label,
 						addFades,
 						cameraMotion,
@@ -23828,7 +23957,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					logJob(jobId, "non-presenter image fallback failed; using local visual", {
 						label,
 						reason,
-						images: Math.min(imagePaths.length, 8),
+						images: Math.min(fallbackImages.length, 8),
 						error: e.message,
 					});
 				}
@@ -24287,6 +24416,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		});
 		let introBase = "";
 		let introPresenterError = null;
+		let introActualVisualType = "presenter";
+		let introFallbackReason = "";
 		for (
 			let i = 0;
 			i < introBaselineCandidates.length && !introBase;
@@ -24316,6 +24447,10 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			}
 		}
 		if (!introBase) {
+			introActualVisualType = "image_rescue";
+			introFallbackReason = introBaselineCandidates.length
+				? "intro_presenter_render_failed"
+				: "intro_presenter_motion_unavailable";
 			if (introPresenterError) {
 				logJob(jobId, "strict intro presenter unavailable; using images", {
 					error: introPresenterError.message,
@@ -24329,9 +24464,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				addFades: true,
 				cameraMotion: { ...introCameraMotion, visualType: "image" },
 				preferredImagePaths: feedImageFallbackPaths,
-				reason: introBaselineCandidates.length
-					? "intro_presenter_render_failed"
-					: "intro_presenter_motion_unavailable",
+				reason: introFallbackReason,
 			});
 		}
 		const introPath = path.join(tmpDir, `intro_${jobId}.mp4`);
@@ -24356,6 +24489,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		// 11) Content segment pipeline
 		const segmentVideos = [introPath];
+		const segmentRenderSummary = [
+			{
+				label: "intro",
+				plannedVisualType: "presenter",
+				actualVisualType: introActualVisualType,
+				durationSec: introDurationSec,
+				mustUsePresenter: false,
+				...(introFallbackReason ? { fallbackReason: introFallbackReason } : {}),
+			},
+		];
 		const requiredPresenterSegmentSet = new Set(
 			timeline
 				.filter((seg) => seg.mustUsePresenter)
@@ -24621,6 +24764,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					}
 				}
 				if (!norm) {
+					if (mustUsePresenter && REQUIRE_FORCED_OPENING_PRESENTERS) {
+						const errorMessage =
+							presenterRenderError?.message || "unknown presenter render error";
+						logJob(jobId, "required presenter segment render failed", {
+							segment: seg.index,
+							renderLabel: seg.renderLabel || String(seg.index),
+							error: errorMessage,
+						});
+						throw new Error(
+							`required_presenter_segment_failed:${seg.renderLabel || seg.index}:${errorMessage}`,
+						);
+					}
 					logJob(jobId, "presenter segment render failed; using non-presenter visual", {
 						segment: seg.index,
 						renderLabel: seg.renderLabel || String(seg.index),
@@ -24646,6 +24801,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			}
 
 			segmentVideos.push(norm);
+			segmentRenderSummary.push({
+				label: seg.renderLabel || String(seg.index),
+				segment: seg.index,
+				renderSegments: seg.renderSegmentIndices || [seg.index],
+				plannedVisualType,
+				actualVisualType,
+				durationSec: segDur,
+				mustUsePresenter,
+				...(fallbackReason ? { fallbackReason } : {}),
+			});
 			logJob(jobId, "segment ready", {
 				segment: seg.index,
 				renderLabel: seg.renderLabel || String(seg.index),
@@ -24671,6 +24836,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			categoryLabel,
 		});
 		let outroPath = "";
+		let outroActualVisualType = "presenter";
+		let outroFallbackReason = "";
 		if (outroBaseline) {
 			try {
 				const outroTalk = await renderLipsyncedSegment({
@@ -24752,12 +24919,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				});
 			} catch (e) {
 				outroPath = "";
+				outroActualVisualType = "image_rescue";
+				outroFallbackReason = "outro_presenter_render_failed";
 				logJob(jobId, "outro presenter render failed; using non-presenter visual", {
 					error: e.message,
 				});
 			}
 		}
 		if (!outroPath) {
+			outroActualVisualType = "image_rescue";
+			outroFallbackReason = outroBaseline
+				? "outro_presenter_render_failed"
+				: "outro_presenter_motion_unavailable";
 			outroPath = await renderNonPresenterFallbackSegment({
 				segDur: outroDurationSec,
 				audioPath: outroAudioPath,
@@ -24765,12 +24938,77 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				addFades: true,
 				cameraMotion: { ...outroCameraMotion, visualType: "image" },
 				preferredImagePaths: feedImageFallbackPaths,
-				reason: outroBaseline
-					? "outro_presenter_render_failed"
-					: "outro_presenter_motion_unavailable",
+				reason: outroFallbackReason,
 			});
 		}
 		segmentVideos.push(outroPath);
+		segmentRenderSummary.push({
+			label: "outro",
+			plannedVisualType: "presenter",
+			actualVisualType: outroActualVisualType,
+			durationSec: outroDurationSec,
+			mustUsePresenter: false,
+			...(outroFallbackReason ? { fallbackReason: outroFallbackReason } : {}),
+		});
+
+		const presenterCoverage = summarizePresenterCoverage(segmentRenderSummary);
+		const minPresenterUnits = Math.max(
+			MIN_ACTUAL_PRESENTER_SEGMENTS,
+			Math.ceil(
+				presenterCoverage.plannedPresenterUnits *
+					MIN_ACTUAL_PRESENTER_PLAN_RATIO,
+			),
+		);
+		const presenterCoverageIssues = [];
+		if (presenterCoverage.actualPresenterUnits < minPresenterUnits) {
+			presenterCoverageIssues.push("too_few_presenter_segments");
+		}
+		if (
+			presenterCoverage.plannedPresenterUnits > 0 &&
+			presenterCoverage.actualPresenterDurationRatio <
+				MIN_ACTUAL_PRESENTER_DURATION_RATIO
+		) {
+			presenterCoverageIssues.push("presenter_duration_too_low");
+		}
+		if (
+			REQUIRE_FORCED_OPENING_PRESENTERS &&
+			presenterCoverage.forcedOpeningMisses.length
+		) {
+			presenterCoverageIssues.push("forced_opening_presenter_missing");
+		}
+		const presenterCoverageQa = {
+			...presenterCoverage,
+			totalDurationSec: Number(
+				(presenterCoverage.totalDurationSec || 0).toFixed(3),
+			),
+			plannedPresenterDurationSec: Number(
+				(presenterCoverage.plannedPresenterDurationSec || 0).toFixed(3),
+			),
+			actualPresenterDurationSec: Number(
+				(presenterCoverage.actualPresenterDurationSec || 0).toFixed(3),
+			),
+			actualPresenterDurationRatio: Number(
+				(presenterCoverage.actualPresenterDurationRatio || 0).toFixed(3),
+			),
+			minPresenterUnits,
+			minPresenterDurationRatio: MIN_ACTUAL_PRESENTER_DURATION_RATIO,
+			minPresenterPlanRatio: MIN_ACTUAL_PRESENTER_PLAN_RATIO,
+			pass: presenterCoverageIssues.length === 0,
+			issues: presenterCoverageIssues,
+		};
+		logJob(jobId, "presenter coverage qa", presenterCoverageQa);
+		updateJob(jobId, {
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				presenterCoverage: presenterCoverageQa,
+				actualVisualPlan: segmentRenderSummary,
+			},
+		});
+		if (!presenterCoverageQa.pass) {
+			throw new Error(
+				`presenter_coverage_failed:${presenterCoverageIssues.join(",")}`,
+			);
+		}
 
 		updateJob(jobId, { progressPct: 72 });
 
@@ -24938,6 +25176,15 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				const durationForDoc = allowedDurations.has(durationValue)
 					? durationValue
 					: undefined;
+				const actualVisualBySegment = new Map();
+				for (const item of segmentRenderSummary || []) {
+					for (const idx of item.renderSegments || []) {
+						actualVisualBySegment.set(idx, {
+							actualVisualType: item.actualVisualType,
+							fallbackReason: item.fallbackReason || "",
+						});
+					}
+				}
 				const timelineForMeta = Array.isArray(timeline)
 					? timeline.map((seg) => ({
 							index: seg.index,
@@ -24947,6 +25194,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							startSec: seg.startSec,
 							endSec: seg.endSec,
 							visualType: seg.visualType || "presenter",
+							actualVisualType:
+								actualVisualBySegment.get(seg.index)?.actualVisualType ||
+								seg.visualType ||
+								"presenter",
+							fallbackReason:
+								actualVisualBySegment.get(seg.index)?.fallbackReason || "",
 							expression: seg.expression || "neutral",
 							videoExpression: seg.videoExpression || seg.expression || "neutral",
 							cameraMotion: seg.cameraMotion
@@ -24982,6 +25235,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						noveltyPlan: compactPriorVideoPlanForMeta(priorVideoPlan),
 						segments: script?.segments || [],
 						timeline: timelineForMeta,
+						presenterCoverage: presenterCoverageQa,
+						actualVisualPlan: segmentRenderSummary,
 					},
 					shortsDetails: shortsDetailsForDoc,
 					language: languageLabel,
