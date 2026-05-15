@@ -2896,9 +2896,9 @@ const PROMPT_RECOMMENDATION_PATTERNS = [
 
 const PROMPT_SPLIT_RE = /[|;]+/;
 const PROMPT_BRIEF_LABEL_RE =
-	/^\s*(title|headline|opening\s*line|hook|why\s+it\s+can\s+work|why\s+it\s+works|angle|tone|must\s+include|avoid|ending|end|sources?|stats?|facts?|thumbnail(?:\s*text)?|visuals?|b[-\s]?roll|feed\s*(?:images?|videos?)?|(?:\d+\s*[-\s]*)?minute\s*structure|structure|outline)\s*:\s*(.*)$/i;
+	/^\s*(title|headline|seo\s*title(?:\s*request)?|title\s*request|reference\s*title(?:\s*idea)?|opening\s*line|hook|why\s+it\s+can\s+work|why\s+it\s+works|angle|tone|audience|must\s+include|avoid|ending|end|outro|sources?|stats?|facts?|thumbnail(?:\s*(?:text|idea))?|visuals?|b[-\s]?roll|feed\s*(?:images?|videos?)?|(?:\d+\s*[-\s]*)?minute\s*structure|structure|outline)\s*:\s*(.*)$/i;
 const PROMPT_BRIEF_SINGLE_LABEL_RE =
-	/\b(title|headline|opening\s*line|hook|why\s+it\s+can\s+work|why\s+it\s+works|must\s+include|avoid|ending|stats?|facts?|visuals?|b[-\s]?roll|thumbnail(?:\s*text)?|(?:\d+\s*[-\s]*)?minute\s*structure|structure|outline)\s*:/i;
+	/\b(title|headline|seo\s*title(?:\s*request)?|title\s*request|reference\s*title(?:\s*idea)?|opening\s*line|hook|why\s+it\s+can\s+work|why\s+it\s+works|audience|must\s+include|avoid|ending|stats?|facts?|visuals?|b[-\s]?roll|thumbnail(?:\s*(?:text|idea))?|(?:\d+\s*[-\s]*)?minute\s*structure|structure|outline)\s*:/i;
 const PROMPT_BRIEF_STRUCTURE_LINE_RE =
 	/^\s*(?:minute|part|section|beat)\s*\d{1,2}\s*:\s*(.+)$/i;
 
@@ -3017,6 +3017,43 @@ function normalizePromptThumbnailText(text = "") {
 	return raw.replace(/[?]+/g, "").trim().toUpperCase().slice(0, 18);
 }
 
+function normalizePromptBriefKey(raw = "") {
+	return String(raw || "")
+		.toLowerCase()
+		.replace(/\s+/g, "_")
+		.replace(/-/g, "_")
+		.trim();
+}
+
+function isPromptFactStatLine(line = "") {
+	const raw = normalizeWhitespace(line);
+	if (!raw) return false;
+	if (PROMPT_BRIEF_STRUCTURE_LINE_RE.test(raw)) return false;
+	const labelMatch = raw.match(PROMPT_BRIEF_LABEL_RE);
+	if (labelMatch) {
+		const key = normalizePromptBriefKey(labelMatch[1]);
+		if (
+			/^(title|headline|seo_title|seo_title_request|opening_line|hook|thumbnail|thumbnail_text|thumbnail_idea|structure|outline|audience|tone|avoid|ending|end|outro)$/.test(
+				key,
+			) ||
+			/minute_structure$/i.test(key)
+		) {
+			return false;
+		}
+	}
+	if (
+		/^\s*(?:topic\s*)?(?:#?\d{1,2}|[A-Z])[\).:-]\s+/.test(raw) &&
+		!/%|\$|\b(?:reported|according to|survey|study|data|outlook|census|bls|ftc|fed|federal reserve)\b/i.test(
+			raw,
+		)
+	) {
+		return false;
+	}
+	return /%|\$|\b\d+(?:\.\d+)?\s*(?:percent|million|billion|trillion|people|workers|households|americans)\b|\b(?:reported|according to|ftc|census|bls|fed|federal reserve|labor department|commerce department|stanford|survey|study|data|outlook)\b/i.test(
+		raw,
+	);
+}
+
 function parseStructuredPromptBrief(promptText = "") {
 	const raw = String(promptText || "").trim();
 	if (!raw) {
@@ -3046,6 +3083,54 @@ function parseStructuredPromptBrief(promptText = "") {
 	const factLines = [];
 	const seoTitleInstructions = [];
 	const structureLines = [];
+	let pendingKey = "";
+	const appendFieldValue = (keyRaw, valueRaw, originalLine = "") => {
+		const key = normalizePromptBriefKey(keyRaw);
+		const value = String(valueRaw || "").trim();
+		if (!key || !value) {
+			pendingKey = key || pendingKey;
+			return;
+		}
+		if (
+			key === "seo_title" ||
+			key === "seo_title_request" ||
+			key === "title_request" ||
+			key === "reference_title" ||
+			key === "reference_title_idea"
+		) {
+			seoTitleInstructions.push(value || originalLine);
+			return;
+		}
+		if (
+			(key === "title" || key === "headline") &&
+			isSeoTitleRequestText(value)
+		) {
+			seoTitleInstructions.push(value || originalLine);
+			return;
+		}
+		if (
+			key === "thumbnail" ||
+			key === "thumbnail_text" ||
+			key === "thumbnail_idea"
+		) {
+			fields.thumbnail_text = fields.thumbnail_text
+				? `${fields.thumbnail_text} ${value}`.trim()
+				: value;
+			return;
+		}
+		if (
+			key === "structure" ||
+			key === "outline" ||
+			/minute_structure$/i.test(key)
+		) {
+			structureLines.push(value);
+			return;
+		}
+		fields[key] = fields[key] ? `${fields[key]} ${value}`.trim() : value;
+		if (isPromptFactStatLine(value)) {
+			factLines.push(value);
+		}
+	};
 	for (const originalLine of lines) {
 		let line = originalLine;
 		const lineWithoutSeoInstruction = stripSeoTitleRequestText(line);
@@ -3059,33 +3144,14 @@ function parseStructuredPromptBrief(promptText = "") {
 		}
 		const match = line.match(PROMPT_BRIEF_LABEL_RE);
 		if (match) {
-			const key = String(match[1] || "")
-				.toLowerCase()
-				.replace(/\s+/g, "_")
-				.replace(/-/g, "_");
+			const key = normalizePromptBriefKey(match[1]);
 			const value = String(match[2] || "").trim();
-			if ((key === "title" || key === "headline") && isSeoTitleRequestText(value)) {
-				seoTitleInstructions.push(value || originalLine);
-				continue;
-			}
-			if (key === "thumbnail" || key === "thumbnail_text") {
-				fields.thumbnail_text = fields.thumbnail_text
-					? `${fields.thumbnail_text} ${value}`.trim()
-					: value;
-				continue;
-			}
-			if (
-				key === "structure" ||
-				key === "outline" ||
-				/minute_structure$/i.test(key)
-			) {
-				if (value) structureLines.push(value);
-				continue;
-			}
-			fields[key] = fields[key] ? `${fields[key]} ${value}`.trim() : value;
-			if (/\d|%|\$|\b(?:reported|according to|ftc|census|bls|fed|federal reserve|labor department|commerce department)\b/i.test(value)) {
-				factLines.push(value);
-			}
+			pendingKey = value ? "" : key;
+			if (value) appendFieldValue(key, value, originalLine);
+			continue;
+		}
+		if (pendingKey) {
+			appendFieldValue(pendingKey, line, originalLine);
 			continue;
 		}
 		if (isSeoTitleRequestText(line)) {
@@ -3098,7 +3164,7 @@ function parseStructuredPromptBrief(promptText = "") {
 			continue;
 		}
 		unlabeled.push(line);
-		if (/\d|%|\$|\b(?:reported|according to|ftc|census|bls|fed|federal reserve|labor department|commerce department)\b/i.test(line)) {
+		if (isPromptFactStatLine(line)) {
 			factLines.push(line);
 		}
 	}
@@ -3109,7 +3175,8 @@ function parseStructuredPromptBrief(promptText = "") {
 	const promptHeading = stripOuterQuotes(stripPromptHeadingNumber(heading));
 	const inferredTitle = promptHeading;
 	const title = stripOuterQuotes(explicitTitle || inferredTitle);
-	const titleLocked = Boolean(title && (explicitTitle || inferredTitle));
+	const wantsSeoTitle = seoTitleInstructions.length > 0;
+	const titleLocked = Boolean(title && !wantsSeoTitle && (explicitTitle || inferredTitle));
 	const openingLine = stripOuterQuotes(fields.opening_line || fields.hook || "");
 	const thumbnailText = normalizePromptThumbnailText(fields.thumbnail_text || "");
 	const primaryTopic =
@@ -3117,7 +3184,8 @@ function parseStructuredPromptBrief(promptText = "") {
 		normalizePromptTopic(stripSeoTitleRequestText(raw)).slice(0, 120);
 	const briefLines = uniqueStrings(
 		[
-			...(title ? [`Requested title: ${title}`] : []),
+			...(titleLocked && title ? [`Requested title: ${title}`] : []),
+			...(!titleLocked && title ? [`Reference title/topic: ${title}`] : []),
 			...(promptHeading && promptHeading !== title
 				? [`Prompt topic heading: ${promptHeading}`]
 				: []),
@@ -3133,11 +3201,13 @@ function parseStructuredPromptBrief(promptText = "") {
 			...(fields.why_it_works ? [`Why it works: ${fields.why_it_works}`] : []),
 			...(fields.angle ? [`Angle: ${fields.angle}`] : []),
 			...(fields.tone ? [`Tone: ${fields.tone}`] : []),
+			...(fields.audience ? [`Audience: ${fields.audience}`] : []),
 			...(fields.must_include ? [`Must include: ${fields.must_include}`] : []),
 			...(fields.avoid ? [`Avoid: ${fields.avoid}`] : []),
 			...(fields.ending || fields.end
 				? [`Ending: ${fields.ending || fields.end}`]
 				: []),
+			...(fields.outro ? [`Outro: ${fields.outro}`] : []),
 			...(fields.visuals ? [`Visuals: ${fields.visuals}`] : []),
 			...(fields.b_roll ? [`B-roll: ${fields.b_roll}`] : []),
 			...factLines.map((line) => `Fact/stat to verify: ${line}`),
@@ -3184,7 +3254,7 @@ function parseStructuredPromptBrief(promptText = "") {
 		searchHints,
 		imageHints,
 		seoTitleInstructions: uniqueStrings(seoTitleInstructions, { limit: 4 }),
-		wantsSeoTitle: seoTitleInstructions.length > 0,
+		wantsSeoTitle,
 		thumbnailText,
 		structureLines: uniqueStrings(structureLines, { limit: 12 }),
 		raw: raw.slice(0, 5000),
@@ -3257,11 +3327,7 @@ function buildPromptFactSearchQueries(promptText = "", topic = "") {
 		.map((line) => normalizeWhitespace(line))
 		.filter(Boolean);
 	const statLines = lines.filter(
-		(line) =>
-			/\d|%|\$/.test(line) ||
-			/\b(ftc|census|bls|fed|federal reserve|labor department|commerce department|reported|according to)\b/i.test(
-				line,
-			),
+		(line) => isPromptFactStatLine(line),
 	);
 	return uniqueStrings(
 		[
@@ -3285,6 +3351,7 @@ function buildPromptSearchHints(topic = "", promptText = "", topList = null) {
 	const cleanTopic = cleanTopicLabel(topic);
 	const original = cleanTopicLabel(promptText);
 	const base = cleanTopic || original;
+	const brief = parseStructuredPromptBrief(promptText);
 	const hints = [];
 	const push = (value) => {
 		const q = sanitizeOverlayQuery(value);
@@ -3302,7 +3369,13 @@ function buildPromptSearchHints(topic = "", promptText = "", topList = null) {
 		push(`${base} travel guide`);
 		push(`${topList.subject || base} top ${topList.count}`);
 	}
-	if (original && original.toLowerCase() !== base.toLowerCase()) push(original);
+	if (
+		!brief.isStructured &&
+		original &&
+		original.toLowerCase() !== base.toLowerCase()
+	) {
+		push(original);
+	}
 	return uniqueStrings(hints, { limit: 12 });
 }
 
@@ -10279,7 +10352,7 @@ function combineOpeningLineWithSegment({
 	if (!endsWithTerminalPunctuation(opening)) opening = `${opening}.`;
 	const openingKey = normalizeOpeningForCompare(opening);
 	const currentKey = normalizeOpeningForCompare(current);
-	if (openingKey && currentKey.includes(openingKey)) return current;
+	if (openingKey && currentKey.startsWith(openingKey)) return current;
 	const sentences = splitSentences(current).filter(Boolean);
 	let rest = sentences
 		.filter((sentence) => {
@@ -13294,6 +13367,8 @@ const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
 	/\bvs\.?\b/i,
 	/\b\d{1,3}\s*[\u2013-]\s*\d{1,3}\b/,
 	/^\s*[A-Z][A-Za-z'â€™.-]+(?:\s+[A-Z][A-Za-z'â€™.-]+){1,7}\s*:/,
+	/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s+(?:That|This|The|It)\b/i,
+	/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s*$/i,
 	/\bloss\s+circle\b/i,
 	/\bthe\s+angle\s+today\s+is\b/i,
 ];
@@ -13308,6 +13383,8 @@ const SCRIPT_STOCK_PHRASE_PATTERNS = [
 	/\bthe\s+next\s+useful\s+(?:beat|detail|update)\b/i,
 	/\bdetail\s+that\s+changes\s+what\s+viewers\s+should\s+actually\s+think\b/i,
 	/\bwhat\s+viewers\s+should\s+actually\s+think\b/i,
+	/\bthat\s+keeps\s+the\s+story\s+moving\s+toward\s+evidence\b/i,
+	/\bclearer\s+viewer\s+takeaway\b/i,
 ];
 
 const SCRIPT_SERIOUS_CASUAL_PATTERNS = [
@@ -14546,14 +14623,100 @@ function buildShortSegmentExtension({
 	return pick(
 		isQuestion
 			? [
-					"The answer depends on the next confirmed detail viewers have not seen yet.",
-					"The missing piece is the detail that turns interest into a real conclusion.",
+					"The useful answer starts with the pressure viewers can actually act on today.",
+					"The practical question is what changes in the next decision, not just the headline.",
+					"The clearest answer is the one that turns the story into a specific next step.",
 				]
 			: [
-					"The next useful beat is the detail that changes what viewers should actually think.",
-					"That keeps the story moving toward evidence, consequence, and a clearer viewer takeaway.",
+					"For viewers, the useful part is how this pressure shows up in real choices.",
+					"That matters because the consequence is practical, not just emotional.",
+					"The strongest takeaway is the small change that gives people more control.",
 				],
 	);
+}
+
+function sentenceHasBlockingScriptArtifact(sentence = "") {
+	const text = String(sentence || "").trim();
+	if (!text) return false;
+	if (/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s*$/i.test(text)) return true;
+	if (/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s+(?:That|This|The|It)\b/i.test(text))
+		return true;
+	return SCRIPT_STOCK_PHRASE_PATTERNS.some((rx) => rx.test(text));
+}
+
+function stripBlockingScriptArtifacts(text = "") {
+	const sentences = splitSentences(text).filter(Boolean);
+	const kept = sentences.filter(
+		(sentence) => !sentenceHasBlockingScriptArtifact(sentence),
+	);
+	let cleaned = kept.length ? kept.join(" ") : String(text || "");
+	cleaned = cleaned
+		.replace(/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s+(?=(?:That|This|The|It)\b)/i, "")
+		.trim();
+	for (const rx of SCRIPT_STOCK_PHRASE_PATTERNS) {
+		cleaned = cleaned.replace(rx, " ").replace(/\s+/g, " ").trim();
+	}
+	return sanitizeSegmentText(cleaned);
+}
+
+function repairBlockingScriptArtifacts({
+	script,
+	topics = [],
+	wordCaps = [],
+	categoryLabel = "",
+} = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return { script, changed: [] };
+	const speakability = analyzeScriptSpeakability({
+		script,
+		topics,
+		categoryLabel,
+	});
+	const badIndices = new Set([
+		...(speakability.stats?.stockPhraseSegments || []),
+		...(speakability.stats?.speechAwkwardSegments || []),
+	]);
+	for (const group of speakability.stats?.repeatedSentenceGroups || []) {
+		const indices = Array.isArray(group?.segments) ? group.segments : [];
+		const repeatedText = String(group?.sentence || "");
+		if (SCRIPT_STOCK_PHRASE_PATTERNS.some((rx) => rx.test(repeatedText))) {
+			indices.forEach((idx) => badIndices.add(idx));
+		} else {
+			indices.slice(1).forEach((idx) => badIndices.add(idx));
+		}
+	}
+	if (!badIndices.size) return { script, changed: [] };
+
+	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
+	const changed = [];
+	const repaired = segments.map((segment, idx) => {
+		if (!badIndices.has(idx)) return segment;
+		const original = sanitizeSegmentText(segment?.text || "");
+		let text = stripBlockingScriptArtifacts(original);
+		if (countWords(text) < QA_MIN_SEGMENT_WORDS) {
+			const extension = buildShortSegmentExtension({
+				text,
+				segment,
+				topics,
+				categoryGuide,
+				segmentIndex: idx,
+			});
+			text = sanitizeSegmentText(`${text} ${extension}`.trim());
+		}
+		const cap = Number(wordCaps?.[idx] || 0);
+		if (cap) text = trimSegmentToCap(text, Math.max(cap + 8, countWords(text)));
+		text = sanitizeSegmentText(text);
+		if (text && text !== original) {
+			changed.push({
+				index: Number.isFinite(Number(segment?.index)) ? Number(segment.index) : idx,
+				from: original,
+				to: text,
+			});
+			return { ...segment, text };
+		}
+		return segment;
+	});
+	return { script: { ...script, segments: repaired }, changed };
 }
 
 function repairShortScriptSegments({
@@ -14658,6 +14821,19 @@ function repairResidualScriptQuality({
 	if (shortRepair.changed.length) {
 		repairs.push({ type: "short_segments", changed: shortRepair.changed });
 	}
+	const artifactRepair = repairBlockingScriptArtifacts({
+		script: current,
+		topics,
+		wordCaps,
+		categoryLabel,
+	});
+	current = artifactRepair.script;
+	if (artifactRepair.changed.length) {
+		repairs.push({
+			type: "blocking_script_artifacts",
+			changed: artifactRepair.changed,
+		});
+	}
 	const earlyRepair = repairEarlyCuriosityGap({
 		script: current,
 		shortsGuardrails,
@@ -14668,6 +14844,22 @@ function repairResidualScriptQuality({
 	current = earlyRepair.script;
 	if (earlyRepair.changed) repairs.push({ type: "early_curiosity_gap" });
 	return { script: current, repairs };
+}
+
+function blockingScriptQualityIssues(qa = {}) {
+	const stats = qa?.stats || {};
+	const issues = [];
+	if ((stats.speechAwkwardSegments || []).length)
+		issues.push("speech_awkward_segments");
+	if ((stats.stockPhraseSegments || []).length)
+		issues.push("stock_transition_phrases");
+	if ((stats.repeatedSentenceGroups || []).length)
+		issues.push("repeated_sentences");
+	if ((stats.platformAttributionSegments || []).length)
+		issues.push("bad_platform_attribution");
+	if ((stats.searchMetaSegments || []).length >= 2)
+		issues.push("search_meta_phrasing");
+	return issues;
 }
 
 function buildScriptLogText(script = {}) {
@@ -14922,8 +15114,20 @@ function ensureTopicAttributions({
 		);
 		if (hasAttribution) continue;
 
-		const targetIndex = segments.findIndex((s) => Number(s.topicIndex) === i);
-		if (targetIndex < 0) continue;
+		const promptOpening = String(topics?.[i]?.promptBrief?.openingLine || "").trim();
+		const openingKey = normalizeOpeningForCompare(promptOpening);
+		const topicSegmentEntries = segments
+			.map((s, index) => ({ s, index }))
+			.filter((entry) => Number(entry.s?.topicIndex) === i);
+		const targetEntry =
+			openingKey && topicSegmentEntries.length > 1
+				? topicSegmentEntries.find((entry) => {
+						const textKey = normalizeOpeningForCompare(entry.s?.text || "");
+						return !textKey.startsWith(openingKey);
+					}) || topicSegmentEntries[1]
+				: topicSegmentEntries[0];
+		const targetIndex = Number(targetEntry?.index);
+		if (!Number.isFinite(targetIndex) || targetIndex < 0) continue;
 		const sourceLabel = formatSourceLabel(
 			sourceHosts[0],
 			segments[targetIndex]?.topicLabel || topics?.[i]?.topic || "",
@@ -19902,8 +20106,10 @@ async function runLongVideoJob(
 							promptBrief?.openingLine
 								? `User requested opening line: ${promptBrief.openingLine}`
 								: "",
-							promptBrief?.title
+							shouldLockPromptBriefTitle(promptBrief)
 								? `User requested title: ${promptBrief.title}`
+								: promptBrief?.title
+									? `User reference title/topic: ${promptBrief.title}`
 								: "",
 						].filter(Boolean),
 						{ limit: 18 },
@@ -20316,6 +20522,61 @@ async function runLongVideoJob(
 			});
 		}
 
+		qaResult = analyzeScriptQuality({
+			script,
+			topics: topicPicks,
+			topicContexts,
+			wordCaps,
+			categoryLabel,
+		});
+		const blockingQa = blockingScriptQualityIssues(qaResult);
+		if (blockingQa.length) {
+			const finalArtifactRepair = repairBlockingScriptArtifacts({
+				script,
+				topics: topicPicks,
+				wordCaps,
+				categoryLabel,
+			});
+			if (finalArtifactRepair.changed.length) {
+				script = sanitizeScriptVisualCueLeaks(
+					finalArtifactRepair.script,
+					topicPicks,
+				);
+				script = applyPromptBriefToScript({
+					script,
+					topics: topicPicks,
+					wordCaps,
+				});
+				qaResult = analyzeScriptQuality({
+					script,
+					topics: topicPicks,
+					topicContexts,
+					wordCaps,
+					categoryLabel,
+				});
+				logJob(jobId, "script final artifact repair", {
+					repairs: finalArtifactRepair.changed,
+					qa: {
+						pass: qaResult.pass,
+						needsRewrite: qaResult.needsRewrite,
+						issues: qaResult.issues,
+						warnings: qaResult.warnings,
+						stats: qaResult.stats,
+					},
+				});
+			}
+		}
+		const remainingBlockingQa = blockingScriptQualityIssues(qaResult);
+		if (remainingBlockingQa.length) {
+			logJob(jobId, "script quality hard stop before tts", {
+				blocking: remainingBlockingQa,
+				qa: qaResult,
+			});
+			throw new Error(`script_quality_blocked:${remainingBlockingQa.join("|")}`);
+		}
+		shortsGuardrails = analyzeShortsGuardrails(script);
+		if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
+
 		const shortsDetailsRaw = await ensureShortsDetails({
 			jobId,
 			script,
@@ -20447,6 +20708,9 @@ async function runLongVideoJob(
 					...(hookPlan || {}),
 					badgeText: promptThumbnailText,
 				};
+				thumbLog("thumbnail prompt text override", {
+					badgeText: promptThumbnailText,
+				});
 			}
 			if (hookPlan) thumbLog("thumbnail hook plan (computed)", hookPlan);
 			await ensureThumbnailSeedImages({
@@ -20475,7 +20739,7 @@ async function runLongVideoJob(
 				log: thumbLog,
 				requireTopicImages: true,
 				overrideHeadline: hookHeadline,
-				overrideBadgeText: hookPlan?.badgeText,
+				overrideBadgeText: promptThumbnailText || hookPlan?.badgeText,
 				overrideIntent: hookPlan?.intent,
 				overrideTopicImageQueries: hookPlan?.imageQueries,
 			});
