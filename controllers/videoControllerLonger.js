@@ -661,6 +661,86 @@ const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 // Content visual mix (presenter vs static images). Required default is
 // 40% presenter / 60% scraped feed or topic images.
 const CONTENT_PRESENTER_RATIO = 0.4;
+const FEED_VIDEO_ENABLED = envFlag("LONG_VIDEO_FEED_VIDEO_ENABLED", true);
+const FEED_VIDEO_SEARCH_ENABLED = envFlag(
+	"LONG_VIDEO_FEED_VIDEO_SEARCH",
+	true,
+);
+const BING_FEED_VIDEO_SEARCH_ENABLED = envFlag(
+	"LONG_VIDEO_BING_FEED_VIDEO_SEARCH",
+	true,
+);
+const FEED_VIDEO_TRUSTED_SOURCES_ONLY = envFlag(
+	"LONG_VIDEO_FEED_VIDEO_TRUSTED_ONLY",
+	false,
+);
+const FEED_VIDEO_TARGET_FEED_SHARE = clampNumber(
+	process.env.LONG_VIDEO_FEED_VIDEO_TARGET_FEED_SHARE ?? 0.35,
+	0,
+	0.75,
+);
+const FEED_VIDEO_MAX_SEGMENTS = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_FEED_VIDEO_MAX_SEGMENTS ?? 3, 0, 8),
+);
+const FEED_VIDEO_MAX_SEGMENT_ATTEMPTS = Math.floor(
+	clampNumber(
+		process.env.LONG_VIDEO_FEED_VIDEO_MAX_SEGMENT_ATTEMPTS ?? 8,
+		0,
+		24,
+	),
+);
+const FEED_VIDEO_MIN_SEGMENT_SEC = clampNumber(
+	process.env.LONG_VIDEO_FEED_VIDEO_MIN_SEGMENT_SEC ?? 3.2,
+	1.5,
+	12,
+);
+const FEED_VIDEO_MIN_SOURCE_SEC = clampNumber(
+	process.env.LONG_VIDEO_FEED_VIDEO_MIN_SOURCE_SEC ?? 2.2,
+	1,
+	12,
+);
+const FEED_VIDEO_MAX_CLIP_SEC = clampNumber(
+	process.env.LONG_VIDEO_FEED_VIDEO_MAX_CLIP_SEC ?? 8.5,
+	2,
+	12,
+);
+const FEED_VIDEO_MAX_BYTES = Math.floor(
+	clampNumber(
+		process.env.LONG_VIDEO_FEED_VIDEO_MAX_BYTES ?? 32_000_000,
+		3_000_000,
+		120_000_000,
+	),
+);
+const FEED_VIDEO_CANDIDATE_LIMIT = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_FEED_VIDEO_CANDIDATES ?? 16, 4, 40),
+);
+const FEED_VIDEO_QUERY_LIMIT = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_FEED_VIDEO_QUERY_LIMIT ?? 4, 1, 8),
+);
+const FEED_VIDEO_DOWNLOAD_TIMEOUT_MS = clampNumber(
+	process.env.LONG_VIDEO_FEED_VIDEO_DOWNLOAD_TIMEOUT_MS ?? 30000,
+	8000,
+	90000,
+);
+const FEED_VIDEO_PAGE_TIMEOUT_MS = clampNumber(
+	process.env.LONG_VIDEO_FEED_VIDEO_PAGE_TIMEOUT_MS ?? 9000,
+	4000,
+	20000,
+);
+const FEED_VIDEO_MIN_WIDTH = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_FEED_VIDEO_MIN_WIDTH ?? 480, 240, 1920),
+);
+const FEED_VIDEO_MIN_HEIGHT = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_FEED_VIDEO_MIN_HEIGHT ?? 270, 160, 1080),
+);
+const FEED_VIDEO_MOTION_QA_ENABLED = envFlag(
+	"LONG_VIDEO_FEED_VIDEO_MOTION_QA",
+	true,
+);
+const FEED_VIDEO_FREEZE_NOISE = clampNumber(0.0025, 0.0001, 0.02);
+const FEED_VIDEO_FREEZE_MIN_SEC = clampNumber(1.2, 0.4, 5);
+const FEED_VIDEO_MAX_FREEZE_RATIO = clampNumber(0.82, 0.35, 0.98);
+const FEED_VIDEO_MAX_FREEZE_SEC = clampNumber(5.5, 1.5, 12);
 const IMAGE_SEGMENT_TARGET_SEC = clampNumber(3.8, 2.5, 8);
 const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
 const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(
@@ -782,6 +862,9 @@ function getLongVideoRuntimeProfile() {
 		requireLipsync: REQUIRE_LIPSYNC,
 		enableRunwayBaseline: ENABLE_RUNWAY_BASELINE,
 		useMotionRefBaseline: USE_MOTION_REF_BASELINE,
+		feedVideoEnabled: FEED_VIDEO_ENABLED,
+		feedVideoMaxSegments: FEED_VIDEO_MAX_SEGMENTS,
+		feedVideoMaxAttempts: FEED_VIDEO_MAX_SEGMENT_ATTEMPTS,
 		runwayPollMaxSec: 120 * 2,
 	};
 }
@@ -1251,6 +1334,79 @@ async function downloadToFile(url, outPath, timeoutMs = 30000, retries = 2) {
 	throw lastErr || new Error("download failed");
 }
 
+async function downloadToFileWithLimit({
+	url,
+	outPath,
+	timeoutMs = 30000,
+	retries = 1,
+	maxBytes = FEED_VIDEO_MAX_BYTES,
+}) {
+	ensureDir(path.dirname(outPath));
+	let lastErr = null;
+
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		try {
+			const res = await axios.get(url, {
+				responseType: "stream",
+				timeout: timeoutMs,
+				maxRedirects: 4,
+				headers: {
+					"User-Agent": "agentai-long-video/2.0",
+					Accept: "video/mp4,video/webm,video/*,*/*;q=0.8",
+				},
+				validateStatus: (s) => s >= 200 && s < 400,
+			});
+			const declared = Number(res.headers?.["content-length"] || 0);
+			if (declared && declared > maxBytes) {
+				throw new Error(`remote file too large: ${declared}`);
+			}
+
+			await new Promise((resolve, reject) => {
+				let bytes = 0;
+				let settled = false;
+				const ws = fs.createWriteStream(outPath);
+				const fail = (err) => {
+					if (settled) return;
+					settled = true;
+					try {
+						res.data.destroy();
+					} catch {}
+					try {
+						ws.destroy();
+					} catch {}
+					reject(err);
+				};
+				res.data.on("data", (chunk) => {
+					bytes += chunk.length;
+					if (bytes > maxBytes) {
+						fail(new Error(`download exceeded ${maxBytes} bytes`));
+					}
+				});
+				res.data.on("error", fail);
+				ws.on("error", fail);
+				ws.on("finish", () => {
+					if (settled) return;
+					settled = true;
+					resolve();
+				});
+				res.data.pipe(ws);
+			});
+
+			const st = fs.statSync(outPath);
+			if (!st || st.size < 1024) throw new Error("downloaded file too small");
+			return outPath;
+		} catch (e) {
+			lastErr = e;
+			safeUnlink(outPath);
+			if (attempt < retries) {
+				await sleep(350 * Math.pow(2, attempt));
+				continue;
+			}
+		}
+	}
+	throw lastErr || new Error("download failed");
+}
+
 async function headContentType(url, timeoutMs = 8000) {
 	try {
 		const res = await axios.head(url, {
@@ -1320,6 +1476,10 @@ function detectFileType(filePath) {
 
 	// MP4/MOV-ish
 	if (ascii12.slice(4, 8) === "ftyp") return { kind: "video", ext: "mp4" };
+
+	// WEBM/MKV
+	if (head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3)
+		return { kind: "video", ext: "webm" };
 
 	return null;
 }
@@ -1957,6 +2117,54 @@ function normalizeTrendPotentialImages(list = []) {
 	return out;
 }
 
+function normalizeTrendPotentialVideos(list = []) {
+	if (!Array.isArray(list)) return [];
+	const out = [];
+	const seen = new Set();
+	for (const item of list) {
+		if (!item) continue;
+		const obj = typeof item === "string" ? { url: item } : item;
+		const url = String(
+			obj.videoUrl ||
+				obj.videoURL ||
+				obj.contentUrl ||
+				obj.contentURL ||
+				obj.url ||
+				obj.link ||
+				obj.originalUrl ||
+				"",
+		).trim();
+		const pageUrl = String(
+			obj.pageUrl ||
+				obj.contextLink ||
+				obj.sourceUrl ||
+				obj.hostPageUrl ||
+				obj.embedUrl ||
+				"",
+		).trim();
+		const usableUrl = isHttpUrl(url) ? url : isHttpUrl(pageUrl) ? pageUrl : "";
+		if (!usableUrl) continue;
+		const key = normalizeImageUrlKey(usableUrl);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push({
+			url: usableUrl,
+			pageUrl: isHttpUrl(pageUrl) ? pageUrl : "",
+			source: String(
+				obj.source || obj.publisher || obj.siteName || obj.contextLink || "",
+			).trim(),
+			title: String(
+				obj.description || obj.title || obj.caption || obj.name || "",
+			).trim(),
+			durationSec: Number(obj.durationSec || obj.duration || 0) || 0,
+			width: obj.width || obj.w || null,
+			height: obj.height || obj.h || null,
+			origin: "trend",
+		});
+	}
+	return out;
+}
+
 function normalizeTrendStory(raw = {}) {
 	const baseTitle = String(
 		raw.trendDialogTitle ||
@@ -2020,6 +2228,20 @@ function normalizeTrendStory(raw = {}) {
 		{ limit: 10 },
 	).filter((u) => isHttpUrl(u));
 	const potentialImages = normalizeTrendPotentialImages(raw.potentialImages);
+	const potentialVideos = normalizeTrendPotentialVideos([
+		...(Array.isArray(raw.potentialVideos) ? raw.potentialVideos : []),
+		...(Array.isArray(raw.videoCandidates) ? raw.videoCandidates : []),
+		...(Array.isArray(raw.videos) ? raw.videos : []),
+	]);
+	const videos = uniqueStrings(
+		[
+			raw.video,
+			raw.videoUrl,
+			...(Array.isArray(raw.videoUrls) ? raw.videoUrls : []),
+			...potentialVideos.map((v) => v.url).filter(Boolean),
+		],
+		{ limit: 12 },
+	).filter((u) => isHttpUrl(u));
 	const keywords = uniqueStrings(
 		[
 			...searchPhrases,
@@ -2050,6 +2272,8 @@ function normalizeTrendStory(raw = {}) {
 		image,
 		images,
 		potentialImages,
+		videos,
+		potentialVideos,
 		articles,
 		keywords,
 	};
@@ -2164,6 +2388,10 @@ async function fetchCseItems(
 							.trim()
 							.slice(0, 260),
 						link,
+						displayLink: String(it.displayLink || "").trim(),
+						mime: String(it.mime || "").trim(),
+						fileFormat: String(it.fileFormat || "").trim(),
+						pagemap: it.pagemap || null,
 						image: it.image || null,
 					});
 				}
@@ -2833,9 +3061,12 @@ function resolvePreferredTopicHint(raw = "") {
 			promptText: "",
 			topicCandidates: [],
 			imageUrls: [],
+			videoUrls: [],
 		};
 	}
-	const imageUrls = extractUrlsFromText(original).filter(isHttpUrl);
+	const promptUrls = extractUrlsFromText(original).filter(isHttpUrl);
+	const videoUrls = promptUrls.filter((u) => isProbablyDirectVideoUrl(u));
+	const imageUrls = promptUrls.filter((u) => !videoUrls.includes(u));
 	const cleanedPrompt = stripUrlsFromText(original);
 	const promptText = String(cleanedPrompt || "").trim();
 	if (!promptText) {
@@ -2844,6 +3075,7 @@ function resolvePreferredTopicHint(raw = "") {
 			promptText: "",
 			topicCandidates: [],
 			imageUrls,
+			videoUrls,
 		};
 	}
 	const subjectTokens = extractPromptSubjectTokens(promptText);
@@ -2862,6 +3094,7 @@ function resolvePreferredTopicHint(raw = "") {
 		promptText,
 		topicCandidates,
 		imageUrls,
+		videoUrls,
 	};
 }
 
@@ -2934,6 +3167,7 @@ async function selectTopics({
 					{ limit: 14 },
 				),
 				images: topics.length === 0 ? promptInfo.imageUrls : [],
+				videos: topics.length === 0 ? promptInfo.videoUrls : [],
 				source: "user_prompt",
 				promptText: promptInfo.promptText,
 				topList,
@@ -2945,6 +3179,8 @@ async function selectTopics({
 					entityNames: topList?.subject ? [topList.subject] : [],
 					articles: [],
 					images: [],
+					videos: topics.length === 0 ? promptInfo.videoUrls : [],
+					potentialVideos: [],
 					potentialImages: [],
 				},
 			});
@@ -3803,6 +4039,277 @@ async function fetchOpenGraphImageUrl(pageUrl, timeoutMs = 9000) {
 	}
 }
 
+function decodeHtmlEntitiesLite(value = "") {
+	return String(value || "")
+		.replace(/&amp;|&#38;|&#038;/gi, "&")
+		.replace(/&quot;|&#34;|&#034;/gi, '"')
+		.replace(/&#39;|&#039;|&apos;/gi, "'")
+		.replace(/&lt;|&#60;|&#060;/gi, "<")
+		.replace(/&gt;|&#62;|&#062;/gi, ">")
+		.replace(/\\\//g, "/")
+		.replace(/\\u002f/gi, "/")
+		.replace(/\\u003a/gi, ":")
+		.replace(/\\u0026/gi, "&");
+}
+
+function sanitizeFeedVideoUrl(raw = "", baseUrl = "") {
+	let value = decodeHtmlEntitiesLite(raw).trim();
+	if (!value) return "";
+	value = value.replace(/[),.;]+$/g, "");
+	if (!/^https?:\/\//i.test(value) && /%3a%2f%2f/i.test(value)) {
+		try {
+			value = decodeURIComponent(value);
+		} catch {}
+	}
+	try {
+		const resolved = new URL(value, baseUrl || undefined);
+		if (!/^https?:$/i.test(resolved.protocol)) return "";
+		return resolved.toString();
+	} catch {
+		return "";
+	}
+}
+
+function normalizeFeedVideoKey(url = "") {
+	try {
+		const parsed = new URL(sanitizeFeedVideoUrl(url));
+		parsed.hash = "";
+		for (const key of [
+			"utm_source",
+			"utm_medium",
+			"utm_campaign",
+			"utm_term",
+			"utm_content",
+			"fbclid",
+			"gclid",
+		]) {
+			parsed.searchParams.delete(key);
+		}
+		return parsed.toString().toLowerCase();
+	} catch {
+		return sanitizeFeedVideoUrl(url).split("#")[0].toLowerCase();
+	}
+}
+
+function isProbablyDirectVideoUrl(url = "") {
+	const raw = String(url || "").toLowerCase();
+	return /\.(mp4|m4v|mov|webm)(?:[?#]|$)/i.test(raw);
+}
+
+function isUnsupportedFeedVideoHost(url = "") {
+	const host = getUrlHost(url);
+	return /\b(youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|threads\.net|snapchat\.com)\b/i.test(
+		host,
+	);
+}
+
+function isDisfavoredFeedVideoSourceUrl(url = "") {
+	const raw = String(url || "");
+	if (!raw) return true;
+	if (isUnsupportedFeedVideoHost(raw)) return true;
+	if (/\.(m3u8|mpd)(?:[?#]|$)/i.test(raw)) return true;
+	if (/\b(ad|ads|promo|sponsored|thumbnail|poster|sprite|preview|watermark|stock-footage|stock_video|stockvideo)\b/i.test(raw))
+		return true;
+	if (isDisfavoredImageSourceUrl(raw)) return true;
+	return false;
+}
+
+function feedVideoSourceTrustScore(url = "") {
+	const host = getUrlHost(url);
+	if (!host) return 0;
+	let score = 0;
+	if (/\.(gov|mil)$/i.test(host)) score += 6;
+	if (/\b(courts?|supremecourt|judicial|sheriff|police|city|county|state)\b/i.test(host))
+		score += 3;
+	if (/\b(apnews|reuters|pbs|c-span|cspan|cnn|nbcnews|cbsnews|abcnews|foxnews|usatoday|npr|bbc|washingtonpost|nytimes)\./i.test(host))
+		score += 2;
+	if (/\b(vimeo\.com|dailymotion\.com)\b/i.test(host)) score -= 2;
+	if (isUnsupportedFeedVideoHost(url)) score -= 20;
+	if (isDisfavoredFeedVideoSourceUrl(url)) score -= 10;
+	return score;
+}
+
+function extractOpenGraphVideoUrls(html = "", baseUrl = "") {
+	const urls = [];
+	const push = (raw) => {
+		const url = sanitizeFeedVideoUrl(raw, baseUrl);
+		if (url) urls.push(url);
+	};
+	const metaTags = String(html || "").match(/<meta[^>]+>/gi) || [];
+	const priority = [
+		"og:video:secure_url",
+		"og:video:url",
+		"og:video",
+		"twitter:player:stream",
+		"twitter:player",
+	];
+	for (const key of priority) {
+		for (const tag of metaTags) {
+			const attrs = parseMetaAttributes(tag);
+			const prop = attrs.property || attrs.name || attrs.itemprop || "";
+			if (!prop || prop.toLowerCase() !== key) continue;
+			if (attrs.content) push(attrs.content);
+		}
+	}
+
+	const itempropRe =
+		/<(?:meta|link)[^>]+itemprop=["'](?:contentUrl|embedUrl|url)["'][^>]+>/gi;
+	let itemMatch = null;
+	while ((itemMatch = itempropRe.exec(String(html || "")))) {
+		const attrs = parseMetaAttributes(itemMatch[0]);
+		push(attrs.content || attrs.href || "");
+	}
+
+	const jsonLdRe =
+		/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+	let jsonMatch = null;
+	while ((jsonMatch = jsonLdRe.exec(String(html || "")))) {
+		const rawJson = decodeHtmlEntitiesLite(jsonMatch[1] || "").trim();
+		if (!rawJson) continue;
+		try {
+			const parsed = JSON.parse(rawJson);
+			const stack = Array.isArray(parsed) ? parsed.slice() : [parsed];
+			while (stack.length) {
+				const item = stack.shift();
+				if (!item || typeof item !== "object") continue;
+				const typeText = Array.isArray(item["@type"])
+					? item["@type"].join(" ")
+					: String(item["@type"] || "");
+				if (/VideoObject/i.test(typeText)) {
+					push(item.contentUrl || item.embedUrl || item.url || "");
+					if (Array.isArray(item.associatedMedia)) {
+						for (const media of item.associatedMedia) {
+							if (media && typeof media === "object")
+								push(media.contentUrl || media.embedUrl || media.url || "");
+						}
+					}
+				}
+				for (const val of Object.values(item)) {
+					if (Array.isArray(val)) stack.push(...val);
+					else if (val && typeof val === "object") stack.push(val);
+				}
+			}
+		} catch {}
+	}
+
+	return uniqueStrings(urls, { limit: FEED_VIDEO_CANDIDATE_LIMIT });
+}
+
+function extractVideoUrlsFromPagemap(pagemap = null) {
+	if (!pagemap || typeof pagemap !== "object") return [];
+	const urls = [];
+	const push = (raw) => {
+		const url = sanitizeFeedVideoUrl(raw);
+		if (url) urls.push(url);
+	};
+	const videoObjects = Array.isArray(pagemap.videoobject)
+		? pagemap.videoobject
+		: [];
+	for (const item of videoObjects) {
+		if (!item || typeof item !== "object") continue;
+		push(item.contenturl || item.contentUrl);
+		push(item.embedurl || item.embedUrl);
+		push(item.url);
+	}
+	const metaTags = Array.isArray(pagemap.metatags) ? pagemap.metatags : [];
+	for (const meta of metaTags) {
+		if (!meta || typeof meta !== "object") continue;
+		push(meta["og:video:secure_url"]);
+		push(meta["og:video:url"]);
+		push(meta["og:video"]);
+		push(meta["twitter:player:stream"]);
+		push(meta["twitter:player"]);
+	}
+	return uniqueStrings(urls, { limit: FEED_VIDEO_CANDIDATE_LIMIT });
+}
+
+async function fetchOpenGraphVideoUrls(pageUrl, timeoutMs = FEED_VIDEO_PAGE_TIMEOUT_MS) {
+	try {
+		if (!isHttpUrl(pageUrl) || isUnsupportedFeedVideoHost(pageUrl)) return [];
+		const res = await axios.get(pageUrl, {
+			timeout: timeoutMs,
+			maxContentLength: 1024 * 1024,
+			maxBodyLength: 1024 * 1024,
+			headers: { "User-Agent": "agentai-long-video/2.0" },
+			validateStatus: (s) => s >= 200 && s < 400,
+		});
+		const html = String(res.data || "");
+		if (!html) return [];
+		return extractOpenGraphVideoUrls(html, pageUrl);
+	} catch {
+		return [];
+	}
+}
+
+function extractBingRedirectTarget(rawUrl = "") {
+	const url = sanitizeFeedVideoUrl(rawUrl);
+	if (!url) return "";
+	try {
+		const parsed = new URL(url);
+		if (!/bing\.com$/i.test(parsed.hostname.replace(/^www\./i, ""))) return url;
+		const encoded = parsed.searchParams.get("u") || parsed.searchParams.get("url");
+		if (!encoded) return "";
+		let clean = encoded;
+		if (/^a1/i.test(clean)) clean = clean.slice(2);
+		try {
+			clean = Buffer.from(clean, "base64").toString("utf8");
+		} catch {}
+		return sanitizeFeedVideoUrl(clean);
+	} catch {
+		return url;
+	}
+}
+
+async function fetchBingVideoCandidates(query, { limit = 8, jobId = null } = {}) {
+	if (!BING_FEED_VIDEO_SEARCH_ENABLED || !query) return [];
+	try {
+		const { data } = await axios.get("https://www.bing.com/videos/search", {
+			params: { q: query, mkt: "en-US", safeSearch: "Strict" },
+			timeout: FEED_VIDEO_PAGE_TIMEOUT_MS,
+			maxContentLength: 1024 * 1024,
+			maxBodyLength: 1024 * 1024,
+			headers: { "User-Agent": "agentai-long-video/2.0" },
+			validateStatus: (s) => s >= 200 && s < 500,
+		});
+		const html = decodeHtmlEntitiesLite(String(data || ""));
+		const found = [];
+		const push = (raw, sourceType = "bing-video") => {
+			const resolved = extractBingRedirectTarget(raw) || sanitizeFeedVideoUrl(raw);
+			if (!resolved || !isHttpUrl(resolved)) return;
+			found.push({ url: resolved, pageUrl: resolved, sourceType, query });
+		};
+		const jsonUrlRe =
+			/"(?:murl|contentUrl|contenturl|hostPageUrl|purl|webSearchUrl)"\s*:\s*"([^"]+)"/gi;
+		let match = null;
+		while ((match = jsonUrlRe.exec(html))) push(match[1]);
+		const hrefRe = /<a[^>]+href=["']([^"']+)["']/gi;
+		while ((match = hrefRe.exec(html))) {
+			const href = match[1];
+			if (/\/videos\/search/i.test(href)) continue;
+			push(href, "bing-video-page");
+		}
+		const directRe = /https?:\/\/[^"'<>\\\s]+?\.(?:mp4|m4v|mov|webm)(?:[?#][^"'<>\\\s]*)?/gi;
+		while ((match = directRe.exec(html))) push(match[0], "bing-video-direct");
+		const out = [];
+		const seen = new Set();
+		for (const item of found) {
+			const key = normalizeFeedVideoKey(item.url);
+			if (!key || seen.has(key)) continue;
+			seen.add(key);
+			out.push(item);
+			if (out.length >= limit) break;
+		}
+		return out;
+	} catch (e) {
+		if (jobId)
+			logJob(jobId, "bing feed video search failed", {
+				query,
+				error: e.message,
+			});
+		return [];
+	}
+}
+
 async function fetchWikipediaPageImageUrl(topic = "") {
 	const title = cleanTopicLabel(topic);
 	if (!title) return null;
@@ -4230,6 +4737,463 @@ function buildTopicNearImageQueries(
 	}
 
 	return uniqueStrings(queries, { limit: 16 });
+}
+
+function buildCategoryVideoQueryModifiers(category = "", topicLabel = "") {
+	const hay = `${category} ${topicLabel}`.toLowerCase();
+	const mods = ["news video", "footage", "press conference video"];
+	if (
+		/\b(court|trial|lawsuit|legal|crime|murder|conviction|appeal|hearing|police|sheriff|judge|jury)\b/i.test(
+			hay,
+		)
+	) {
+		mods.unshift(
+			"courtroom video",
+			"court hearing video",
+			"trial footage",
+			"courthouse video",
+		);
+	}
+	if (/\b(sports?|nba|nfl|mlb|nhl|soccer|football|basketball|player|team)\b/i.test(hay)) {
+		mods.unshift("game footage", "press conference video", "practice video");
+	}
+	if (/\b(movie|film|tv|series|trailer|actor|actress|show)\b/i.test(hay)) {
+		mods.unshift("official clip", "trailer clip", "interview video");
+	}
+	if (/\b(music|song|album|tour|concert|singer|rapper|band)\b/i.test(hay)) {
+		mods.unshift("performance video", "interview video", "concert footage");
+	}
+	return uniqueStrings(mods, { limit: 8 });
+}
+
+function buildTopicNearVideoQueries(
+	topicLabel = "",
+	{ topicKeywords = [], articleTitles = [], category = "" } = {},
+) {
+	const base = cleanTopicCandidate(topicLabel);
+	const queries = [];
+	const push = (raw) => {
+		const q = sanitizeOverlayQuery(raw);
+		if (q) queries.push(q);
+	};
+	if (base) {
+		for (const modifier of buildCategoryVideoQueryModifiers(category, topicLabel)) {
+			push(`${base} ${modifier}`);
+		}
+		push(`${base} video`);
+	}
+	const hintPhrases = uniqueStrings(
+		[
+			...(Array.isArray(topicKeywords) ? topicKeywords : []),
+			...(Array.isArray(articleTitles) ? articleTitles : []),
+		]
+			.map((hint) => cleanImageQueryHint(hint, topicLabel))
+			.filter(Boolean),
+		{ limit: 6 },
+	);
+	for (const phrase of hintPhrases) {
+		push(`${phrase} video`);
+		push(`${phrase} footage`);
+	}
+	return uniqueStrings(queries, { limit: 12 });
+}
+
+function buildSegmentVideoQueryVariants({
+	baseQuery = "",
+	topicLabel = "",
+	segmentText = "",
+	topicKeywords = [],
+	articleTitles = [],
+	category = "",
+	maxVariants = FEED_VIDEO_QUERY_LIMIT,
+} = {}) {
+	const imageLike = buildSegmentImageQueryVariants({
+		baseQuery,
+		topicLabel,
+		segmentText,
+		topicKeywords,
+		articleTitles,
+		category,
+		maxVariants: Math.max(maxVariants, 6),
+	});
+	const videoNear = buildTopicNearVideoQueries(topicLabel || baseQuery, {
+		topicKeywords,
+		articleTitles,
+		category,
+	});
+	const raw = uniqueStrings(
+		[
+			baseQuery ? `${baseQuery} video` : "",
+			baseQuery ? `${baseQuery} footage` : "",
+			...videoNear,
+			...imageLike.map((q) =>
+				/\b(video|footage|clip)\b/i.test(q) ? q : `${q} video`,
+			),
+		].filter(Boolean),
+		{ limit: Math.max(2, maxVariants) },
+	);
+	return raw.map((q) => sanitizeOverlayQuery(q)).filter(Boolean);
+}
+
+function normalizeFeedVideoCandidateEntry(raw = {}, sourceType = "feed-video") {
+	if (!raw) return null;
+	const obj = typeof raw === "string" ? { url: raw } : raw;
+	const url = sanitizeFeedVideoUrl(
+		obj.url ||
+			obj.videoUrl ||
+			obj.contentUrl ||
+			obj.link ||
+			obj.murl ||
+			obj.src ||
+			"",
+	);
+	const pageUrl = sanitizeFeedVideoUrl(
+		obj.pageUrl ||
+			obj.contextLink ||
+			obj.hostPageUrl ||
+			obj.sourceUrl ||
+			obj.link ||
+			"",
+	);
+	const usableUrl = url || pageUrl;
+	if (!usableUrl || !isHttpUrl(usableUrl)) return null;
+	return {
+		url: usableUrl,
+		pageUrl: pageUrl || usableUrl,
+		sourceType: String(obj.sourceType || sourceType || "feed-video"),
+		title: String(obj.title || obj.name || "").trim().slice(0, 180),
+		snippet: String(obj.snippet || obj.description || "").trim().slice(0, 260),
+		query: String(obj.query || "").trim(),
+	};
+}
+
+function scoreFeedVideoCandidate(entry = {}, opts = {}) {
+	const url = String(entry.url || "");
+	const pageUrl = String(entry.pageUrl || "");
+	const fields = [
+		url,
+		pageUrl,
+		entry.title || "",
+		entry.snippet || "",
+		entry.query || "",
+		entry.sourceType || "",
+	];
+	const topicTokens = filterSpecificTopicTokens(
+		normalizeTopicTokens(opts.topicTokens || []),
+	);
+	const segmentTokens = filterSpecificTopicTokens(
+		normalizeTopicTokens(opts.segmentTokens || []),
+	);
+	const queryTokens = filterSpecificTopicTokens(
+		normalizeTopicTokens(opts.queryTokens || []),
+	);
+	const combinedTokens = uniqueStrings(
+		[...topicTokens, ...segmentTokens, ...queryTokens],
+		{ limit: 24 },
+	);
+	const topicInfo = topicMatchInfo(topicTokens, fields);
+	const segmentInfo = topicMatchInfo(segmentTokens, fields);
+	const queryInfo = topicMatchInfo(queryTokens, fields);
+	const direct = isProbablyDirectVideoUrl(url);
+	const trust = Math.max(feedVideoSourceTrustScore(url), feedVideoSourceTrustScore(pageUrl));
+	let score =
+		topicInfo.count * 3 +
+		queryInfo.count * 2 +
+		segmentInfo.count * 1.5 +
+		trust +
+		(direct ? 2 : 0);
+	if (/trend|seed|article-og/i.test(entry.sourceType || "")) score += 2;
+	if (/bing-video-direct|cse-video-direct/i.test(entry.sourceType || ""))
+		score += 1;
+	if (combinedTokens.length && !topicInfo.count && !queryInfo.count)
+		score -= 4;
+	if (isDisfavoredFeedVideoSourceUrl(url)) score -= 50;
+	if (FEED_VIDEO_TRUSTED_SOURCES_ONLY && trust < 1) score -= 25;
+	return { score, trust, direct };
+}
+
+async function collectFeedVideoCandidateEntriesForSegment({
+	query = "",
+	topicLabel = "",
+	queryVariants = [],
+	topicTokens = [],
+	segmentTokens = [],
+	queryTokens = [],
+	meta = {},
+	category = "",
+	jobId = null,
+} = {}) {
+	if (!FEED_VIDEO_ENABLED) return [];
+	const entries = [];
+	const push = (raw, sourceType) => {
+		const entry = normalizeFeedVideoCandidateEntry(raw, sourceType);
+		if (!entry) return;
+		if (isDisfavoredFeedVideoSourceUrl(entry.url)) return;
+		entries.push(entry);
+	};
+
+	for (const url of Array.isArray(meta.videoUrls) ? meta.videoUrls : []) {
+		push({ url, title: topicLabel }, "trend-video");
+	}
+	for (const item of Array.isArray(meta.potentialVideos) ? meta.potentialVideos : []) {
+		push(item, item?.origin || "trend-video");
+	}
+
+	const articleUrls = uniqueStrings(meta.articleUrls || [], { limit: 4 });
+	for (const articleUrl of articleUrls) {
+		const ogVideos = await fetchOpenGraphVideoUrls(articleUrl);
+		for (const videoUrl of ogVideos) {
+			push(
+				{
+					url: videoUrl,
+					pageUrl: articleUrl,
+					title: topicLabel,
+					query,
+				},
+				"article-og-video",
+			);
+		}
+	}
+
+	const videoQueries = uniqueStrings(
+		[
+			...buildSegmentVideoQueryVariants({
+				baseQuery: query,
+				topicLabel,
+				segmentText: meta.segmentText || "",
+				topicKeywords: meta.keywordHints,
+				articleTitles: meta.articleTitles,
+				category,
+				maxVariants: FEED_VIDEO_QUERY_LIMIT,
+			}),
+			...(Array.isArray(queryVariants) ? queryVariants : []).map((q) =>
+				/\b(video|footage|clip)\b/i.test(q) ? q : `${q} video`,
+			),
+		],
+		{ limit: FEED_VIDEO_QUERY_LIMIT },
+	);
+
+	if (FEED_VIDEO_SEARCH_ENABLED) {
+		for (const videoQuery of videoQueries) {
+			if (GOOGLE_CSE_ID && GOOGLE_CSE_KEY) {
+				const items = await fetchCseItems([videoQuery], {
+					num: FEED_VIDEO_CANDIDATE_LIMIT,
+					maxPages: 1,
+				});
+				for (const item of items) {
+					const pageUrl = String(item.link || "").trim();
+					for (const videoUrl of extractVideoUrlsFromPagemap(item.pagemap)) {
+						push(
+							{
+								url: videoUrl,
+								pageUrl,
+								title: item.title,
+								snippet: item.snippet,
+								query: videoQuery,
+							},
+							isProbablyDirectVideoUrl(videoUrl)
+								? "cse-video-direct"
+								: "cse-video-meta",
+						);
+					}
+					if (pageUrl && !isUnsupportedFeedVideoHost(pageUrl)) {
+						push(
+							{
+								url: pageUrl,
+								pageUrl,
+								title: item.title,
+								snippet: item.snippet,
+								query: videoQuery,
+							},
+							"cse-video-page",
+						);
+					}
+				}
+			}
+
+			const bingCandidates = await fetchBingVideoCandidates(videoQuery, {
+				limit: Math.max(4, Math.floor(FEED_VIDEO_CANDIDATE_LIMIT / 2)),
+				jobId,
+			});
+			for (const item of bingCandidates) push(item, item.sourceType);
+		}
+	}
+
+	const scored = [];
+	const seen = new Set();
+	for (const entry of entries) {
+		const key = normalizeFeedVideoKey(entry.url || entry.pageUrl);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		const scoredEntry = {
+			...entry,
+			...scoreFeedVideoCandidate(entry, {
+				topicTokens,
+				segmentTokens,
+				queryTokens,
+			}),
+		};
+		if (FEED_VIDEO_TRUSTED_SOURCES_ONLY && scoredEntry.trust < 1) continue;
+		if (scoredEntry.score < -10) continue;
+		scored.push(scoredEntry);
+	}
+	scored.sort((a, b) => {
+		if (b.score !== a.score) return b.score - a.score;
+		if (Number(b.direct) !== Number(a.direct)) return Number(b.direct) - Number(a.direct);
+		return b.trust - a.trust;
+	});
+	return scored.slice(0, FEED_VIDEO_CANDIDATE_LIMIT);
+}
+
+async function analyzeFeedVideoSourceMotion(videoPath, jobId, label) {
+	if (!FEED_VIDEO_MOTION_QA_ENABLED) return { pass: true, issues: [] };
+	try {
+		const freezeInfo = await detectFrozenVideo(videoPath, {
+			noise: FEED_VIDEO_FREEZE_NOISE,
+			minFreezeSec: FEED_VIDEO_FREEZE_MIN_SEC,
+		});
+		const result = {
+			pass: true,
+			issues: [],
+			durationSec: freezeInfo.durationSec || 0,
+			maxFreezeSec: freezeInfo.maxFreezeSec || 0,
+			freezeRatio: freezeInfo.freezeRatio || 0,
+		};
+		if (
+			result.maxFreezeSec >= FEED_VIDEO_MAX_FREEZE_SEC ||
+			result.freezeRatio >= FEED_VIDEO_MAX_FREEZE_RATIO
+		) {
+			result.pass = false;
+			result.issues.push("feed_video_too_static");
+		}
+		return result;
+	} catch (e) {
+		if (jobId)
+			logJob(jobId, "feed video motion qa failed", {
+				label,
+				error: e.message,
+			});
+		return { pass: true, issues: ["motion_qa_unavailable"] };
+	}
+}
+
+async function expandFeedVideoCandidateUrls(entry = {}) {
+	const urls = [];
+	const push = (raw) => {
+		const url = sanitizeFeedVideoUrl(raw);
+		if (!url || isDisfavoredFeedVideoSourceUrl(url)) return;
+		urls.push(url);
+	};
+	if (
+		isProbablyDirectVideoUrl(entry.url) ||
+		/\b(og|meta|direct|trend|seed)\b/i.test(entry.sourceType || "")
+	) {
+		push(entry.url);
+	}
+	for (const pageUrl of uniqueStrings([entry.pageUrl, entry.url], { limit: 2 })) {
+		if (!pageUrl || isProbablyDirectVideoUrl(pageUrl)) continue;
+		const ogVideos = await fetchOpenGraphVideoUrls(pageUrl);
+		ogVideos.forEach(push);
+	}
+	return uniqueStrings(urls, { limit: 5 });
+}
+
+async function downloadFeedVideoCandidates({
+	candidates = [],
+	tmpDir,
+	jobId,
+	segIndex,
+	targetCount = 1,
+}) {
+	const localPaths = [];
+	const usedUrls = [];
+	const seen = new Set();
+	for (let i = 0; i < candidates.length; i++) {
+		if (localPaths.length >= targetCount) break;
+		const candidate = candidates[i];
+		const directUrls = await expandFeedVideoCandidateUrls(candidate);
+		for (const directUrl of directUrls) {
+			if (localPaths.length >= targetCount) break;
+			const key = normalizeFeedVideoKey(directUrl);
+			if (!key || seen.has(key)) continue;
+			seen.add(key);
+			if (FEED_VIDEO_TRUSTED_SOURCES_ONLY) {
+				const trust = Math.max(
+					feedVideoSourceTrustScore(directUrl),
+					feedVideoSourceTrustScore(candidate.pageUrl || ""),
+				);
+				if (trust < 1) continue;
+			}
+			const extGuess = path
+				.extname(String(directUrl).split("?")[0] || "")
+				.toLowerCase();
+			const ext = [".mp4", ".m4v", ".mov", ".webm"].includes(extGuess)
+				? extGuess
+				: ".mp4";
+			const out = path.join(
+				tmpDir,
+				`seg_${jobId}_${segIndex}_feed_video_${i}_${crypto
+					.randomUUID()
+					.slice(0, 8)}${ext}`,
+			);
+			try {
+				await downloadToFileWithLimit({
+					url: directUrl,
+					outPath: out,
+					timeoutMs: FEED_VIDEO_DOWNLOAD_TIMEOUT_MS,
+					retries: 1,
+					maxBytes: FEED_VIDEO_MAX_BYTES,
+				});
+				const detected = detectFileType(out);
+				if (!detected || detected.kind !== "video") {
+					safeUnlink(out);
+					continue;
+				}
+				const info = await probeMedia(out);
+				const videoStream =
+					(info.streams || []).find((s) => s.codec_type === "video") || {};
+				const durationSec = Number(info.duration || videoStream.duration || 0);
+				const width = Number(videoStream.width || 0);
+				const height = Number(videoStream.height || 0);
+				if (
+					!info.hasVideo ||
+					durationSec < FEED_VIDEO_MIN_SOURCE_SEC ||
+					(width && width < FEED_VIDEO_MIN_WIDTH) ||
+					(height && height < FEED_VIDEO_MIN_HEIGHT)
+				) {
+					safeUnlink(out);
+					continue;
+				}
+				const motionQa = await analyzeFeedVideoSourceMotion(
+					out,
+					jobId,
+					`seg_${segIndex}_feed_video`,
+				);
+				if (!motionQa.pass) {
+					logJob(jobId, "feed video rejected by motion qa", {
+						segment: segIndex,
+						url: directUrl,
+						issues: motionQa.issues,
+						maxFreezeSec: Number((motionQa.maxFreezeSec || 0).toFixed(3)),
+						freezeRatio: Number((motionQa.freezeRatio || 0).toFixed(3)),
+					});
+					safeUnlink(out);
+					continue;
+				}
+				localPaths.push(out);
+				usedUrls.push(directUrl);
+			} catch (e) {
+				logJob(jobId, "feed video candidate download failed", {
+					segment: segIndex,
+					sourceType: candidate.sourceType,
+					url: directUrl,
+					error: e.message,
+				});
+				safeUnlink(out);
+			}
+		}
+	}
+	return { localPaths, usedUrls };
 }
 
 async function fetchCseImagesForQuery(
@@ -6058,7 +7022,9 @@ async function prepareImageSegments({
 		return {
 			timeline,
 			segmentImagePaths: new Map(),
+			segmentFeedVideoPaths: new Map(),
 			imagePlanSummary: [],
+			feedVideoPlanSummary: [],
 		};
 	}
 
@@ -6071,10 +7037,26 @@ async function prepareImageSegments({
 	const topicCache = new Map();
 	const fallbackCache = new Map();
 	const googleImageCache = new Map();
+	const feedVideoCandidateCache = new Map();
 	const usedHosts = new Set();
 	const usedUrlsGlobal = new Set();
+	const usedFeedVideoUrlsGlobal = new Set();
 	const usedUrlsByTopic = new Map();
 	const topicMetaByIndex = new Map();
+	const imageSegmentTotal = timeline.filter((seg) => seg.visualType === "image")
+		.length;
+	const feedVideoSegmentLimit =
+		FEED_VIDEO_ENABLED && FEED_VIDEO_MAX_SEGMENTS > 0
+			? Math.min(
+					FEED_VIDEO_MAX_SEGMENTS,
+					Math.max(
+						0,
+						Math.ceil(imageSegmentTotal * FEED_VIDEO_TARGET_FEED_SHARE),
+					),
+				)
+			: 0;
+	let feedVideoSegmentsUsed = 0;
+	let feedVideoSegmentsAttempted = 0;
 	const outputCfg =
 		output && typeof output === "object"
 			? output
@@ -6105,6 +7087,20 @@ async function prepareImageSegments({
 				.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
 			{ limit: 8 },
 		);
+		const potentialVideos = Array.isArray(story.potentialVideos)
+			? story.potentialVideos
+			: [];
+		const videoUrls = uniqueStrings(
+			[
+				...(Array.isArray(t.videos) ? t.videos : []),
+				t.video,
+				...(Array.isArray(story.videos) ? story.videos : []),
+				story.video,
+				story.videoUrl,
+				...potentialVideos.map((v) => v?.url).filter(Boolean),
+			],
+			{ limit: 18 },
+		).filter((u) => isHttpUrl(u));
 		let promptFreeImageUrls = [];
 		const isPromptTopic = isUserPromptTopicPick(t);
 		if (
@@ -6191,6 +7187,8 @@ async function prepareImageSegments({
 			potentialUrls: mergedPotentialUrls,
 			seedUrls,
 			trustedSeedUrls: articleImageUrls,
+			videoUrls,
+			potentialVideos,
 		});
 	}
 
@@ -6202,7 +7200,9 @@ async function prepareImageSegments({
 	};
 
 	const segmentImagePaths = new Map();
+	const segmentFeedVideoPaths = new Map();
 	const imagePlanSummary = [];
+	const feedVideoPlanSummary = [];
 	const updated = [];
 	const imageSourceSummary = {
 		segments: 0,
@@ -6220,6 +7220,10 @@ async function prepareImageSegments({
 		pickedCse: 0,
 		pickedSeed: 0,
 		pickedFallback: 0,
+		feedVideoSegments: 0,
+		feedVideoAttempts: 0,
+		feedVideoCandidates: 0,
+		feedVideoPicked: 0,
 	};
 
 	for (const seg of timeline) {
@@ -6269,6 +7273,78 @@ async function prepareImageSegments({
 			segmentTokens,
 			queryTokens: queryTokens.slice(0, 8),
 		});
+
+		let feedVideoDownload = { localPaths: [], usedUrls: [] };
+		let feedVideoCandidates = [];
+		if (
+			feedVideoSegmentLimit > 0 &&
+			feedVideoSegmentsUsed < feedVideoSegmentLimit &&
+			feedVideoSegmentsAttempted < FEED_VIDEO_MAX_SEGMENT_ATTEMPTS &&
+			segDur >= FEED_VIDEO_MIN_SEGMENT_SEC
+		) {
+			feedVideoSegmentsAttempted += 1;
+			const feedVideoCacheKey = `${query}||${effectiveTopicLabel}||${seg.index}`;
+			feedVideoCandidates = feedVideoCandidateCache.get(feedVideoCacheKey);
+			if (!feedVideoCandidates) {
+				feedVideoCandidates =
+					await collectFeedVideoCandidateEntriesForSegment({
+						query,
+						topicLabel: effectiveTopicLabel,
+						queryVariants,
+						topicTokens,
+						segmentTokens,
+						queryTokens,
+						meta: { ...meta, segmentText: seg.text || "" },
+						category,
+						jobId,
+					});
+				feedVideoCandidateCache.set(feedVideoCacheKey, feedVideoCandidates);
+			}
+			const availableFeedVideoCandidates = (feedVideoCandidates || []).filter(
+				(item) =>
+					!usedFeedVideoUrlsGlobal.has(
+						normalizeFeedVideoKey(item.url || item.pageUrl || ""),
+					),
+			);
+			if (availableFeedVideoCandidates.length) {
+				feedVideoDownload = await downloadFeedVideoCandidates({
+					candidates: availableFeedVideoCandidates,
+					tmpDir,
+					jobId,
+					segIndex: seg.index,
+					targetCount: 1,
+				});
+				if (feedVideoDownload.localPaths.length) {
+					feedVideoSegmentsUsed += 1;
+					segmentFeedVideoPaths.set(seg.index, feedVideoDownload.localPaths);
+					for (const url of feedVideoDownload.usedUrls || []) {
+						usedFeedVideoUrlsGlobal.add(normalizeFeedVideoKey(url));
+					}
+					feedVideoPlanSummary.push({
+						segment: seg.index,
+						videoCount: feedVideoDownload.localPaths.length,
+						query,
+						topicLabel: effectiveTopicLabel,
+						sourceUrls: feedVideoDownload.usedUrls,
+						candidates: availableFeedVideoCandidates.length,
+					});
+					logJob(jobId, "segment feed video ready", {
+						segment: seg.index,
+						query,
+						topicLabel: effectiveTopicLabel,
+						candidates: availableFeedVideoCandidates.length,
+						downloaded: feedVideoDownload.localPaths.length,
+					});
+				} else {
+					logJob(jobId, "segment feed video unavailable", {
+						segment: seg.index,
+						query,
+						topicLabel: effectiveTopicLabel,
+						candidates: availableFeedVideoCandidates.length,
+					});
+				}
+			}
+		}
 
 		const plannedSegmentUrls = dedupeUrlsPreserveOrder(
 			Array.isArray(seg.imageUrls) ? seg.imageUrls : [],
@@ -6862,6 +7938,11 @@ async function prepareImageSegments({
 		imageSourceSummary.pickedCse += pickedCse;
 		imageSourceSummary.pickedSeed += pickedSeed;
 		imageSourceSummary.pickedFallback += pickedFallback;
+		imageSourceSummary.feedVideoCandidates += feedVideoCandidates?.length || 0;
+		imageSourceSummary.feedVideoPicked += feedVideoDownload.usedUrls?.length || 0;
+		if (feedVideoDownload.localPaths?.length) {
+			imageSourceSummary.feedVideoSegments += 1;
+		}
 
 		let cloudinaryUrls = [];
 		if (localPaths.length) {
@@ -6874,7 +7955,8 @@ async function prepareImageSegments({
 			});
 		}
 
-		if (!localPaths.length) {
+		const hasFeedVideo = Boolean(feedVideoDownload.localPaths?.length);
+		if (!localPaths.length && !hasFeedVideo) {
 			logJob(jobId, "segment images missing; fallback to presenter", {
 				segment: seg.index,
 				query,
@@ -6884,10 +7966,11 @@ async function prepareImageSegments({
 			continue;
 		}
 
-		segmentImagePaths.set(seg.index, localPaths);
+		if (localPaths.length) segmentImagePaths.set(seg.index, localPaths);
 		imagePlanSummary.push({
 			segment: seg.index,
 			imageCount: localPaths.length,
+			feedVideoCount: feedVideoDownload.localPaths?.length || 0,
 			cloudinaryCount: cloudinaryUrls.length,
 			desiredCount,
 			renderTargetCount,
@@ -6898,19 +7981,28 @@ async function prepareImageSegments({
 			...seg,
 			imageUrls: pickedUrls,
 			imageCloudinaryUrls: cloudinaryUrls,
+			feedVideoUrls: feedVideoDownload.usedUrls || [],
 		});
 	}
 
+	imageSourceSummary.feedVideoAttempts = feedVideoSegmentsAttempted;
 	if (imageSourceSummary.segments) {
 		logJob(jobId, "segment image source summary", imageSourceSummary);
 	}
 
-	return { timeline: updated, segmentImagePaths, imagePlanSummary };
+	return {
+		timeline: updated,
+		segmentImagePaths,
+		segmentFeedVideoPaths,
+		imagePlanSummary,
+		feedVideoPlanSummary,
+	};
 }
 
 async function evaluateImageSegmentDiversity({
 	timeline = [],
 	segmentImagePaths,
+	segmentFeedVideoPaths,
 	jobId,
 }) {
 	const imageSegments = (timeline || []).filter(
@@ -6935,7 +8027,8 @@ async function evaluateImageSegmentDiversity({
 			? seg.imageCloudinaryUrls
 			: [];
 		const raw = Array.isArray(seg.imageUrls) ? seg.imageUrls : [];
-		const pick = cloud[0] || raw[0] || "";
+		const video = Array.isArray(seg.feedVideoUrls) ? seg.feedVideoUrls : [];
+		const pick = cloud[0] || raw[0] || video[0] || "";
 		if (pick) primaryUrls.push(pick);
 	}
 	const uniquePrimary = new Set(primaryUrls.map((u) => normalizeImageUrlKey(u)))
@@ -6963,6 +8056,23 @@ async function evaluateImageSegmentDiversity({
 			uniqueHash = new Set(hashes).size;
 		}
 	}
+	if (segmentFeedVideoPaths instanceof Map) {
+		for (const seg of imageSegments) {
+			if (segmentKeys.has(seg.index)) continue;
+			const paths = segmentFeedVideoPaths.get(seg.index) || [];
+			const p = paths[0];
+			if (!p) continue;
+			try {
+				const h = await hashFileSha1(p);
+				segmentKeys.set(seg.index, `video:${h}`);
+			} catch (e) {
+				logJob(jobId, "segment feed video hash failed", {
+					segment: seg.index,
+					error: e.message,
+				});
+			}
+		}
+	}
 
 	for (const seg of imageSegments) {
 		if (segmentKeys.has(seg.index)) continue;
@@ -6970,7 +8080,8 @@ async function evaluateImageSegmentDiversity({
 			? seg.imageCloudinaryUrls
 			: [];
 		const raw = Array.isArray(seg.imageUrls) ? seg.imageUrls : [];
-		const pick = cloud[0] || raw[0] || "";
+		const video = Array.isArray(seg.feedVideoUrls) ? seg.feedVideoUrls : [];
+		const pick = cloud[0] || raw[0] || video[0] || "";
 		if (pick) {
 			segmentKeys.set(seg.index, `url:${normalizeImageUrlKey(pick)}`);
 		}
@@ -11733,9 +12844,9 @@ ${categoryGuide.lines.join("\n")}
 - Keep expressions coherent across segments; avoid abrupt mood flips and avoid exaggerated expressions.
 - Each segment must include EXACTLY one overlayCues entry with a search query that matches that segment.
 - For Top N countdowns, set countdownRank on every segment to the rank being discussed and countdownLabel to the ranked item name. The first segment for each rank must start with "#rank- Item Name".
-- overlayCues.query must be 2-6 words, describe a real photo to search for, include the topic name or a key subject from that segment, no punctuation or hashtags.
+- overlayCues.query must be 2-6 words, describe a real visual to search for (photo or video), include the topic name or a key subject from that segment, no punctuation or hashtags.
 - overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
-- Treat overlayCues.query as the downstream image-search contract. It must stay within the topic and name a visible subject, place, action, object, institution, or scene from the segment/source context.
+- Treat overlayCues.query as the downstream feed-search contract for images and possible B-roll video. It must stay within the topic and name a visible subject, place, action, object, institution, or scene from the segment/source context.
 - Prefer official, public-facing, source-related visual subjects for overlayCues.query, such as official portraits, team photos, press conferences, venues, event stills, or source article subjects. Avoid stock-agency wording.
 - Do NOT include overlayCues.query, image-search hints, visual cue labels, or anchor-image language in the spoken segment text. Those are metadata only.
 - If exact photos are scarce, broaden only to adjacent visible context directly implied by the topic or source context; never use unrelated people, places, brands, or generic scenery.
@@ -15433,6 +16544,127 @@ async function renderImageSegment({
 	return norm;
 }
 
+async function renderFeedVideoSegment({
+	jobId,
+	tmpDir,
+	output,
+	segDur,
+	audioPath,
+	videoPaths = [],
+	label,
+	addFades = false,
+}) {
+	const sources = Array.isArray(videoPaths) ? videoPaths.filter(Boolean) : [];
+	if (!sources.length) throw new Error("No feed videos for segment");
+	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
+	const dur = Math.max(0.2, Number(segDur) || 0.2);
+	const targetDur =
+		dur <= FEED_VIDEO_MAX_CLIP_SEC + 0.5
+			? dur
+			: Math.max(0.2, FEED_VIDEO_MAX_CLIP_SEC);
+	const w = makeEven(output.w);
+	const h = makeEven(output.h);
+	const fps = Number(output.fps || DEFAULT_OUTPUT_FPS) || DEFAULT_OUTPUT_FPS;
+	const errors = [];
+
+	for (let i = 0; i < sources.length; i++) {
+		const source = sources[i];
+		const info = await probeMedia(source);
+		if (!info.hasVideo) continue;
+		const sourceDur = Number(info.duration || 0);
+		const startSeed = Math.abs(
+			Number(
+				crypto
+					.createHash("sha1")
+					.update(`${jobId}:${safeLabel}:${i}`)
+					.digest()
+					.readUInt32BE(0),
+			),
+		);
+		const canTrim = sourceDur > targetDur + 0.8;
+		const startSec = canTrim
+			? Math.min(
+					Math.max(0, sourceDur - targetDur - 0.2),
+					(startSeed % 1000) / 1000 *
+						Math.max(0, sourceDur - targetDur - 0.2),
+				)
+			: 0;
+		const inputArgs = canTrim
+			? ["-ss", startSec.toFixed(3), "-i", source]
+			: sourceDur > 0 && sourceDur < targetDur - 0.15
+				? ["-stream_loop", "-1", "-i", source]
+				: ["-i", source];
+		const raw = path.join(tmpDir, `seg_feed_video_${jobId}_${safeLabel}_${i}.mp4`);
+		let fit = raw;
+		const vf = `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},fps=${fps},setpts=PTS-STARTPTS,setsar=1,format=yuv420p`;
+		try {
+			await spawnBin(
+				ffmpegPath,
+				[
+					...inputArgs,
+					"-t",
+					targetDur.toFixed(3),
+					"-an",
+					"-vf",
+					vf,
+					"-c:v",
+					"libx264",
+					"-preset",
+					INTERMEDIATE_PRESET,
+					"-crf",
+					String(INTERMEDIATE_VIDEO_CRF),
+					"-pix_fmt",
+					"yuv420p",
+					"-movflags",
+					"+faststart",
+					"-y",
+					raw,
+				],
+				"feed_video_clip",
+				{ timeoutMs: IMAGE_MONTAGE_TIMEOUT_MS },
+			);
+			fit =
+				Math.abs(targetDur - dur) > 0.08
+					? path.join(tmpDir, `seg_feed_video_${jobId}_${safeLabel}_${i}_fit.mp4`)
+					: raw;
+			if (fit !== raw) {
+				await fitVideoToDuration(raw, dur, fit);
+				safeUnlink(raw);
+			}
+			const withAudio = path.join(
+				tmpDir,
+				`feed_video_${jobId}_${safeLabel}_${i}_audio.mp4`,
+			);
+			await mergeVideoWithAudio(fit, audioPath, withAudio);
+			if (fit !== raw) safeUnlink(fit);
+			else safeUnlink(raw);
+			const norm = path.join(
+				tmpDir,
+				`feed_video_${jobId}_${safeLabel}_${i}_norm.mp4`,
+			);
+			await normalizeClip(withAudio, norm, output, {
+				zoomOut: 1,
+				addFades,
+				cameraMotion: null,
+			});
+			safeUnlink(withAudio);
+			return norm;
+		} catch (e) {
+			safeUnlink(raw);
+			if (fit !== raw) safeUnlink(fit);
+			errors.push(e?.message || String(e));
+			logJob(jobId, "feed video render candidate failed", {
+				label: safeLabel,
+				index: i,
+				error: e.message,
+			});
+		}
+	}
+	throw new Error(
+		`feed_video_render_failed: ${errors.slice(0, 3).join(" | ")}`,
+	);
+}
+
 async function renderNoSyncVisualFallbackSegment({
 	jobId,
 	tmpDir,
@@ -18236,6 +19468,7 @@ async function runLongVideoJob(
 		let driftSec = 0;
 		let autoOverlayAssets = [];
 		let segmentImagePaths = new Map();
+		let segmentFeedVideoPaths = new Map();
 		const maxRewriteAttempts = voiceoverUrlLocked ? 0 : MAX_SCRIPT_REWRITES;
 
 		for (let attempt = 0; attempt <= maxRewriteAttempts; attempt++) {
@@ -18848,7 +20081,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		});
 		timeline = imagePrep.timeline;
 		segmentImagePaths = imagePrep.segmentImagePaths || new Map();
+		segmentFeedVideoPaths = imagePrep.segmentFeedVideoPaths || new Map();
 		const imagePlanSummary = imagePrep.imagePlanSummary || [];
+		const feedVideoPlanSummary = imagePrep.feedVideoPlanSummary || [];
 
 		const finalPresenterSegments = [];
 		const finalImageSegments = [];
@@ -18883,6 +20118,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const allImageUrls = [];
 		for (const seg of timeline) {
 			if (Array.isArray(seg.imageUrls)) allImageUrls.push(...seg.imageUrls);
+			if (Array.isArray(seg.feedVideoUrls))
+				allImageUrls.push(...seg.feedVideoUrls);
 		}
 		const uniqueImageUrls = new Set(
 			allImageUrls.map((u) => normalizeImageUrlKey(u)),
@@ -18899,6 +20136,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const imageDiversity = await evaluateImageSegmentDiversity({
 			timeline,
 			segmentImagePaths,
+			segmentFeedVideoPaths,
 			jobId,
 		});
 		logJob(jobId, "segment image diversity", imageDiversity);
@@ -18906,6 +20144,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			logJob(jobId, "segment image plan", {
 				count: imagePlanSummary.length,
 				segments: imagePlanSummary,
+			});
+		}
+		if (feedVideoPlanSummary.length) {
+			logJob(jobId, "segment feed video plan", {
+				count: feedVideoPlanSummary.length,
+				segments: feedVideoPlanSummary,
 			});
 		}
 		updateJob(jobId, {
@@ -18916,6 +20160,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					targetPresenterRatio: CONTENT_PRESENTER_RATIO,
 					presenterSegments: finalPresenterSegments,
 					imageSegments: finalImageSegments,
+					feedVideoSegments: feedVideoPlanSummary.map((s) => s.segment),
 				},
 				imageQa: {
 					total: allImageUrls.length,
@@ -19322,8 +20567,22 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			let actualVisualType = plannedVisualType;
 			let fallbackReason = "";
 			if (plannedVisualType === "image") {
+				const feedVideoPaths = segmentFeedVideoPaths.get(seg.index) || [];
 				const imagePaths = segmentImagePaths.get(seg.index) || [];
 				const primaryPathSet = new Set(imagePaths);
+				const renderFeedVideoClip = (paths, labelSuffix = "") =>
+					renderFeedVideoSegment({
+						jobId,
+						tmpDir,
+						output,
+						segDur,
+						audioPath: seg.audioPath,
+						videoPaths: paths,
+						label: labelSuffix
+							? `${seg.index}_${labelSuffix}`
+							: String(seg.index),
+						addFades: ENABLE_SEGMENT_FADES,
+					});
 				const renderFeedImageClip = (paths, labelSuffix = "") =>
 					renderImageSegment({
 						jobId,
@@ -19338,24 +20597,47 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						addFades: ENABLE_SEGMENT_FADES,
 						cameraMotion: seg.cameraMotion,
 					});
-				if (imagePaths.length) {
+				if (feedVideoPaths.length) {
 					try {
-						norm = await renderFeedImageClip(imagePaths);
-						actualVisualType = "image";
-						lastGoodFeedImagePaths = imagePaths.slice(0, 5);
-					} catch (e) {
-						logJob(jobId, "image segment render failed; trying feed-image rescue", {
+						norm = await renderFeedVideoClip(feedVideoPaths);
+						actualVisualType = "feed_video";
+						logJob(jobId, "feed video segment rendered", {
 							segment: seg.index,
-							feedImages: imagePaths.length,
+							feedVideos: feedVideoPaths.length,
+						});
+					} catch (e) {
+						logJob(jobId, "feed video segment render failed; trying images", {
+							segment: seg.index,
+							feedVideos: feedVideoPaths.length,
 							error: e.message,
 						});
-						fallbackReason = "image_render_failed";
+						fallbackReason = "feed_video_render_failed";
 					}
-				} else {
-					logJob(jobId, "image segment missing assets; trying feed-image rescue", {
-						segment: seg.index,
-					});
-					fallbackReason = "image_assets_missing";
+				}
+				if (!norm) {
+					if (imagePaths.length) {
+						try {
+							norm = await renderFeedImageClip(imagePaths);
+							actualVisualType = "image";
+							lastGoodFeedImagePaths = imagePaths.slice(0, 5);
+						} catch (e) {
+							logJob(jobId, "image segment render failed; trying feed-image rescue", {
+								segment: seg.index,
+								feedImages: imagePaths.length,
+								error: e.message,
+							});
+							fallbackReason = fallbackReason
+								? `${fallbackReason}_then_image_render_failed`
+								: "image_render_failed";
+						}
+					} else {
+						logJob(jobId, "image segment missing assets; trying feed-image rescue", {
+							segment: seg.index,
+						});
+						fallbackReason = fallbackReason
+							? `${fallbackReason}_then_image_assets_missing`
+							: "image_assets_missing";
+					}
 				}
 
 				if (!norm) {
