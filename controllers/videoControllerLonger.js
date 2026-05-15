@@ -1903,9 +1903,10 @@ const PROMPT_CATEGORY_RULES = [
 	},
 	{
 		label: "Finance",
-		weight: 3,
+		weight: 5,
 		patterns: [
 			/\b(stocks?|market|finance|bitcoin|crypto|inflation|fed|interest\s+rates?|earnings|revenue|profit|bank|economy|investment|investors?)\b/i,
+			/\b(broke|paycheck|pay\s*check|cost\s+of\s+living|rent|renter|renters|bills?|subscriptions?|expenses?|spending|budget|grocer(?:y|ies)|wages?|salary|debt|autopay|overdraft|late\s+fees?|financial\s+stress|money\s+stress)\b/i,
 		],
 	},
 	{
@@ -14558,6 +14559,7 @@ function buildShortSegmentExtension({
 	topics = [],
 	categoryGuide = {},
 	segmentIndex = 0,
+	avoidTexts = [],
 } = {}) {
 	const topic = topics?.[Number(segment?.topicIndex) || 0] || {};
 	const topicLabel = String(
@@ -14567,7 +14569,22 @@ function buildShortSegmentExtension({
 	const seed =
 		(Number.isFinite(Number(segmentIndex)) ? Number(segmentIndex) : 0) +
 		(Number(segment?.topicIndex) || 0);
-	const pick = (items) => items[Math.abs(seed) % items.length] || items[0];
+	const avoid = new Set(
+		(Array.isArray(avoidTexts) ? avoidTexts : [avoidTexts])
+			.map((item) => normalizeQaText(item))
+			.filter(Boolean),
+	);
+	const pick = (items) => {
+		const list = (Array.isArray(items) ? items : []).filter(Boolean);
+		if (!list.length) return "";
+		const start = Math.abs(seed) % list.length;
+		for (let offset = 0; offset < list.length; offset++) {
+			const candidate = list[(start + offset) % list.length];
+			const key = normalizeQaText(candidate);
+			if (key && !avoid.has(key)) return candidate;
+		}
+		return list[start] || list[0];
+	};
 	const sensitive = isSensitiveTopicText(`${topicLabel} ${text}`);
 	if (sensitive) {
 		return pick(
@@ -14667,6 +14684,11 @@ function removeRepeatedSentenceFromText(text = "", repeatedSentence = "") {
 	return sanitizeSegmentText(kept.join(" "));
 }
 
+function rememberRepairExtension(usedExtensions, extension = "") {
+	const key = normalizeQaText(extension);
+	if (key && usedExtensions instanceof Set) usedExtensions.add(key);
+}
+
 function sentenceHasBlockingScriptArtifact(sentence = "") {
 	const text = String(sentence || "").trim();
 	if (!text) return false;
@@ -14725,10 +14747,14 @@ function repairBlockingScriptArtifacts({
 
 	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
 	const changed = [];
+	const usedExtensions = new Set(
+		[...repeatedSentenceByIndex.values()].map((text) => normalizeQaText(text)),
+	);
 	const repaired = segments.map((segment, idx) => {
 		if (!badIndices.has(idx)) return segment;
 		const original = sanitizeSegmentText(segment?.text || "");
 		let text = stripBlockingScriptArtifacts(original);
+		const avoidTexts = [...repeatedSentenceByIndex.values()];
 		if (repeatedSentenceByIndex.has(idx)) {
 			text = removeRepeatedSentenceFromText(
 				text,
@@ -14742,7 +14768,9 @@ function repairBlockingScriptArtifacts({
 				topics,
 				categoryGuide,
 				segmentIndex: idx,
+				avoidTexts: [...avoidTexts, ...usedExtensions],
 			});
+			rememberRepairExtension(usedExtensions, extension);
 			text = sanitizeSegmentText(`${text} ${extension}`.trim());
 		}
 		const cap = Number(wordCaps?.[idx] || 0);
@@ -14771,6 +14799,7 @@ function repairShortScriptSegments({
 	if (!segments.length) return { script, changed: [] };
 	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
 	const changed = [];
+	const usedExtensions = new Set();
 	const repairedSegments = segments.map((segment, idx) => {
 		const text = sanitizeSegmentText(segment?.text || "");
 		const words = countWords(text);
@@ -14781,7 +14810,9 @@ function repairShortScriptSegments({
 			topics,
 			categoryGuide,
 			segmentIndex: idx,
+			avoidTexts: [...usedExtensions],
 		});
+		rememberRepairExtension(usedExtensions, extension);
 		let updated = cleanupSpeechText(`${text} ${extension}`)
 			.replace(/\s+([,.!?])/g, "$1")
 			.replace(/\s{2,}/g, " ")
@@ -20009,7 +20040,7 @@ async function runLongVideoJob(
 		)
 			? "prompt"
 			: "trends";
-		if (contentMode === "prompt") {
+		if (contentMode === "prompt" && !earlyPromptCategoryLabel) {
 			const refinedPromptCategoryLabel = inferPromptCategoryLabel({
 				topics: topicPicks,
 				promptText: promptTextForCategory,
