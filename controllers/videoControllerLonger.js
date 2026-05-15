@@ -9695,8 +9695,9 @@ function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 		: "hands low near the torso, lightly clasped or relaxed";
 	return [
 		`Match DemoVideo.mp4 and motion_reference.mp4: locked tripod camera with a perfectly stable frame, upright seated posture, shoulders square, ${handLine}, calm direct eye contact, natural unhurried blinks, mild brow life, soft chin dips, subtle breathing and posture settling.`,
+		"Keep visible human motion alive throughout the whole clip: a blink or eye refocus every few seconds, tiny jaw readiness, natural breathing in the shoulders, and one small conversational nod or micro-shift.",
 		"Allow one brief side-thought glance then return to lens; warm beats may have a small authentic smile.",
-		"No camera shake, background drift, swaying, lunging, head tilts, looped nodding, wide eyes, theatrical reactions, or frozen statue behavior.",
+		"No camera shake, background drift, swaying, lunging, head tilts, looped nodding, wide eyes, theatrical reactions, motionless face, or frozen statue behavior.",
 	].join(" ");
 }
 
@@ -9962,9 +9963,9 @@ function buildBaselinePrompt(
 
 	const variantHint =
 		variant === 1
-			? "Use a slightly different blink cadence and allow one soft emphasis nod or chin dip across the shot; keep movement natural, restrained, and never looped."
+			? "Use a slightly different blink cadence and include two tiny conversational beats: one soft emphasis nod or chin dip, and one small shoulder-breath/posture reset. Keep movement natural, restrained, and never looped."
 			: variant === 2
-				? "Allow a tiny shoulder-settling shift and one brief micro-lean recovery while keeping framing stable and the performance calm."
+				? "Use the motion-rescue take: keep the presenter calm but clearly alive with blink, breath, micro jaw movement, one brief side glance back to lens, and a tiny shoulder-settling shift. No still-photo frames."
 				: "";
 	const variantLine = variantHint
 		? `Motion variation: ${variantHint}`
@@ -9977,10 +9978,11 @@ function buildBaselinePrompt(
 Photorealistic talking-head video of the SAME man as the reference image. Preserve exact identity: shaved head, glasses, eye spacing, nose, beard line, mouth, jaw, skin texture, age, and face proportions; no beautifying, face morphing, or feature drift.
 Keep the same studio, lighting, wardrobe, desk, and static empty background; no extra people, reflections, text, screens, candles, flames, or moving background.
 Framing: medium shot, upper torso to mid torso, moderate headroom, camera at a comfortable distance.
-This must be a real moving presenter video, not a still image, frozen photo, looping freeze-frame, or camera-only zoom. The face, eyes, jaw, shoulders, and breathing must show continuous subtle human motion.
+This must be a real moving presenter video, not a still image, frozen photo, looping freeze-frame, or camera-only zoom. The face, eyes, jaw, shoulders, and breathing must show continuous subtle human motion in every second of the clip.
 ${expressionLine}
 ${variantLine}
 Motion: ${motionHint}
+Motion floor: never hold the same facial pose for more than half a second. If the presenter is listening silently, keep small blinks, eye refocus, gentle breathing, and tiny posture settling visible without becoming theatrical.
 Mouth and jaw: natural speech-ready movement with restrained openings and soft lip compression; do not lip-sync, over-open vowels, warp the mouth, or make puppet-like motion.
 Eyes: relaxed with natural reflections and blink cadence; direct lens contact; no glassy stare, wide eyes, frequent side glances, surprise, skepticism, smirks, or dramatic brow lifts.
 Wardrobe/hands: clean collar/lapels/sleeves; hands low or out of frame, never covering the face.
@@ -23361,6 +23363,99 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			throw new Error(message);
 		}
 
+		const collectGlobalVisualFallbackPaths = ({
+			exclude = [],
+			limit = 12,
+		} = {}) => {
+			const excluded = new Set(
+				(Array.isArray(exclude) ? exclude : [exclude]).filter(Boolean),
+			);
+			const paths = [];
+			const seen = new Set();
+			const addPath = (p) => {
+				if (!p || excluded.has(p) || seen.has(p)) return;
+				if (!fs.existsSync(p)) return;
+				seen.add(p);
+				paths.push(p);
+			};
+			addPath(thumbnailPath);
+			if (segmentImagePaths instanceof Map) {
+				for (const group of segmentImagePaths.values()) {
+					for (const p of group || []) addPath(p);
+				}
+			}
+			return paths.slice(0, Math.max(1, Number(limit) || 12));
+		};
+		const feedImageFallbackPaths = collectGlobalVisualFallbackPaths({
+			limit: 14,
+		});
+		const renderNonPresenterFallbackSegment = async ({
+			segDur,
+			audioPath,
+			label,
+			addFades = false,
+			cameraMotion = null,
+			preferredImagePaths = [],
+			reason = "presenter_motion_unavailable",
+		}) => {
+			const imagePaths = [];
+			const seen = new Set();
+			const addImagePath = (p) => {
+				if (!p || seen.has(p) || !fs.existsSync(p)) return;
+				seen.add(p);
+				imagePaths.push(p);
+			};
+			(Array.isArray(preferredImagePaths)
+				? preferredImagePaths
+				: [preferredImagePaths]
+			).forEach(addImagePath);
+			collectGlobalVisualFallbackPaths({
+				exclude: imagePaths,
+				limit: 10,
+			}).forEach(addImagePath);
+			if (imagePaths.length) {
+				try {
+					logJob(jobId, "non-presenter visual fallback using images", {
+						label,
+						reason,
+						images: Math.min(imagePaths.length, 8),
+					});
+					return await renderImageSegment({
+						jobId,
+						tmpDir,
+						output,
+						segDur,
+						audioPath,
+						imagePaths: imagePaths.slice(0, 8),
+						label,
+						addFades,
+						cameraMotion,
+					});
+				} catch (e) {
+					logJob(jobId, "non-presenter image fallback failed; using local visual", {
+						label,
+						reason,
+						images: Math.min(imagePaths.length, 8),
+						error: e.message,
+					});
+				}
+			}
+			logJob(jobId, "non-presenter local visual fallback used", {
+				label,
+				reason,
+			});
+			return await renderNoSyncVisualFallbackSegment({
+				jobId,
+				tmpDir,
+				output,
+				segDur,
+				audioPath,
+				label,
+				addFades,
+				cameraMotion,
+			});
+		};
+
 		const presenterSegSet = new Set(finalPresenterSegments);
 		const presenterOnlySegments = segments.filter((s) =>
 			presenterSegSet.has(s.index),
@@ -23476,14 +23571,23 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		if (!expressionsNeeded.includes("neutral"))
 			expressionsNeeded.unshift("neutral");
 
+		let lastPresenterMotionError = "";
 		if (presenterIsVideo) {
-			await assertPresenterVideoHasMotion({
-				videoPath: presenterLocal,
-				jobId,
-				label: "provided_presenter_video",
-			});
-			pushBaselineVariant("neutral", presenterLocal);
-			logJob(jobId, "presenter is video; baseline uses provided video");
+			try {
+				await assertPresenterVideoHasMotion({
+					videoPath: presenterLocal,
+					jobId,
+					label: "provided_presenter_video",
+				});
+				pushBaselineVariant("neutral", presenterLocal);
+				logJob(jobId, "presenter is video; baseline uses provided video");
+			} catch (e) {
+				lastPresenterMotionError = e?.message || String(e);
+				logJob(jobId, "provided presenter video failed motion qa", {
+					error: lastPresenterMotionError,
+					strictNoStaticPresenter: true,
+				});
+			}
 		} else if (
 			enableRunwayPresenterMotion &&
 			ENABLE_RUNWAY_BASELINE &&
@@ -23496,7 +23600,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							filePath: presenterLocal,
 							filename: `presenter_${expr}.png`,
 						});
-						const prompt = buildBaselinePrompt(expr, motionRefVideo, v);
+						const prompt = buildBaselinePrompt(expr, motionRefVideo, v + 1);
 
 						logJob(jobId, "runway baseline prompt", {
 							expression: expr,
@@ -23579,6 +23683,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							},
 						});
 					} catch (e) {
+						lastPresenterMotionError = e?.message || String(e);
 						logJob(jobId, "runway baseline failed (expression)", {
 							expression: expr,
 							variant: v + 1,
@@ -23590,45 +23695,76 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		}
 		if (!baselinePresenterVideos.size) {
 			if (REQUIRE_REAL_PRESENTER_VIDEO || !ALLOW_STATIC_PRESENTER_FALLBACK) {
-				throw new Error(
-					"presenter_motion_required: Runway presenter motion did not produce a valid moving presenter video. Static presenter fallback is disabled.",
+				const disabledPresenterSegments = timeline
+					.filter((seg) => seg.visualType === "presenter")
+					.map((seg) => seg.index);
+				timeline = timeline.map((seg) =>
+					seg.visualType === "presenter"
+						? {
+								...seg,
+								visualType: "image",
+								presenterMotionDisabled: true,
+								presenterFallbackReason: "presenter_motion_unavailable",
+							}
+						: seg,
 				);
+				logJob(jobId, "presenter motion unavailable; continuing without presenter", {
+					reason: lastPresenterMotionError || "no_valid_presenter_motion",
+					disabledPresenterSegments,
+					strictNoStaticPresenter: true,
+					imageFallbacksAvailable: feedImageFallbackPaths.length,
+				});
+				updateJob(jobId, {
+					meta: {
+						...JOBS.get(jobId)?.meta,
+						timeline,
+						visualPlan: {
+							targetPresenterRatio: CONTENT_PRESENTER_RATIO,
+							presenterSegments: [],
+							imageSegments: timeline.map((seg) => seg.index),
+							feedVideoSegments: feedVideoPlanSummary.map((s) => s.segment),
+							presenterMotionUnavailable: true,
+							disabledPresenterSegments,
+						},
+					},
+				});
+			} else {
+				// Fallback: convert image to a simple still video
+				const still = path.join(tmpDir, `baseline_still_${jobId}.mp4`);
+				await spawnBin(
+					ffmpegPath,
+					[
+						"-loop",
+						"1",
+						"-i",
+						presenterLocal,
+						"-t",
+						BASELINE_DUR_SEC.toFixed(3),
+						"-an",
+						"-vf",
+						`scale=${makeEven(output.w)}:${makeEven(
+							output.h,
+						)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
+							output.w,
+						)}:${makeEven(output.h)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p`,
+						"-c:v",
+						"libx264",
+						"-preset",
+						"veryfast",
+						"-crf",
+						String(SYNC_SO_INPUT_CRF),
+						"-pix_fmt",
+						"yuv420p",
+						"-movflags",
+						"+faststart",
+						"-y",
+						still,
+					],
+					"baseline_still",
+					{ timeoutMs: 180000 },
+				);
+				pushBaselineVariant("neutral", still);
 			}
-			// Fallback: convert image to a simple still video
-			const still = path.join(tmpDir, `baseline_still_${jobId}.mp4`);
-			await spawnBin(
-				ffmpegPath,
-				[
-					"-loop",
-					"1",
-					"-i",
-					presenterLocal,
-					"-t",
-					BASELINE_DUR_SEC.toFixed(3),
-					"-an",
-					"-vf",
-					`scale=${makeEven(output.w)}:${makeEven(
-						output.h,
-					)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-						output.w,
-					)}:${makeEven(output.h)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p`,
-					"-c:v",
-					"libx264",
-					"-preset",
-					"veryfast",
-					"-crf",
-					String(SYNC_SO_INPUT_CRF),
-					"-pix_fmt",
-					"yuv420p",
-					"-movflags",
-					"+faststart",
-					"-y",
-					still,
-				],
-				"baseline_still",
-				{ timeoutMs: 180000 },
-			);
-			pushBaselineVariant("neutral", still);
 		}
 
 		const baselineDefault = pickBaselineDefault();
@@ -23649,18 +23785,40 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			index: -1,
 			categoryLabel,
 		});
-		const introBase = await renderLipsyncedSegment({
-			jobId,
-			tmpDir,
-			output,
-			baselineSource: introBaseline,
-			segDur: introDurationSec,
-			audioPath: introAudioPath,
-			label: "intro",
-			offsetSeed: introOffsetSeed,
-			addFades: true,
-			cameraMotion: introCameraMotion,
-		});
+		let introBase = "";
+		if (introBaseline) {
+			try {
+				introBase = await renderLipsyncedSegment({
+					jobId,
+					tmpDir,
+					output,
+					baselineSource: introBaseline,
+					segDur: introDurationSec,
+					audioPath: introAudioPath,
+					label: "intro",
+					offsetSeed: introOffsetSeed,
+					addFades: true,
+					cameraMotion: introCameraMotion,
+				});
+			} catch (e) {
+				logJob(jobId, "intro presenter render failed; using non-presenter visual", {
+					error: e.message,
+				});
+			}
+		}
+		if (!introBase) {
+			introBase = await renderNonPresenterFallbackSegment({
+				segDur: introDurationSec,
+				audioPath: introAudioPath,
+				label: "intro_no_presenter_motion",
+				addFades: true,
+				cameraMotion: { ...introCameraMotion, visualType: "image" },
+				preferredImagePaths: feedImageFallbackPaths,
+				reason: introBaseline
+					? "intro_presenter_render_failed"
+					: "intro_presenter_motion_unavailable",
+			});
+		}
 		const introPath = path.join(tmpDir, `intro_${jobId}.mp4`);
 		const introTitle = buildIntroCardTitle({
 			title: seoMeta?.seoTitle || script.title,
@@ -23700,18 +23858,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					syncTier: unit.syncTier,
 				})),
 		});
-		const feedImageFallbackPaths = [];
-		const feedImageFallbackPathSet = new Set();
-		if (segmentImagePaths instanceof Map) {
-			for (const paths of segmentImagePaths.values()) {
-				for (const p of paths || []) {
-					if (!p || feedImageFallbackPathSet.has(p)) continue;
-					feedImageFallbackPathSet.add(p);
-					feedImageFallbackPaths.push(p);
-				}
-			}
-		}
-		let lastGoodFeedImagePaths = [];
+		let lastGoodFeedImagePaths = feedImageFallbackPaths.slice(0, 5);
 		for (const seg of renderUnits) {
 			const segDur = Math.max(0.2, Number(seg.segDur || 0));
 			logJob(jobId, "segment start", {
@@ -23868,6 +24015,24 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				}
 			}
 
+			if (!norm && !baselineSource) {
+				norm = await renderNonPresenterFallbackSegment({
+					segDur,
+					audioPath: seg.audioPath,
+					label: `${seg.renderLabel || seg.index}_no_presenter_motion`,
+					addFades: ENABLE_SEGMENT_FADES,
+					cameraMotion: seg.cameraMotion
+						? { ...seg.cameraMotion, visualType: "image" }
+						: null,
+					preferredImagePaths: feedImageFallbackPaths,
+					reason: "presenter_motion_unavailable",
+				});
+				actualVisualType = "image_rescue";
+				fallbackReason = fallbackReason
+					? `${fallbackReason}_presenter_motion_unavailable`
+					: "presenter_motion_unavailable";
+			}
+
 			if (!norm) {
 				if (
 					plannedVisualType === "image" &&
@@ -23881,19 +24046,42 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					actualVisualType = "presenter_fallback";
 					fallbackReason = "image_render_unavailable";
 				}
-				norm = await renderLipsyncedSegment({
-					jobId,
-					tmpDir,
-					output,
-					baselineSource,
-					segDur,
-					audioPath: seg.audioPath,
-					label: seg.renderLabel || String(seg.index),
-					offsetSeed: seg.index,
-					addFades: ENABLE_SEGMENT_FADES,
-					syncTier: seg.syncTier || "standard",
-					cameraMotion: seg.cameraMotion,
-				});
+				try {
+					norm = await renderLipsyncedSegment({
+						jobId,
+						tmpDir,
+						output,
+						baselineSource,
+						segDur,
+						audioPath: seg.audioPath,
+						label: seg.renderLabel || String(seg.index),
+						offsetSeed: seg.index,
+						addFades: ENABLE_SEGMENT_FADES,
+						syncTier: seg.syncTier || "standard",
+						cameraMotion: seg.cameraMotion,
+					});
+				} catch (e) {
+					logJob(jobId, "presenter segment render failed; using non-presenter visual", {
+						segment: seg.index,
+						renderLabel: seg.renderLabel || String(seg.index),
+						error: e.message,
+					});
+					norm = await renderNonPresenterFallbackSegment({
+						segDur,
+						audioPath: seg.audioPath,
+						label: `${seg.renderLabel || seg.index}_presenter_failed`,
+						addFades: ENABLE_SEGMENT_FADES,
+						cameraMotion: seg.cameraMotion
+							? { ...seg.cameraMotion, visualType: "image" }
+							: null,
+						preferredImagePaths: feedImageFallbackPaths,
+						reason: "presenter_render_failed",
+					});
+					actualVisualType = "image_rescue";
+					fallbackReason = fallbackReason
+						? `${fallbackReason}_presenter_render_failed`
+						: "presenter_render_failed";
+				}
 			}
 
 			segmentVideos.push(norm);
@@ -23921,83 +24109,106 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			index: timeline.length + 1,
 			categoryLabel,
 		});
-		const outroTalk = await renderLipsyncedSegment({
-			jobId,
-			tmpDir,
-			output,
-			baselineSource: outroBaseline,
-			segDur: outroDurationSec,
-			audioPath: outroAudioPath,
-			label: "outro",
-			offsetSeed: outroOffsetSeed,
-			addFades: false,
-			syncTier: "hero",
-			cameraMotion: outroCameraMotion,
-		});
+		let outroPath = "";
+		if (outroBaseline) {
+			try {
+				const outroTalk = await renderLipsyncedSegment({
+					jobId,
+					tmpDir,
+					output,
+					baselineSource: outroBaseline,
+					segDur: outroDurationSec,
+					audioPath: outroAudioPath,
+					label: "outro",
+					offsetSeed: outroOffsetSeed,
+					addFades: false,
+					syncTier: "hero",
+					cameraMotion: outroCameraMotion,
+				});
 
-		// Calm tail after the outro line (silent + fade-out).
-		const tailBaseline =
-			pickBaselineVariant("warm", 2) ||
-			pickBaselineVariant("neutral", 2) ||
-			outroBaseline ||
-			baselineDefault;
-		const tailBaselineDur = await probeDurationSeconds(tailBaseline);
-		const tailStart = Math.max(0, tailBaselineDur - OUTRO_SMILE_TAIL_SEC);
-		const tailRaw = path.join(tmpDir, `outro_tail_raw_${jobId}.mp4`);
-		await spawnBin(
-			ffmpegPath,
-			[
-				"-ss",
-				tailStart.toFixed(3),
-				"-i",
-				tailBaseline,
-				"-t",
-				OUTRO_SMILE_TAIL_SEC.toFixed(3),
-				"-an",
-				"-vf",
-				"setpts=PTS-STARTPTS",
-				"-c:v",
-				"libx264",
-				"-preset",
-				INTERMEDIATE_PRESET,
-				"-crf",
-				String(INTERMEDIATE_VIDEO_CRF),
-				"-pix_fmt",
-				"yuv420p",
-				"-movflags",
-				"+faststart",
-				"-y",
-				tailRaw,
-			],
-			"outro_tail_cut",
-			{ timeoutMs: 120000 },
-		);
-		const tailFit = path.join(tmpDir, `outro_tail_fit_${jobId}.mp4`);
-		await fitVideoToDuration(tailRaw, OUTRO_SMILE_TAIL_SEC, tailFit);
-		safeUnlink(tailRaw);
+				// Calm tail after the outro line (silent + fade-out).
+				const tailBaseline =
+					pickBaselineVariant("warm", 2) ||
+					pickBaselineVariant("neutral", 2) ||
+					outroBaseline ||
+					baselineDefault;
+				const tailBaselineDur = await probeDurationSeconds(tailBaseline);
+				const tailStart = Math.max(0, tailBaselineDur - OUTRO_SMILE_TAIL_SEC);
+				const tailRaw = path.join(tmpDir, `outro_tail_raw_${jobId}.mp4`);
+				await spawnBin(
+					ffmpegPath,
+					[
+						"-ss",
+						tailStart.toFixed(3),
+						"-i",
+						tailBaseline,
+						"-t",
+						OUTRO_SMILE_TAIL_SEC.toFixed(3),
+						"-an",
+						"-vf",
+						"setpts=PTS-STARTPTS",
+						"-c:v",
+						"libx264",
+						"-preset",
+						INTERMEDIATE_PRESET,
+						"-crf",
+						String(INTERMEDIATE_VIDEO_CRF),
+						"-pix_fmt",
+						"yuv420p",
+						"-movflags",
+						"+faststart",
+						"-y",
+						tailRaw,
+					],
+					"outro_tail_cut",
+					{ timeoutMs: 120000 },
+				);
+				const tailFit = path.join(tmpDir, `outro_tail_fit_${jobId}.mp4`);
+				await fitVideoToDuration(tailRaw, OUTRO_SMILE_TAIL_SEC, tailFit);
+				safeUnlink(tailRaw);
 
-		const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
-		await createSilentWav({
-			durationSec: OUTRO_SMILE_TAIL_SEC,
-			outPath: tailSilence,
-		});
-		const tailWithAudio = path.join(tmpDir, `outro_tail_audio_${jobId}.mp4`);
-		await mergeVideoWithAudio(tailFit, tailSilence, tailWithAudio);
-		safeUnlink(tailSilence);
-		safeUnlink(tailFit);
+				const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
+				await createSilentWav({
+					durationSec: OUTRO_SMILE_TAIL_SEC,
+					outPath: tailSilence,
+				});
+				const tailWithAudio = path.join(tmpDir, `outro_tail_audio_${jobId}.mp4`);
+				await mergeVideoWithAudio(tailFit, tailSilence, tailWithAudio);
+				safeUnlink(tailSilence);
+				safeUnlink(tailFit);
 
-		const outroTail = path.join(tmpDir, `outro_tail_${jobId}.mp4`);
-		await normalizeClip(tailWithAudio, outroTail, output, {
-			zoomOut: CAMERA_ZOOM_OUT,
-			fadeOutOnly: true,
-		});
-		safeUnlink(tailWithAudio);
+				const outroTail = path.join(tmpDir, `outro_tail_${jobId}.mp4`);
+				await normalizeClip(tailWithAudio, outroTail, output, {
+					zoomOut: CAMERA_ZOOM_OUT,
+					fadeOutOnly: true,
+				});
+				safeUnlink(tailWithAudio);
 
-		const outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
-		await concatClips([outroTalk, outroTail], outroPath, {
-			...output,
-			softTransitions: false,
-		});
+				outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
+				await concatClips([outroTalk, outroTail], outroPath, {
+					...output,
+					softTransitions: false,
+				});
+			} catch (e) {
+				outroPath = "";
+				logJob(jobId, "outro presenter render failed; using non-presenter visual", {
+					error: e.message,
+				});
+			}
+		}
+		if (!outroPath) {
+			outroPath = await renderNonPresenterFallbackSegment({
+				segDur: outroDurationSec,
+				audioPath: outroAudioPath,
+				label: "outro_no_presenter_motion",
+				addFades: true,
+				cameraMotion: { ...outroCameraMotion, visualType: "image" },
+				preferredImagePaths: feedImageFallbackPaths,
+				reason: outroBaseline
+					? "outro_presenter_render_failed"
+					: "outro_presenter_motion_unavailable",
+			});
+		}
 		segmentVideos.push(outroPath);
 
 		updateJob(jobId, { progressPct: 72 });
