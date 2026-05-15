@@ -540,7 +540,11 @@ const SYNC_SO_PRESCALE_ALWAYS = false;
 const SYNC_SO_PRESCALE_SIZE_PCT = clampNumber(0.85, 0.5, 0.98);
 const SYNC_SO_PRESCALE_MIN_SEC = clampNumber(9, 4, 15);
 const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(1280, 640, 1280);
-const SYNC_SO_SEGMENT_MAX_RETRIES = clampNumber(2, 0, 5);
+const SYNC_SO_SEGMENT_MAX_RETRIES = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_SYNC_SEGMENT_MAX_RETRIES ?? 0,
+	0,
+	3,
+));
 const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
 const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
 const REQUIRE_LIPSYNC = true;
@@ -579,6 +583,20 @@ const PRESENTER_BASELINE_MOTION_NEAR_PASS_ENABLED = envFlag(
 	"LONG_VIDEO_BASELINE_MOTION_NEAR_PASS",
 	true,
 );
+const PRESENTER_RENDER_MOTION_NEAR_PASS_ENABLED = envFlag(
+	"LONG_VIDEO_RENDER_MOTION_NEAR_PASS",
+	true,
+);
+const PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO = clampNumber(
+	process.env.LONG_VIDEO_RENDER_MOTION_MAX_FREEZE_RATIO ?? 0.22,
+	PRESENTER_MOTION_MAX_FREEZE_RATIO,
+	0.35,
+);
+const PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC = clampNumber(
+	process.env.LONG_VIDEO_RENDER_MOTION_MAX_FREEZE_SEC ?? 0.85,
+	PRESENTER_MOTION_MAX_FREEZE_SEC,
+	1.5,
+);
 const SYNC_SO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
 const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 
@@ -593,6 +611,15 @@ const BASELINE_DUR_SEC = clampNumber(
 );
 const BASELINE_VARIANTS = Math.floor(
 	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 3, 1, 4),
+);
+const BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ?? 1,
+	1,
+	4,
+));
+const BASELINE_STOP_AFTER_CLEAN_PASS = envFlag(
+	"LONG_VIDEO_BASELINE_STOP_AFTER_CLEAN_PASS",
+	true,
 );
 const CAMERA_ZOOM_OUT = clampNumber(
 	process.env.LONG_VIDEO_CAMERA_ZOOM_OUT ?? 0.96,
@@ -716,6 +743,25 @@ const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 // Content visual mix (presenter vs static images). Required default is
 // 40% presenter / 60% scraped feed or topic images.
 const CONTENT_PRESENTER_RATIO = 0.4;
+const FORCE_OPENING_PRESENTER_COUNT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_FORCE_OPENING_PRESENTER_COUNT ?? 2,
+	0,
+	4,
+));
+const OPENING_PRESENTER_USE_HERO_SYNC = envFlag(
+	"LONG_VIDEO_OPENING_PRESENTER_HERO_SYNC",
+	false,
+);
+const OPENING_PRESENTER_BASELINE_TRIES = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_OPENING_PRESENTER_BASELINE_TRIES ?? 1,
+	1,
+	3,
+));
+const OPENING_PRESENTER_SYNC_RETRIES = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_OPENING_PRESENTER_SYNC_RETRIES ?? 1,
+	0,
+	3,
+));
 const FEED_VIDEO_ENABLED = envFlag("LONG_VIDEO_FEED_VIDEO_ENABLED", true);
 const FEED_VIDEO_SEARCH_ENABLED = envFlag(
 	"LONG_VIDEO_FEED_VIDEO_SEARCH",
@@ -18378,6 +18424,29 @@ async function analyzeLipsyncOutput({
 	return result;
 }
 
+function isPresenterFreezeNearPass(qa, mode = "rendered") {
+	const issues = Array.isArray(qa?.issues) ? qa.issues : [];
+	const freezeOnly =
+		issues.length > 0 &&
+		issues.every((issue) => issue === "sync_output_frozen");
+	if (!freezeOnly || Number(qa?.durationSec || 0) < 2) return false;
+
+	const qaMode = String(mode || "rendered").toLowerCase();
+	const maxFreezeSec =
+		qaMode === "baseline"
+			? PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC
+			: PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC;
+	const maxFreezeRatio =
+		qaMode === "baseline"
+			? PRESENTER_BASELINE_MOTION_MAX_FREEZE_RATIO
+			: PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO;
+
+	return (
+		Number(qa.maxFreezeSec || 0) <= maxFreezeSec &&
+		Number(qa.freezeRatio || 0) <= maxFreezeRatio
+	);
+}
+
 async function evaluatePresenterVideoMotion({
 	videoPath,
 	jobId,
@@ -18402,17 +18471,18 @@ async function evaluatePresenterVideoMotion({
 		qaMode === "baseline" &&
 		PRESENTER_BASELINE_MOTION_NEAR_PASS_ENABLED
 	) {
-		const freezeOnly =
-			originalIssues.length > 0 &&
-			originalIssues.every((issue) => issue === "sync_output_frozen");
-		const nearPass =
-			freezeOnly &&
-			Number(qa.durationSec || 0) >= 2 &&
-			Number(qa.maxFreezeSec || 0) <=
-				PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC &&
-			Number(qa.freezeRatio || 0) <=
-				PRESENTER_BASELINE_MOTION_MAX_FREEZE_RATIO;
-		if (nearPass) {
+		if (isPresenterFreezeNearPass(qa, "baseline")) {
+			qa.pass = true;
+			qa.issues = [];
+			acceptedNearPass = true;
+		}
+	}
+	if (
+		!qa.pass &&
+		qaMode === "rendered" &&
+		PRESENTER_RENDER_MOTION_NEAR_PASS_ENABLED
+	) {
+		if (isPresenterFreezeNearPass(qa, "rendered")) {
 			qa.pass = true;
 			qa.issues = [];
 			acceptedNearPass = true;
@@ -18437,12 +18507,17 @@ async function evaluatePresenterVideoMotion({
 	return { ...qa, acceptedNearPass, originalIssues };
 }
 
-async function assertPresenterVideoHasMotion({ videoPath, jobId, label }) {
+async function assertPresenterVideoHasMotion({
+	videoPath,
+	jobId,
+	label,
+	mode = "strict",
+}) {
 	return await evaluatePresenterVideoMotion({
 		videoPath,
 		jobId,
 		label,
-		mode: "strict",
+		mode,
 	});
 }
 
@@ -18882,6 +18957,7 @@ async function renderLipsyncedSegment({
 	addFades = false,
 	syncTier = "standard",
 	cameraMotion = null,
+	maxRetries = SYNC_SO_SEGMENT_MAX_RETRIES,
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	const dur = Math.max(0.2, Number(segDur) || 0.2);
@@ -18992,9 +19068,10 @@ async function renderLipsyncedSegment({
 		if (prescaled && prescaled !== baseSized) safeUnlink(prescaled);
 	}
 
-	let lipsynced = null;
+	const syncAttemptLimit = Math.floor(clampNumber(maxRetries, 0, 3));
+	let finalNorm = null;
 	let lastErr = null;
-	for (let attempt = 0; attempt <= SYNC_SO_SEGMENT_MAX_RETRIES; attempt++) {
+	for (let attempt = 0; attempt <= syncAttemptLimit; attempt++) {
 		try {
 			if (SYNC_SO_REQUEST_GAP_MS) await sleep(SYNC_SO_REQUEST_GAP_MS);
 			const attemptPlan = resolveSyncAttemptPlan(attempt, syncTier);
@@ -19034,7 +19111,7 @@ async function renderLipsyncedSegment({
 				jobId,
 			});
 
-			const raw = path.join(tmpDir, `lip_${jobId}_${safeLabel}.mp4`);
+			const raw = path.join(tmpDir, `lip_${jobId}_${safeLabel}_${attempt}.mp4`);
 			await downloadToFile(outUrl, raw, 120000, 2);
 			const syncQa = await analyzeLipsyncOutput({
 				videoPath: raw,
@@ -19056,15 +19133,60 @@ async function renderLipsyncedSegment({
 				maxFreezeSec: Number((syncQa.maxFreezeSec || 0).toFixed(3)),
 				freezeRatio: Number((syncQa.freezeRatio || 0).toFixed(3)),
 			});
+			if (
+				!syncQa.pass &&
+				PRESENTER_RENDER_MOTION_NEAR_PASS_ENABLED &&
+				isPresenterFreezeNearPass(syncQa, "rendered")
+			) {
+				logJob(jobId, "lipsync qa near-pass accepted", {
+					label: safeLabel,
+					attempt,
+					issues: syncQa.issues,
+					maxFreezeSec: Number((syncQa.maxFreezeSec || 0).toFixed(3)),
+					freezeRatio: Number((syncQa.freezeRatio || 0).toFixed(3)),
+				});
+				syncQa.pass = true;
+				syncQa.issues = [];
+			}
 			if (!syncQa.pass) {
 				safeUnlink(raw);
 				throw new Error(`Lipsync QA failed: ${syncQa.issues.join(", ")}`);
 			}
 
-			const fit2 = path.join(tmpDir, `lip_fit_${jobId}_${safeLabel}.mp4`);
+			const fit2 = path.join(
+				tmpDir,
+				`lip_fit_${jobId}_${safeLabel}_${attempt}.mp4`,
+			);
 			await fitVideoToDuration(raw, dur, fit2, SEGMENT_PAD_SEC);
 			safeUnlink(raw);
-			lipsynced = fit2;
+
+			const withAudio = path.join(
+				tmpDir,
+				`seg_${jobId}_${safeLabel}_${attempt}_audio.mp4`,
+			);
+			await mergeVideoWithAudio(fit2, audioPath, withAudio);
+			safeUnlink(fit2);
+
+			const norm = path.join(
+				tmpDir,
+				`seg_${jobId}_${safeLabel}_${attempt}_norm.mp4`,
+			);
+			await normalizeClip(withAudio, norm, output, {
+				zoomOut: CAMERA_ZOOM_OUT,
+				addFades,
+				cameraMotion: cameraMotion
+					? { ...cameraMotion, visualType: "presenter" }
+					: null,
+			});
+			safeUnlink(withAudio);
+			await assertPresenterVideoHasMotion({
+				videoPath: norm,
+				jobId,
+				label: `rendered_presenter_${safeLabel}_a${attempt}`,
+				mode: "rendered",
+			});
+
+			finalNorm = norm;
 			lastErr = null;
 			break;
 		} catch (e) {
@@ -19074,14 +19196,14 @@ async function renderLipsyncedSegment({
 				attempt,
 				error: e.message,
 			});
-			if (attempt < SYNC_SO_SEGMENT_MAX_RETRIES) {
+			if (attempt < syncAttemptLimit) {
 				const delay = SYNC_SO_RETRY_DELAY_MS * (attempt + 1);
 				await sleep(delay);
 			}
 		}
 	}
 
-	if (!lipsynced) {
+	if (!finalNorm) {
 		if (REQUIRE_LIPSYNC || PRESENTER_MOTION_QA_ENABLED) {
 			throw lastErr || new Error("Lipsync failed");
 		}
@@ -19091,28 +19213,21 @@ async function renderLipsyncedSegment({
 		});
 		const fit = path.join(tmpDir, `base_fit_${jobId}_${safeLabel}.mp4`);
 		await fitVideoToDuration(baseSized, dur, fit, SEGMENT_PAD_SEC);
-		lipsynced = fit;
+		const withAudio = path.join(tmpDir, `seg_${jobId}_${safeLabel}_audio.mp4`);
+		await mergeVideoWithAudio(fit, audioPath, withAudio);
+		const norm = path.join(tmpDir, `seg_${jobId}_${safeLabel}_norm.mp4`);
+		await normalizeClip(withAudio, norm, output, {
+			zoomOut: CAMERA_ZOOM_OUT,
+			addFades,
+			cameraMotion: cameraMotion
+				? { ...cameraMotion, visualType: "presenter" }
+				: null,
+		});
+		safeUnlink(withAudio);
+		finalNorm = norm;
 	}
 
-	const withAudio = path.join(tmpDir, `seg_${jobId}_${safeLabel}_audio.mp4`);
-	await mergeVideoWithAudio(lipsynced, audioPath, withAudio);
-
-	const norm = path.join(tmpDir, `seg_${jobId}_${safeLabel}_norm.mp4`);
-	await normalizeClip(withAudio, norm, output, {
-		zoomOut: CAMERA_ZOOM_OUT,
-		addFades,
-		cameraMotion: cameraMotion
-			? { ...cameraMotion, visualType: "presenter" }
-			: null,
-	});
-	safeUnlink(withAudio);
-	await assertPresenterVideoHasMotion({
-		videoPath: norm,
-		jobId,
-		label: `rendered_presenter_${safeLabel}`,
-	});
-
-	return norm;
+	return finalNorm;
 }
 
 function buildSubtleStillMotionFilter({
@@ -23456,24 +23571,55 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		} else {
 			presenterCount = totalSegments;
 		}
+		const forcedOpeningPresenterCount = Math.min(
+			FORCE_OPENING_PRESENTER_COUNT,
+			totalSegments,
+		);
+		presenterCount = Math.min(
+			totalSegments,
+			Math.max(presenterCount, forcedOpeningPresenterCount),
+		);
 		const presenterPositions = pickEvenlySpacedIndices(
 			totalSegments,
 			presenterCount,
 		);
-		const presenterPosSet = new Set(presenterPositions);
+		const presenterPosSet = new Set();
+		for (let idx = 0; idx < forcedOpeningPresenterCount; idx += 1) {
+			presenterPosSet.add(idx);
+		}
+		for (const idx of presenterPositions) {
+			if (presenterPosSet.size >= presenterCount) break;
+			presenterPosSet.add(idx);
+		}
+		for (
+			let idx = 0;
+			idx < totalSegments && presenterPosSet.size < presenterCount;
+			idx += 1
+		) {
+			presenterPosSet.add(idx);
+		}
 		const presenterSegments = [];
 		const imageSegments = [];
+		const forcedPresenterSegments = [];
 		timeline = timeline.map((seg, idx) => {
 			const visualType = presenterPosSet.has(idx) ? "presenter" : "image";
+			const mustUsePresenter = idx < forcedOpeningPresenterCount;
 			if (visualType === "presenter") presenterSegments.push(seg.index);
 			else imageSegments.push(seg.index);
-			return { ...seg, plannedVisualType: visualType, visualType };
+			if (mustUsePresenter) forcedPresenterSegments.push(seg.index);
+			return {
+				...seg,
+				plannedVisualType: visualType,
+				visualType,
+				mustUsePresenter,
+			};
 		});
 		logJob(jobId, "segment visual plan", {
 			totalSegments,
 			targetPresenterRatio: CONTENT_PRESENTER_RATIO,
 			targetPresenterCount: presenterSegments.length,
 			targetImageCount: imageSegments.length,
+			forcedPresenterSegments,
 			presenterSegments,
 			imageSegments,
 		});
@@ -23515,6 +23661,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			imageFallbackToPresenterSegments,
 		});
 		const premiumPresenterSegments = [];
+		for (const seg of timeline) {
+			if (seg.mustUsePresenter) premiumPresenterSegments.push(seg.index);
+		}
 		if (finalPresenterSegments.length) {
 			premiumPresenterSegments.push(finalPresenterSegments[0]);
 			if (finalPresenterSegments.length > 1) {
@@ -23776,10 +23925,47 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		// 9) Create baseline presenter videos (expression-aware)
 		const baselinePresenterVideos = new Map();
-		const pushBaselineVariant = (expr, clipPath) => {
+		const normalizeBaselineItem = (item) =>
+			typeof item === "string" ? { path: item } : item || {};
+		const rankBaselineItems = (items = []) =>
+			items
+				.map((item) => normalizeBaselineItem(item))
+				.filter((item) => item.path)
+				.sort((a, b) => {
+					const aNear = a.acceptedNearPass ? 1 : 0;
+					const bNear = b.acceptedNearPass ? 1 : 0;
+					if (aNear !== bNear) return aNear - bNear;
+					const aRatio = Number.isFinite(Number(a.freezeRatio))
+						? Number(a.freezeRatio)
+						: 1;
+					const bRatio = Number.isFinite(Number(b.freezeRatio))
+						? Number(b.freezeRatio)
+						: 1;
+					if (aRatio !== bRatio) return aRatio - bRatio;
+					const aFreeze = Number.isFinite(Number(a.maxFreezeSec))
+						? Number(a.maxFreezeSec)
+						: 999;
+					const bFreeze = Number.isFinite(Number(b.maxFreezeSec))
+						? Number(b.maxFreezeSec)
+						: 999;
+					if (aFreeze !== bFreeze) return aFreeze - bFreeze;
+					return (Number(a.variant) || 0) - (Number(b.variant) || 0);
+				});
+		const pushBaselineVariant = (expr, clipPath, motionQa = null, variant = 0) => {
 			if (!clipPath) return;
 			const list = baselinePresenterVideos.get(expr) || [];
-			list.push(clipPath);
+			list.push({
+				path: clipPath,
+				expression: expr,
+				variant: Number(variant) || list.length + 1,
+				acceptedNearPass: Boolean(motionQa?.acceptedNearPass),
+				freezeRatio: Number.isFinite(Number(motionQa?.freezeRatio))
+					? Number(motionQa.freezeRatio)
+					: 0,
+				maxFreezeSec: Number.isFinite(Number(motionQa?.maxFreezeSec))
+					? Number(motionQa.maxFreezeSec)
+					: 0,
+			});
 			baselinePresenterVideos.set(expr, list);
 		};
 		const pickBaselineVariant = (expr, seed = 0) => {
@@ -23793,13 +23979,45 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				.update(`${jobId}:${expr}:${seed}`)
 				.digest();
 			const idx = hash.readUInt32BE(0) % list.length;
-			return list[idx];
+			return normalizeBaselineItem(list[idx]).path || null;
 		};
 		const pickBaselineDefault = () => {
 			const neutralList = baselinePresenterVideos.get("neutral") || [];
-			if (neutralList.length) return neutralList[0];
+			if (neutralList.length) return normalizeBaselineItem(neutralList[0]).path;
 			const first = baselinePresenterVideos.values().next().value;
-			return Array.isArray(first) ? first[0] : first || null;
+			return Array.isArray(first)
+				? normalizeBaselineItem(first[0]).path || null
+				: normalizeBaselineItem(first).path || null;
+		};
+		const pickBestBaselineVariant = (expr) => {
+			const ranked = rankBaselineItems(baselinePresenterVideos.get(expr) || []);
+			if (ranked.length) return ranked[0].path;
+			const neutralRanked = rankBaselineItems(
+				baselinePresenterVideos.get("neutral") || [],
+			);
+			return neutralRanked[0]?.path || null;
+		};
+		const pickBaselineCandidates = (expr, seed = 0, limit = 4) => {
+			const seen = new Set();
+			const out = [];
+			const addPath = (clipPath) => {
+				if (!clipPath || seen.has(clipPath)) return;
+				seen.add(clipPath);
+				out.push(clipPath);
+			};
+			const addRanked = (key) => {
+				for (const item of rankBaselineItems(baselinePresenterVideos.get(key) || [])) {
+					addPath(item.path);
+				}
+			};
+			addRanked(expr);
+			if (expr !== "warm") addRanked("warm");
+			if (expr !== "thoughtful") addRanked("thoughtful");
+			if (expr !== "neutral") addRanked("neutral");
+			addPath(pickBaselineVariant(expr, seed));
+			addPath(pickBestBaselineVariant(expr));
+			addPath(pickBaselineDefault());
+			return out.slice(0, Math.max(1, Number(limit) || 1));
 		};
 		const expressionsNeeded = Array.from(
 			new Set(
@@ -23823,7 +24041,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					jobId,
 					label: "provided_presenter_video",
 				});
-				pushBaselineVariant("neutral", presenterLocal);
+				pushBaselineVariant(
+					"neutral",
+					presenterLocal,
+					{ acceptedNearPass: false, freezeRatio: 0, maxFreezeSec: 0 },
+					0,
+				);
 				logJob(jobId, "presenter is video; baseline uses provided video");
 			} catch (e) {
 				lastPresenterMotionError = e?.message || String(e);
@@ -23838,6 +24061,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			RUNWAY_API_KEY
 		) {
 			for (const expr of expressionsNeeded) {
+				let acceptedBaselineCount = 0;
 				for (let v = 0; v < BASELINE_VARIANTS; v++) {
 					try {
 						const runwayUri = await runwayCreateEphemeralUpload({
@@ -23919,7 +24143,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							label: `baseline_${expr}_v${v + 1}`,
 							mode: "baseline",
 						});
-						pushBaselineVariant(expr, syncReady);
+						pushBaselineVariant(expr, syncReady, motionQa, v + 1);
 						logJob(jobId, "baseline presenter ready", {
 							expression: expr,
 							variant: v + 1,
@@ -23930,6 +24154,22 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 								freezeRatio: Number((motionQa.freezeRatio || 0).toFixed(3)),
 							},
 						});
+						acceptedBaselineCount += 1;
+						if (
+							acceptedBaselineCount >=
+								BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ||
+							(BASELINE_STOP_AFTER_CLEAN_PASS && !motionQa.acceptedNearPass)
+						) {
+							logJob(jobId, "baseline expression satisfied", {
+								expression: expr,
+								variant: v + 1,
+								acceptedBaselineCount,
+								acceptedNearPass: Boolean(motionQa.acceptedNearPass),
+								maxAcceptedVariants:
+									BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION,
+							});
+							break;
+						}
 					} catch (e) {
 						lastPresenterMotionError = e?.message || String(e);
 						logJob(jobId, "runway baseline failed (expression)", {
@@ -24011,7 +24251,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					"baseline_still",
 					{ timeoutMs: 180000 },
 				);
-				pushBaselineVariant("neutral", still);
+				pushBaselineVariant(
+					"neutral",
+					still,
+					{
+						acceptedNearPass: true,
+						freezeRatio: 1,
+						maxFreezeSec: BASELINE_DUR_SEC,
+					},
+					0,
+				);
 			}
 		}
 
@@ -24021,8 +24270,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		// 10) Intro (lipsync + title overlay)
 		const introOffsetSeed = seedFromJobId(jobId) % 29;
-		const introBaseline =
-			pickBaselineVariant(introExpression, 0) || baselineDefault;
+		const introBaselineCandidates = pickBaselineCandidates(
+			introExpression,
+			0,
+			OPENING_PRESENTER_BASELINE_TRIES,
+		);
 		const introCameraMotion = inferCameraMotionPlan({
 			text: introTextFinal,
 			topicLabel: topicSummary,
@@ -24034,27 +24286,42 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			categoryLabel,
 		});
 		let introBase = "";
-		if (introBaseline) {
+		let introPresenterError = null;
+		for (
+			let i = 0;
+			i < introBaselineCandidates.length && !introBase;
+			i += 1
+		) {
 			try {
 				introBase = await renderLipsyncedSegment({
 					jobId,
 					tmpDir,
 					output,
-					baselineSource: introBaseline,
+					baselineSource: introBaselineCandidates[i],
 					segDur: introDurationSec,
 					audioPath: introAudioPath,
-					label: "intro",
-					offsetSeed: introOffsetSeed,
+					label: i ? `intro_b${i}` : "intro",
+					offsetSeed: introOffsetSeed + i,
 					addFades: true,
+					syncTier: OPENING_PRESENTER_USE_HERO_SYNC ? "hero" : "standard",
 					cameraMotion: introCameraMotion,
+					maxRetries: OPENING_PRESENTER_SYNC_RETRIES,
 				});
 			} catch (e) {
-				logJob(jobId, "intro presenter render failed; using non-presenter visual", {
+				introPresenterError = e;
+				logJob(jobId, "intro presenter render attempt failed", {
+					attempt: i,
 					error: e.message,
 				});
 			}
 		}
 		if (!introBase) {
+			if (introPresenterError) {
+				logJob(jobId, "strict intro presenter unavailable; using images", {
+					error: introPresenterError.message,
+					attempts: introBaselineCandidates.length,
+				});
+			}
 			introBase = await renderNonPresenterFallbackSegment({
 				segDur: introDurationSec,
 				audioPath: introAudioPath,
@@ -24062,7 +24329,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				addFades: true,
 				cameraMotion: { ...introCameraMotion, visualType: "image" },
 				preferredImagePaths: feedImageFallbackPaths,
-				reason: introBaseline
+				reason: introBaselineCandidates.length
 					? "intro_presenter_render_failed"
 					: "intro_presenter_motion_unavailable",
 			});
@@ -24089,6 +24356,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		// 11) Content segment pipeline
 		const segmentVideos = [introPath];
+		const requiredPresenterSegmentSet = new Set(
+			timeline
+				.filter((seg) => seg.mustUsePresenter)
+				.map((seg) => seg.index),
+		);
 		const renderUnits = await buildRenderableTimelineUnits({
 			timeline,
 			tmpDir,
@@ -24117,9 +24389,17 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				visualType: seg.visualType || "presenter",
 			});
 
+			const renderSegmentIndices = seg.renderSegmentIndices || [seg.index];
+			const mustUsePresenter = renderSegmentIndices.some((idx) =>
+				requiredPresenterSegmentSet.has(idx),
+			);
 			const exprKey = seg.videoExpression || seg.expression || "neutral";
-			const baselineSource =
-				pickBaselineVariant(exprKey, seg.index) || baselineDefault;
+			const baselineCandidates = pickBaselineCandidates(
+				exprKey,
+				seg.index,
+				mustUsePresenter ? OPENING_PRESENTER_BASELINE_TRIES : 1,
+			);
+			const baselineSource = baselineCandidates[0] || baselineDefault;
 			let norm = null;
 			const plannedVisualType = seg.visualType || "presenter";
 			let actualVisualType = plannedVisualType;
@@ -24294,25 +24574,58 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					actualVisualType = "presenter_fallback";
 					fallbackReason = "image_render_unavailable";
 				}
-				try {
-					norm = await renderLipsyncedSegment({
-						jobId,
-						tmpDir,
-						output,
-						baselineSource,
-						segDur,
-						audioPath: seg.audioPath,
-						label: seg.renderLabel || String(seg.index),
-						offsetSeed: seg.index,
-						addFades: ENABLE_SEGMENT_FADES,
-						syncTier: seg.syncTier || "standard",
-						cameraMotion: seg.cameraMotion,
-					});
-				} catch (e) {
+				let presenterRenderError = null;
+				const presenterCandidates = baselineCandidates.length
+					? baselineCandidates
+					: baselineSource
+						? [baselineSource]
+						: [];
+				for (
+					let i = 0;
+					i < presenterCandidates.length && !norm;
+					i += 1
+				) {
+					try {
+						norm = await renderLipsyncedSegment({
+							jobId,
+							tmpDir,
+							output,
+							baselineSource: presenterCandidates[i],
+							segDur,
+							audioPath: seg.audioPath,
+							label: i
+								? `${seg.renderLabel || seg.index}_b${i}`
+								: seg.renderLabel || String(seg.index),
+							offsetSeed: seg.index + i,
+							addFades: ENABLE_SEGMENT_FADES,
+							syncTier:
+								mustUsePresenter
+									? OPENING_PRESENTER_USE_HERO_SYNC
+										? "hero"
+										: "standard"
+									: seg.syncTier || "standard",
+							cameraMotion: seg.cameraMotion,
+							maxRetries: mustUsePresenter
+								? OPENING_PRESENTER_SYNC_RETRIES
+								: SYNC_SO_SEGMENT_MAX_RETRIES,
+						});
+					} catch (e) {
+						presenterRenderError = e;
+						logJob(jobId, "presenter segment render attempt failed", {
+							segment: seg.index,
+							renderLabel: seg.renderLabel || String(seg.index),
+							attempt: i,
+							mustUsePresenter,
+							error: e.message,
+						});
+					}
+				}
+				if (!norm) {
 					logJob(jobId, "presenter segment render failed; using non-presenter visual", {
 						segment: seg.index,
 						renderLabel: seg.renderLabel || String(seg.index),
-						error: e.message,
+						mustUsePresenter,
+						error: presenterRenderError?.message || "unknown error",
 					});
 					norm = await renderNonPresenterFallbackSegment({
 						segDur,
