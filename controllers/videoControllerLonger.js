@@ -2901,6 +2901,8 @@ const PROMPT_BRIEF_SINGLE_LABEL_RE =
 	/\b(title|headline|seo\s*title(?:\s*request)?|title\s*request|reference\s*title(?:\s*idea)?|opening\s*line|hook|why\s+it\s+can\s+work|why\s+it\s+works|audience|must\s+include|avoid|ending|stats?|facts?|visuals?|b[-\s]?roll|thumbnail(?:\s*(?:text|idea))?|(?:\d+\s*[-\s]*)?minute\s*structure|structure|outline)\s*:/i;
 const PROMPT_BRIEF_STRUCTURE_LINE_RE =
 	/^\s*(?:minute|part|section|beat)\s*\d{1,2}\s*:\s*(.+)$/i;
+const PROMPT_BRIEF_INLINE_LABEL_RE =
+	/\s+(?=(?:title|headline|seo\s*title(?:\s*request)?|title\s*request|reference\s*title(?:\s*idea)?|opening\s*line|hook|why\s+it\s+can\s+work|why\s+it\s+works|angle|tone|audience|must\s+include|avoid|ending|end|outro|sources?|stats?|facts?|thumbnail(?:\s*(?:text|idea))?|visuals?|b[-\s]?roll|feed\s*(?:images?|videos?)?|(?:\d+\s*[-\s]*)?minute\s*structure|structure|outline|minute\s*\d{1,2}|part\s*\d{1,2}|section\s*\d{1,2}|beat\s*\d{1,2})\s*:)/gi;
 
 function parseTopListNumberToken(token = "") {
 	const raw = String(token || "")
@@ -3025,6 +3027,15 @@ function normalizePromptBriefKey(raw = "") {
 		.trim();
 }
 
+function normalizePromptBriefInput(text = "") {
+	return String(text || "")
+		.replace(/\\r\\n|\\n|\\r/g, "\n")
+		.replace(/\r\n?/g, "\n")
+		.replace(PROMPT_BRIEF_INLINE_LABEL_RE, "\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
 function isPromptFactStatLine(line = "") {
 	const raw = normalizeWhitespace(line);
 	if (!raw) return false;
@@ -3055,7 +3066,8 @@ function isPromptFactStatLine(line = "") {
 }
 
 function parseStructuredPromptBrief(promptText = "") {
-	const raw = String(promptText || "").trim();
+	const rawOriginal = String(promptText || "").trim();
+	const raw = normalizePromptBriefInput(rawOriginal);
 	if (!raw) {
 		return {
 			isStructured: false,
@@ -3152,6 +3164,7 @@ function parseStructuredPromptBrief(promptText = "") {
 		}
 		if (pendingKey) {
 			appendFieldValue(pendingKey, line, originalLine);
+			pendingKey = "";
 			continue;
 		}
 		if (isSeoTitleRequestText(line)) {
@@ -3179,8 +3192,10 @@ function parseStructuredPromptBrief(promptText = "") {
 	const titleLocked = Boolean(title && !wantsSeoTitle && (explicitTitle || inferredTitle));
 	const openingLine = stripOuterQuotes(fields.opening_line || fields.hook || "");
 	const thumbnailText = normalizePromptThumbnailText(fields.thumbnail_text || "");
+	const primaryTopicSeed =
+		wantsSeoTitle && promptHeading ? promptHeading : title || promptHeading;
 	const primaryTopic =
-		cleanTopicLabel(title || stripPromptHeadingNumber(heading)) ||
+		cleanTopicLabel(primaryTopicSeed || stripPromptHeadingNumber(heading)) ||
 		normalizePromptTopic(stripSeoTitleRequestText(raw)).slice(0, 120);
 	const briefLines = uniqueStrings(
 		[
@@ -3257,16 +3272,17 @@ function parseStructuredPromptBrief(promptText = "") {
 		wantsSeoTitle,
 		thumbnailText,
 		structureLines: uniqueStrings(structureLines, { limit: 12 }),
-		raw: raw.slice(0, 5000),
+		raw: rawOriginal.slice(0, 5000),
 	};
 }
 
 function shouldTreatPromptAsSingleBrief(promptText = "") {
 	const raw = String(promptText || "").trim();
 	if (!raw) return false;
-	if (PROMPT_BRIEF_SINGLE_LABEL_RE.test(raw)) return true;
+	const normalized = normalizePromptBriefInput(raw);
+	if (PROMPT_BRIEF_SINGLE_LABEL_RE.test(normalized)) return true;
 	if (raw.length >= 220 && /[.?!]\s+/.test(raw)) return true;
-	const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+	const lines = normalized.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 	return lines.length >= 3 && lines.some((line) => /\d|%|\$/.test(line));
 }
 
@@ -14626,13 +14642,29 @@ function buildShortSegmentExtension({
 					"The useful answer starts with the pressure viewers can actually act on today.",
 					"The practical question is what changes in the next decision, not just the headline.",
 					"The clearest answer is the one that turns the story into a specific next step.",
+					"The next move is to separate what feels urgent from what is actually useful.",
+					"The better question is which choice gives the viewer more control today.",
 				]
 			: [
 					"For viewers, the useful part is how this pressure shows up in real choices.",
 					"That matters because the consequence is practical, not just emotional.",
 					"The strongest takeaway is the small change that gives people more control.",
+					"The useful shift is to make the hidden pressure visible before it becomes a crisis.",
+					"That turns the point into something practical instead of another reason to feel blamed.",
+					"The viewer takeaway is simple: find the quiet leak before chasing a perfect budget.",
+					"That gives the story a concrete next step instead of leaving people with guilt.",
 				],
 	);
+}
+
+function removeRepeatedSentenceFromText(text = "", repeatedSentence = "") {
+	const repeatedKey = normalizeQaText(repeatedSentence);
+	if (!repeatedKey) return sanitizeSegmentText(text);
+	const kept = splitSentences(text).filter((sentence) => {
+		const key = normalizeQaText(sentence);
+		return !key || key !== repeatedKey;
+	});
+	return sanitizeSegmentText(kept.join(" "));
 }
 
 function sentenceHasBlockingScriptArtifact(sentence = "") {
@@ -14676,13 +14708,17 @@ function repairBlockingScriptArtifacts({
 		...(speakability.stats?.stockPhraseSegments || []),
 		...(speakability.stats?.speechAwkwardSegments || []),
 	]);
+	const repeatedSentenceByIndex = new Map();
 	for (const group of speakability.stats?.repeatedSentenceGroups || []) {
 		const indices = Array.isArray(group?.segments) ? group.segments : [];
 		const repeatedText = String(group?.sentence || "");
 		if (SCRIPT_STOCK_PHRASE_PATTERNS.some((rx) => rx.test(repeatedText))) {
 			indices.forEach((idx) => badIndices.add(idx));
 		} else {
-			indices.slice(1).forEach((idx) => badIndices.add(idx));
+			indices.slice(1).forEach((idx) => {
+				badIndices.add(idx);
+				repeatedSentenceByIndex.set(idx, repeatedText);
+			});
 		}
 	}
 	if (!badIndices.size) return { script, changed: [] };
@@ -14693,6 +14729,12 @@ function repairBlockingScriptArtifacts({
 		if (!badIndices.has(idx)) return segment;
 		const original = sanitizeSegmentText(segment?.text || "");
 		let text = stripBlockingScriptArtifacts(original);
+		if (repeatedSentenceByIndex.has(idx)) {
+			text = removeRepeatedSentenceFromText(
+				text,
+				repeatedSentenceByIndex.get(idx),
+			);
+		}
 		if (countWords(text) < QA_MIN_SEGMENT_WORDS) {
 			const extension = buildShortSegmentExtension({
 				text,
