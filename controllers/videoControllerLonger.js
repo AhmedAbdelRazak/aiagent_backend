@@ -3066,6 +3066,63 @@ function isPromptFactStatLine(line = "") {
 	);
 }
 
+function extractPromptQuotedFragments(text = "") {
+	const raw = String(text || "");
+	const out = [];
+	const re = /["\u201c]([^"\u201d]{8,260})["\u201d]|[\u2018]([^\u2019]{8,260})[\u2019]/g;
+	let match;
+	while ((match = re.exec(raw))) {
+		const value = stripOuterQuotes(match[1] || match[2] || "");
+		if (value) out.push(value);
+	}
+	return out;
+}
+
+function normalizePromptMustIncludeLines(text = "") {
+	const raw = normalizeWhitespace(text);
+	if (!raw) return [];
+	const quoted = extractPromptQuotedFragments(raw);
+	const candidates = quoted.length
+		? quoted
+		: splitSentences(
+				raw
+					.replace(
+						/^(?:make\s+sure\s+to\s+)?(?:must\s+)?include(?:\s+the)?(?:\s+exact|\s+memorable|\s+important)?(?:\s+line|\s+sentence)?:?\s*/i,
+						"",
+					)
+					.replace(/\binclude\s+the\s+(?:exact|memorable|important)\s+(?:line|sentence):\s*/i, ""),
+			);
+	return uniqueStrings(
+		candidates
+			.map((line) => sanitizeSegmentText(stripOuterQuotes(line)))
+			.filter((line) => countWords(line) >= 4 && countWords(line) <= 42),
+		{ limit: 4 },
+	);
+}
+
+function normalizePromptOutroLine(text = "") {
+	let raw = stripOuterQuotes(normalizeWhitespace(text));
+	if (!raw) return "";
+	const quoted = extractPromptQuotedFragments(raw);
+	if (quoted.length) raw = quoted[quoted.length - 1];
+	raw = sanitizeIntroOutroLine(raw)
+		.replace(/\blet\s+know\s+know\b/gi, "let me know")
+		.replace(/\blet\s+me\s+know\s+what\s+do\s+you\s+think\b/gi, "tell me what you think")
+		.trim();
+	if (!raw) return "";
+	if (!/[.!?]$/.test(raw)) raw = `${raw}.`;
+	if (countWords(raw) <= 24) return raw;
+	const question = splitSentences(raw).find((sentence) => /\?/.test(sentence));
+	if (question && countWords(question) <= 16) {
+		return sanitizeIntroOutroLine(
+			`Please like, subscribe, and tell me: ${question
+				.replace(/^\s*(?:please\s+)?(?:like|subscribe|comment|tell\s+me)\b[^:?]*[:?]?\s*/i, "")
+				.trim()}`,
+		);
+	}
+	return sanitizeIntroOutroLine(trimSegmentToCap(raw, 24));
+}
+
 function parseStructuredPromptBrief(promptText = "") {
 	const rawOriginal = String(promptText || "").trim();
 	const raw = normalizePromptBriefInput(rawOriginal);
@@ -3084,6 +3141,8 @@ function parseStructuredPromptBrief(promptText = "") {
 			wantsSeoTitle: false,
 			thumbnailText: "",
 			structureLines: [],
+			mustIncludeLines: [],
+			outroLine: "",
 		};
 	}
 
@@ -3193,6 +3252,10 @@ function parseStructuredPromptBrief(promptText = "") {
 	const titleLocked = Boolean(title && !wantsSeoTitle && (explicitTitle || inferredTitle));
 	const openingLine = stripOuterQuotes(fields.opening_line || fields.hook || "");
 	const thumbnailText = normalizePromptThumbnailText(fields.thumbnail_text || "");
+	const mustIncludeLines = normalizePromptMustIncludeLines(
+		fields.must_include || "",
+	);
+	const outroLine = normalizePromptOutroLine(fields.outro || "");
 	const primaryTopicSeed =
 		wantsSeoTitle && promptHeading ? promptHeading : title || promptHeading;
 	const primaryTopic =
@@ -3273,6 +3336,8 @@ function parseStructuredPromptBrief(promptText = "") {
 		wantsSeoTitle,
 		thumbnailText,
 		structureLines: uniqueStrings(structureLines, { limit: 12 }),
+		mustIncludeLines,
+		outroLine,
 		raw: rawOriginal.slice(0, 5000),
 	};
 }
@@ -3353,8 +3418,17 @@ function buildPromptFactSearchQueries(promptText = "", topic = "") {
 			topic && /\bscam|fraud\b/i.test(`${topic} ${raw}`)
 				? `${topic} FTC social media scam losses`
 				: "",
-			topic && /\beconomic|economy|rent|grocery|inflation|americans\b/i.test(`${topic} ${raw}`)
+			topic && /\beconomic|economy|rent|grocery|groceries|inflation|americans|broke|paycheck|bills?|subscriptions?|cost of living|budget|debt\b/i.test(`${topic} ${raw}`)
 				? `${topic} BLS Census Federal Reserve household costs`
+				: "",
+			topic && /\bbroke|paycheck|rent|grocery|groceries|bills?|subscriptions?|cost of living|budget|debt\b/i.test(`${topic} ${raw}`)
+				? "BLS CPI rent food wages household spending latest data"
+				: "",
+			topic && /\bbroke|paycheck|rent|grocery|groceries|bills?|subscriptions?|cost of living|budget|debt\b/i.test(`${topic} ${raw}`)
+				? "Federal Reserve household economic well being paycheck to paycheck"
+				: "",
+			topic && /\brent|housing|cost of living|broke|paycheck\b/i.test(`${topic} ${raw}`)
+				? "Census rent burden household income housing costs"
 				: "",
 		]
 			.filter(Boolean)
@@ -10296,11 +10370,31 @@ function collectPromptSeoTitleInstructions(topics = []) {
 	return uniqueStrings(lines, { limit: 5 });
 }
 
+function collectPromptMustIncludeLines(topics = []) {
+	const lines = [];
+	for (const topic of Array.isArray(topics) ? topics : []) {
+		const brief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
+		if (Array.isArray(brief?.mustIncludeLines)) {
+			lines.push(...brief.mustIncludeLines);
+		}
+	}
+	return uniqueStrings(lines, { limit: 6 });
+}
+
 function primaryPromptThumbnailText(topics = []) {
 	for (const topic of Array.isArray(topics) ? topics : []) {
 		const brief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
 		const thumbnailText = normalizePromptThumbnailText(brief?.thumbnailText || "");
 		if (thumbnailText) return thumbnailText;
+	}
+	return "";
+}
+
+function primaryPromptOutroText(topics = []) {
+	for (const topic of Array.isArray(topics) ? topics : []) {
+		const brief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
+		const outroLine = normalizePromptOutroLine(brief?.outroLine || "");
+		if (outroLine) return outroLine;
 	}
 	return "";
 }
@@ -10326,6 +10420,13 @@ function buildPromptBriefInstructionBlock(topics = []) {
 			lines.push(`  Thumbnail badge/text must include: ${brief.thumbnailText}`);
 		if (brief?.openingLine)
 			lines.push(`  Requested opening line: "${brief.openingLine}"`);
+		if (Array.isArray(brief?.mustIncludeLines) && brief.mustIncludeLines.length) {
+			for (const mustLine of brief.mustIncludeLines.slice(0, 4)) {
+				lines.push(`  Must include this line or a very close spoken version: "${mustLine}"`);
+			}
+		}
+		if (brief?.outroLine)
+			lines.push(`  Requested outro/CTA: "${brief.outroLine}"`);
 		if (Array.isArray(brief?.structureLines) && brief.structureLines.length) {
 			lines.push(
 				"  Requested structure: preserve this order; if the requested video duration is longer or shorter, scale the depth proportionally instead of changing the topic.",
@@ -10388,6 +10489,75 @@ function combineOpeningLineWithSegment({
 	return sanitizeSegmentText(`${opening}${rest ? ` ${rest}` : ""}`.trim());
 }
 
+function promptMustIncludeTargetIndex(segments = [], line = "") {
+	const includeTokens = tokenizeQaText(line)
+		.filter((t) => t.length > 2)
+		.filter((t) => !["you", "your", "the", "and", "from", "that", "this"].includes(t));
+	const financeNeedle = /\b(subscription|automatic|withdrawal|autopay|charge|bill|broke|spending|paycheck|budget|leak)\b/i.test(
+		line,
+	);
+	let bestIdx = -1;
+	let bestScore = -1;
+	for (let i = 0; i < segments.length; i++) {
+		const text = String(segments[i]?.text || "");
+		const hayTokens = new Set(tokenizeQaText(text));
+		let score = includeTokens.reduce(
+			(sum, token) => sum + (hayTokens.has(token) ? 2 : 0),
+			0,
+		);
+		if (
+			financeNeedle &&
+			/\b(subscription|automatic|autopay|recurring|charge|bill|spending|paycheck|budget|leak)\b/i.test(
+				text,
+			)
+		) {
+			score += 8;
+		}
+		if (i === 0) score -= 2;
+		if (score > bestScore) {
+			bestScore = score;
+			bestIdx = i;
+		}
+	}
+	if (bestIdx >= 0 && bestScore > 0) return bestIdx;
+	return Math.max(0, Math.min(segments.length - 1, Math.floor(segments.length * 0.38)));
+}
+
+function insertPromptMustIncludeLine({
+	text = "",
+	mustLine = "",
+	cap = 0,
+} = {}) {
+	const include = sanitizeSegmentText(stripOuterQuotes(mustLine));
+	let current = stripBlockingScriptArtifacts(sanitizeSegmentText(text));
+	if (!include) return current;
+	if (normalizeQaText(current).includes(normalizeQaText(include))) return current;
+
+	const sentences = splitSentences(current).filter(Boolean);
+	const includeWords = countWords(include);
+	const maxWords = Math.max(
+		Number(cap || 0) || 0,
+		countWords(current) + includeWords,
+		includeWords + 10,
+	);
+	const shouldReplaceWeakTail =
+		sentences.length > 1 &&
+		(countWords(current) + includeWords > maxWords + 8 ||
+			/\b(that'?s the takeaway|viewer takeaway|concrete next step|story moving|story is bigger)\b/i.test(
+				sentences[sentences.length - 1] || "",
+			));
+
+	if (shouldReplaceWeakTail) {
+		current = sentences.slice(0, -1).join(" ").trim();
+	}
+	let combined = sanitizeSegmentText(`${current} ${include}`.trim());
+	if (countWords(combined) <= maxWords + 8) return combined;
+	const roomForCurrent = Math.max(8, maxWords - includeWords);
+	const trimmedCurrent = trimSegmentToCap(current, roomForCurrent);
+	combined = sanitizeSegmentText(`${trimmedCurrent} ${include}`.trim());
+	return combined;
+}
+
 function applyPromptBriefToScript({ script = {}, topics = [], wordCaps = [] } = {}) {
 	if (!script || !Array.isArray(script.segments)) return script;
 	const brief = primaryPromptBrief(topics);
@@ -10410,6 +10580,27 @@ function applyPromptBriefToScript({ script = {}, topics = [], wordCaps = [] } = 
 		next.segments[idx].text = combineOpeningLineWithSegment({
 			openingLine: brief.openingLine,
 			text: next.segments[idx].text,
+			cap,
+		});
+	}
+	const mustIncludeLines = collectPromptMustIncludeLines(topics);
+	for (const mustLine of mustIncludeLines) {
+		const key = normalizeQaText(mustLine);
+		if (!key) continue;
+		const fullText = normalizeQaText(
+			next.segments.map((s) => s.text || "").join(" "),
+		);
+		if (fullText.includes(key)) continue;
+		const idx = promptMustIncludeTargetIndex(next.segments, mustLine);
+		if (idx < 0 || !next.segments[idx]) continue;
+		const cap = Math.max(
+			Number(wordCaps[next.segments[idx].index] || wordCaps[idx] || 0) || 0,
+			countWords(next.segments[idx].text || "") + countWords(mustLine),
+			countWords(mustLine) + 10,
+		);
+		next.segments[idx].text = insertPromptMustIncludeLine({
+			text: next.segments[idx].text,
+			mustLine,
 			cap,
 		});
 	}
@@ -11026,7 +11217,7 @@ const THUMBNAIL_INTENT_RULES = [
 	},
 	{
 		intent: "finance",
-		re: /\b(stock|shares|ipo|earnings|revenue|sec|market|inflation|interest rate|crypto|bitcoin|ethereum)\b/i,
+		re: /\b(stock|shares|ipo|earnings|revenue|sec|market|inflation|interest rate|crypto|bitcoin|ethereum|paycheck|rent|grocer(?:y|ies)|broke|budget|debt|bills?|subscriptions?|autopay|cost of living)\b/i,
 	},
 	{
 		intent: "politics",
@@ -11373,6 +11564,26 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 						? `${lastName} DETAILS`
 						: actionHeadline) || "";
 			if (fallback) resolvedHeadline = clampHeadline(fallback);
+		}
+	}
+	const promptBadge = primaryPromptThumbnailText(topics);
+	const topicHay = [
+		title || "",
+		signals.displayTopic || "",
+		signals.angle || "",
+		signals.reason || "",
+		(signals.keywords || []).join(" "),
+		promptBadge,
+	]
+		.join(" ")
+		.toLowerCase();
+	if (/\b(broke|paycheck|rent|grocery|groceries|bills?|budget|cost of living|subscriptions?)\b/.test(topicHay)) {
+		if (/\bjob|paycheck|work|working|employed\b/.test(topicHay)) {
+			resolvedHeadline = clampHeadline(promptBadge ? "WITH A JOB?" : "STILL BROKE?");
+		} else if (/\brent\b/.test(topicHay)) {
+			resolvedHeadline = clampHeadline("RENT SQUEEZE");
+		} else {
+			resolvedHeadline = clampHeadline("MONEY SQUEEZE");
 		}
 	}
 
@@ -12809,8 +13020,13 @@ function buildOutroLine({
 	shortTitle,
 	mood = "neutral",
 	includeQuestion = true,
+	promptOutroText = "",
 }) {
 	void includeQuestion;
+	const requestedOutro = normalizePromptOutroLine(
+		promptOutroText || primaryPromptOutroText(topics),
+	);
+	if (requestedOutro) return sanitizeIntroOutroLine(requestedOutro);
 	const question = buildOutroEngagementQuestion({ topics, shortTitle, mood });
 	let line = `If this helped, please like and subscribe, and tell me: ${question}`;
 	if (countWords(line) > 20) {
@@ -12820,6 +13036,49 @@ function buildOutroLine({
 		line = `Please like, subscribe, and tell me: ${question}`;
 	}
 	return sanitizeIntroOutroLine(line);
+}
+
+function resolveYoutubeCategoryLabelForPrompt({
+	categoryLabel = "",
+	topics = [],
+	script = {},
+} = {}) {
+	const label = String(categoryLabel || "").trim();
+	if (!label) return label;
+	const text = [
+		label,
+		script?.title || "",
+		script?.shortTitle || "",
+		...(Array.isArray(topics)
+			? topics.map((t) =>
+					[
+						t?.displayTopic,
+						t?.topic,
+						t?.angle,
+						...(Array.isArray(t?.keywords) ? t.keywords : []),
+						...(Array.isArray(t?.promptBrief?.briefLines)
+							? t.promptBrief.briefLines
+							: []),
+					]
+						.filter(Boolean)
+						.join(" "),
+				)
+			: []),
+		...(Array.isArray(script?.segments)
+			? script.segments.map((s) => s?.text || "")
+			: []),
+	]
+		.join(" ")
+		.toLowerCase();
+	if (
+		label === "Finance" &&
+		/\b(broke|paycheck|budget|rent|grocer(?:y|ies)|bills?|subscriptions?|spending|cost of living|personal finance|track one week|cancel leaks|delay emotional purchases)\b/.test(
+			text,
+		)
+	) {
+		return "Education";
+	}
+	return label;
 }
 
 const SEGMENT_ENDING_BLOCKLIST = new Set([
@@ -12859,8 +13118,8 @@ function hasOpenParenthetical(text = "") {
 function appendClosingPhrase(text = "", mood = "neutral") {
 	const closer =
 		mood === "serious"
-			? "That's the takeaway for now."
-			: "That's the takeaway.";
+			? "That is the safest reading for now."
+			: "That is the cleanest read for now.";
 	const base = String(text || "").trim();
 	if (!base) return closer;
 	const needsPunct = /[.!?]["')\]]?$/.test(base) ? "" : ".";
@@ -13392,6 +13651,7 @@ const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
 
 const SCRIPT_STOCK_PHRASE_PATTERNS = [
 	/\bthat\s+is\s+the\s+turn\b/i,
+	/\bthat'?s\s+the\s+takeaway\b/i,
 	/\bnext\s+detail\s+changes\s+how\b/i,
 	/\bthe\s+next\s+detail\s+changes\s+how\b/i,
 	/\bthe\s+confirmed\s+picture\s+is\s+still\s+narrow\b/i,
@@ -13401,7 +13661,13 @@ const SCRIPT_STOCK_PHRASE_PATTERNS = [
 	/\bdetail\s+that\s+changes\s+what\s+viewers\s+should\s+actually\s+think\b/i,
 	/\bwhat\s+viewers\s+should\s+actually\s+think\b/i,
 	/\bthat\s+keeps\s+the\s+story\s+moving\s+toward\s+evidence\b/i,
+	/\bthat\s+gives\s+the\s+story\s+a\s+concrete\s+next\s+step\b/i,
+	/\bthe\s+story\s+is\s+bigger\s+than\s+one\s+paycheck\b/i,
+	/\bconcrete\s+next\s+step\s+instead\s+of\s+leaving\s+people\s+with\s+guilt\b/i,
 	/\bclearer\s+viewer\s+takeaway\b/i,
+	/\bviewer\s+takeaway\s+is\s+simple\b/i,
+	/\bstrongest\s+takeaway\s+is\s+the\s+small\s+change\b/i,
+	/\buseful\s+shift\s+is\s+to\s+make\s+the\s+hidden\s+pressure\s+visible\b/i,
 ];
 
 const SCRIPT_SERIOUS_CASUAL_PATTERNS = [
@@ -14653,6 +14919,27 @@ function buildShortSegmentExtension({
 					],
 		);
 	}
+	if (
+		/\b(broke|paycheck|rent|grocery|groceries|subscription|autopay|automatic|withdrawal|budget|debt|inflation|costs?|bills?|spending|savings?)\b/i.test(
+			`${topicLabel} ${text}`,
+		)
+	) {
+		return pick(
+			isQuestion
+				? [
+						"The honest answer starts with separating pressure you caused from pressure the system added.",
+						"The useful question is which expense quietly changed the month.",
+						"The practical answer starts with making the invisible charges visible.",
+					]
+				: [
+						"That matters because clarity lowers the shame and shows where one small change can start.",
+						"The practical move is to make the pressure visible before deciding what to cut.",
+						"For someone living close to the line, even one quiet leak can change the week.",
+						"The goal is not a perfect budget; it is one decision that gives the paycheck more room.",
+						"That keeps the advice humane: reduce the leak without pretending rent and groceries are easy.",
+					],
+		);
+	}
 	return pick(
 		isQuestion
 			? [
@@ -14665,11 +14952,9 @@ function buildShortSegmentExtension({
 			: [
 					"For viewers, the useful part is how this pressure shows up in real choices.",
 					"That matters because the consequence is practical, not just emotional.",
-					"The strongest takeaway is the small change that gives people more control.",
-					"The useful shift is to make the hidden pressure visible before it becomes a crisis.",
 					"That turns the point into something practical instead of another reason to feel blamed.",
-					"The viewer takeaway is simple: find the quiet leak before chasing a perfect budget.",
-					"That gives the story a concrete next step instead of leaving people with guilt.",
+					"The practical point is what changes in the next decision, not just how the headline feels.",
+					"That gives the audience a specific way to think about the pressure.",
 				],
 	);
 }
@@ -14703,14 +14988,14 @@ function stripBlockingScriptArtifacts(text = "") {
 	const kept = sentences.filter(
 		(sentence) => !sentenceHasBlockingScriptArtifact(sentence),
 	);
-	let cleaned = kept.length ? kept.join(" ") : String(text || "");
+	let cleaned = kept.length ? kept.join(" ") : "";
 	cleaned = cleaned
 		.replace(/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s+(?=(?:That|This|The|It)\b)/i, "")
 		.trim();
 	for (const rx of SCRIPT_STOCK_PHRASE_PATTERNS) {
 		cleaned = cleaned.replace(rx, " ").replace(/\s+/g, " ").trim();
 	}
-	return sanitizeSegmentText(cleaned);
+	return cleaned ? sanitizeSegmentText(cleaned) : "";
 }
 
 function repairBlockingScriptArtifacts({
@@ -20864,9 +21149,14 @@ async function runLongVideoJob(
 			lockTitle: shouldLockPromptBriefTitle(primaryPromptBrief(topicPicks)),
 			titleInstructions: collectPromptSeoTitleInstructions(topicPicks),
 		});
+		const promptYoutubeCategoryLabel = resolveYoutubeCategoryLabelForPrompt({
+			categoryLabel,
+			topics: topicPicks,
+			script,
+		});
 		const youtubeCategoryFinal =
-			contentMode === "prompt" && YT_CATEGORY_MAP[categoryLabel]
-				? categoryLabel
+			contentMode === "prompt" && YT_CATEGORY_MAP[promptYoutubeCategoryLabel]
+				? promptYoutubeCategoryLabel
 				: YT_CATEGORY_MAP[youtubeCategory]
 					? youtubeCategory
 					: LONG_VIDEO_YT_CATEGORY;
