@@ -138,6 +138,19 @@ const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
 const RUNWAY_VERSION = "2024-11-06";
 const RUNWAY_VIDEO_MODEL = "gen4.5";
 const RUNWAY_VIDEO_MODEL_FALLBACK = "gen4_turbo";
+const RUNWAY_RECHARGE_RETRY_ATTEMPTS = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_RUNWAY_RECHARGE_RETRIES ?? 4, 0, 8),
+);
+const RUNWAY_RECHARGE_WAIT_MS = clampNumber(
+	process.env.LONG_VIDEO_RUNWAY_RECHARGE_WAIT_MS ?? 25000,
+	5000,
+	120000,
+);
+const RUNWAY_RECHARGE_BACKOFF_MS = clampNumber(
+	process.env.LONG_VIDEO_RUNWAY_RECHARGE_BACKOFF_MS ?? 5000,
+	0,
+	60000,
+);
 
 const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
 const SYNC_SO_BASE = "https://api.sync.so";
@@ -903,6 +916,8 @@ function getLongVideoRuntimeProfile() {
 		requireRealPresenterVideo: REQUIRE_REAL_PRESENTER_VIDEO,
 		allowStaticPresenterFallback: ALLOW_STATIC_PRESENTER_FALLBACK,
 		enableRunwayBaseline: ENABLE_RUNWAY_BASELINE,
+		runwayRechargeRetries: RUNWAY_RECHARGE_RETRY_ATTEMPTS,
+		runwayRechargeWaitSec: Number((RUNWAY_RECHARGE_WAIT_MS / 1000).toFixed(1)),
 		useMotionRefBaseline: USE_MOTION_REF_BASELINE,
 		feedVideoEnabled: FEED_VIDEO_ENABLED,
 		feedVideoMaxSegments: FEED_VIDEO_MAX_SEGMENTS,
@@ -9806,6 +9821,53 @@ async function pollRunwayTask(taskId, label) {
 	throw new Error(`${label} timed out`);
 }
 
+function runwayErrorText(err) {
+	if (!err) return "";
+	if (typeof err === "string") return err;
+	const parts = [];
+	if (err.message) parts.push(err.message);
+	if (err.response?.status) parts.push(String(err.response.status));
+	const data = err.response?.data;
+	if (typeof data === "string") parts.push(data);
+	else if (data && typeof data === "object") {
+		try {
+			parts.push(JSON.stringify(data));
+		} catch {}
+	}
+	return parts.filter(Boolean).join(" ");
+}
+
+function isRunwayRechargeOrLimitError(err) {
+	const text = runwayErrorText(err).toLowerCase();
+	if (!text) return false;
+	return /\b(402|429|credit|credits|balance|quota|rate\s*limit|too many requests|billing|payment|insufficient|recharg|points?|resource exhausted|temporarily unavailable|capacity)\b/i.test(
+		text,
+	);
+}
+
+async function waitForRunwayRecharge({
+	jobId,
+	label = "runway",
+	model = "",
+	attempt = 0,
+	error = "",
+}) {
+	const waitMs = Math.round(
+		RUNWAY_RECHARGE_WAIT_MS +
+			Math.max(0, Number(attempt) || 0) * RUNWAY_RECHARGE_BACKOFF_MS,
+	);
+	if (jobId) {
+		logJob(jobId, "runway recharge wait", {
+			label,
+			model,
+			attempt: Number(attempt) + 1,
+			waitSec: Number((waitMs / 1000).toFixed(1)),
+			error: String(error || "").slice(0, 500),
+		});
+	}
+	await sleep(waitMs);
+}
+
 function runwayRatio(ratio) {
 	// Runway accepts explicit resolutions; keep safe set
 	const allowed = new Set([
@@ -9842,6 +9904,8 @@ async function runwayImageToVideo({
 	durationSec,
 	ratio,
 	modelOrder,
+	jobId = "",
+	label = "runway_image_to_video",
 }) {
 	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
 	const models = [];
@@ -9872,23 +9936,83 @@ async function runwayImageToVideo({
 			duration: clampNumber(Math.round(Number(durationSec) || 5), 2, 10),
 		};
 
-		const res = await axios.post(
-			"https://api.dev.runwayml.com/v1/image_to_video",
-			payload,
-			{
-				headers: runwayHeadersJson(),
-				timeout: 30000,
-				validateStatus: (s) => s < 500,
-			},
-		);
-		if (res.status < 300 && res.data?.id)
-			return await pollRunwayTask(res.data.id, "runway_image_to_video");
+		for (
+			let rechargeAttempt = 0;
+			rechargeAttempt <= RUNWAY_RECHARGE_RETRY_ATTEMPTS;
+			rechargeAttempt++
+		) {
+			try {
+				const res = await axios.post(
+					"https://api.dev.runwayml.com/v1/image_to_video",
+					payload,
+					{
+						headers: runwayHeadersJson(),
+						timeout: 30000,
+						validateStatus: (s) => s < 500,
+					},
+				);
+				if (res.status < 300 && res.data?.id) {
+					try {
+						return await pollRunwayTask(res.data.id, label);
+					} catch (e) {
+						lastErr = e;
+						if (
+							isRunwayRechargeOrLimitError(e) &&
+							rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
+						) {
+							await waitForRunwayRecharge({
+								jobId,
+								label,
+								model,
+								attempt: rechargeAttempt,
+								error: runwayErrorText(e),
+							});
+							continue;
+						}
+						break;
+					}
+				}
 
-		const msg =
-			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
-		lastErr = new Error(
-			`Runway image_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
-		);
+				const msg =
+					typeof res.data === "string"
+						? res.data
+						: JSON.stringify(res.data || {});
+				lastErr = new Error(
+					`Runway image_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
+				);
+				if (
+					isRunwayRechargeOrLimitError(lastErr) &&
+					rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
+				) {
+					await waitForRunwayRecharge({
+						jobId,
+						label,
+						model,
+						attempt: rechargeAttempt,
+						error: runwayErrorText(lastErr),
+					});
+					continue;
+				}
+				break;
+			} catch (e) {
+				lastErr = e;
+				if (
+					isRunwayRechargeOrLimitError(e) &&
+					rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
+				) {
+					await waitForRunwayRecharge({
+						jobId,
+						label,
+						model,
+						attempt: rechargeAttempt,
+						error: runwayErrorText(e),
+					});
+					continue;
+				}
+				break;
+			}
+		}
+
 		if (model !== models[models.length - 1]) {
 			console.warn(
 				`[Runway] image_to_video failed for model ${model}; trying fallback ${
@@ -9906,6 +10030,8 @@ async function runwayVideoToVideo({
 	ratio,
 	seed,
 	references,
+	jobId = "",
+	label = "runway_video_to_video",
 }) {
 	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
 
@@ -9919,25 +10045,83 @@ async function runwayVideoToVideo({
 		...(Array.isArray(references) && references.length ? { references } : {}),
 	};
 
-	const res = await axios.post(
-		"https://api.dev.runwayml.com/v1/video_to_video",
-		payload,
-		{
-			headers: runwayHeadersJson(),
-			timeout: 30000,
-			validateStatus: (s) => s < 500,
-		},
-	);
+	let lastErr = null;
+	for (
+		let rechargeAttempt = 0;
+		rechargeAttempt <= RUNWAY_RECHARGE_RETRY_ATTEMPTS;
+		rechargeAttempt++
+	) {
+		try {
+			const res = await axios.post(
+				"https://api.dev.runwayml.com/v1/video_to_video",
+				payload,
+				{
+					headers: runwayHeadersJson(),
+					timeout: 30000,
+					validateStatus: (s) => s < 500,
+				},
+			);
 
-	if (res.status >= 300 || !res.data?.id) {
-		const msg =
-			typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
-		throw new Error(
-			`Runway video_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
-		);
+			if (res.status < 300 && res.data?.id) {
+				try {
+					return await pollRunwayTask(res.data.id, label);
+				} catch (e) {
+					lastErr = e;
+					if (
+						isRunwayRechargeOrLimitError(e) &&
+						rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
+					) {
+						await waitForRunwayRecharge({
+							jobId,
+							label,
+							model: "gen4_aleph",
+							attempt: rechargeAttempt,
+							error: runwayErrorText(e),
+						});
+						continue;
+					}
+					break;
+				}
+			}
+
+			const msg =
+				typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
+			lastErr = new Error(
+				`Runway video_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
+			);
+			if (
+				isRunwayRechargeOrLimitError(lastErr) &&
+				rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
+			) {
+				await waitForRunwayRecharge({
+					jobId,
+					label,
+					model: "gen4_aleph",
+					attempt: rechargeAttempt,
+					error: runwayErrorText(lastErr),
+				});
+				continue;
+			}
+			break;
+		} catch (e) {
+			lastErr = e;
+			if (
+				isRunwayRechargeOrLimitError(e) &&
+				rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
+			) {
+				await waitForRunwayRecharge({
+					jobId,
+					label,
+					model: "gen4_aleph",
+					attempt: rechargeAttempt,
+					error: runwayErrorText(e),
+				});
+				continue;
+			}
+			break;
+		}
 	}
-
-	return await pollRunwayTask(res.data.id, "runway_video_to_video");
+	throw lastErr || new Error("Runway video_to_video failed");
 }
 
 function buildBaselinePrompt(
@@ -20134,6 +20318,8 @@ Keep movements small and realistic. Natural sleeve and fabric movement. No exagg
 			durationSec: dur,
 			ratio: outputRatio,
 			modelOrder: introModelOrder.length ? introModelOrder : undefined,
+			jobId,
+			label: `intro_motion_${label}`,
 		});
 	};
 
@@ -23614,6 +23800,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							promptText: prompt,
 							durationSec: BASELINE_DUR_SEC,
 							ratio: output.ratio,
+							jobId,
+							label: `baseline_${expr}_v${v + 1}`,
 						});
 
 						const outMp4 = path.join(
