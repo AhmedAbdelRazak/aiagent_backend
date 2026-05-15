@@ -565,6 +565,20 @@ const PRESENTER_MOTION_FREEZE_MIN_SEC = clampNumber(0.24, 0.12, 2);
 const PRESENTER_MOTION_FREEZE_NOISE = clampNumber(0.006, 0.0001, 0.01);
 const PRESENTER_MOTION_MAX_FREEZE_RATIO = clampNumber(0.08, 0.03, 0.6);
 const PRESENTER_MOTION_MAX_FREEZE_SEC = clampNumber(0.55, 0.15, 3);
+const PRESENTER_BASELINE_MOTION_MAX_FREEZE_RATIO = clampNumber(
+	process.env.LONG_VIDEO_BASELINE_MOTION_MAX_FREEZE_RATIO ?? 0.18,
+	PRESENTER_MOTION_MAX_FREEZE_RATIO,
+	0.35,
+);
+const PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC = clampNumber(
+	process.env.LONG_VIDEO_BASELINE_MOTION_MAX_FREEZE_SEC ?? 1.2,
+	PRESENTER_MOTION_MAX_FREEZE_SEC,
+	2.5,
+);
+const PRESENTER_BASELINE_MOTION_NEAR_PASS_ENABLED = envFlag(
+	"LONG_VIDEO_BASELINE_MOTION_NEAR_PASS",
+	true,
+);
 const SYNC_SO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
 const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 
@@ -578,7 +592,7 @@ const BASELINE_DUR_SEC = clampNumber(
 	10,
 );
 const BASELINE_VARIANTS = Math.floor(
-	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 2, 1, 3),
+	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 3, 1, 4),
 );
 const CAMERA_ZOOM_OUT = clampNumber(
 	process.env.LONG_VIDEO_CAMERA_ZOOM_OUT ?? 0.96,
@@ -912,6 +926,9 @@ function getLongVideoRuntimeProfile() {
 		fingerprint: LONG_VIDEO_CONTROLLER_FINGERPRINT,
 		baselineDurSec: BASELINE_DUR_SEC,
 		baselineVariants: BASELINE_VARIANTS,
+		baselineNearPassEnabled: PRESENTER_BASELINE_MOTION_NEAR_PASS_ENABLED,
+		baselineMaxFreezeRatio: PRESENTER_BASELINE_MOTION_MAX_FREEZE_RATIO,
+		baselineMaxFreezeSec: PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC,
 		requireLipsync: REQUIRE_LIPSYNC,
 		requireRealPresenterVideo: REQUIRE_REAL_PRESENTER_VIDEO,
 		allowStaticPresenterFallback: ALLOW_STATIC_PRESENTER_FALLBACK,
@@ -18361,10 +18378,16 @@ async function analyzeLipsyncOutput({
 	return result;
 }
 
-async function assertPresenterVideoHasMotion({ videoPath, jobId, label }) {
+async function evaluatePresenterVideoMotion({
+	videoPath,
+	jobId,
+	label,
+	mode = "strict",
+}) {
 	if (!REQUIRE_REAL_PRESENTER_VIDEO || !PRESENTER_MOTION_QA_ENABLED) {
 		return { pass: true, issues: [] };
 	}
+	const qaMode = String(mode || "strict").toLowerCase();
 	const qa = await analyzeLipsyncOutput({
 		videoPath,
 		expectedDurSec: null,
@@ -18372,10 +18395,36 @@ async function assertPresenterVideoHasMotion({ videoPath, jobId, label }) {
 		label,
 		requireMotion: true,
 	});
+	const originalIssues = Array.isArray(qa.issues) ? [...qa.issues] : [];
+	let acceptedNearPass = false;
+	if (
+		!qa.pass &&
+		qaMode === "baseline" &&
+		PRESENTER_BASELINE_MOTION_NEAR_PASS_ENABLED
+	) {
+		const freezeOnly =
+			originalIssues.length > 0 &&
+			originalIssues.every((issue) => issue === "sync_output_frozen");
+		const nearPass =
+			freezeOnly &&
+			Number(qa.durationSec || 0) >= 2 &&
+			Number(qa.maxFreezeSec || 0) <=
+				PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC &&
+			Number(qa.freezeRatio || 0) <=
+				PRESENTER_BASELINE_MOTION_MAX_FREEZE_RATIO;
+		if (nearPass) {
+			qa.pass = true;
+			qa.issues = [];
+			acceptedNearPass = true;
+		}
+	}
 	logJob(jobId, "presenter source motion qa", {
 		label,
 		pass: qa.pass,
 		issues: qa.issues,
+		mode: qaMode,
+		acceptedNearPass,
+		...(acceptedNearPass ? { originalIssues } : {}),
 		durationSec: Number((qa.durationSec || 0).toFixed(3)),
 		maxFreezeSec: Number((qa.maxFreezeSec || 0).toFixed(3)),
 		freezeRatio: Number((qa.freezeRatio || 0).toFixed(3)),
@@ -18385,7 +18434,16 @@ async function assertPresenterVideoHasMotion({ videoPath, jobId, label }) {
 			`presenter_motion_qa_failed:${label}:${qa.issues.join(",") || "unknown"}`,
 		);
 	}
-	return qa;
+	return { ...qa, acceptedNearPass, originalIssues };
+}
+
+async function assertPresenterVideoHasMotion({ videoPath, jobId, label }) {
+	return await evaluatePresenterVideoMotion({
+		videoPath,
+		jobId,
+		label,
+		mode: "strict",
+	});
 }
 
 async function requestSyncSoJob({ videoPath, audioPath, jobId, modelId }) {
@@ -23855,16 +23913,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							jobId,
 							`baseline_sync_${expr}_v${v + 1}`,
 						);
-						const motionQa = await assertPresenterVideoHasMotion({
+						const motionQa = await evaluatePresenterVideoMotion({
 							videoPath: syncReady,
 							jobId,
 							label: `baseline_${expr}_v${v + 1}`,
+							mode: "baseline",
 						});
 						pushBaselineVariant(expr, syncReady);
 						logJob(jobId, "baseline presenter ready", {
 							expression: expr,
 							variant: v + 1,
 							path: path.basename(syncReady),
+							acceptedNearPass: Boolean(motionQa.acceptedNearPass),
 							motionQa: {
 								maxFreezeSec: Number((motionQa.maxFreezeSec || 0).toFixed(3)),
 								freezeRatio: Number((motionQa.freezeRatio || 0).toFixed(3)),
