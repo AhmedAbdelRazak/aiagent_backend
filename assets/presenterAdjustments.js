@@ -241,7 +241,7 @@ function buildTopicContext({ title, topics = [], categoryLabel = "" }) {
 function inferPresentationMode({ title, topics, categoryLabel }) {
 	const context = buildTopicContext({ title, topics, categoryLabel });
 	if (
-		/\b(broke|paycheck|paycheque|rent|renter|renters|grocer(?:y|ies)|bills?|subscriptions?|automatic withdrawals?|inflation|cost of living|living paycheck|financial stress|money stress|budget|savings?|debt|fixed costs?|feel behind)\b/.test(
+		/\b(broke|paycheck|paycheque|rent|renter|renters|grocer(?:y|ies)|bills?|subscriptions?|automatic withdrawals?|inflation|cost of living|living paycheck|financial stress|money stress|budget|savings?|debt|fixed costs?|feel behind|making friends|make friends|adult friendship|friendships?|friends feels|loneliness|lonely|social connection|social isolation|belonging|community|relationships?|dating|family pressure|reach out|text first|group chat)\b/.test(
 			context,
 		)
 	) {

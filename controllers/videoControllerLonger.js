@@ -1869,6 +1869,14 @@ function inferEntertainmentCategory(tokens = []) {
 
 const CATEGORY_LABEL_ALIASES = {
 	petsandanimals: "Pets and Animals",
+	peopleblogs: "SocialIssues",
+	"people&blogs": "SocialIssues",
+	peopleandblogs: "SocialIssues",
+	peopleblog: "SocialIssues",
+	socialissues: "SocialIssues",
+	socialissue: "SocialIssues",
+	relationships: "SocialIssues",
+	relationship: "SocialIssues",
 };
 
 function normalizeCategoryLabel(label) {
@@ -1885,6 +1893,15 @@ const PROMPT_CATEGORY_RULES = [
 		patterns: [
 			/\b(public\s+health|world\s+health\s+organization|health|disease|outbreak|infection|infected|illness|hospital|symptoms?|transmission|pandemic|epidemic|vaccine|cdc|case\s+counts?|contact\s+tracing|mortality|treatment)\b/i,
 			/\b[a-z0-9-]*virus\b/i,
+		],
+	},
+	{
+		label: "SocialIssues",
+		weight: 6,
+		patterns: [
+			/\b(making friends|make friends|adult friendship|friendships?|friendship feels|friends feels|making new friends|meeting people|social life|social connection|social isolation|loneliness|lonely|belonging|community|close friends|group chat|reach out|text first)\b/i,
+			/\b(friendships?|friends?)\b[^.?!\n]{0,80}\b(hard|difficult|awkward|lonely|alone|rejection|rejected|ignored|disconnected|isolated|drifting|harder)\b/i,
+			/\b(hard|difficult|awkward|lonely|alone|rejection|rejected|ignored|disconnected|isolated|drifting|harder)\b[^.?!\n]{0,80}\b(friendships?|friends?)\b/i,
 		],
 	},
 	{
@@ -11173,6 +11190,28 @@ function isPersonalFinanceCostOfLivingTopic({
 	);
 }
 
+function isSocialConnectionTopic({
+	topics = [],
+	categoryLabel = "",
+	text = "",
+} = {}) {
+	const hay = promptTopicHaystack(topics, `${categoryLabel || ""} ${text || ""}`);
+	return (
+		/\b(socialissues|people\s*&?\s*blogs?|relationships?)\b/i.test(
+			categoryLabel || "",
+		) ||
+		/\b(making friends|make friends|adult friendship|friendships?|friendship feels|friends feels|making new friends|meeting people|social life|social connection|social isolation|loneliness|lonely|belonging|community|close friends|group chat|reach out|text first|fear of rejection|rejection)\b/i.test(
+			hay,
+		) ||
+		/\b(friendships?|friends?)\b[^.?!\n]{0,80}\b(hard|difficult|awkward|lonely|alone|rejection|rejected|ignored|disconnected|isolated|drifting|harder)\b/i.test(
+			hay,
+		) ||
+		/\b(hard|difficult|awkward|lonely|alone|rejection|rejected|ignored|disconnected|isolated|drifting|harder)\b[^.?!\n]{0,80}\b(friendships?|friends?)\b/i.test(
+			hay,
+		)
+	);
+}
+
 function isWeakPromptOpeningSegment(text = "", topicLabel = "") {
 	const clean = normalizeWhitespace(text);
 	if (!clean) return true;
@@ -13452,6 +13491,16 @@ function formatAgendaList(items = []) {
 function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
 	const labels = buildIntroTopicLabels(topics, 6);
 	const text = `${shortTitle || ""} ${labels.join(" ")}`.toLowerCase();
+	if (isSocialConnectionTopic({ topics, text: shortTitle })) {
+		return {
+			beats: [
+				"why it feels personal",
+				"what changed in adult routines",
+				"the small moves that rebuild closeness",
+			],
+			cardSubtitle: "Why It Feels Hard and What Helps",
+		};
+	}
 	if (/\b(divorce|split|breakup|separation|custody)\b/.test(text)) {
 		return {
 			beats: [
@@ -13562,6 +13611,16 @@ function buildIntroCardTitle({ title = "", shortTitle = "" } = {}) {
 
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	void jobId;
+	if (
+		isSocialConnectionTopic({
+			topics,
+			text: `${shortTitle || ""} ${mood || ""}`,
+		})
+	) {
+		return sanitizeIntroOutroLine(
+			`Hi guys, it's ${INTRO_HOST_NAME}. More contact, less closeness. Let's unpack why friendship feels harder now, and what actually helps.`,
+		);
+	}
 	if (
 		isPersonalFinanceCostOfLivingTopic({
 			topics,
@@ -13764,6 +13823,9 @@ function resolveYoutubeCategoryLabelForPrompt({
 		)
 	) {
 		return "Education";
+	}
+	if (isSocialConnectionTopic({ topics, categoryLabel: label, text })) {
+		return "SocialIssues";
 	}
 	return label;
 }
@@ -14217,6 +14279,7 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 	const isSports = isSportsCategoryLabel(categoryLabel, topics);
 	const isPolitics = isPoliticsCategoryLabel(categoryLabel, topics);
 	const isHealth = isHealthCategoryLabel(categoryLabel, topics);
+	const isSocial = isSocialConnectionTopic({ topics, categoryLabel });
 	const topicText = (Array.isArray(topics) ? topics : [])
 		.map((topic) =>
 			[
@@ -14235,6 +14298,7 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 			isSports: false,
 			isPolitics: true,
 			isHealth: false,
+			isSocial: false,
 			isSerious: true,
 			lines: [
 				"- For politics, diplomacy, war, courts, or public safety, keep the voice measured and specific. No jokes, hype, or overly casual creator filler.",
@@ -14251,6 +14315,7 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 			isSports: false,
 			isPolitics: false,
 			isHealth: true,
+			isSocial: false,
 			isSerious: true,
 			lines: [
 				"- For health, disease, outbreak, or public-safety topics, keep the voice calm, precise, and useful. No jokes, hype, or creator filler.",
@@ -14262,11 +14327,29 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 		};
 	}
 
+	if (isSocial) {
+		return {
+			isSports: false,
+			isPolitics: false,
+			isHealth: false,
+			isSocial: true,
+			isSerious: false,
+			lines: [
+				"- For social connection, friendship, loneliness, dating, family, or relationship topics, write with warmth and practical empathy. Make viewers feel seen, not diagnosed.",
+				"- Do not frame the topic like breaking news. Avoid generic phrases such as \"what happened\", \"why people are reacting\", \"key reporting\", or \"the headline\" unless there is an actual current event.",
+				"- Use concrete everyday scenes: unanswered texts, busy weekends, moving cities, remote work, awkward invitations, recurring plans, and small acts of reaching out.",
+				"- Keep advice realistic and low-pressure. Prefer one small next action over sweeping life advice.",
+				"- Let the opening feel intimate and human: a real contradiction, a familiar feeling, then a reason to keep watching.",
+			],
+		};
+	}
+
 	if (!isSports) {
 		return {
 			isSports: false,
 			isPolitics: false,
 			isHealth: false,
+			isSocial: false,
 			isSerious: false,
 			lines: [
 				"- Write for spoken delivery first. Translate keyword-style phrases into natural sentences a presenter would actually say.",
@@ -14281,6 +14364,7 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 		isSports: true,
 		isPolitics: false,
 		isHealth: false,
+		isSocial: false,
 		isSerious: false,
 		lines: [
 			"- For sports topics, write like a sharp postgame or pregame breakdown, not a search-trends explainer.",
@@ -15589,6 +15673,23 @@ function buildShortSegmentExtension({
 				: [
 						"That keeps the focus on what the record actually supports, not the loudest interpretation.",
 						"The useful line is evidence first, interpretation second.",
+				],
+		);
+	}
+	if (categoryGuide?.isSocial || isSocialConnectionTopic({ topics, text: topicLabel })) {
+		return pick(
+			isQuestion
+				? [
+						"The answer usually starts smaller than people expect: one clear invitation, repeated enough to become familiar.",
+						"The useful question is who could become easier to reach if the plan became more specific.",
+						"The next step is not becoming impressive; it is making connection easier to repeat.",
+					]
+				: [
+						"That is the part people often misread: awkwardness can be the start of rhythm, not proof the friendship failed.",
+						"The small shift is to make connection repeatable, so it does not depend on everyone magically feeling free.",
+						"That keeps the advice realistic: send the clear invite, accept a little awkwardness, and let routine do some work.",
+						"That is where hope comes in, because friendship often returns through ordinary repetition, not one perfect conversation.",
+						"The pressure softens when reaching out becomes normal maintenance, not a test of your worth.",
 					],
 		);
 	}
@@ -15642,18 +15743,18 @@ function buildShortSegmentExtension({
 	return pick(
 		isQuestion
 			? [
-					"The useful answer starts with the pressure viewers can actually act on today.",
-					"The practical question is what changes in the next decision, not just the headline.",
-					"The clearest answer is the one that turns the story into a specific next step.",
-					"The next move is to separate what feels urgent from what is actually useful.",
-					"The better question is which choice gives the viewer more control today.",
+					"The useful answer starts with the part people can actually test today.",
+					"The better question is what one small choice changes next.",
+					"The clearest answer turns the pattern into a specific next step.",
+					"The next move is to separate what feels urgent from what is genuinely useful.",
+					"The better question is which choice gives people more control today.",
 				]
 			: [
-					"For viewers, the useful part is how this pressure shows up in real choices.",
-					"That matters because the consequence is practical, not just emotional.",
-					"That turns the point into something practical instead of another reason to feel blamed.",
-					"The practical point is what changes in the next decision, not just how the headline feels.",
-					"That gives the audience a specific way to think about the pressure.",
+					"That is where the pattern becomes useful: it points to one small choice people can test next.",
+					"The consequence shows up in ordinary decisions, not just in the big emotional moments.",
+					"That turns the point into something usable instead of another reason to feel blamed.",
+					"The next decision matters because small repeated choices are what change the pattern.",
+					"That gives people a clearer way to understand the pressure without turning it into shame.",
 				],
 	);
 }
@@ -20701,22 +20802,30 @@ function buildBackgroundMusicSearchPlan({
 		categoryLabel,
 		text: topic,
 	});
+	const socialConnection = isSocialConnectionTopic({
+		topics,
+		categoryLabel,
+		text: topic,
+	});
 	const serious = String(mood || "").toLowerCase() === "serious";
-	if (personalFinance || serious) {
+	if (personalFinance || socialConnection || serious) {
 		return {
 			fuzzytags:
-				"documentary, calm, ambient, corporate, piano, hopeful, instrumental",
+				socialConnection
+					? "calm, acoustic, ambient, hopeful, piano, soft, instrumental"
+					: "documentary, calm, ambient, corporate, piano, hopeful, instrumental",
 			speed: ["low", "medium"],
 			preferTerms: [
 				"ambient",
 				"piano",
+				"acoustic",
 				"documentary",
 				"corporate",
 				"hope",
 				"calm",
 				"soft",
-				"acoustic",
 				"minimal",
+				"warm",
 			],
 			avoidTerms: [
 				"salsa",
@@ -21299,6 +21408,23 @@ async function runLongVideoJob(
 				});
 				categoryLabel = refinedPromptCategoryLabel;
 			}
+		}
+		if (
+			contentMode === "prompt" &&
+			isSocialConnectionTopic({
+				topics: topicPicks,
+				categoryLabel,
+				text: promptTextForCategory,
+			}) &&
+			categoryLabel !== "SocialIssues"
+		) {
+			logJob(jobId, "prompt category inferred", {
+				stage: "social-override",
+				requestedCategory: requestedCategoryLabel,
+				previousCategory: categoryLabel,
+				inferredCategory: "SocialIssues",
+			});
+			categoryLabel = "SocialIssues";
 		}
 		logJob(jobId, "topics selected", {
 			count: topicPicks.length,
