@@ -9992,6 +9992,15 @@ function isRunwayRechargeOrLimitError(err) {
 	);
 }
 
+function isOpenAiQuotaOrRateLimitError(err) {
+	const status = Number(err?.status || err?.response?.status || 0);
+	if (status === 429) return true;
+	const text = runwayErrorText(err).toLowerCase();
+	return /\b(429|quota|billing|rate\s*limit|too many requests|insufficient_quota|exceeded your current quota)\b/i.test(
+		text,
+	);
+}
+
 async function waitForRunwayRecharge({
 	jobId,
 	label = "runway",
@@ -15121,6 +15130,131 @@ function buildDynamicRetentionGuide({
 
 	return `Dynamic retention and human-feel plan:
 ${lines.join("\n")}`;
+}
+
+function buildLocalFallbackScript({
+	jobId,
+	topics = [],
+	segmentCount = 12,
+	wordCaps = [],
+	tonePlan = null,
+	contentMode = "prompt",
+} = {}) {
+	const safeTopics =
+		Array.isArray(topics) && topics.length
+			? topics.filter((t) => t && (t.topic || t.displayTopic))
+			: [{ topic: "today's topic" }];
+	const topicLabelFor = (t) =>
+		String(t?.displayTopic || t?.topic || "today's topic").trim();
+	const brief = primaryPromptBrief(safeTopics);
+	const title =
+		formatHumanTitle(
+			String(brief?.title || topicLabelFor(safeTopics[0]) || "Long Video"),
+			120,
+		) || "Long Video";
+	const shortTitle = shortTitleFromText(title).slice(0, 60);
+	const ranges = allocateTopicSegments(
+		Math.max(1, Math.floor(Number(segmentCount) || 12)),
+		safeTopics,
+	);
+	const mood = tonePlan?.mood || "neutral";
+	const isPromptMode = String(contentMode || "").toLowerCase() === "prompt";
+	const socialConnection = isSocialConnectionTopic({
+		topics: safeTopics,
+		text: title,
+	});
+	const genericBeats = [
+		"Start with the human tension, then keep the explanation grounded in daily life.",
+		"The important part is not that people stopped caring. It is that the easy routines changed.",
+		"Most adult connection now needs planning, energy, and repetition before it feels natural.",
+		"Online contact can create the feeling of closeness without the shared time that builds trust.",
+		"That is why a small invitation can feel heavier than it should, even when the other person would welcome it.",
+		"The useful shift is to stop waiting for effortless chemistry and start creating repeatable moments.",
+		"A weekly walk, a monthly dinner, or a simple check-in works because it lowers the decision cost.",
+		"Friendship usually grows from ordinary consistency, not one perfect conversation.",
+		"The first few tries may feel stiff, and that does not mean the connection is failing.",
+		"What helps is making the next step specific enough that both people know how to say yes.",
+		"The goal is not a crowded social life. It is a few relationships with enough repetition to feel real.",
+		"That is the hopeful part: connection can be rebuilt, but it needs structure instead of wishful thinking.",
+	];
+	const friendshipBeats = [
+		"More contact tools did not automatically create more closeness. They mostly made it easier to send a message.",
+		"Friendship still depends on repeated time, shared context, and the feeling that someone will show up again.",
+		"Adult schedules make that harder because work, family, moving, and fatigue interrupt the old routines.",
+		"Social media can make everyone look busy and already chosen, even when many people feel quietly disconnected.",
+		"That pressure makes simple invitations feel risky, because nobody wants to seem needy or out of place.",
+		"The fix is smaller than people think: make friendship easier to repeat, not more dramatic.",
+		"Instead of one big plan, try a low-pressure rhythm like coffee after work or a Sunday walk.",
+		"Early conversations can feel awkward because the relationship has not earned its shorthand yet.",
+		"Consistency is what creates that shorthand. Familiarity turns effort into comfort.",
+		"It also helps to name the plan clearly, because vague intentions usually disappear into busy weeks.",
+		"Some friendships will not catch, and that is normal. The win is continuing without turning it into a verdict on you.",
+		"The people who build community usually are not luckier. They are willing to initiate more than once.",
+		"Over time, the repeated invitations become the proof that the relationship is safe.",
+		"So the practical answer is not to chase everyone. It is to choose a few people and create a rhythm.",
+	];
+	const beats = socialConnection ? friendshipBeats : genericBeats;
+	const segments = [];
+	for (let i = 0; i < Math.max(1, Number(segmentCount) || 12); i += 1) {
+		const range =
+			ranges.find((r) => i >= r.startIndex && i <= r.endIndex) || ranges[0];
+		const topicIndex = Math.max(0, Number(range?.topicIndex || 0));
+		const topicLabel = topicLabelFor(safeTopics[topicIndex] || safeTopics[0]);
+		const cap = wordCaps[i] || 24;
+		let text = beats[i % beats.length];
+		if (i === 0 && brief?.openingLine) {
+			text = combineOpeningLineWithSegment({
+				openingLine: brief.openingLine,
+				text,
+				cap: Math.max(cap, countWords(brief.openingLine) + 10),
+			});
+		} else {
+			text = trimSegmentToCap(text, cap);
+		}
+		text = sanitizeSegmentText(text);
+		const query =
+			buildOverlayQueryFallback(text, topicLabel) ||
+			sanitizeOverlayQuery(`${topicLabel} people conversation`);
+		segments.push({
+			index: i,
+			topicIndex,
+			topicLabel,
+			text,
+			expression:
+				i === 0
+					? "neutral"
+					: normalizeExpression(
+							i % 5 === 0 ? "warm" : i % 3 === 0 ? "thoughtful" : "neutral",
+							mood,
+						),
+			countdownRank: null,
+			countdownLabel: "",
+			overlayCues: [
+				{
+					query,
+					startPct: 0.25,
+					endPct: 0.75,
+					position: "topRight",
+				},
+			],
+		});
+	}
+	const script = {
+		title,
+		shortTitle,
+		segments,
+		shortsDetails: null,
+		localFallback: true,
+	};
+	script.shortsDetails = normalizeShortsDetails(null, script);
+	logJob(jobId, "local fallback script ready", {
+		reason: "openai_quota_or_rate_limit",
+		mode: isPromptMode ? "prompt" : "trends",
+		title,
+		segments: segments.length,
+		words: segments.reduce((sum, seg) => sum + countWords(seg.text), 0),
+	});
+	return script;
 }
 
 async function generateScript({
@@ -22259,21 +22393,37 @@ async function runLongVideoJob(
 			topList: requestedTopListPlan || null,
 		});
 
-		let script = await generateScript({
-			jobId,
-			topics: topicPicks,
-			languageLabel: lang,
-			narrationTargetSec,
-			segmentCount,
-			wordCaps,
-			topicContexts,
-			tonePlan: voiceTonePlan,
-			topicContextFlags,
-			categoryLabel,
-			includeOutro: true,
-			contentMode,
-			priorVideoPlan,
-		});
+		let script;
+		try {
+			script = await generateScript({
+				jobId,
+				topics: topicPicks,
+				languageLabel: lang,
+				narrationTargetSec,
+				segmentCount,
+				wordCaps,
+				topicContexts,
+				tonePlan: voiceTonePlan,
+				topicContextFlags,
+				categoryLabel,
+				includeOutro: true,
+				contentMode,
+				priorVideoPlan,
+			});
+		} catch (e) {
+			if (!isOpenAiQuotaOrRateLimitError(e)) throw e;
+			logJob(jobId, "openai script generation unavailable; using local fallback", {
+				error: e.message,
+			});
+			script = buildLocalFallbackScript({
+				jobId,
+				topics: topicPicks,
+				segmentCount,
+				wordCaps,
+				tonePlan: voiceTonePlan,
+				contentMode,
+			});
+		}
 		script = applyLongVideoScriptGuards({
 			script,
 			topics: topicPicks,
