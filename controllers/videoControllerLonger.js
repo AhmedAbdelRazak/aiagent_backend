@@ -613,7 +613,7 @@ const BASELINE_VARIANTS = Math.floor(
 	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 3, 1, 4),
 );
 const BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ?? 1,
+	process.env.LONG_VIDEO_BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ?? 2,
 	1,
 	4,
 ));
@@ -753,7 +753,7 @@ const OPENING_PRESENTER_USE_HERO_SYNC = envFlag(
 	false,
 );
 const OPENING_PRESENTER_BASELINE_TRIES = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_OPENING_PRESENTER_BASELINE_TRIES ?? 1,
+	process.env.LONG_VIDEO_OPENING_PRESENTER_BASELINE_TRIES ?? 2,
 	1,
 	3,
 ));
@@ -872,6 +872,10 @@ const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(
 const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(4.8, 3, 12);
 const IMAGE_SEGMENT_MIN_UNIQUE_RATIO = clampNumber(0.5, 0.4, 1);
 const ENABLE_PRESENTER_RUN_MERGE = true;
+const MERGE_REQUIRED_PRESENTER_RUNS = envFlag(
+	"LONG_VIDEO_MERGE_REQUIRED_PRESENTER_RUNS",
+	false,
+);
 const PRESENTER_RUN_MERGE_MAX_SEC = clampNumber(22, 8, 30);
 const PRESENTER_RUN_MERGE_MAX_SEGMENTS = clampNumber(3, 2, 4);
 const IMAGE_SEARCH_MAX_QUERY_VARIANTS = clampNumber(12, 4, 16);
@@ -20285,6 +20289,12 @@ function canMergePresenterRun(currentRun, seg) {
 	if (!currentRun || !seg) return false;
 	if (seg.visualType !== "presenter") return false;
 	if (currentRun.visualType !== "presenter") return false;
+	if (
+		!MERGE_REQUIRED_PRESENTER_RUNS &&
+		(currentRun.mustUsePresenter || seg.mustUsePresenter)
+	) {
+		return false;
+	}
 	if (Number(seg.topicIndex) !== Number(currentRun.topicIndex)) return false;
 	if (
 		String(seg.videoExpression || seg.expression || "neutral") !==
@@ -20393,6 +20403,7 @@ async function buildRenderableTimelineUnits({
 				expression: seg.expression || "neutral",
 				cameraMotion: seg.cameraMotion || { mode: "steady" },
 				segDur,
+				mustUsePresenter: Boolean(seg.mustUsePresenter),
 				hasPremium: premiumPresenterSegmentSet.has(seg.index),
 				segments: [seg],
 			};
@@ -20402,6 +20413,7 @@ async function buildRenderableTimelineUnits({
 		if (canMergePresenterRun(presenterRun, seg)) {
 			presenterRun.segments.push(seg);
 			presenterRun.segDur += segDur;
+			if (seg.mustUsePresenter) presenterRun.mustUsePresenter = true;
 			if (premiumPresenterSegmentSet.has(seg.index))
 				presenterRun.hasPremium = true;
 			continue;
@@ -20415,6 +20427,7 @@ async function buildRenderableTimelineUnits({
 			expression: seg.expression || "neutral",
 			cameraMotion: seg.cameraMotion || { mode: "steady" },
 			segDur,
+			mustUsePresenter: Boolean(seg.mustUsePresenter),
 			hasPremium: premiumPresenterSegmentSet.has(seg.index),
 			segments: [seg],
 		};
