@@ -136,10 +136,13 @@ const UNIFORM_TTS_VOICE_SETTINGS = false;
 const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
 
 const RUNWAY_VERSION = "2024-11-06";
-const RUNWAY_VIDEO_MODEL = "gen4.5";
-const RUNWAY_VIDEO_MODEL_FALLBACK = "gen4_turbo";
+const RUNWAY_VIDEO_MODEL =
+	String(process.env.LONG_VIDEO_RUNWAY_MODEL || "gen4.5").trim() || "gen4.5";
+const RUNWAY_VIDEO_MODEL_FALLBACK = String(
+	process.env.LONG_VIDEO_RUNWAY_MODEL_FALLBACK || "",
+).trim();
 const RUNWAY_RECHARGE_RETRY_ATTEMPTS = Math.floor(
-	clampNumber(process.env.LONG_VIDEO_RUNWAY_RECHARGE_RETRIES ?? 4, 0, 8),
+	clampNumber(process.env.LONG_VIDEO_RUNWAY_RECHARGE_RETRIES ?? 0, 0, 8),
 );
 const RUNWAY_RECHARGE_WAIT_MS = clampNumber(
 	process.env.LONG_VIDEO_RUNWAY_RECHARGE_WAIT_MS ?? 25000,
@@ -154,13 +157,17 @@ const RUNWAY_RECHARGE_BACKOFF_MS = clampNumber(
 
 const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
 const SYNC_SO_BASE = "https://api.sync.so";
-// Cost-aware Sync model policy:
-// - regular presenter beats use the cheaper high-quality tier
-// - premium beats keep the stronger model
-// - retries can fall back to the base tier when needed
-const SYNC_SO_MODEL_STANDARD = "lipsync-2-pro";
-const SYNC_SO_MODEL_HERO = "sync-3";
-const SYNC_SO_MODEL_FALLBACK = "lipsync-2";
+// Cost-aware Sync model policy. By default, even hero beats use lipsync-2;
+// set SYNC_SO_MODEL_HERO=sync-3 in env only when you want the pricier tier.
+const SYNC_SO_MODEL_STANDARD =
+	String(process.env.SYNC_SO_MODEL_STANDARD || "lipsync-2").trim() ||
+	"lipsync-2";
+const SYNC_SO_MODEL_HERO =
+	String(process.env.SYNC_SO_MODEL_HERO || SYNC_SO_MODEL_STANDARD).trim() ||
+	SYNC_SO_MODEL_STANDARD;
+const SYNC_SO_MODEL_FALLBACK =
+	String(process.env.SYNC_SO_MODEL_FALLBACK || SYNC_SO_MODEL_STANDARD).trim() ||
+	SYNC_SO_MODEL_STANDARD;
 const SYNC_SO_GENERATE_PATH = "/v2/generate";
 
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
@@ -526,6 +533,11 @@ const AUDIO_QA_EDGE_BUFFER_SEC = clampNumber(0.08, 0, 0.2);
 const AUDIO_QA_REPAIR_MAX_SILENCE_SEC = clampNumber(0.22, 0.12, 0.5);
 const AUDIO_QA_TRANSCRIBE = true;
 const AUDIO_QA_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
+const AUDIO_QA_TRANSCRIBE_COOLDOWN_MS = clampNumber(
+	process.env.LONG_VIDEO_AUDIO_QA_TRANSCRIBE_COOLDOWN_MS ?? 15 * 60 * 1000,
+	60 * 1000,
+	60 * 60 * 1000,
+);
 const AUDIO_QA_MIN_WORDS = clampNumber(7, 4, 14);
 const AUDIO_QA_SIMILARITY_THRESHOLD = clampNumber(0.82, 0.7, 0.95);
 const AUDIO_QA_STRICT_STABILITY_BOOST = clampNumber(0.08, 0, 0.2);
@@ -544,6 +556,11 @@ const SYNC_SO_SEGMENT_MAX_RETRIES = Math.floor(clampNumber(
 	process.env.LONG_VIDEO_SYNC_SEGMENT_MAX_RETRIES ?? 0,
 	0,
 	3,
+));
+const SYNC_SO_GENERATE_HTTP_RETRIES = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_SYNC_GENERATE_HTTP_RETRIES ?? 0,
+	0,
+	2,
 ));
 const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
 const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
@@ -581,11 +598,11 @@ const PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC = clampNumber(
 );
 const PRESENTER_BASELINE_MOTION_NEAR_PASS_ENABLED = envFlag(
 	"LONG_VIDEO_BASELINE_MOTION_NEAR_PASS",
-	true,
+	false,
 );
 const PRESENTER_RENDER_MOTION_NEAR_PASS_ENABLED = envFlag(
 	"LONG_VIDEO_RENDER_MOTION_NEAR_PASS",
-	true,
+	false,
 );
 const PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO = clampNumber(
 	process.env.LONG_VIDEO_RENDER_MOTION_MAX_FREEZE_RATIO ?? 0.24,
@@ -610,10 +627,10 @@ const BASELINE_DUR_SEC = clampNumber(
 	10,
 );
 const BASELINE_VARIANTS = Math.floor(
-	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 3, 1, 4),
+	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 1, 1, 4),
 );
 const BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ?? 2,
+	process.env.LONG_VIDEO_BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ?? 1,
 	1,
 	4,
 ));
@@ -743,6 +760,25 @@ const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 // Content visual mix (presenter vs static images). Required default is
 // 40% presenter / 60% scraped feed or topic images.
 const CONTENT_PRESENTER_RATIO = 0.4;
+const PRE_SCRIPT_VISUAL_RESEARCH_ENABLED = envFlag(
+	"LONG_VIDEO_PRE_SCRIPT_VISUAL_RESEARCH",
+	true,
+);
+const PRE_SCRIPT_VISUAL_RESEARCH_QUERY_LIMIT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_PRE_SCRIPT_VISUAL_QUERY_LIMIT ?? 4,
+	0,
+	8,
+));
+const PRE_SCRIPT_VISUAL_RESEARCH_RESULTS_PER_QUERY = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_PRE_SCRIPT_VISUAL_RESULTS_PER_QUERY ?? 28,
+	8,
+	60,
+));
+const PRE_SCRIPT_VISUAL_RESEARCH_TITLE_LIMIT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_PRE_SCRIPT_VISUAL_TITLE_LIMIT ?? 18,
+	4,
+	40,
+));
 const FORCE_OPENING_PRESENTER_COUNT = Math.floor(clampNumber(
 	process.env.LONG_VIDEO_FORCE_OPENING_PRESENTER_COUNT ?? 2,
 	0,
@@ -753,34 +789,34 @@ const OPENING_PRESENTER_USE_HERO_SYNC = envFlag(
 	false,
 );
 const OPENING_PRESENTER_BASELINE_TRIES = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_OPENING_PRESENTER_BASELINE_TRIES ?? 2,
+	process.env.LONG_VIDEO_OPENING_PRESENTER_BASELINE_TRIES ?? 1,
 	1,
 	3,
 ));
 const OPENING_PRESENTER_SYNC_RETRIES = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_OPENING_PRESENTER_SYNC_RETRIES ?? 1,
+	process.env.LONG_VIDEO_OPENING_PRESENTER_SYNC_RETRIES ?? 0,
 	0,
 	3,
 ));
 const MIN_ACTUAL_PRESENTER_SEGMENTS = Math.floor(clampNumber(
 	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_SEGMENTS ??
-		FORCE_OPENING_PRESENTER_COUNT,
+		0,
 	0,
 	20,
 ));
 const MIN_ACTUAL_PRESENTER_PLAN_RATIO = clampNumber(
-	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_PLAN_RATIO ?? 0.4,
+	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_PLAN_RATIO ?? 0,
 	0,
 	1,
 );
 const MIN_ACTUAL_PRESENTER_DURATION_RATIO = clampNumber(
-	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_DURATION_RATIO ?? 0.08,
+	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_DURATION_RATIO ?? 0,
 	0,
 	0.5,
 );
 const REQUIRE_FORCED_OPENING_PRESENTERS = envFlag(
 	"LONG_VIDEO_REQUIRE_FORCED_OPENING_PRESENTERS",
-	true,
+	false,
 );
 const FEED_VIDEO_ENABLED = envFlag("LONG_VIDEO_FEED_VIDEO_ENABLED", true);
 const FEED_VIDEO_SEARCH_ENABLED = envFlag(
@@ -868,6 +904,10 @@ const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(
 	process.env.LONG_VIDEO_IMAGE_SEGMENT_MAX_IMAGES ?? 3,
 	2,
 	6,
+);
+const STRICT_TOPIC_RELEVANT_FEED_IMAGES = envFlag(
+	"LONG_VIDEO_STRICT_TOPIC_RELEVANT_FEED_IMAGES",
+	true,
 );
 const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(4.8, 3, 12);
 const IMAGE_SEGMENT_MIN_UNIQUE_RATIO = clampNumber(0.5, 0.4, 1);
@@ -1022,6 +1062,8 @@ logStartupDetail("[LongVideo] controller loaded", getLongVideoRuntimeProfile());
 const JOBS = new Map();
 const MAX_JOBS_TO_KEEP = 250;
 const JOB_TTL_MS = 1000 * 60 * 60 * 6;
+let audioQaTranscribeDisabledUntil = 0;
+let audioQaTranscribeDisabledReason = "";
 
 setInterval(() => {
 	const now = Date.now();
@@ -3622,6 +3664,11 @@ function stripPromptHeadingNumber(text = "") {
 		.trim();
 }
 
+function looksLikePromptStructureLabelOnly(text = "") {
+	const raw = cleanTopicLabel(text).replace(/:+$/g, "").trim();
+	return /^(?:minute|part|section|beat)\s*\d{1,2}$/i.test(raw);
+}
+
 function stripOuterQuotes(text = "") {
 	return String(text || "")
 		.trim()
@@ -3659,9 +3706,10 @@ function stripSeoTitleRequestText(text = "") {
 function isLikelyPromptTitleLine(line = "") {
 	const raw = stripOuterQuotes(stripPromptHeadingNumber(line));
 	if (!raw || isSeoTitleRequestText(raw)) return false;
+	if (PROMPT_BRIEF_STRUCTURE_LINE_RE.test(raw)) return false;
+	if (looksLikePromptStructureLabelOnly(raw)) return false;
 	const words = countWords(raw);
 	if (words < 2 || words > 16) return false;
-	if (/[?]$/.test(raw)) return false;
 	if (/^(please|i\s+(?:want|need|would)|can\s+you|could\s+you|add|create|generate|write|make|give|use|find|recommend)\b/i.test(raw))
 		return false;
 	const tokens = tokenizeLabel(raw);
@@ -4356,9 +4404,14 @@ async function selectTopics({
 			const normalized = normalizePromptTopic(candidate);
 			if (!normalized) continue;
 			const topList = detectTopListRequest(normalized);
-			const finalTopic = topList
+			let finalTopic = topList
 				? normalizeTopListTopic(normalized, topList)
 				: normalized;
+			if (looksLikePromptStructureLabelOnly(finalTopic)) {
+				finalTopic =
+					cleanTopicLabel(promptBrief.title || promptBrief.primaryTopic || "") ||
+					finalTopic;
+			}
 			const signature = topicSignature(finalTopic);
 			if (signature && seen.has(signature)) continue;
 			if (signature) seen.add(signature);
@@ -4727,6 +4780,221 @@ async function fetchGoogleImagesFromService(
 		}
 	}
 	return [];
+}
+
+function normalizeFreeImageMetadataItem(raw, query = "") {
+	if (typeof raw === "string") {
+		return {
+			url: raw,
+			title: "",
+			sourcePage: "",
+			provider: "",
+			query,
+		};
+	}
+	if (!raw || typeof raw !== "object") return null;
+	const url = String(raw.url || raw.imageUrl || raw.src || "").trim();
+	if (!url) return null;
+	return {
+		url,
+		title: cleanTopicLabel(raw.title || raw.alt || raw.caption || ""),
+		sourcePage: String(raw.sourcePage || raw.pageUrl || raw.contextUrl || "").trim(),
+		provider: String(raw.provider || "").trim(),
+		query,
+	};
+}
+
+async function fetchGoogleImageMetadataFromService(
+	query,
+	{ limit = PRE_SCRIPT_VISUAL_RESEARCH_RESULTS_PER_QUERY, baseUrl, jobId } = {},
+) {
+	const q = sanitizeOverlayQuery(query);
+	if (!q) return [];
+	const candidates = buildGoogleImagesApiCandidates(baseUrl);
+	for (const endpoint of candidates) {
+		try {
+			const { data } = await axios.get(endpoint, {
+				params: {
+					q,
+					limit: Math.max(6, Number(limit) || 12),
+					includeMetadata: 1,
+					bingOnly: 1,
+				},
+				timeout: 45000,
+				validateStatus: (s) => s < 500,
+			});
+			const raw =
+				(Array.isArray(data?.images) && data.images) ||
+				(Array.isArray(data?.urls) && data.urls) ||
+				(Array.isArray(data?.results) && data.results) ||
+				[];
+			const seen = new Set();
+			const items = [];
+			for (const item of raw) {
+				const normalized = normalizeFreeImageMetadataItem(item, q);
+				if (!normalized?.url) continue;
+				if (!isHttpUrl(normalized.url) || isLikelyThumbnailUrl(normalized.url))
+					continue;
+				const key = normalizeImageUrlKey(normalized.url);
+				if (!key || seen.has(key)) continue;
+				seen.add(key);
+				items.push(normalized);
+				if (items.length >= Math.max(12, Number(limit) || 12)) break;
+			}
+			if (items.length) {
+				if (jobId)
+					logJob(jobId, "pre-script visual search hit", {
+						query: q,
+						endpoint,
+						count: items.length,
+						withTitles: items.filter((item) => item.title).length,
+					});
+				return items;
+			}
+		} catch (e) {
+			if (jobId)
+				logJob(jobId, "pre-script visual search failed", {
+					query: q,
+					endpoint,
+					error: e.message,
+				});
+		}
+	}
+	return [];
+}
+
+function buildPreScriptVisualQueries(topic = {}, category = "") {
+	const story = topic.trendStory || {};
+	const promptBrief = topic.promptBrief || parseStructuredPromptBrief(topic.promptText);
+	const label = String(topic.displayTopic || topic.topic || "").trim();
+	const keywordHints = Array.isArray(topic.keywords) ? topic.keywords : [];
+	const articleTitles = Array.isArray(story.articles)
+		? story.articles.map((a) => a?.title).filter(Boolean)
+		: [];
+	return uniqueStrings(
+		[
+			...(Array.isArray(topic.imageSearchHints) ? topic.imageSearchHints : []),
+			...(Array.isArray(promptBrief?.imageHints) ? promptBrief.imageHints : []),
+			...(Array.isArray(story.imageSearchQueries)
+				? story.imageSearchQueries
+				: []),
+			...(promptBrief?.title ? [`${promptBrief.title} news photo`] : []),
+			...buildTopicNearImageQueries(label, {
+				topicKeywords: keywordHints,
+				articleTitles,
+				category,
+			}),
+		]
+			.filter(Boolean)
+			.map((q) => sanitizeOverlayQuery(q))
+			.filter(Boolean),
+		{ limit: PRE_SCRIPT_VISUAL_RESEARCH_QUERY_LIMIT },
+	);
+}
+
+function summarizePreScriptVisualCandidates(candidates = []) {
+	const titles = [];
+	const urls = [];
+	const seenTitles = new Set();
+	const seenUrls = new Set();
+	for (const item of candidates || []) {
+		if (item?.url) {
+			const key = normalizeImageUrlKey(item.url);
+			if (key && !seenUrls.has(key)) {
+				seenUrls.add(key);
+				urls.push(item.url);
+			}
+		}
+		const title = cleanTopicLabel(item?.title || "");
+		if (!title || countWords(title) < 2) continue;
+		const titleKey = normalizeQaText(title);
+		if (!titleKey || seenTitles.has(titleKey)) continue;
+		seenTitles.add(titleKey);
+		titles.push({
+			title,
+			query: item.query || "",
+			source: getUrlHost(item.sourcePage || item.url || ""),
+		});
+		if (titles.length >= PRE_SCRIPT_VISUAL_RESEARCH_TITLE_LIMIT) break;
+	}
+	return { titles, urls };
+}
+
+async function prefetchPreScriptVisualResearch({
+	topics = [],
+	baseUrl,
+	jobId,
+	category = "",
+} = {}) {
+	if (
+		!PRE_SCRIPT_VISUAL_RESEARCH_ENABLED ||
+		!GOOGLE_IMAGES_SEARCH_ENABLED ||
+		!PRE_SCRIPT_VISUAL_RESEARCH_QUERY_LIMIT
+	) {
+		return [];
+	}
+	const summaries = [];
+	for (let i = 0; i < (topics || []).length; i += 1) {
+		const topic = topics[i] || {};
+		const queries = buildPreScriptVisualQueries(topic, category);
+		if (!queries.length) continue;
+		const candidates = [];
+		const seen = new Set();
+		for (const query of queries) {
+			const items = await fetchGoogleImageMetadataFromService(query, {
+				limit: PRE_SCRIPT_VISUAL_RESEARCH_RESULTS_PER_QUERY,
+				baseUrl,
+				jobId,
+			});
+			for (const item of items) {
+				const key = normalizeImageUrlKey(item.url);
+				if (!key || seen.has(key)) continue;
+				seen.add(key);
+				candidates.push(item);
+			}
+		}
+		const summary = summarizePreScriptVisualCandidates(candidates);
+		const story = topic.trendStory || {};
+		const existingPotential = Array.isArray(story.potentialImages)
+			? story.potentialImages
+			: [];
+		const mergedPotential = [];
+		const potentialSeen = new Set();
+		for (const item of [...existingPotential, ...candidates]) {
+			const normalized = normalizeFreeImageMetadataItem(item, item?.query || "");
+			if (!normalized?.url) continue;
+			const key = normalizeImageUrlKey(normalized.url);
+			if (!key || potentialSeen.has(key)) continue;
+			potentialSeen.add(key);
+			mergedPotential.push(normalized);
+		}
+		topic.trendStory = {
+			...story,
+			potentialImages: mergedPotential.slice(0, 90),
+			visualResearch: {
+				queries,
+				candidateCount: candidates.length,
+				titles: summary.titles,
+			},
+		};
+		summaries.push({
+			topicIndex: i,
+			topic: topic.displayTopic || topic.topic || "",
+			queries,
+			candidateCount: candidates.length,
+			titleCount: summary.titles.length,
+			titles: summary.titles,
+			urlCount: summary.urls.length,
+		});
+		logJob(jobId, "pre-script visual research ready", {
+			topic: topic.displayTopic || topic.topic || "",
+			queries: queries.length,
+			candidates: candidates.length,
+			titles: summary.titles.length,
+			potentialImages: topic.trendStory.potentialImages.length,
+		});
+	}
+	return summaries;
 }
 
 function rssText(value) {
@@ -6778,8 +7046,25 @@ function pickEvenlySpacedIndices(total, target) {
 	return Array.from(new Set(out)).sort((a, b) => a - b);
 }
 
-function computeSegmentImageCount(segDur) {
+function isHoldSingleVisualSegment(seg = {}) {
+	const text = String(seg?.text || "");
+	const cue = Array.isArray(seg?.overlayCues)
+		? String(seg.overlayCues[0]?.query || "")
+		: "";
+	const hay = `${text} ${cue}`.toLowerCase();
+	if (
+		/\b(chart|graph|data|stat|statistics|census|bls|federal reserve|report|study|survey|paperwork|documents?|debt papers?|application|table|map|timeline|infographic|receipt|bill|invoice|budget sheet)\b/i.test(
+			hay,
+		)
+	) {
+		return true;
+	}
+	return countWords(text) >= 60;
+}
+
+function computeSegmentImageCount(segDur, seg = null) {
 	const dur = Math.max(0, Number(segDur) || 0);
+	if (seg && isHoldSingleVisualSegment(seg)) return 1;
 	if (dur < IMAGE_SEGMENT_MULTI_MIN_SEC) return 1;
 	const ideal = Math.round(dur / IMAGE_SEGMENT_TARGET_SEC);
 	return clampNumber(ideal, IMAGE_SEGMENT_MIN_IMAGES, IMAGE_SEGMENT_MAX_IMAGES);
@@ -6939,6 +7224,18 @@ function scoreUrlTokenMatch(url = "", tokens = []) {
 	return count;
 }
 
+function scoreTextTokenMatch(text = "", tokens = []) {
+	const normTokens = normalizeTopicTokens(tokens);
+	if (!normTokens.length) return 0;
+	const hay = normalizeQaText(text);
+	if (!hay) return 0;
+	let count = 0;
+	for (const tok of normTokens) {
+		if (tok && hay.includes(tok)) count += 1;
+	}
+	return count;
+}
+
 function getImageUrlRelevanceTokens(opts = {}) {
 	const topicTokens = filterSpecificTopicTokens(
 		normalizeTopicTokens(opts.topicTokens || opts.preferTokens || []),
@@ -6955,6 +7252,26 @@ function getImageUrlRelevanceTokens(opts = {}) {
 function getTrustedImageUrlKeys(opts = {}) {
 	if (opts?.trustedUrlKeys instanceof Set) return opts.trustedUrlKeys;
 	return new Set();
+}
+
+function getImageRelevanceMeta(url = "", opts = {}) {
+	const key = normalizeImageUrlKey(url);
+	const byKey =
+		opts?.imageMetaByKey instanceof Map ? opts.imageMetaByKey : new Map();
+	const meta = byKey.get(key);
+	if (!meta || typeof meta !== "object") return "";
+	return [
+		meta.title,
+		meta.alt,
+		meta.caption,
+		meta.query,
+		meta.source,
+		meta.sourcePage,
+		meta.pageUrl,
+		meta.provider,
+	]
+		.filter(Boolean)
+		.join(" ");
 }
 
 function scoreImageUrlQuality(url = "") {
@@ -6981,6 +7298,16 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 	const key = normalizeImageUrlKey(url);
 	const trustedUrlKeys = getTrustedImageUrlKeys(opts);
 	const qualityScore = scoreImageUrlQuality(url);
+	const { topicTokens, segmentTokens, queryTokens } =
+		getImageUrlRelevanceTokens(opts);
+	const metaText = getImageRelevanceMeta(url, opts);
+	const scoreAnyTokenMatch = (tokens) =>
+		Math.max(scoreUrlTokenMatch(url, tokens), scoreTextTokenMatch(metaText, tokens));
+	const topicScore = scoreAnyTokenMatch(topicTokens);
+	const segmentScore = scoreAnyTokenMatch(segmentTokens);
+	const queryScore = scoreAnyTokenMatch(queryTokens);
+	const hasRelevanceTokens =
+		topicTokens.length || segmentTokens.length || queryTokens.length;
 	if (
 		isDisfavoredImageSourceUrl(url) &&
 		!opts?.allowDisfavoredStockImages
@@ -6995,7 +7322,10 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 			queryScore: 0,
 		};
 	}
-	if (trustedUrlKeys.has(key)) {
+	if (
+		trustedUrlKeys.has(key) &&
+		(!STRICT_TOPIC_RELEVANT_FEED_IMAGES || !hasRelevanceTokens)
+	) {
 		return {
 			trusted: true,
 			accepted: true,
@@ -7007,11 +7337,6 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 		};
 	}
 
-	const { topicTokens, segmentTokens, queryTokens } =
-		getImageUrlRelevanceTokens(opts);
-	const topicScore = scoreUrlTokenMatch(url, topicTokens);
-	const segmentScore = scoreUrlTokenMatch(url, segmentTokens);
-	const queryScore = scoreUrlTokenMatch(url, queryTokens);
 	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
 	const queryRequired = queryTokens.length >= 3 ? 2 : queryTokens.length ? 1 : 0;
 	const topical =
@@ -7024,7 +7349,7 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 		(topicScore > 0 && segmentMatched) ||
 		(!requiredTopicMatches && (segmentMatched || queryMatched));
 	return {
-		trusted: false,
+		trusted: trustedUrlKeys.has(key),
 		accepted,
 		score: topicScore * 3 + queryScore * 2 + segmentScore + qualityScore * 0.25,
 		qualityScore,
@@ -8695,7 +9020,7 @@ async function prepareImageSegments({
 		}
 		const potentialUrls = uniqueStrings(
 			(Array.isArray(story.potentialImages) ? story.potentialImages : [])
-				.map((p) => p?.url)
+				.map((p) => (typeof p === "string" ? p : p?.url))
 				.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
 			{ limit: 30 },
 		);
@@ -8703,6 +9028,38 @@ async function prepareImageSegments({
 			[...potentialUrls, ...promptFreeImageUrls],
 			{ limit: 80 },
 		);
+		const imageMetaByKey = new Map();
+		const addImageMeta = (raw, queryHint = "") => {
+			const normalized = normalizeFreeImageMetadataItem(raw, queryHint);
+			if (!normalized?.url) return;
+			const key = normalizeImageUrlKey(normalized.url);
+			if (!key) return;
+			imageMetaByKey.set(key, {
+				...(imageMetaByKey.get(key) || {}),
+				...normalized,
+			});
+		};
+		for (const item of Array.isArray(story.potentialImages)
+			? story.potentialImages
+			: []) {
+			addImageMeta(item, item?.query || label);
+		}
+		for (const article of Array.isArray(story.articles) ? story.articles : []) {
+			if (!article?.image) continue;
+			addImageMeta(
+				{
+					url: article.image,
+					title: article.title,
+					sourcePage: article.url,
+					provider: article.source || "article",
+				},
+				label,
+			);
+		}
+		for (const url of [...(Array.isArray(t.images) ? t.images : []), t.image]) {
+			if (!url) continue;
+			addImageMeta({ url, title: label, query: label }, label);
+		}
 		const potentialKeys = new Set(
 			mergedPotentialUrls.map((u) => normalizeImageUrlKey(u)),
 		);
@@ -8726,6 +9083,7 @@ async function prepareImageSegments({
 			potentialUrls: mergedPotentialUrls,
 			seedUrls,
 			trustedSeedUrls: articleImageUrls,
+			imageMetaByKey,
 			videoUrls,
 			potentialVideos,
 			detailCard: buildTopicDetailCardPlan(t, contextItems),
@@ -8773,10 +9131,13 @@ async function prepareImageSegments({
 		}
 
 		const segDur = Math.max(0.2, Number(seg.endSec) - Number(seg.startSec));
-		const desiredCount = computeSegmentImageCount(segDur);
+		const desiredCount = computeSegmentImageCount(segDur, seg);
+		const holdSingleVisual = isHoldSingleVisualSegment(seg);
 		const renderTargetCount = Math.max(
 			desiredCount,
-			Math.min(desiredCount + IMAGE_SEGMENT_RENDER_RESERVE, 5),
+			holdSingleVisual
+				? desiredCount
+				: Math.min(desiredCount + IMAGE_SEGMENT_RENDER_RESERVE, 5),
 		);
 		const topicIndex = Number(seg.topicIndex) || 0;
 		const { query, topicLabel } = resolveSegmentImageQuery(seg, topics);
@@ -8810,6 +9171,7 @@ async function prepareImageSegments({
 			topicLabel: effectiveTopicLabel,
 			desiredCount,
 			variantCount: queryVariants.length,
+			holdSingleVisual,
 			segmentTokens,
 			queryTokens: queryTokens.slice(0, 8),
 		});
@@ -8930,6 +9292,7 @@ async function prepareImageSegments({
 			segmentTokens,
 			queryTokens,
 			trustedUrlKeys: trustedSeedUrlKeys,
+			imageMetaByKey: meta.imageMetaByKey,
 		};
 
 		const relevantBeforeFallback = filterRelevantImageCandidatePool(
@@ -8985,6 +9348,7 @@ async function prepareImageSegments({
 				segmentTokens,
 				queryTokens,
 				trustedUrlKeys: trustedBeforeGoogleKeys,
+				imageMetaByKey: meta.imageMetaByKey,
 			},
 		);
 		if (
@@ -9029,6 +9393,7 @@ async function prepareImageSegments({
 						segmentTokens,
 						queryTokens,
 						trustedUrlKeys: trustedBeforeGoogleKeys,
+						imageMetaByKey: meta.imageMetaByKey,
 					},
 				);
 				if (trialRelevant.length >= googleTargetPool) break;
@@ -9061,6 +9426,7 @@ async function prepareImageSegments({
 				segmentTokens,
 				queryTokens,
 				trustedUrlKeys: trustedBeforeCseKeys,
+				imageMetaByKey: meta.imageMetaByKey,
 			},
 		);
 		const allowCseTopUp =
@@ -9177,6 +9543,7 @@ async function prepareImageSegments({
 				topicTokens,
 				segmentTokens,
 				trustedUrlKeys,
+				imageMetaByKey: meta.imageMetaByKey,
 				usedUrlsGlobal,
 			},
 		);
@@ -9244,6 +9611,7 @@ async function prepareImageSegments({
 					topicTokens,
 					segmentTokens,
 					trustedUrlKeys,
+					imageMetaByKey: meta.imageMetaByKey,
 					usedUrlsGlobal,
 				},
 			);
@@ -9321,6 +9689,7 @@ async function prepareImageSegments({
 					topicTokens,
 					segmentTokens,
 					trustedUrlKeys,
+					imageMetaByKey: meta.imageMetaByKey,
 					usedUrlsGlobal,
 				},
 			);
@@ -9352,7 +9721,7 @@ async function prepareImageSegments({
 			});
 		}
 
-		if (localPaths.length < renderTargetCount) {
+		if (!STRICT_TOPIC_RELEVANT_FEED_IMAGES && localPaths.length < renderTargetCount) {
 			const missing = Math.max(1, renderTargetCount - localPaths.length);
 			const alreadyPickedKeys = new Set(
 				pickedUrls.map((u) => normalizeImageUrlKey(u)),
@@ -9424,6 +9793,17 @@ async function prepareImageSegments({
 				candidates: relaxedPool.length,
 				picked: relaxedPicks.length,
 				downloaded: localPaths.length,
+			});
+		} else if (
+			STRICT_TOPIC_RELEVANT_FEED_IMAGES &&
+			localPaths.length < renderTargetCount
+		) {
+			logJob(jobId, "segment image relaxed rescue skipped", {
+				segment: seg.index,
+				desiredCount,
+				renderTargetCount,
+				downloaded: localPaths.length,
+				reason: "strict_topic_relevance",
 			});
 		}
 
@@ -9552,6 +9932,7 @@ async function prepareImageSegments({
 			cloudinaryCount: cloudinaryUrls.length,
 			desiredCount,
 			renderTargetCount,
+			holdSingleVisual,
 			query,
 			topicLabel: effectiveTopicLabel,
 		});
@@ -10327,7 +10708,7 @@ ${expressionLine}
 ${variantLine}
 Motion: ${motionHint}
 Motion floor: never hold the same facial pose for more than half a second. If the presenter is listening silently, keep small blinks, eye refocus, gentle breathing, and tiny posture settling visible without becoming theatrical.
-Mouth and jaw: natural speech-ready movement with restrained openings and soft lip compression; do not lip-sync, over-open vowels, warp the mouth, or make puppet-like motion.
+Mouth and jaw: lips mostly relaxed and lightly closed, with only tiny speech-ready jaw readiness; do not form syllables, lip-sync, over-open vowels, warp the mouth, stretch the cheeks, or make puppet-like motion.
 Eyes: relaxed with natural reflections and blink cadence; direct lens contact; no glassy stare, wide eyes, frequent side glances, surprise, skepticism, smirks, or dramatic brow lifts.
 Wardrobe/hands: clean collar/lapels/sleeves; hands low or out of frame, never covering the face.
 Camera/framing: locked tripod shot; no camera shake, no frame vibration, no reframing, no breathing zoom, no drifting background edges, no rolling wobble. Do NOT try to lip-sync.
@@ -11968,8 +12349,7 @@ function buildSubtleVideoExpressionPlan(
 			continue;
 		}
 		const preferred = normalized[idx];
-		if (preferred === "excited")
-			plan[idx] = FORCE_NEUTRAL_VOICEOVER ? "warm" : "excited";
+		if (preferred === "excited") plan[idx] = "warm";
 		else if (preferred === "thoughtful") plan[idx] = "thoughtful";
 		else if (preferred === "warm") plan[idx] = "warm";
 		else if (entertainmentSet.has(idx)) plan[idx] = "warm";
@@ -14739,6 +15119,7 @@ const SCRIPT_SEARCH_META_PATTERNS = [
 	/\bshot\s+up\s+in\s+search(?:es)?\b/i,
 	/\bspiked?\s+in\s+search(?:es)?\b/i,
 	/\btrending\s+search(?:es)?\b/i,
+	/\b(?:minute|part|section|beat)\s*\d{1,2}\s*:?\s+(?:bls|census|federal|visual|image|query|source)\b/i,
 ];
 
 const SCRIPT_PLATFORM_ATTRIBUTION_PATTERNS = [
@@ -14760,6 +15141,7 @@ const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
 	/\bvs\.?\b/i,
 	/\b\d{1,3}\s*[\u2013-]\s*\d{1,3}\b/,
 	/^\s*[A-Z][A-Za-z'â€™.-]+(?:\s+[A-Z][A-Za-z'â€™.-]+){1,7}\s*:/,
+	/\b(?:minute|part|section|beat)\s*\d{1,2}\s*:?\s*(?:[A-Z][A-Za-z&-]*\s*){1,5}:\s*/i,
 	/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s+(?:That|This|The|It)\b/i,
 	/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s*$/i,
 	/\bloss\s+circle\b/i,
@@ -15168,38 +15550,38 @@ function buildLocalFallbackScript({
 		text: title,
 	});
 	const genericBeats = [
-		"Start with the human tension, then keep the explanation grounded in daily life.",
-		"The important part is not that people stopped caring. It is that the easy routines changed.",
-		"Most adult connection now needs planning, energy, and repetition before it feels natural.",
-		"Online contact can create the feeling of closeness without the shared time that builds trust.",
-		"That is why a small invitation can feel heavier than it should, even when the other person would welcome it.",
-		"The useful shift is to stop waiting for effortless chemistry and start creating repeatable moments.",
-		"A weekly walk, a monthly dinner, or a simple check-in works because it lowers the decision cost.",
-		"Friendship usually grows from ordinary consistency, not one perfect conversation.",
-		"The first few tries may feel stiff, and that does not mean the connection is failing.",
-		"What helps is making the next step specific enough that both people know how to say yes.",
-		"The goal is not a crowded social life. It is a few relationships with enough repetition to feel real.",
-		"That is the hopeful part: connection can be rebuilt, but it needs structure instead of wishful thinking.",
-		"A useful way to read the problem is to separate loneliness from failure.",
-		"Many people are not rejecting connection. They are protecting the little energy they have left.",
-		"That makes low-friction plans more powerful than dramatic promises.",
-		"A clear invitation removes guesswork, which is often what makes reaching out feel heavy.",
-		"The pattern changes when connection becomes part of the week instead of a special event.",
-		"Shared activities help because the activity carries the first awkward minutes.",
-		"Following up once is normal, not desperate, when the tone stays kind and specific.",
-		"People often need familiarity before they can relax enough to become themselves.",
-		"That means the first meeting is not the full test of the friendship.",
-		"The better test is whether both people make the next step a little easier.",
-		"Some attempts will fade, and that can be information instead of a personal verdict.",
-		"Not every connection has to become deep to be valuable.",
-		"Weak ties still matter because familiar faces can become real support over time.",
-		"The most realistic approach is to make one repeatable plan and let trust accumulate.",
-		"That is how connection starts feeling less like performance and more like ordinary care.",
-		"A small routine can do what motivation alone cannot do.",
-		"Once the next plan is obvious, friendship stops depending on perfect timing.",
-		"The practical move is to lower the friction before the feeling disappears.",
-		"That gives people a way back into connection without pretending modern life is easy.",
-		"The hopeful ending is not instant closeness. It is proof that closeness can be rebuilt.",
+		"Start with the central tension, then connect it to what people feel in daily life.",
+		"The useful question is not whether the topic matters, but where the pressure shows up first.",
+		"A good explanation separates the old promise from the new tradeoff people are actually weighing.",
+		"The story gets clearer when the visible example is tied to a real decision, cost, or consequence.",
+		"That is why the next detail matters: it shows who benefits, who carries risk, and what is still uncertain.",
+		"The practical shift is to stop treating the topic like a slogan and look at the conditions around it.",
+		"One concrete example can do more than a long list because viewers can picture the tradeoff immediately.",
+		"The strongest point is usually the one that connects the headline to an ordinary choice.",
+		"The first answer may sound simple, but the details make the decision harder.",
+		"What helps is making the next step specific enough that viewers can test it against their own situation.",
+		"The goal is not to force one opinion. It is to show the pattern clearly enough that the choice feels less vague.",
+		"That is the useful part: a complicated topic becomes easier when the tradeoffs are visible.",
+		"A balanced read starts by naming both the benefit and the cost without pretending either side disappears.",
+		"Many people are reacting to real pressure, not just hype, and that context changes the tone.",
+		"That makes practical framing more powerful than a dramatic promise.",
+		"A clear comparison removes guesswork because it shows what changes under different choices.",
+		"The pattern changes when viewers can see the consequence instead of only hearing the claim.",
+		"Specific examples help because they carry the first abstract minutes of the explanation.",
+		"The strongest version stays fair: name the upside, name the risk, and keep the advice grounded.",
+		"People often need a clearer frame before they can decide what the headline means for them.",
+		"That means the first impression is not the full test of the issue.",
+		"The better test is whether the evidence makes the next choice easier to understand.",
+		"Some details will stay uncertain, and that can be information instead of a reason to exaggerate.",
+		"Not every angle has to become dramatic to be useful.",
+		"Small signals still matter because they show where the bigger pattern may be heading.",
+		"The most realistic approach is to compare the payoff, the risk, and the cheaper route before deciding.",
+		"That is how the story becomes useful instead of just noisy.",
+		"A small check can do what a big opinion cannot do.",
+		"Once the next question is obvious, the topic stops depending on vague advice.",
+		"The practical move is to lower the confusion before the decision gets expensive.",
+		"That gives viewers a way to think clearly without pretending the pressure is easy.",
+		"The hopeful ending is not certainty. It is a better way to ask the next question.",
 	];
 	const friendshipBeats = [
 		"More contact tools did not automatically create more closeness. They mostly made it easier to send a message.",
@@ -15446,6 +15828,29 @@ async function generateScript({
 			}\n- Articles: ${articles.length ? articles.join(" | ") : "(none)"}`;
 		})
 		.join("\n\n");
+	const visualResearchLines = safeTopics
+		.map((t, i) => {
+			const vr = t?.trendStory?.visualResearch || {};
+			const titles = Array.isArray(vr.titles) ? vr.titles : [];
+			const queries = Array.isArray(vr.queries) ? vr.queries : [];
+			const label = topicLabelFor(t) || t.topic || `Topic ${i + 1}`;
+			const titleLines = titles
+				.slice(0, 12)
+				.map((item) => {
+					const title = cleanTopicLabel(item?.title || "");
+					if (!title) return "";
+					const source = item?.source ? ` (${item.source})` : "";
+					const query = item?.query ? ` | query: ${item.query}` : "";
+					return `- ${title}${source}${query}`;
+				})
+				.filter(Boolean);
+			return `Topic ${i + 1} (${label}):\nQueries already searched: ${
+				queries.length ? queries.slice(0, 6).join(" | ") : "(none)"
+			}\nAvailable feed-image title clues:\n${
+				titleLines.length ? titleLines.join("\n") : "- (none)"
+			}`;
+		})
+		.join("\n\n");
 	const trendSignalLines = buildTrendSignalLines(safeTopics);
 
 	const topicIntents = safeTopics.map((t, idx) => {
@@ -15582,6 +15987,9 @@ ${topicContextGuide}
 Topic notes:
 ${topicHintLines}
 
+Pre-script feed visual research:
+${visualResearchLines}
+
 ${promptBriefGuide}
 
 ${priorVideoGuide}
@@ -15604,6 +16012,7 @@ Style rules (IMPORTANT):
 - Avoid abstract or unnatural phrases a real host would not say out loud, such as "loss circle" or stiff framing like "the angle today is".
 - Keep the delivery composed and natural, not shouty. The writing should feel sharp, engaging, and lightly provocative when the story supports it, but never reckless, insulting, or overhyped.
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
+- Viewer-first editorial stance: stand with ordinary people affected by the issue. Evaluate companies, institutions, governments, schools, platforms, and authorities by their human impact. Do not shame viewers or blame people for pressure they did not create. For neutral general news or pure entertainment trends, stay fair and factual, but keep the human consequence visible.
 - Keep it natural, not forced. For serious politics, diplomacy, legal stories, tragedies, or conflict, avoid casual filler like "real quick" or "here's the thing"; for lighter topics, use at most one friendly pivot per topic.
 - For entertainment topics (film, TV, music, awards), add ONE or TWO short reactionary opinions per topic from the presenter (brief clauses only). Keep them grounded, fair, and clearly separate from sourced facts.
 - Use contractions. Punchy sentences. A little playful, but not cringe.
@@ -15620,6 +16029,7 @@ Style rules (IMPORTANT):
 - Prefer curiosity pivots over soft transitions; when moving between points, hint at a consequence or open question instead of just explaining flow.
 - Every 2-3 segments, add a brief stakes ratchet: one line that signals what changes if the point is true, without fully resolving it.
 - Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
+- Stay on one story. Do not jump into a different life-advice topic, generic friendship advice, unrelated politics, unrelated culture, or a second topic unless the user explicitly requested multiple topics.
 - Use specific nouns (people, places, titles) over vague phrases like "big news" or "fans are excited".
 - Keep the opening controlled, but make segment 0 feel like a real hook instead of a bland recap.
 - If the frontend prompt includes an Opening line, use that exact line as the first spoken sentence of segment 0 unless it would be unsafe or factually false.
@@ -15688,6 +16098,9 @@ ${categoryGuide.lines.join("\n")}
 - overlayCues.query must be 2-6 words, describe a real visual to search for (photo or video), include the topic name or a key subject from that segment, no punctuation or hashtags.
 - overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
 - Treat overlayCues.query as the downstream feed-search contract for images and possible B-roll video. It must stay within the topic and name a visible subject, place, action, object, institution, or scene from the segment/source context.
+- Shape the story around the strongest available feed visuals above where possible. The image/video research comes before the script: use those title clues to choose concrete beats, examples, and overlayCues.query values, but do not say "image title", "search result", or "visual research" in the spoken script.
+- Never choose or imply an unrelated feed visual just because it is dramatic. If the available visual does not clearly belong to the topic, broaden to a directly adjacent topic visual or use a neutral explanatory visual; do not use unrelated people, unrelated events, or generic scenery.
+- If a beat depends on a chart, graph, official data table, report, debt paperwork, application screen, map, timeline, or infographic, write that segment so one visual can stay on screen long enough to be understood. Explain what the viewer is looking at instead of rotating away too fast.
 - Prefer official, public-facing, source-related visual subjects for overlayCues.query, such as official portraits, team photos, press conferences, venues, event stills, or source article subjects. Avoid stock-agency wording.
 - Do NOT include overlayCues.query, image-search hints, visual cue labels, or anchor-image language in the spoken segment text. Those are metadata only.
 - If exact photos are scarce, broaden only to adjacent visible context directly implied by the topic or source context; never use unrelated people, places, brands, or generic scenery.
@@ -16356,6 +16769,11 @@ function stripBlockingScriptArtifacts(text = "") {
 	);
 	let cleaned = kept.length ? kept.join(" ") : "";
 	cleaned = cleaned
+		.replace(
+			/\b(?:minute|part|section|beat)\s*\d{1,2}\s*:?\s*(?:[A-Z][A-Za-z&-]*\s*){1,5}:\s*/gi,
+			" ",
+		)
+		.replace(/\b(?:visual|image|query|source)\s*:\s*/gi, " ")
 		.replace(/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s+(?=(?:That|This|The|It)\b)/i, "")
 		.trim();
 	for (const rx of SCRIPT_STOCK_PHRASE_PATTERNS) {
@@ -18178,6 +18596,9 @@ function buildVoiceoverSliceDurations(segments = [], totalDurationSec = 0) {
 async function transcribeAudioForQa(audioPath, jobId, label) {
 	if (!AUDIO_QA_TRANSCRIBE) return "";
 	if (!openai?.audio?.transcriptions?.create) return "";
+	if (Date.now() < audioQaTranscribeDisabledUntil) {
+		return "";
+	}
 	const models = [AUDIO_QA_TRANSCRIBE_MODEL, "whisper-1"]
 		.filter(Boolean)
 		.filter((v, i, arr) => arr.indexOf(v) === i);
@@ -18201,6 +18622,18 @@ async function transcribeAudioForQa(audioPath, jobId, label) {
 			label,
 			error: lastErr.message,
 		});
+	}
+	if (lastErr && isOpenAiQuotaOrRateLimitError(lastErr)) {
+		audioQaTranscribeDisabledUntil =
+			Date.now() + AUDIO_QA_TRANSCRIBE_COOLDOWN_MS;
+		audioQaTranscribeDisabledReason = lastErr.message || "openai_quota";
+		if (jobId) {
+			logJob(jobId, "audio qa transcription disabled temporarily", {
+				label,
+				cooldownSec: Math.round(AUDIO_QA_TRANSCRIBE_COOLDOWN_MS / 1000),
+				error: audioQaTranscribeDisabledReason,
+			});
+		}
 	}
 	return "";
 }
@@ -18427,7 +18860,13 @@ async function analyzeAudioQuality({ wavPath, expectedText, jobId, label }) {
 			const transcript = await transcribeAudioForQa(wavPath, jobId, label);
 			result.transcript = transcript;
 			if (!transcript) {
-				result.issues.push("transcription_empty");
+				if (Date.now() < audioQaTranscribeDisabledUntil) {
+					result.transcriptionSkipped = true;
+					result.transcriptionSkipReason =
+						audioQaTranscribeDisabledReason || "openai_quota";
+				} else {
+					result.issues.push("transcription_empty");
+				}
 			} else {
 				if (hasFillerWords(transcript)) result.issues.push("filler_detected");
 				const expectedTokens = buildExpectedQaTokens(expectedText);
@@ -18891,7 +19330,7 @@ async function requestSyncSoJob({ videoPath, audioPath, jobId, modelId }) {
 		};
 
 		return await withRetries(doReq, {
-			retries: 2,
+			retries: SYNC_SO_GENERATE_HTTP_RETRIES,
 			baseDelayMs: 900,
 			label: "sync_generate",
 		});
@@ -22098,7 +22537,14 @@ async function runLongVideoJob(
 			baseUrl,
 		});
 		const topicTitles = topicPicks
-			.map((t) => t.displayTopic || t.topic)
+			.map((t) => {
+				const label = cleanTopicLabel(t.displayTopic || t.topic || "");
+				if (!looksLikePromptStructureLabelOnly(label)) return label;
+				const brief = t.promptBrief || parseStructuredPromptBrief(t.promptText);
+				return (
+					cleanTopicLabel(brief?.title || brief?.primaryTopic || "") || label
+				);
+			})
 			.filter(Boolean);
 		const topicSummary = topicTitles.join(" / ");
 		const contentMode = topicPicks.some(
@@ -22401,6 +22847,20 @@ async function runLongVideoJob(
 			};
 		});
 		logJob(jobId, "topic sources", { topics: topicSourceSummary });
+		const preScriptVisualResearch = await prefetchPreScriptVisualResearch({
+			topics: topicPicks,
+			baseUrl,
+			jobId,
+			category: categoryLabel,
+		});
+		if (preScriptVisualResearch.length) {
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					preScriptVisualResearch,
+				},
+			});
+		}
 		const topicContextFlags = topicContexts.map((tc, idx) => {
 			const items = Array.isArray(tc.context) ? tc.context : [];
 			const topicObj = Array.isArray(topicPicks) ? topicPicks[idx] : null;
@@ -25497,6 +25957,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						timeline: timelineForMeta,
 						presenterCoverage: presenterCoverageQa,
 						actualVisualPlan: segmentRenderSummary,
+						preScriptVisualResearch,
 					},
 					shortsDetails: shortsDetailsForDoc,
 					language: languageLabel,

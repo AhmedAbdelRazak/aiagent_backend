@@ -4158,9 +4158,17 @@ router.get("/google-images", requireLocalOrInternalKey, async (req, res) => {
   const limit = Number.isFinite(rawLimit)
     ? clampInt(rawLimit, 6, GOOGLE_IMAGES_MAX_RESULTS)
     : GOOGLE_IMAGES_DEFAULT_LIMIT;
+  const includeMetadata = ["1", "true", "yes", "on"].includes(
+    String(req.query.includeMetadata || "").toLowerCase(),
+  );
+  const bingOnly = ["1", "true", "yes", "on"].includes(
+    String(req.query.bingOnly || "").toLowerCase(),
+  );
 
   try {
-    const images = await scrapeFreeImageSearch({ query, limit });
+    const images = bingOnly
+      ? await scrapeBingImages({ query, limit, includeMetadata })
+      : await scrapeFreeImageSearch({ query, limit, includeMetadata });
     return res.json({
       query,
       count: images.length,
