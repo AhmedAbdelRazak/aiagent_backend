@@ -605,9 +605,9 @@ const PRESENTER_RENDER_MOTION_NEAR_PASS_ENABLED = envFlag(
 	true,
 );
 const PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO = clampNumber(
-	process.env.LONG_VIDEO_RENDER_MOTION_MAX_FREEZE_RATIO ?? 0.36,
+	process.env.LONG_VIDEO_RENDER_MOTION_MAX_FREEZE_RATIO ?? 0.48,
 	PRESENTER_MOTION_MAX_FREEZE_RATIO,
-	0.5,
+	0.6,
 );
 const PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC = clampNumber(
 	process.env.LONG_VIDEO_RENDER_MOTION_MAX_FREEZE_SEC ?? 1.05,
@@ -772,7 +772,11 @@ const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 
 // Content visual mix (presenter vs static images). Required default is
 // 40% presenter / 60% scraped feed or topic images.
-const CONTENT_PRESENTER_RATIO = 0.4;
+const CONTENT_PRESENTER_RATIO = clampNumber(
+	process.env.LONG_VIDEO_PRESENTER_RATIO ?? 0.4,
+	0.2,
+	0.7,
+);
 const PRE_SCRIPT_VISUAL_RESEARCH_ENABLED = envFlag(
 	"LONG_VIDEO_PRE_SCRIPT_VISUAL_RESEARCH",
 	true,
@@ -875,6 +879,10 @@ const MIN_ACTUAL_PRESENTER_DURATION_RATIO = clampNumber(
 );
 const ALLOW_ZERO_PRESENTER_OUTPUT = envFlag(
 	"LONG_VIDEO_ALLOW_ZERO_PRESENTER_OUTPUT",
+	false,
+);
+const FAIL_ON_LOW_PRESENTER_COVERAGE = envFlag(
+	"LONG_VIDEO_FAIL_ON_LOW_PRESENTER_COVERAGE",
 	false,
 );
 const REQUIRE_FORCED_OPENING_PRESENTERS = envFlag(
@@ -6171,10 +6179,40 @@ function isUnsupportedFeedVideoHost(url = "") {
 	);
 }
 
+function isKnownBlockedFeedVideoPage(url = "") {
+	const raw = String(url || "");
+	if (!raw || isProbablyDirectVideoUrl(raw)) return false;
+	let host = "";
+	let pathAndQuery = "";
+	try {
+		const parsed = new URL(raw);
+		host = parsed.hostname || "";
+		pathAndQuery = `${parsed.pathname || ""}?${parsed.search || ""}`;
+	} catch {
+		host = getUrlHost(raw);
+		pathAndQuery = raw;
+	}
+	if (
+		/\b(stock\.adobe\.com|vecteezy\.com|storyblocks\.com|envato\.com|shutterstock\.com|istockphoto\.com|gettyimages\.com|depositphotos\.com|videvo\.net)\b/i.test(
+			host,
+		)
+	)
+		return true;
+	if (
+		/\b(pexels\.com|pixabay\.com)\b/i.test(host) &&
+		/(?:\/search\/|\/search\b|[?&]q=|[?&]query=)/i.test(pathAndQuery)
+	)
+		return true;
+	if (/\b(stock-footage|stock-video|stock_video|stockvideo)\b/i.test(pathAndQuery))
+		return true;
+	return false;
+}
+
 function isDisfavoredFeedVideoSourceUrl(url = "") {
 	const raw = String(url || "");
 	if (!raw) return true;
 	if (isUnsupportedFeedVideoHost(raw)) return true;
+	if (isKnownBlockedFeedVideoPage(raw)) return true;
 	if (/\.(m3u8|mpd)(?:[?#]|$)/i.test(raw)) return true;
 	if (/\b(ad|ads|promo|sponsored|thumbnail|poster|sprite|preview|watermark|stock-footage|stock_video|stockvideo)\b/i.test(raw))
 		return true;
@@ -6509,6 +6547,25 @@ function ensureTopicInQuery(query = "", topicLabel = "") {
 	return sanitizeOverlayQuery(`${topic} ${base}`) || topic;
 }
 
+function ensureCompactTopicInQuery(query = "", topicLabel = "") {
+	const base = sanitizeOverlayQuery(query);
+	const topic = sanitizeOverlayQuery(topicLabel);
+	if (!topic) return base;
+	if (!base) return compactVisualSearchQuery(topic, topic, topic);
+	const baseTokens = filterSegmentImageMatchTokens(tokenizeLabel(base));
+	const topicTokens = filterSegmentImageMatchTokens(tokenizeLabel(topic));
+	const hasTopicToken = topicTokens.some((t) => baseTokens.includes(t));
+	if (hasTopicToken || baseTokens.length >= 3) {
+		return compactVisualSearchQuery(base, topic, base);
+	}
+	const topicPrefix = topicTokens.slice(0, 2).join(" ");
+	return compactVisualSearchQuery(
+		[topicPrefix, base].filter(Boolean).join(" "),
+		topic,
+		ensureTopicInQuery(base, topic),
+	);
+}
+
 function isGenericOverlayQuery(query = "", topicLabel = "") {
 	const base = sanitizeOverlayQuery(query);
 	if (!base) return true;
@@ -6662,13 +6719,13 @@ function filterSegmentImageMatchTokens(tokens = []) {
 }
 
 function buildOverlayQueryFallback(text = "", topic = "") {
-	const base = cleanTopicCandidate(topic);
+	const base = compactVisualSearchQuery(cleanTopicCandidate(topic), topic, topic);
 	const tokens = filterSegmentImageMatchTokens(tokenizeLabel(text)).slice(0, 4);
 	const extras = tokens.filter(
 		(t) => !base.toLowerCase().includes(String(t || "").toLowerCase()),
 	);
 	const parts = [base, ...extras].filter(Boolean);
-	return sanitizeOverlayQuery(parts.join(" "));
+	return ensureCompactTopicInQuery(parts.join(" "), topic);
 }
 
 function cleanImageQueryHint(hint = "", topicLabel = "") {
@@ -6685,7 +6742,7 @@ function cleanImageQueryHint(hint = "", topicLabel = "") {
 		.filter((t) => topicTokens.has(t) || !SEGMENT_IMAGE_STOP_TOKENS.has(t))
 		.slice(0, 9);
 	if (tokens.length < 2) return "";
-	return ensureTopicInQuery(tokens.join(" "), topicLabel);
+	return ensureCompactTopicInQuery(tokens.join(" "), topicLabel);
 }
 
 const GENERIC_NEAR_IMAGE_MODIFIERS = [
@@ -7154,12 +7211,17 @@ async function expandFeedVideoCandidateUrls(entry = {}) {
 	};
 	if (
 		isProbablyDirectVideoUrl(entry.url) ||
-		/\b(og|meta|direct|trend|seed)\b/i.test(entry.sourceType || "")
+		/\b(direct|article-og)\b/i.test(entry.sourceType || "")
 	) {
 		push(entry.url);
 	}
 	for (const pageUrl of uniqueStrings([entry.pageUrl, entry.url], { limit: 2 })) {
-		if (!pageUrl || isProbablyDirectVideoUrl(pageUrl)) continue;
+		if (
+			!pageUrl ||
+			isProbablyDirectVideoUrl(pageUrl) ||
+			isKnownBlockedFeedVideoPage(pageUrl)
+		)
+			continue;
 		const ogVideos = await fetchOpenGraphVideoUrls(pageUrl);
 		ogVideos.forEach(push);
 	}
@@ -7609,7 +7671,7 @@ function resolveSegmentImageQuery(seg, topics = []) {
 	const preferredQuery = isGenericOverlayQuery(baseQuery, topicLabel)
 		? fallbackQuery
 		: baseQuery || fallbackQuery;
-	const query = ensureTopicInQuery(preferredQuery, visualTopicLabel);
+	const query = ensureCompactTopicInQuery(preferredQuery, visualTopicLabel);
 	return { query, topicLabel: visualTopicLabel || topicLabel };
 }
 
@@ -7648,7 +7710,7 @@ function buildSegmentImageQueryVariants({
 		tokenizeLabel(segmentText || ""),
 	).filter((t) => !topicTokens.has(t));
 	if (topicLabel && textTokens.length) {
-		push(`${topicLabel} ${textTokens.slice(0, 3).join(" ")}`);
+		push(ensureCompactTopicInQuery(textTokens.slice(0, 3).join(" "), topicLabel));
 	}
 
 	const hintList = uniqueStrings(
@@ -7662,7 +7724,7 @@ function buildSegmentImageQueryVariants({
 	);
 	for (const hint of hintList) {
 		if (variants.length >= maxVariants) break;
-		const withTopic = ensureTopicInQuery(hint, topicLabel);
+		const withTopic = ensureCompactTopicInQuery(hint, topicLabel);
 		push(withTopic);
 	}
 
@@ -8175,6 +8237,11 @@ function getTrustedImageUrlKeys(opts = {}) {
 	return new Set();
 }
 
+function getValidatedImageUrlKeys(opts = {}) {
+	if (opts?.validatedUrlKeys instanceof Set) return opts.validatedUrlKeys;
+	return new Set();
+}
+
 function getImageRelevanceMeta(url = "", opts = {}) {
 	const key = normalizeImageUrlKey(url);
 	const byKey =
@@ -8218,6 +8285,7 @@ function scoreImageUrlQuality(url = "") {
 function scoreImageUrlRelevance(url = "", opts = {}) {
 	const key = normalizeImageUrlKey(url);
 	const trustedUrlKeys = getTrustedImageUrlKeys(opts);
+	const validatedUrlKeys = getValidatedImageUrlKeys(opts);
 	const qualityScore = scoreImageUrlQuality(url);
 	const { topicTokens, segmentTokens, queryTokens } =
 		getImageUrlRelevanceTokens(opts);
@@ -8243,12 +8311,25 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 			queryScore: 0,
 		};
 	}
+	if (validatedUrlKeys.has(key)) {
+		return {
+			trusted: true,
+			validated: true,
+			accepted: true,
+			score: 1200 + qualityScore,
+			qualityScore,
+			topicScore,
+			segmentScore,
+			queryScore,
+		};
+	}
 	if (
 		trustedUrlKeys.has(key) &&
 		(!STRICT_TOPIC_RELEVANT_FEED_IMAGES || !hasRelevanceTokens)
 	) {
 		return {
 			trusted: true,
+			validated: false,
 			accepted: true,
 			score: 1000,
 			qualityScore,
@@ -8271,6 +8352,7 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 		(!requiredTopicMatches && (segmentMatched || queryMatched));
 	return {
 		trusted: trustedUrlKeys.has(key),
+		validated: validatedUrlKeys.has(key),
 		accepted,
 		score: topicScore * 3 + queryScore * 2 + segmentScore + qualityScore * 0.25,
 		qualityScore,
@@ -8292,6 +8374,7 @@ function filterRelevantImageCandidatePool(pool = [], opts = {}) {
 		relevanceTokens.topicTokens.length ||
 		relevanceTokens.segmentTokens.length ||
 		relevanceTokens.queryTokens.length ||
+		getValidatedImageUrlKeys(opts).size ||
 		getTrustedImageUrlKeys(opts).size;
 	if (!hasSignals) return cleanPool;
 
@@ -8300,6 +8383,8 @@ function filterRelevantImageCandidatePool(pool = [], opts = {}) {
 		.filter((entry) => entry.accepted);
 	if (!scored.length) return [];
 	scored.sort((a, b) => {
+		if (Number(Boolean(b.validated)) !== Number(Boolean(a.validated)))
+			return Number(Boolean(b.validated)) - Number(Boolean(a.validated));
 		if (Number(b.trusted) !== Number(a.trusted))
 			return Number(b.trusted) - Number(a.trusted);
 		if (b.topicScore !== a.topicScore) return b.topicScore - a.topicScore;
@@ -8490,8 +8575,9 @@ async function uploadLocalImageToCloudinary(
 	} catch (e) {
 		const msg = String(e?.message || "");
 		const sizeIssue =
-			msg.includes("Maximum image size is 25 Megapixels") ||
-			msg.includes("File size too large");
+			/Maximum image size is 25 Megapixels|File size too large|image is too large|too large to process|first action resizes/i.test(
+				msg,
+			);
 		if (!sizeIssue) throw e;
 
 		const targetW = Math.max(640, Number(output?.w) || 1280);
@@ -8519,12 +8605,16 @@ async function uploadLocalImageToCloudinary(
 			"cloudinary_downscale",
 			{ timeoutMs: 120000 },
 		);
-		const result = await cloudinary.uploader.upload(scaledPath, {
-			...baseOpts,
-			quality: "auto:good",
-			fetch_format: "auto",
-		});
-		safeUnlink(scaledPath);
+		let result;
+		try {
+			result = await cloudinary.uploader.upload(scaledPath, {
+				...baseOpts,
+				quality: "auto:good",
+				fetch_format: "auto",
+			});
+		} finally {
+			safeUnlink(scaledPath);
+		}
 		return {
 			public_id: result.public_id,
 			url: result.secure_url,
@@ -10223,7 +10313,8 @@ async function prepareImageSegments({
 			topicTokens,
 			segmentTokens,
 			queryTokens,
-			trustedUrlKeys: trustedSeedUrlKeys,
+			trustedUrlKeys: new Set([...plannedUrlKeys, ...trustedSeedUrlKeys]),
+			validatedUrlKeys: plannedUrlKeys,
 			imageMetaByKey: meta.imageMetaByKey,
 		};
 
@@ -10267,6 +10358,7 @@ async function prepareImageSegments({
 		}
 
 		const trustedBeforeGoogleKeys = new Set([
+			...plannedUrlKeys,
 			...trustedSeedUrlKeys,
 			...fallbackUrlKeys,
 		]);
@@ -10280,6 +10372,7 @@ async function prepareImageSegments({
 				segmentTokens,
 				queryTokens,
 				trustedUrlKeys: trustedBeforeGoogleKeys,
+				validatedUrlKeys: plannedUrlKeys,
 				imageMetaByKey: meta.imageMetaByKey,
 			},
 		);
@@ -10325,6 +10418,7 @@ async function prepareImageSegments({
 						segmentTokens,
 						queryTokens,
 						trustedUrlKeys: trustedBeforeGoogleKeys,
+						validatedUrlKeys: plannedUrlKeys,
 						imageMetaByKey: meta.imageMetaByKey,
 					},
 				);
@@ -10345,6 +10439,7 @@ async function prepareImageSegments({
 		}
 
 		const trustedBeforeCseKeys = new Set([
+			...plannedUrlKeys,
 			...trustedSeedUrlKeys,
 			...fallbackUrlKeys,
 		]);
@@ -10358,6 +10453,7 @@ async function prepareImageSegments({
 				segmentTokens,
 				queryTokens,
 				trustedUrlKeys: trustedBeforeCseKeys,
+				validatedUrlKeys: plannedUrlKeys,
 				imageMetaByKey: meta.imageMetaByKey,
 			},
 		);
@@ -10438,6 +10534,7 @@ async function prepareImageSegments({
 			[...fromQueryUrls, ...fromTopicUrls].map((u) => normalizeImageUrlKey(u)),
 		);
 		const trustedUrlKeys = new Set([
+			...plannedUrlKeys,
 			...trustedSeedUrlKeys,
 			...fallbackUrlKeys,
 			...cseUrlKeys,
@@ -10475,6 +10572,7 @@ async function prepareImageSegments({
 				topicTokens,
 				segmentTokens,
 				trustedUrlKeys,
+				validatedUrlKeys: plannedUrlKeys,
 				imageMetaByKey: meta.imageMetaByKey,
 				usedUrlsGlobal,
 			},
@@ -10543,6 +10641,7 @@ async function prepareImageSegments({
 					topicTokens,
 					segmentTokens,
 					trustedUrlKeys,
+					validatedUrlKeys: plannedUrlKeys,
 					imageMetaByKey: meta.imageMetaByKey,
 					usedUrlsGlobal,
 				},
@@ -10621,6 +10720,7 @@ async function prepareImageSegments({
 					topicTokens,
 					segmentTokens,
 					trustedUrlKeys,
+					validatedUrlKeys: plannedUrlKeys,
 					imageMetaByKey: meta.imageMetaByKey,
 					usedUrlsGlobal,
 				},
@@ -25546,6 +25646,47 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			imageSegments: finalImageSegments,
 			imageFallbackToPresenterSegments,
 		});
+		const presenterContentSec = timeline.reduce(
+			(sum, seg) =>
+				sum +
+				(seg.visualType === "presenter" ? Number(seg.durationSec || 0) : 0),
+			0,
+		);
+		const imageContentSec = timeline.reduce(
+			(sum, seg) =>
+				sum + (seg.visualType === "image" ? Number(seg.durationSec || 0) : 0),
+			0,
+		);
+		const presenterExpressionCount = new Set(
+			timeline
+				.filter((seg) => seg.visualType === "presenter")
+				.map((seg) =>
+					normalizeExpression(
+						seg.videoExpression || seg.expression || "neutral",
+						voiceTonePlan?.mood,
+					),
+				),
+		).size;
+		const estimatedSyncBillableSec =
+			Number(introDurationSec || 0) +
+			Number(outroDurationSec || 0) +
+			presenterContentSec;
+		const estimatedRunwayBaselineSec =
+			ENABLE_RUNWAY_BASELINE && RUNWAY_API_KEY
+				? presenterExpressionCount * BASELINE_VARIANTS * BASELINE_DUR_SEC
+				: 0;
+		logJob(jobId, "cost-sensitive render budget", {
+			presenterRatio: CONTENT_PRESENTER_RATIO,
+			presenterContentSec: Number(presenterContentSec.toFixed(3)),
+			imageContentSec: Number(imageContentSec.toFixed(3)),
+			estimatedSyncBillableSec: Number(estimatedSyncBillableSec.toFixed(3)),
+			estimatedSyncBillableMin: Number((estimatedSyncBillableSec / 60).toFixed(3)),
+			estimatedRunwayBaselineSec: Number(
+				estimatedRunwayBaselineSec.toFixed(3),
+			),
+			baselineExpressions: presenterExpressionCount,
+			baselineVariants: BASELINE_VARIANTS,
+		});
 		const premiumPresenterSegments = [];
 		for (const seg of timeline) {
 			if (seg.mustUsePresenter) premiumPresenterSegments.push(seg.index);
@@ -26785,6 +26926,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			minPresenterUnits,
 			minPresenterDurationRatio: MIN_ACTUAL_PRESENTER_DURATION_RATIO,
 			minPresenterPlanRatio: MIN_ACTUAL_PRESENTER_PLAN_RATIO,
+			failOnLowCoverage: FAIL_ON_LOW_PRESENTER_COVERAGE,
 			pass: presenterCoverageIssues.length === 0,
 			issues: presenterCoverageIssues,
 		};
@@ -26797,9 +26939,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			},
 		});
 		if (!presenterCoverageQa.pass) {
-			throw new Error(
-				`presenter_coverage_failed:${presenterCoverageIssues.join(",")}`,
-			);
+			if (FAIL_ON_LOW_PRESENTER_COVERAGE) {
+				throw new Error(
+					`presenter_coverage_failed:${presenterCoverageIssues.join(",")}`,
+				);
+			}
+			logJob(jobId, "presenter coverage degraded; continuing with image rescues", {
+				issues: presenterCoverageIssues,
+				actualPresenterUnits: presenterCoverage.actualPresenterUnits,
+				actualPresenterDurationRatio: Number(
+					(presenterCoverage.actualPresenterDurationRatio || 0).toFixed(3),
+				),
+			});
 		}
 
 		updateJob(jobId, { progressPct: 72 });
