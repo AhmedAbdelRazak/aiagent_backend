@@ -587,9 +587,9 @@ const PRESENTER_MOTION_FREEZE_NOISE = clampNumber(0.006, 0.0001, 0.01);
 const PRESENTER_MOTION_MAX_FREEZE_RATIO = clampNumber(0.08, 0.03, 0.6);
 const PRESENTER_MOTION_MAX_FREEZE_SEC = clampNumber(0.55, 0.15, 3);
 const PRESENTER_BASELINE_MOTION_MAX_FREEZE_RATIO = clampNumber(
-	process.env.LONG_VIDEO_BASELINE_MOTION_MAX_FREEZE_RATIO ?? 0.18,
+	process.env.LONG_VIDEO_BASELINE_MOTION_MAX_FREEZE_RATIO ?? 0.45,
 	PRESENTER_MOTION_MAX_FREEZE_RATIO,
-	0.35,
+	0.6,
 );
 const PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC = clampNumber(
 	process.env.LONG_VIDEO_BASELINE_MOTION_MAX_FREEZE_SEC ?? 1.2,
@@ -598,7 +598,7 @@ const PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC = clampNumber(
 );
 const PRESENTER_BASELINE_MOTION_NEAR_PASS_ENABLED = envFlag(
 	"LONG_VIDEO_BASELINE_MOTION_NEAR_PASS",
-	false,
+	true,
 );
 const PRESENTER_RENDER_MOTION_NEAR_PASS_ENABLED = envFlag(
 	"LONG_VIDEO_RENDER_MOTION_NEAR_PASS",
@@ -800,19 +800,23 @@ const OPENING_PRESENTER_SYNC_RETRIES = Math.floor(clampNumber(
 ));
 const MIN_ACTUAL_PRESENTER_SEGMENTS = Math.floor(clampNumber(
 	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_SEGMENTS ??
-		0,
+		Math.max(2, FORCE_OPENING_PRESENTER_COUNT),
 	0,
 	20,
 ));
 const MIN_ACTUAL_PRESENTER_PLAN_RATIO = clampNumber(
-	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_PLAN_RATIO ?? 0,
+	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_PLAN_RATIO ?? 0.15,
 	0,
 	1,
 );
 const MIN_ACTUAL_PRESENTER_DURATION_RATIO = clampNumber(
-	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_DURATION_RATIO ?? 0,
+	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_DURATION_RATIO ?? 0.04,
 	0,
 	0.5,
+);
+const ALLOW_ZERO_PRESENTER_OUTPUT = envFlag(
+	"LONG_VIDEO_ALLOW_ZERO_PRESENTER_OUTPUT",
+	false,
 );
 const REQUIRE_FORCED_OPENING_PRESENTERS = envFlag(
 	"LONG_VIDEO_REQUIRE_FORCED_OPENING_PRESENTERS",
@@ -25035,6 +25039,17 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				const disabledPresenterSegments = timeline
 					.filter((seg) => seg.visualType === "presenter")
 					.map((seg) => seg.index);
+				if (disabledPresenterSegments.length && !ALLOW_ZERO_PRESENTER_OUTPUT) {
+					logJob(jobId, "presenter motion unavailable; stopping before upload", {
+						reason: lastPresenterMotionError || "no_valid_presenter_motion",
+						disabledPresenterSegments,
+						strictNoStaticPresenter: true,
+						imageFallbacksAvailable: feedImageFallbackPaths.length,
+					});
+					throw new Error(
+						`presenter_motion_unavailable:no_usable_runway_baseline:${lastPresenterMotionError || "unknown"}`,
+					);
+				}
 				timeline = timeline.map((seg) =>
 					seg.visualType === "presenter"
 						? {
@@ -25680,6 +25695,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			),
 		);
 		const presenterCoverageIssues = [];
+		if (
+			!ALLOW_ZERO_PRESENTER_OUTPUT &&
+			presenterCoverage.plannedPresenterUnits > 0 &&
+			presenterCoverage.actualPresenterUnits <= 0
+		) {
+			presenterCoverageIssues.push("no_presenter_segments");
+		}
 		if (presenterCoverage.actualPresenterUnits < minPresenterUnits) {
 			presenterCoverageIssues.push("too_few_presenter_segments");
 		}
