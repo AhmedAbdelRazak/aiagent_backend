@@ -212,7 +212,21 @@ app.set("io", io);
 /* ---------- Global middleware ---------- */
 const LOG_FORMAT =
 	process.env.LOG_FORMAT || (NODE_ENV === "production" ? "combined" : "dev");
-app.use(morgan(LOG_FORMAT));
+const LOG_LONG_VIDEO_STATUS_POLLING = /^(1|true|yes|on)$/i.test(
+	String(process.env.LOG_LONG_VIDEO_STATUS_POLLING || "").trim(),
+);
+function shouldSkipAccessLog(req, res) {
+	if (res.statusCode >= 400) return false;
+	if (LOG_LONG_VIDEO_STATUS_POLLING) return false;
+	const pathOnly = String(req.originalUrl || req.url || "").split("?")[0];
+	return (
+		req.method === "GET" &&
+		/^\/api\/long-video\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+			pathOnly,
+		)
+	);
+}
+app.use(morgan(LOG_FORMAT, { skip: shouldSkipAccessLog }));
 
 const BODY_LIMIT = process.env.BODY_LIMIT || "50mb";
 app.use(express.json({ limit: BODY_LIMIT }));
