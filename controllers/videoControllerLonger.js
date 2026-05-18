@@ -747,6 +747,19 @@ const MUSIC_USE_DEFAULT_FIRST = envFlag(
 	"LONG_VIDEO_MUSIC_DEFAULT_FIRST",
 	false,
 );
+const MUSIC_RESOLVE_TIMEOUT_MS = clampNumber(
+	process.env.LONG_VIDEO_MUSIC_RESOLVE_TIMEOUT_MS ?? 120000,
+	15000,
+	300000,
+);
+const MUSIC_TRACK_DOWNLOAD_TIMEOUT_MS = clampNumber(
+	process.env.LONG_VIDEO_MUSIC_TRACK_DOWNLOAD_TIMEOUT_MS ?? 20000,
+	8000,
+	60000,
+);
+const MUSIC_MAX_DOWNLOAD_CANDIDATES = Math.round(
+	clampNumber(process.env.LONG_VIDEO_MUSIC_MAX_DOWNLOAD_CANDIDATES ?? 5, 1, 10),
+);
 
 // Overlays
 // Larger overlays by default; cap size relative to frame width.
@@ -1119,6 +1132,24 @@ if (SHOULD_PERSIST_LONG_VIDEO) ensureDir(THUMBNAIL_DIR);
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
+}
+
+async function withTimeout(promise, timeoutMs, label = "operation") {
+	const ms = Number(timeoutMs);
+	if (!Number.isFinite(ms) || ms <= 0) return await promise;
+	let timer = null;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise((_, reject) => {
+				timer = setTimeout(() => {
+					reject(new Error(`${label} timed out after ${Math.round(ms)}ms`));
+				}, ms);
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
 }
 
 function clampNumber(n, min, max) {
@@ -1504,9 +1535,36 @@ async function downloadToFile(url, outPath, timeoutMs = 30000, retries = 2) {
 
 			await new Promise((resolve, reject) => {
 				const ws = fs.createWriteStream(outPath);
+				let settled = false;
+				const streamTimeoutMs = Math.max(5000, Number(timeoutMs) + 5000);
+				const streamTimer = setTimeout(() => {
+					settle(
+						new Error(
+							`download stream timed out after ${Math.round(streamTimeoutMs)}ms`,
+						),
+					);
+				}, streamTimeoutMs);
+				function settle(err) {
+					if (settled) return;
+					settled = true;
+					clearTimeout(streamTimer);
+					if (err) {
+						try {
+							res.data.destroy(err);
+						} catch {}
+						try {
+							ws.destroy(err);
+						} catch {}
+						reject(err);
+						return;
+					}
+					resolve();
+				}
 				res.data.pipe(ws);
-				ws.on("finish", resolve);
-				ws.on("error", reject);
+				res.data.on("error", settle);
+				res.data.on("aborted", () => settle(new Error("download stream aborted")));
+				ws.on("finish", () => settle());
+				ws.on("error", settle);
 			});
 
 			const st = fs.statSync(outPath);
@@ -22038,19 +22096,34 @@ async function validateMusicFile(filePath) {
 
 async function tryResolveDefaultBackgroundMusic(jobId) {
 	if (DEFAULT_MUSIC_PATH && fs.existsSync(DEFAULT_MUSIC_PATH)) {
+		logJob(jobId, "music default path check", { path: DEFAULT_MUSIC_PATH });
 		if (await validateMusicFile(DEFAULT_MUSIC_PATH)) {
 			logJob(jobId, "music ready (default path)", { path: DEFAULT_MUSIC_PATH });
 			return DEFAULT_MUSIC_PATH;
 		}
+		logJob(jobId, "music default path invalid", { path: DEFAULT_MUSIC_PATH });
 	}
 	if (DEFAULT_MUSIC_URL) {
 		const out = path.join(TMP_ROOT, `music_default_${jobId}.mp3`);
-		await downloadToFile(DEFAULT_MUSIC_URL, out, 35000, 2);
-		if (await validateMusicFile(out)) {
-			logJob(jobId, "music ready (default url)", { path: path.basename(out) });
-			return out;
+		let keepDownloadedDefault = false;
+		try {
+			logJob(jobId, "music default url download start", {
+				timeoutMs: MUSIC_TRACK_DOWNLOAD_TIMEOUT_MS,
+			});
+			await downloadToFile(DEFAULT_MUSIC_URL, out, MUSIC_TRACK_DOWNLOAD_TIMEOUT_MS, 1);
+			if (await validateMusicFile(out)) {
+				keepDownloadedDefault = true;
+				logJob(jobId, "music ready (default url)", { path: path.basename(out) });
+				return out;
+			}
+			logJob(jobId, "music default url invalid", { path: path.basename(out) });
+		} catch (err) {
+			logJob(jobId, "music default url failed", {
+				error: String(err?.message || err).slice(0, 240),
+			});
+		} finally {
+			if (!keepDownloadedDefault) safeUnlink(out);
 		}
-		safeUnlink(out);
 	}
 	return null;
 }
@@ -22068,9 +22141,20 @@ async function resolveBackgroundMusic({
 
 	// 1) explicit musicUrl
 	const musicUrl = String(requestedMusicUrl || "").trim();
+	logJob(jobId, "music resolve start", {
+		requested: Boolean(musicUrl),
+		defaultFirst: MUSIC_USE_DEFAULT_FIRST,
+		hasDefaultPath: Boolean(DEFAULT_MUSIC_PATH),
+		hasDefaultUrl: Boolean(DEFAULT_MUSIC_URL),
+		hasJamendoClient: Boolean(JAMENDO_CLIENT_ID),
+		timeoutMs: MUSIC_RESOLVE_TIMEOUT_MS,
+	});
 	if (musicUrl) {
 		const out = path.join(TMP_ROOT, `music_req_${jobId}.mp3`);
-		await downloadToFile(musicUrl, out, 35000, 2);
+		logJob(jobId, "music requested download start", {
+			timeoutMs: MUSIC_TRACK_DOWNLOAD_TIMEOUT_MS,
+		});
+		await downloadToFile(musicUrl, out, MUSIC_TRACK_DOWNLOAD_TIMEOUT_MS, 1);
 		if (await validateMusicFile(out)) {
 			logJob(jobId, "music ready (requested)", { path: path.basename(out) });
 			return out;
@@ -22092,10 +22176,18 @@ async function resolveBackgroundMusic({
 		mood,
 		topics,
 	});
+	logJob(jobId, "jamendo music search start", {
+		fuzzytags: musicPlan.fuzzytags,
+		speed: musicPlan.speed,
+	});
 	const candidates = await jamendoSearchTracks({
 		fuzzytags: musicPlan.fuzzytags,
 		speed: musicPlan.speed,
 		instrumentalOnly: true,
+	});
+	logJob(jobId, "jamendo music search result", {
+		candidates: candidates.length,
+		maxDownloadCandidates: MUSIC_MAX_DOWNLOAD_CANDIDATES,
 	});
 	candidates.sort((a, b) => {
 		const scoreDelta =
@@ -22105,11 +22197,18 @@ async function resolveBackgroundMusic({
 		return Math.min(Number(b.duration || 0), 360) - Math.min(Number(a.duration || 0), 360);
 	});
 
-	for (let i = 0; i < Math.min(10, candidates.length); i++) {
+	for (let i = 0; i < Math.min(MUSIC_MAX_DOWNLOAD_CANDIDATES, candidates.length); i++) {
 		const c = candidates[i];
 		try {
 			const out = path.join(TMP_ROOT, `music_${jobId}_${c.id}.mp3`);
-			await downloadToFile(c.audio, out, 35000, 1);
+			logJob(jobId, "jamendo music download attempt", {
+				index: i,
+				id: c.id,
+				name: c.name,
+				duration: c.duration,
+				timeoutMs: MUSIC_TRACK_DOWNLOAD_TIMEOUT_MS,
+			});
+			await downloadToFile(c.audio, out, MUSIC_TRACK_DOWNLOAD_TIMEOUT_MS, 1);
 			if (await validateMusicFile(out)) {
 				logJob(jobId, "jamendo picked track", {
 					id: c.id,
@@ -22126,7 +22225,18 @@ async function resolveBackgroundMusic({
 				return out;
 			}
 			safeUnlink(out);
-		} catch {
+			logJob(jobId, "jamendo music candidate invalid", {
+				index: i,
+				id: c.id,
+				name: c.name,
+			});
+		} catch (err) {
+			logJob(jobId, "jamendo music candidate failed", {
+				index: i,
+				id: c.id,
+				name: c.name,
+				error: String(err?.message || err).slice(0, 240),
+			});
 			// try next
 		}
 	}
@@ -23724,14 +23834,30 @@ async function runLongVideoJob(
 		updateJob(jobId, { progressPct: 22 });
 
 		// 7) Resolve background music (MUST unless disabled)
-		const musicLocalPath = await resolveBackgroundMusic({
-			jobId,
-			topic: topicTitles[0] || topicSummary,
-			categoryLabel,
-			mood: voiceTonePlan?.mood || tonePlan?.mood || "neutral",
-			topics: topicPicks,
-			disableMusic,
-			requestedMusicUrl: musicUrl,
+		let musicLocalPath = null;
+		try {
+			musicLocalPath = await withTimeout(
+				resolveBackgroundMusic({
+					jobId,
+					topic: topicTitles[0] || topicSummary,
+					categoryLabel,
+					mood: voiceTonePlan?.mood || tonePlan?.mood || "neutral",
+					topics: topicPicks,
+					disableMusic,
+					requestedMusicUrl: musicUrl,
+				}),
+				MUSIC_RESOLVE_TIMEOUT_MS,
+				"background music resolution",
+			);
+		} catch (err) {
+			logJob(jobId, "music resolve failed", {
+				error: String(err?.message || err).slice(0, 320),
+			});
+			throw err;
+		}
+		logJob(jobId, "music resolve complete", {
+			hasMusic: Boolean(musicLocalPath),
+			path: musicLocalPath ? path.basename(musicLocalPath) : null,
 		});
 
 		updateJob(jobId, { progressPct: 26 });
