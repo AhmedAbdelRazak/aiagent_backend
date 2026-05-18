@@ -792,6 +792,52 @@ const PRE_SCRIPT_VISUAL_RESEARCH_TITLE_LIMIT = Math.floor(clampNumber(
 	4,
 	40,
 ));
+const PRE_SCRIPT_VISUAL_BEAT_PLAN_ENABLED = envFlag(
+	"LONG_VIDEO_PRE_SCRIPT_VISUAL_BEAT_PLAN",
+	true,
+);
+const PRE_SCRIPT_VISUAL_BEAT_LIMIT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_PRE_SCRIPT_VISUAL_BEAT_LIMIT ?? 18,
+	4,
+	40,
+));
+const PRE_SCRIPT_VISUAL_VIDEO_BEAT_PROBE_ENABLED = envFlag(
+	"LONG_VIDEO_PRE_SCRIPT_VISUAL_VIDEO_BEAT_PROBE",
+	true,
+);
+const PRE_SCRIPT_VISUAL_VIDEO_BEAT_PROBE_LIMIT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_PRE_SCRIPT_VISUAL_VIDEO_BEAT_PROBE_LIMIT ?? 4,
+	0,
+	12,
+));
+const PRE_TTS_VISUAL_GROUNDING_ENABLED = envFlag(
+	"LONG_VIDEO_PRE_TTS_VISUAL_GROUNDING",
+	true,
+);
+const PRE_TTS_VISUAL_GROUNDING_IMAGE_LIMIT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_PRE_TTS_VISUAL_GROUNDING_IMAGES ?? 8,
+	3,
+	16,
+));
+const PRE_TTS_VISUAL_GROUNDING_VARIANT_LIMIT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_PRE_TTS_VISUAL_GROUNDING_VARIANTS ?? 4,
+	1,
+	8,
+));
+const PRE_TTS_VISUAL_GROUNDING_SEGMENT_LIMIT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_PRE_TTS_VISUAL_GROUNDING_SEGMENTS ?? 24,
+	4,
+	80,
+));
+const PRE_TTS_VISUAL_VIDEO_PROBE_ENABLED = envFlag(
+	"LONG_VIDEO_PRE_TTS_VISUAL_VIDEO_PROBE",
+	true,
+);
+const PRE_TTS_VISUAL_VIDEO_PROBE_SEGMENT_LIMIT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_PRE_TTS_VISUAL_VIDEO_PROBE_SEGMENTS ?? 6,
+	0,
+	16,
+));
 const FORCE_OPENING_PRESENTER_COUNT = Math.floor(clampNumber(
 	process.env.LONG_VIDEO_FORCE_OPENING_PRESENTER_COUNT ?? 2,
 	0,
@@ -5059,6 +5105,369 @@ async function prefetchPreScriptVisualResearch({
 	return summaries;
 }
 
+const VISUAL_QUERY_EXTRA_STOP_TOKENS = new Set([
+	"article",
+	"articles",
+	"editorial",
+	"image",
+	"images",
+	"landmark",
+	"news",
+	"photo",
+	"photos",
+	"picture",
+	"pictures",
+	"press",
+	"stock",
+	"thumbnail",
+	"update",
+	"updates",
+]);
+
+function compactVisualSearchQuery(raw = "", topicLabel = "", fallback = "") {
+	const topicTokens = filterSegmentImageMatchTokens(tokenizeLabel(topicLabel || ""));
+	const rawTokens = filterSegmentImageMatchTokens(tokenizeLabel(raw || "")).filter(
+		(t) => !VISUAL_QUERY_EXTRA_STOP_TOKENS.has(t),
+	);
+	const fallbackTokens = filterSegmentImageMatchTokens(
+		tokenizeLabel(fallback || ""),
+	).filter((t) => !VISUAL_QUERY_EXTRA_STOP_TOKENS.has(t));
+	const chosen = [];
+	const add = (tok) => {
+		const clean = String(tok || "").trim();
+		if (!clean || chosen.includes(clean)) return;
+		chosen.push(clean);
+	};
+	for (const tok of rawTokens) add(tok);
+	if (chosen.length < 2) {
+		for (const tok of fallbackTokens) add(tok);
+	}
+	if (
+		topicTokens.length &&
+		!chosen.some((tok) => topicTokens.includes(tok))
+	) {
+		add(topicTokens[0]);
+	}
+	const query = sanitizeOverlayQuery(chosen.slice(0, 6).join(" "));
+	if (tokenizeLabel(query).length >= 2) return query;
+	const fallbackQuery = sanitizeOverlayQuery(fallback || topicLabel || raw);
+	return fallbackQuery;
+}
+
+function mergeTopicPotentialImages(topic = {}, items = [], limit = 140) {
+	if (!topic || typeof topic !== "object") return [];
+	const story = topic.trendStory || {};
+	const merged = [];
+	const seen = new Set();
+	for (const raw of [
+		...(Array.isArray(story.potentialImages) ? story.potentialImages : []),
+		...(Array.isArray(items) ? items : []),
+	]) {
+		const normalized = normalizeFreeImageMetadataItem(raw, raw?.query || "");
+		if (!normalized?.url || !isHttpUrl(normalized.url)) continue;
+		const key = normalizeImageUrlKey(normalized.url);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		merged.push(normalized);
+		if (merged.length >= limit) break;
+	}
+	topic.trendStory = {
+		...story,
+		potentialImages: merged,
+	};
+	return merged;
+}
+
+function mergeTopicPotentialVideos(topic = {}, items = [], limit = 48) {
+	if (!topic || typeof topic !== "object") return [];
+	const story = topic.trendStory || {};
+	const merged = [];
+	const seen = new Set();
+	for (const raw of [
+		...(Array.isArray(story.potentialVideos) ? story.potentialVideos : []),
+		...(Array.isArray(items) ? items : []),
+	]) {
+		const entry = normalizeFeedVideoCandidateEntry(
+			raw,
+			raw?.sourceType || raw?.origin || "visual-grounding-video",
+		);
+		if (!entry?.url || !isHttpUrl(entry.url)) continue;
+		const key = normalizeFeedVideoKey(entry.url || entry.pageUrl);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		merged.push(entry);
+		if (merged.length >= limit) break;
+	}
+	topic.trendStory = {
+		...story,
+		potentialVideos: merged,
+	};
+	return merged;
+}
+
+function buildPreScriptVisualBeatPlan({
+	topics = [],
+	segmentCount = 0,
+	jobId = null,
+} = {}) {
+	if (!PRE_SCRIPT_VISUAL_BEAT_PLAN_ENABLED) return [];
+	const allPlans = [];
+	const targetPerTopic = Math.max(
+		4,
+		Math.ceil(
+			Math.min(PRE_SCRIPT_VISUAL_BEAT_LIMIT, Number(segmentCount) || 12) /
+				Math.max(1, (topics || []).length || 1),
+		),
+	);
+
+	for (let topicIndex = 0; topicIndex < (topics || []).length; topicIndex += 1) {
+		const topic = topics[topicIndex] || {};
+		const story = topic.trendStory || {};
+		const label = String(topic.displayTopic || topic.topic || "").trim();
+		const groups = new Map();
+		const addCandidate = (raw, fallbackQuery = "") => {
+			const normalized = normalizeFreeImageMetadataItem(raw, fallbackQuery);
+			if (!normalized?.url || !isHttpUrl(normalized.url)) return;
+			const sourceQuery =
+				sanitizeOverlayQuery(normalized.query || fallbackQuery || label) ||
+				label;
+			const key = normalizeQaText(sourceQuery || label || normalized.url);
+			if (!key) return;
+			const group = groups.get(key) || {
+				sourceQuery,
+				items: [],
+				titles: [],
+				hosts: new Set(),
+			};
+			group.items.push(normalized);
+			const title = cleanTopicLabel(normalized.title || "");
+			if (title && !group.titles.some((t) => normalizeQaText(t) === normalizeQaText(title))) {
+				group.titles.push(title);
+			}
+			const host = getUrlHost(normalized.sourcePage || normalized.url || "");
+			if (host) group.hosts.add(host);
+			groups.set(key, group);
+		};
+
+		for (const item of Array.isArray(story.potentialImages)
+			? story.potentialImages
+			: []) {
+			addCandidate(item, item?.query || label);
+		}
+		const topicTokens = topicTokensFromTitle(label);
+		const beats = [...groups.values()]
+			.map((group, idx) => {
+				const titleQuery = compactVisualSearchQuery(
+					group.titles[0] || "",
+					label,
+					group.sourceQuery,
+				);
+				const sourceQuery = compactVisualSearchQuery(
+					group.sourceQuery || "",
+					label,
+					label,
+				);
+				const query =
+					tokenizeLabel(titleQuery).length >= 2 ? titleQuery : sourceQuery;
+				const titleMatches = topicMatchInfo(topicTokens, group.titles).count;
+				const queryMatches = topicMatchInfo(topicTokens, [query, group.sourceQuery])
+					.count;
+				const imageUrls = uniqueStrings(
+					group.items
+						.map((item) => item.url)
+						.filter((url) => isHttpUrl(url) && !isLikelyThumbnailUrl(url)),
+					{ limit: PRE_TTS_VISUAL_GROUNDING_IMAGE_LIMIT },
+				);
+				return {
+					id: `T${topicIndex + 1}V${idx + 1}`,
+					topicIndex,
+					topic: label,
+					query,
+					sourceQuery: sanitizeOverlayQuery(group.sourceQuery || query),
+					imageCount: group.items.length,
+					imageUrls,
+					titleClues: group.titles.slice(0, 4),
+					sourceHosts: [...group.hosts].slice(0, 4),
+					score:
+						group.items.length +
+						group.titles.length * 1.5 +
+						titleMatches * 2 +
+						queryMatches,
+				};
+			})
+			.filter(
+				(beat) =>
+					beat.imageCount > 0 &&
+					beat.query &&
+					tokenizeLabel(beat.query).length >= 2,
+			)
+			.sort((a, b) => b.score - a.score)
+			.slice(0, targetPerTopic)
+			.map((beat, idx) => ({
+				...beat,
+				id: `T${topicIndex + 1}V${idx + 1}`,
+			}));
+
+		topic.trendStory = {
+			...story,
+			visualBeatPlan: beats,
+			visualResearch: {
+				...(story.visualResearch || {}),
+				beats: beats.map((beat) => ({
+					id: beat.id,
+					query: beat.query,
+					sourceQuery: beat.sourceQuery,
+					imageCount: beat.imageCount,
+					titleClues: beat.titleClues,
+					sourceHosts: beat.sourceHosts,
+				})),
+			},
+		};
+		allPlans.push({
+			topicIndex,
+			topic: label,
+			beats,
+		});
+		if (beats.length) {
+			logJob(jobId, "pre-script visual beat plan", {
+				topic: label,
+				beats: beats.length,
+				queries: beats.map((beat) => beat.query).slice(0, 8),
+				imageCandidates: beats.reduce(
+					(sum, beat) => sum + Number(beat.imageCount || 0),
+					0,
+				),
+			});
+		}
+	}
+	return allPlans;
+}
+
+async function enrichPreScriptVisualBeatsWithFeedVideo({
+	topics = [],
+	topicContexts = [],
+	category = "",
+	jobId = null,
+} = {}) {
+	if (
+		!PRE_SCRIPT_VISUAL_VIDEO_BEAT_PROBE_ENABLED ||
+		!FEED_VIDEO_ENABLED ||
+		PRE_SCRIPT_VISUAL_VIDEO_BEAT_PROBE_LIMIT <= 0
+	) {
+		return { probed: 0, videoCandidateBeats: 0, videoCandidates: 0 };
+	}
+	let probed = 0;
+	let videoCandidateBeats = 0;
+	let videoCandidates = 0;
+	const summary = [];
+	for (let topicIndex = 0; topicIndex < (topics || []).length; topicIndex += 1) {
+		const topic = topics[topicIndex] || {};
+		const beats = Array.isArray(topic.trendStory?.visualBeatPlan)
+			? topic.trendStory.visualBeatPlan
+			: [];
+		if (!beats.length) continue;
+		const meta = buildVisualGroundingTopicMeta(topic, topicContexts, topicIndex);
+		const topicLabel =
+			String(topic.displayTopic || topic.topic || "").trim() || meta.label || "";
+		const topicTokens = topicTokensFromTitle(topicLabel);
+		for (const beat of beats) {
+			if (probed >= PRE_SCRIPT_VISUAL_VIDEO_BEAT_PROBE_LIMIT) break;
+			const query = sanitizeOverlayQuery(beat.query || beat.sourceQuery || "");
+			if (!query) continue;
+			probed += 1;
+			const queryVariants = uniqueStrings(
+				[query, beat.sourceQuery, topicLabel].filter(Boolean),
+				{ limit: Math.max(2, FEED_VIDEO_QUERY_LIMIT) },
+			);
+			const queryTokens = filterSpecificTopicTokens(tokenizeLabel(query)).slice(
+				0,
+				16,
+			);
+			const segmentTokens = filterSegmentImageMatchTokens(tokenizeLabel(query))
+				.filter((tok) => !topicTokens.includes(tok))
+				.slice(0, 4);
+			const candidates = await collectFeedVideoCandidateEntriesForSegment({
+				query,
+				topicLabel,
+				queryVariants,
+				topicTokens,
+				segmentTokens,
+				queryTokens,
+				meta: {
+					...meta,
+					segmentText: query,
+				},
+				category,
+				jobId,
+			});
+			beat.videoCandidateCount = candidates.length;
+			beat.videoTitleClues = candidates
+				.map((candidate) => cleanTopicLabel(candidate.title || candidate.snippet || ""))
+				.filter(Boolean)
+				.slice(0, 3);
+			if (candidates.length) {
+				videoCandidateBeats += 1;
+				videoCandidates += candidates.length;
+				mergeTopicPotentialVideos(topic, candidates);
+			}
+			summary.push({
+				topic: topicLabel,
+				beatId: beat.id,
+				query,
+				videoCandidates: candidates.length,
+			});
+		}
+	}
+	if (probed) {
+		logJob(jobId, "pre-script visual video beat probe", {
+			probed,
+			videoCandidateBeats,
+			videoCandidates,
+			beats: summary.slice(0, 12),
+		});
+	}
+	return { probed, videoCandidateBeats, videoCandidates, beats: summary };
+}
+
+function buildVisualBeatPlanPromptLines(topics = []) {
+	const lines = [];
+	for (let i = 0; i < (topics || []).length; i += 1) {
+		const topic = topics[i] || {};
+		const label =
+			String(topic.displayTopic || topic.topic || "").trim() ||
+			`Topic ${i + 1}`;
+		const beats = Array.isArray(topic.trendStory?.visualBeatPlan)
+			? topic.trendStory.visualBeatPlan
+			: [];
+		if (!beats.length) {
+			lines.push(`Topic ${i + 1} (${label}): no validated visual beats.`);
+			continue;
+		}
+		const beatLines = beats
+			.slice(0, 12)
+			.map((beat) => {
+				const titles = Array.isArray(beat.titleClues)
+					? beat.titleClues.slice(0, 2).join(" | ")
+					: "";
+				const hosts = Array.isArray(beat.sourceHosts)
+					? beat.sourceHosts.slice(0, 2).join(", ")
+					: "";
+				return `- ${beat.id}: query="${beat.query}" images=${
+					beat.imageCount || 0
+				}${
+					Number(beat.videoCandidateCount || 0)
+						? ` videos=${beat.videoCandidateCount}`
+						: ""
+				}${hosts ? ` hosts=${hosts}` : ""}${
+					titles ? ` title clues: ${titles}` : ""
+				}`;
+			})
+			.join("\n");
+		lines.push(`Topic ${i + 1} (${label}):\n${beatLines}`);
+	}
+	return lines.join("\n\n") || "- (none)";
+}
+
 function rssText(value) {
 	if (value === undefined || value === null) return "";
 	if (typeof value === "string" || typeof value === "number")
@@ -7108,6 +7517,58 @@ function pickEvenlySpacedIndices(total, target) {
 	return Array.from(new Set(out)).sort((a, b) => a - b);
 }
 
+function computeContentVisualPlan(totalSegments) {
+	const count = Math.max(0, Math.floor(Number(totalSegments) || 0));
+	let presenterCount = Math.floor(count * CONTENT_PRESENTER_RATIO);
+	if (count >= 2) {
+		presenterCount = clampNumber(presenterCount, 1, count - 1);
+	} else {
+		presenterCount = count;
+	}
+	const forcedOpeningPresenterCount = Math.min(
+		FORCE_OPENING_PRESENTER_COUNT,
+		count,
+	);
+	presenterCount = Math.min(
+		count,
+		Math.max(presenterCount, forcedOpeningPresenterCount),
+	);
+	const presenterPositions = pickEvenlySpacedIndices(count, presenterCount);
+	const presenterPosSet = new Set();
+	for (let idx = 0; idx < forcedOpeningPresenterCount; idx += 1) {
+		presenterPosSet.add(idx);
+	}
+	for (const idx of presenterPositions) {
+		if (presenterPosSet.size >= presenterCount) break;
+		presenterPosSet.add(idx);
+	}
+	for (
+		let idx = 0;
+		idx < count && presenterPosSet.size < presenterCount;
+		idx += 1
+	) {
+		presenterPosSet.add(idx);
+	}
+	const presenter = [];
+	const image = [];
+	const forcedPresenter = [];
+	for (let idx = 0; idx < count; idx += 1) {
+		if (idx < forcedOpeningPresenterCount) forcedPresenter.push(idx);
+		if (presenterPosSet.has(idx)) presenter.push(idx);
+		else image.push(idx);
+	}
+	return {
+		totalSegments: count,
+		presenterCount: presenter.length,
+		imageCount: image.length,
+		presenterPositions: presenter,
+		imagePositions: image,
+		forcedPresenterPositions: forcedPresenter,
+		presenterPositionSet: presenterPosSet,
+		forcedPresenterPositionSet: new Set(forcedPresenter),
+	};
+}
+
 function isHoldSingleVisualSegment(seg = {}) {
 	const text = String(seg?.text || "");
 	const cue = Array.isArray(seg?.overlayCues)
@@ -7210,6 +7671,404 @@ function buildSegmentImageQueryVariants({
 	return multiWord.length
 		? uniqueStrings(multiWord, { limit: maxVariants })
 		: unique;
+}
+
+function buildVisualGroundingTopicMeta(topic = {}, topicContexts = [], topicIndex = 0) {
+	const story = topic.trendStory || {};
+	const contextItems = topicContextItemsAt(topicContexts, topicIndex);
+	const label = String(topic.displayTopic || topic.topic || "").trim();
+	const keywordHints = uniqueStrings(
+		[
+			...(Array.isArray(topic.keywords) ? topic.keywords : []),
+			...(story.imageSearchQueries || []),
+			...(story.searchPhrases || []),
+			...(story.entityNames || []),
+		],
+		{ limit: 10 },
+	);
+	const articleTitles = (story.articles || [])
+		.map((a) => a.title)
+		.filter(Boolean);
+	const articleUrls = (story.articles || [])
+		.map((a) => a.url)
+		.filter((u) => isHttpUrl(u));
+	const articleImageUrls = uniqueStrings(
+		(story.articles || [])
+			.map((a) => a.image)
+			.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
+		{ limit: 8 },
+	);
+	const potentialUrls = uniqueStrings(
+		(Array.isArray(story.potentialImages) ? story.potentialImages : [])
+			.map((p) => (typeof p === "string" ? p : p?.url))
+			.filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u)),
+		{ limit: 80 },
+	);
+	const seedUrls = uniqueStrings(
+		[
+			...(Array.isArray(topic.images) ? topic.images : []),
+			topic.image,
+			story.image,
+			...(Array.isArray(story.images) ? story.images : []),
+			...articleImageUrls,
+		],
+		{ limit: 18 },
+	).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
+	const imageMetaByKey = new Map();
+	const addImageMeta = (raw, queryHint = "") => {
+		const normalized = normalizeFreeImageMetadataItem(raw, queryHint);
+		if (!normalized?.url) return;
+		const key = normalizeImageUrlKey(normalized.url);
+		if (!key) return;
+		imageMetaByKey.set(key, {
+			...(imageMetaByKey.get(key) || {}),
+			...normalized,
+		});
+	};
+	for (const item of Array.isArray(story.potentialImages)
+		? story.potentialImages
+		: []) {
+		addImageMeta(item, item?.query || label);
+	}
+	for (const article of Array.isArray(story.articles) ? story.articles : []) {
+		if (!article?.image) continue;
+		addImageMeta(
+			{
+				url: article.image,
+				title: article.title,
+				sourcePage: article.url,
+				provider: article.source || "article",
+			},
+			label,
+		);
+	}
+	for (const url of [...(Array.isArray(topic.images) ? topic.images : []), topic.image]) {
+		if (!url) continue;
+		addImageMeta({ url, title: label, query: label }, label);
+	}
+	return {
+		label,
+		contextItems,
+		keywordHints,
+		articleTitles,
+		articleUrls,
+		potentialUrls,
+		seedUrls,
+		trustedSeedUrls: articleImageUrls,
+		imageMetaByKey,
+		videoUrls: uniqueStrings(
+			[
+				...(Array.isArray(topic.videos) ? topic.videos : []),
+				topic.video,
+				...(Array.isArray(story.videos) ? story.videos : []),
+				story.video,
+				story.videoUrl,
+				...(Array.isArray(story.potentialVideos)
+					? story.potentialVideos.map((v) => v?.url).filter(Boolean)
+					: []),
+			],
+			{ limit: 18 },
+		).filter((u) => isHttpUrl(u)),
+		potentialVideos: Array.isArray(story.potentialVideos)
+			? story.potentialVideos
+			: [],
+		visualBeatQueries: uniqueStrings(
+			(Array.isArray(story.visualBeatPlan) ? story.visualBeatPlan : [])
+				.map((beat) => beat?.query)
+				.filter(Boolean),
+			{ limit: 12 },
+		),
+	};
+}
+
+async function groundScriptInValidatedVisuals({
+	script,
+	topics = [],
+	topicContexts = [],
+	category = "",
+	baseUrl,
+	jobId,
+	plannedImagePositions = [],
+} = {}) {
+	if (!PRE_TTS_VISUAL_GROUNDING_ENABLED || !script?.segments?.length) {
+		return { script, summary: null };
+	}
+	const segments = Array.isArray(script.segments) ? script.segments : [];
+	const imagePositionSet = new Set(
+		(Array.isArray(plannedImagePositions) ? plannedImagePositions : [])
+			.map((idx) => Number(idx))
+			.filter((idx) => Number.isFinite(idx)),
+	);
+	const targetPairs = segments
+		.map((seg, position) => ({ seg, position }))
+		.filter(({ position }) => !imagePositionSet.size || imagePositionSet.has(position))
+		.slice(0, PRE_TTS_VISUAL_GROUNDING_SEGMENT_LIMIT);
+	if (!targetPairs.length || !GOOGLE_IMAGES_SEARCH_ENABLED) {
+		return { script, summary: null };
+	}
+
+	const topicMetaByIndex = new Map();
+	for (let i = 0; i < (topics || []).length; i += 1) {
+		topicMetaByIndex.set(
+			i,
+			buildVisualGroundingTopicMeta(topics[i] || {}, topicContexts, i),
+		);
+	}
+	const imageMetadataCache = new Map();
+	const videoCandidateCache = new Map();
+	let groundedSegments = 0;
+	let revisedQueries = 0;
+	let attachedImages = 0;
+	let feedVideoSegments = 0;
+	let feedVideoCandidates = 0;
+	let videoProbeUsed = 0;
+	const segmentSummaries = [];
+
+	const updatedSegments = segments.map((seg) => ({ ...seg }));
+
+	for (const { seg, position } of targetPairs) {
+		const topicIndex = Number.isFinite(Number(seg.topicIndex))
+			? Number(seg.topicIndex)
+			: 0;
+		const topic = topics[topicIndex] || {};
+		const meta = topicMetaByIndex.get(topicIndex) || {};
+		const { query: currentQuery, topicLabel } = resolveSegmentImageQuery(
+			seg,
+			topics,
+		);
+		const effectiveTopicLabel = topicLabel || meta.label || "";
+		const topicTokens = topicTokensFromTitle(effectiveTopicLabel || "");
+		const segmentTokens = extractSegmentMatchTokens(
+			seg.text || "",
+			effectiveTopicLabel,
+			4,
+		);
+		const queryVariants = uniqueStrings(
+			[
+				currentQuery,
+				...(Array.isArray(meta.visualBeatQueries) ? meta.visualBeatQueries : []),
+				...buildSegmentImageQueryVariants({
+					baseQuery: currentQuery,
+					topicLabel: effectiveTopicLabel,
+					segmentText: seg.text,
+					topicKeywords: meta.keywordHints,
+					articleTitles: meta.articleTitles,
+					category,
+					maxVariants: IMAGE_SEARCH_MAX_QUERY_VARIANTS,
+				}),
+			],
+			{ limit: PRE_TTS_VISUAL_GROUNDING_VARIANT_LIMIT },
+		);
+		const existingCandidates = [];
+		for (const url of [
+			...(Array.isArray(seg.imageUrls) ? seg.imageUrls : []),
+			...(Array.isArray(meta.potentialUrls) ? meta.potentialUrls : []),
+			...(Array.isArray(meta.seedUrls) ? meta.seedUrls : []),
+		]) {
+			if (isHttpUrl(url) && !isLikelyThumbnailUrl(url)) {
+				existingCandidates.push({
+					url,
+					title: effectiveTopicLabel,
+					query: currentQuery,
+				});
+			}
+		}
+
+		let best = {
+			query: currentQuery,
+			relevantUrls: [],
+			items: [],
+			score: -Infinity,
+		};
+		const evaluateItems = (items = [], q = currentQuery) => {
+			const normalizedItems = [];
+			for (const item of items) {
+				const normalized = normalizeFreeImageMetadataItem(item, q);
+				if (!normalized?.url || !isHttpUrl(normalized.url)) continue;
+				const key = normalizeImageUrlKey(normalized.url);
+				if (!key) continue;
+				meta.imageMetaByKey?.set(key, {
+					...(meta.imageMetaByKey.get(key) || {}),
+					...normalized,
+				});
+				normalizedItems.push(normalized);
+			}
+			const candidateUrls = dedupeUrlsPreserveOrder(
+				normalizedItems.map((item) => item.url),
+			).filter((u) => isHttpUrl(u) && !isLikelyThumbnailUrl(u));
+			const queryTokens = filterSpecificTopicTokens(tokenizeLabel(q)).slice(0, 16);
+			const relevantUrls = filterRelevantImageCandidatePool(candidateUrls, {
+				topicTokens,
+				segmentTokens,
+				queryTokens,
+				trustedUrlKeys: new Set(),
+				imageMetaByKey: meta.imageMetaByKey,
+			});
+			const score =
+				relevantUrls.length * 4 +
+				candidateUrls.length +
+				topicMatchInfo(topicTokens, [q, ...normalizedItems.map((item) => item.title)]).count *
+					2;
+			if (score > best.score) {
+				best = {
+					query: q,
+					relevantUrls,
+					items: normalizedItems,
+					score,
+				};
+			}
+		};
+
+		evaluateItems(existingCandidates, currentQuery);
+		for (const q of queryVariants) {
+			const normalizedQuery = sanitizeOverlayQuery(q);
+			if (!normalizedQuery) continue;
+			const cacheKey = `ground::${normalizedQuery}`;
+			let items = imageMetadataCache.get(cacheKey);
+			if (!items) {
+				items = await fetchGoogleImageMetadataFromService(normalizedQuery, {
+					limit: Math.max(12, PRE_TTS_VISUAL_GROUNDING_IMAGE_LIMIT * 2),
+					baseUrl,
+					jobId,
+				});
+				imageMetadataCache.set(cacheKey, items);
+			}
+			evaluateItems(items || [], normalizedQuery);
+			if (best.relevantUrls.length >= PRE_TTS_VISUAL_GROUNDING_IMAGE_LIMIT) {
+				break;
+			}
+		}
+
+		const finalUrls = dedupeUrlsPreserveOrder(best.relevantUrls).slice(
+			0,
+			PRE_TTS_VISUAL_GROUNDING_IMAGE_LIMIT,
+		);
+		if (!finalUrls.length) {
+			segmentSummaries.push({
+				segment: seg.index,
+				position,
+				query: currentQuery,
+				images: 0,
+				videoCandidates: 0,
+			});
+			continue;
+		}
+
+		const segmentUpdate = updatedSegments[position] || { ...seg };
+		const currentCue = Array.isArray(segmentUpdate.overlayCues)
+			? segmentUpdate.overlayCues[0] || {}
+			: {};
+		const bestQuery = sanitizeOverlayQuery(best.query || currentQuery);
+		if (bestQuery && bestQuery !== sanitizeOverlayQuery(currentQuery)) {
+			revisedQueries += 1;
+		}
+		const cueStartPct = clampNumber(currentCue.startPct ?? 0.25, 0.2, 0.65);
+		const cueEndPct = clampNumber(
+			currentCue.endPct ?? 0.75,
+			Math.min(0.85, cueStartPct + 0.2),
+			0.85,
+		);
+		segmentUpdate.overlayCues = [
+			{
+				...currentCue,
+				query: bestQuery || currentQuery,
+				startPct: cueStartPct,
+				endPct: cueEndPct,
+				position: "topRight",
+			},
+		];
+		if (
+			Number(segmentUpdate.overlayCues[0].endPct) -
+				Number(segmentUpdate.overlayCues[0].startPct) <
+			0.2
+		) {
+			segmentUpdate.overlayCues[0].endPct = Math.min(
+				0.85,
+				Number(segmentUpdate.overlayCues[0].startPct) + 0.25,
+			);
+		}
+		segmentUpdate.imageUrls = dedupeUrlsPreserveOrder([
+			...(Array.isArray(segmentUpdate.imageUrls) ? segmentUpdate.imageUrls : []),
+			...finalUrls,
+		]).slice(0, PRE_TTS_VISUAL_GROUNDING_IMAGE_LIMIT);
+		segmentUpdate.visualGrounding = {
+			query: bestQuery || currentQuery,
+			imageCount: finalUrls.length,
+			validatedBeforeTts: true,
+		};
+		updatedSegments[position] = segmentUpdate;
+		groundedSegments += 1;
+		attachedImages += segmentUpdate.imageUrls.length;
+		mergeTopicPotentialImages(topic, best.items);
+
+		let segmentVideoCandidates = [];
+		if (
+			PRE_TTS_VISUAL_VIDEO_PROBE_ENABLED &&
+			FEED_VIDEO_ENABLED &&
+			videoProbeUsed < PRE_TTS_VISUAL_VIDEO_PROBE_SEGMENT_LIMIT
+		) {
+			const videoKey = `video::${topicIndex}::${bestQuery || currentQuery}`;
+			segmentVideoCandidates = videoCandidateCache.get(videoKey);
+			if (!segmentVideoCandidates) {
+				videoProbeUsed += 1;
+				const queryTokens = filterSpecificTopicTokens(
+					tokenizeLabel(bestQuery || currentQuery),
+				).slice(0, 16);
+				segmentVideoCandidates =
+					await collectFeedVideoCandidateEntriesForSegment({
+						query: bestQuery || currentQuery,
+						topicLabel: effectiveTopicLabel,
+						queryVariants,
+						topicTokens,
+						segmentTokens,
+						queryTokens,
+						meta: {
+							...meta,
+							segmentText: seg.text || "",
+						},
+						category,
+						jobId,
+					});
+				videoCandidateCache.set(videoKey, segmentVideoCandidates);
+			}
+			segmentVideoCandidates = (segmentVideoCandidates || []).slice(
+				0,
+				FEED_VIDEO_CANDIDATE_LIMIT,
+			);
+			if (segmentVideoCandidates.length) {
+				segmentUpdate.feedVideoCandidates = segmentVideoCandidates;
+				mergeTopicPotentialVideos(topic, segmentVideoCandidates);
+				feedVideoSegments += 1;
+				feedVideoCandidates += segmentVideoCandidates.length;
+			}
+		}
+
+		segmentSummaries.push({
+			segment: seg.index,
+			position,
+			query: bestQuery || currentQuery,
+			images: finalUrls.length,
+			videoCandidates: segmentVideoCandidates.length,
+		});
+	}
+
+	const summary = {
+		targetSegments: targetPairs.length,
+		groundedSegments,
+		revisedQueries,
+		attachedImages,
+		feedVideoSegments,
+		feedVideoCandidates,
+		segments: segmentSummaries.slice(0, 24),
+	};
+	logJob(jobId, "script visual grounding ready", summary);
+	return {
+		script: {
+			...script,
+			segments: updatedSegments,
+		},
+		summary,
+	};
 }
 
 function extractSegmentMatchTokens(
@@ -9258,7 +10117,18 @@ async function prepareImageSegments({
 						topicTokens,
 						segmentTokens,
 						queryTokens,
-						meta: { ...meta, segmentText: seg.text || "" },
+						meta: {
+							...meta,
+							segmentText: seg.text || "",
+							potentialVideos: [
+								...(Array.isArray(meta.potentialVideos)
+									? meta.potentialVideos
+									: []),
+								...(Array.isArray(seg.feedVideoCandidates)
+									? seg.feedVideoCandidates
+									: []),
+							],
+						},
 						category,
 						jobId,
 					});
@@ -15913,6 +16783,7 @@ async function generateScript({
 			}`;
 		})
 		.join("\n\n");
+	const visualBeatPlanLines = buildVisualBeatPlanPromptLines(safeTopics);
 	const trendSignalLines = buildTrendSignalLines(safeTopics);
 
 	const topicIntents = safeTopics.map((t, idx) => {
@@ -16052,6 +16923,9 @@ ${topicHintLines}
 Pre-script feed visual research:
 ${visualResearchLines}
 
+Validated visual-first beat plan:
+${visualBeatPlanLines}
+
 ${promptBriefGuide}
 
 ${priorVideoGuide}
@@ -16160,7 +17034,9 @@ ${categoryGuide.lines.join("\n")}
 - overlayCues.query must be 2-6 words, describe a real visual to search for (photo or video), include the topic name or a key subject from that segment, no punctuation or hashtags.
 - overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
 - Treat overlayCues.query as the downstream feed-search contract for images and possible B-roll video. It must stay within the topic and name a visible subject, place, action, object, institution, or scene from the segment/source context.
-- Shape the story around the strongest available feed visuals above where possible. The image/video research comes before the script: use those title clues to choose concrete beats, examples, and overlayCues.query values, but do not say "image title", "search result", or "visual research" in the spoken script.
+- Shape the story around the strongest available feed visuals above where possible. The image/video research comes before the script: use the validated visual-first beat plan to choose concrete beats, examples, and overlayCues.query values, but do not say "image title", "search result", "visual beat", or "visual research" in the spoken script.
+- For visual-heavy segments, prefer overlayCues.query values from the validated visual-first beat plan exactly when they fit the segment. If you need a new query, keep it just as concrete and directly tied to the topic.
+- Do not let visuals make the script generic. The writing still needs a strong, coherent editorial arc: clear hook, escalating tension, credible context, useful payoff, and strict topic focus.
 - Never choose or imply an unrelated feed visual just because it is dramatic. If the available visual does not clearly belong to the topic, broaden to a directly adjacent topic visual or use a neutral explanatory visual; do not use unrelated people, unrelated events, or generic scenery.
 - If a beat depends on a chart, graph, official data table, report, debt paperwork, application screen, map, timeline, or infographic, write that segment so one visual can stay on screen long enough to be understood. Explain what the viewer is looking at instead of rotating away too fast.
 - Prefer official, public-facing, source-related visual subjects for overlayCues.query, such as official portraits, team photos, press conferences, venues, event stills, or source article subjects. Avoid stock-agency wording.
@@ -23074,6 +23950,38 @@ async function runLongVideoJob(
 			segmentCount,
 			topList: requestedTopListPlan || null,
 		});
+		const preScriptVisualBeatPlan = buildPreScriptVisualBeatPlan({
+			topics: topicPicks,
+			segmentCount,
+			jobId,
+		});
+		const preScriptVisualVideoProbe =
+			await enrichPreScriptVisualBeatsWithFeedVideo({
+				topics: topicPicks,
+				topicContexts,
+				category: categoryLabel,
+				jobId,
+			});
+		if (preScriptVisualBeatPlan.length) {
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					preScriptVisualBeatPlan: preScriptVisualBeatPlan.map((plan) => ({
+						topicIndex: plan.topicIndex,
+						topic: plan.topic,
+						beats: (plan.beats || []).map((beat) => ({
+							id: beat.id,
+							query: beat.query,
+							imageCount: beat.imageCount,
+							videoCandidateCount: beat.videoCandidateCount || 0,
+							titleClues: beat.titleClues,
+							sourceHosts: beat.sourceHosts,
+						})),
+					})),
+					preScriptVisualVideoProbe,
+				},
+			});
+		}
 
 		let script;
 		try {
@@ -23383,6 +24291,28 @@ async function runLongVideoJob(
 		}
 		shortsGuardrails = analyzeShortsGuardrails(script);
 		if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
+
+		const preTtsVisualPlan = computeContentVisualPlan(
+			Array.isArray(script.segments) ? script.segments.length : 0,
+		);
+		const visualGrounding = await groundScriptInValidatedVisuals({
+			script,
+			topics: topicPicks,
+			topicContexts,
+			category: categoryLabel,
+			baseUrl,
+			jobId,
+			plannedImagePositions: preTtsVisualPlan.imagePositions,
+		});
+		if (visualGrounding?.script) script = visualGrounding.script;
+		if (visualGrounding?.summary) {
+			updateJob(jobId, {
+				meta: {
+					...JOBS.get(jobId)?.meta,
+					scriptVisualGrounding: visualGrounding.summary,
+				},
+			});
+		}
 
 		const shortsDetailsRaw = await ensureShortsDetails({
 			jobId,
@@ -23881,6 +24811,14 @@ async function runLongVideoJob(
 				: null,
 			countdownLabel: cleanTopicLabel(s.countdownLabel || ""),
 			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
+			imageUrls: Array.isArray(s.imageUrls) ? s.imageUrls : [],
+			feedVideoCandidates: Array.isArray(s.feedVideoCandidates)
+				? s.feedVideoCandidates
+				: [],
+			visualGrounding:
+				s.visualGrounding && typeof s.visualGrounding === "object"
+					? s.visualGrounding
+					: null,
 		}));
 		const smoothedExpressions = smoothExpressionPlan(
 			segments.map((s) => s.expression),
@@ -24394,6 +25332,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				: null,
 			countdownLabel: cleanTopicLabel(s.countdownLabel || ""),
 			overlayCues: Array.isArray(s.overlayCues) ? s.overlayCues : [],
+			imageUrls: Array.isArray(s.imageUrls) ? s.imageUrls : [],
+			feedVideoCandidates: Array.isArray(s.feedVideoCandidates)
+				? s.feedVideoCandidates
+				: [],
+			visualGrounding:
+				s.visualGrounding && typeof s.visualGrounding === "object"
+					? s.visualGrounding
+					: null,
 		}));
 		script.segments = finalScriptSegments;
 		const finalQa = analyzeScriptQuality({
@@ -24457,6 +25403,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				index: a.index,
 				text: seg.text,
 				overlayCues: seg.overlayCues,
+				imageUrls: Array.isArray(seg.imageUrls) ? seg.imageUrls : [],
+				feedVideoCandidates: Array.isArray(seg.feedVideoCandidates)
+					? seg.feedVideoCandidates
+					: [],
+				visualGrounding:
+					seg.visualGrounding && typeof seg.visualGrounding === "object"
+						? seg.visualGrounding
+						: null,
 				topicIndex: seg.topicIndex,
 				topicLabel: seg.topicLabel,
 				countdownRank: Number.isFinite(Number(seg.countdownRank))
@@ -24527,45 +25481,15 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		// 8.5) Visual plan: budget-aware presenter vs static feed images (content only)
 		const totalSegments = timeline.length;
-		let presenterCount = Math.floor(totalSegments * CONTENT_PRESENTER_RATIO);
-		if (totalSegments >= 2) {
-			presenterCount = clampNumber(presenterCount, 1, totalSegments - 1);
-		} else {
-			presenterCount = totalSegments;
-		}
-		const forcedOpeningPresenterCount = Math.min(
-			FORCE_OPENING_PRESENTER_COUNT,
-			totalSegments,
-		);
-		presenterCount = Math.min(
-			totalSegments,
-			Math.max(presenterCount, forcedOpeningPresenterCount),
-		);
-		const presenterPositions = pickEvenlySpacedIndices(
-			totalSegments,
-			presenterCount,
-		);
-		const presenterPosSet = new Set();
-		for (let idx = 0; idx < forcedOpeningPresenterCount; idx += 1) {
-			presenterPosSet.add(idx);
-		}
-		for (const idx of presenterPositions) {
-			if (presenterPosSet.size >= presenterCount) break;
-			presenterPosSet.add(idx);
-		}
-		for (
-			let idx = 0;
-			idx < totalSegments && presenterPosSet.size < presenterCount;
-			idx += 1
-		) {
-			presenterPosSet.add(idx);
-		}
+		const contentVisualPlan = computeContentVisualPlan(totalSegments);
+		const presenterPosSet = contentVisualPlan.presenterPositionSet;
 		const presenterSegments = [];
 		const imageSegments = [];
 		const forcedPresenterSegments = [];
 		timeline = timeline.map((seg, idx) => {
 			const visualType = presenterPosSet.has(idx) ? "presenter" : "image";
-			const mustUsePresenter = idx < forcedOpeningPresenterCount;
+			const mustUsePresenter =
+				contentVisualPlan.forcedPresenterPositionSet.has(idx);
 			if (visualType === "presenter") presenterSegments.push(seg.index);
 			else imageSegments.push(seg.index);
 			if (mustUsePresenter) forcedPresenterSegments.push(seg.index);
