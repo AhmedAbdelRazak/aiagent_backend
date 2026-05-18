@@ -309,7 +309,8 @@ function trimTextToMaxChars(text = "", maxChars = 30) {
 	if (!limit || clean.length <= limit) return clean;
 	const clipped = clean.slice(0, limit).trim();
 	const wordSafe = clipped.replace(/\s+\S*$/, "").trim();
-	return wordSafe || clipped;
+	const complete = normalizeHeadlineCandidate(wordSafe || clipped, 8, limit);
+	return complete || wordSafe || clipped;
 }
 
 function estimateDrawtextWidth(text = "", fontSize = 32) {
@@ -977,6 +978,88 @@ const TITLE_STOP_WORDS = new Set([
 	"latest",
 ]);
 
+const THUMBNAIL_TRAILING_FRAGMENT_WORDS = new Set([
+	"the",
+	"a",
+	"an",
+	"to",
+	"of",
+	"for",
+	"with",
+	"from",
+	"by",
+	"at",
+	"into",
+	"onto",
+	"over",
+	"under",
+	"before",
+	"after",
+	"through",
+	"without",
+	"and",
+	"or",
+	"but",
+	"if",
+	"while",
+	"because",
+	"your",
+	"my",
+	"our",
+	"their",
+	"his",
+	"her",
+	"its",
+	"this",
+	"that",
+	"these",
+	"those",
+]);
+
+const THUMBNAIL_LEADING_FRAGMENT_WORDS = new Set([
+	"to",
+	"of",
+	"for",
+	"with",
+	"from",
+	"by",
+	"at",
+	"into",
+	"onto",
+	"over",
+	"under",
+	"before",
+	"after",
+	"through",
+	"without",
+	"and",
+	"or",
+	"but",
+	"because",
+]);
+
+const THUMBNAIL_AUXILIARY_WORDS = new Set([
+	"is",
+	"are",
+	"was",
+	"were",
+	"be",
+	"being",
+	"been",
+	"am",
+	"has",
+	"have",
+	"had",
+	"will",
+	"would",
+	"can",
+	"could",
+	"should",
+	"may",
+	"might",
+	"must",
+]);
+
 const GENERIC_THUMBNAIL_HEADLINES = new Set([
 	"BIG UPDATE",
 	"NEW DETAILS",
@@ -1007,6 +1090,150 @@ function normalizeDisplayWords(text = "") {
 		.filter(Boolean);
 }
 
+function headlineWordKey(word = "") {
+	return String(word || "")
+		.toLowerCase()
+		.replace(/^[^a-z0-9']+|[^a-z0-9']+$/g, "");
+}
+
+function isBareGerundAtEnd(words = []) {
+	if (!words.length) return false;
+	const last = headlineWordKey(words[words.length - 1]);
+	if (!/^[a-z]{4,}ing$/.test(last)) return false;
+	const prev = headlineWordKey(words[words.length - 2] || "");
+	return !THUMBNAIL_AUXILIARY_WORDS.has(prev);
+}
+
+function isLikelyIncompleteThumbnailHeadline(text = "") {
+	const words = normalizeDisplayWords(text);
+	if (!words.length) return true;
+	const first = headlineWordKey(words[0]);
+	const last = headlineWordKey(words[words.length - 1]);
+	if (THUMBNAIL_LEADING_FRAGMENT_WORDS.has(first)) return true;
+	if (THUMBNAIL_TRAILING_FRAGMENT_WORDS.has(last)) return true;
+	if (isBareGerundAtEnd(words)) return true;
+	return false;
+}
+
+function trimWordsToCompleteHeadline(words = [], { maxWords = 4, maxChars = 26 } = {}) {
+	const source = (Array.isArray(words) ? words : [])
+		.map((word) => String(word || "").trim())
+		.filter(Boolean);
+	if (!source.length) return [];
+
+	const wordLimit = Math.max(1, Number(maxWords) || 4);
+	const charLimit = Math.max(8, Number(maxChars) || 26);
+	let kept = source.slice(0, wordLimit);
+
+	while (kept.length > 1 && kept.join(" ").length > charLimit) {
+		kept.pop();
+	}
+	while (kept.length > 1 && isLikelyIncompleteThumbnailHeadline(kept.join(" "))) {
+		const completedCandidate =
+			kept.length < source.length
+				? `${kept.join(" ")} ${source[kept.length]}`
+				: "";
+		const canComplete =
+			completedCandidate &&
+			kept.length < wordLimit &&
+			completedCandidate.length <= charLimit &&
+			!isLikelyIncompleteThumbnailHeadline(completedCandidate);
+		if (canComplete) {
+			kept.push(source[kept.length]);
+			break;
+		}
+		kept.pop();
+	}
+
+	return kept.length ? kept : source.slice(0, 1);
+}
+
+function normalizeHeadlineCandidate(text = "", maxWords = 4, maxChars = 26) {
+	const words = normalizeDisplayWords(text);
+	const kept = trimWordsToCompleteHeadline(words, { maxWords, maxChars });
+	return kept.join(" ").trim();
+}
+
+function splitHeadlineClauses(text = "") {
+	return normalizeWhitespace(text)
+		.replace(/[.!?]+/g, "|")
+		.replace(/\s+[|:;]\s+/g, "|")
+		.split("|")
+		.map((part) => normalizeWhitespace(part))
+		.filter(Boolean);
+}
+
+function extractActionObjectHeadlinePhrases(text = "") {
+	const phrases = [];
+	for (const clause of splitHeadlineClauses(text)) {
+		const words = normalizeDisplayWords(clause);
+		for (let i = 0; i < words.length - 1; i++) {
+			const key = headlineWordKey(words[i]);
+			if (!/^[a-z]{4,}ing$/.test(key)) continue;
+			const phrase = normalizeHeadlineCandidate(
+				words.slice(i, i + 5).join(" "),
+				4,
+				30,
+			);
+			if (
+				phrase.split(/\s+/).length >= 2 &&
+				!isLikelyIncompleteThumbnailHeadline(phrase)
+			) {
+				phrases.push(phrase);
+			}
+		}
+	}
+	return uniqueStrings(phrases, { limit: 6 });
+}
+
+function scoreThumbnailHeadlineCandidate(text = "", source = "") {
+	const normalized = normalizeHeadlineCandidate(text, 5, 30).toUpperCase();
+	const words = normalizeDisplayWords(normalized);
+	if (!normalized || !words.length) return -Infinity;
+
+	let score = 0;
+	if (isLikelyIncompleteThumbnailHeadline(normalized)) score -= 30;
+	else score += 14;
+	if (source === "override") score += 7;
+	if (source === "action") score += 8;
+	if (source === "first_clause") score += 3;
+	if (source === "significant") score += 1;
+	if (GENERIC_THUMBNAIL_HEADLINES.has(normalized)) score -= 4;
+
+	const len = normalized.length;
+	if (len >= 14 && len <= 24) score += 6;
+	else if (len >= 10 && len <= 30) score += 3;
+	else score -= 3;
+
+	if (words.length >= 2 && words.length <= 4) score += 4;
+	else if (words.length === 5) score += 1;
+	if (
+		/\b(why|how|what|truth|secret|trap|warning|danger|lost|stole|stealing|changed|broke|saved|inside|behind)\b/i.test(
+			normalized,
+		)
+	)
+		score += 2;
+
+	return score;
+}
+
+function chooseBestThumbnailHeadlineCandidate(candidates = []) {
+	let best = null;
+	for (const candidate of Array.isArray(candidates) ? candidates : []) {
+		const text = normalizeHeadlineCandidate(candidate?.text || candidate, 5, 30);
+		if (!text) continue;
+		const normalized = text.toUpperCase();
+		const score = scoreThumbnailHeadlineCandidate(
+			normalized,
+			candidate?.source || "",
+		);
+		if (!best || score > best.score) {
+			best = { text: normalized, score };
+		}
+	}
+	return best?.text || "";
+}
+
 function buildSignificantPhrase(text = "", maxWords = 4) {
 	const words = normalizeDisplayWords(text).filter((word) => {
 		const lower = word.toLowerCase();
@@ -1014,7 +1241,7 @@ function buildSignificantPhrase(text = "", maxWords = 4) {
 			!TITLE_STOP_WORDS.has(lower) && (word.length > 2 || /[0-9]/.test(word))
 		);
 	});
-	return words.slice(0, maxWords).join(" ");
+	return normalizeHeadlineCandidate(words.join(" "), maxWords, 30);
 }
 
 function deriveHeadlineFromTitle({
@@ -1060,23 +1287,49 @@ function deriveHeadlineFromTitle({
 		return primaryTopic ? `${primaryTopic} UPDATE` : "WHAT CHANGED";
 	}
 
-	const significant =
-		buildSignificantPhrase(title, 4) ||
-		buildSignificantPhrase(shortTitle, 4) ||
-		buildSignificantPhrase(seoTitle, 4);
+	const headlineCandidates = [
+		...extractActionObjectHeadlinePhrases(title).map((text) => ({
+			text,
+			source: "action",
+		})),
+		...extractActionObjectHeadlinePhrases(shortTitle).map((text) => ({
+			text,
+			source: "action",
+		})),
+		...extractActionObjectHeadlinePhrases(seoTitle).map((text) => ({
+			text,
+			source: "action",
+		})),
+		...splitHeadlineClauses(title)
+			.slice(0, 2)
+			.map((text, index) => ({
+				text,
+				source: index === 0 ? "first_clause" : "clause",
+			})),
+		...splitHeadlineClauses(shortTitle)
+			.slice(0, 1)
+			.map((text) => ({ text, source: "short_title" })),
+		...splitHeadlineClauses(seoTitle)
+			.slice(0, 2)
+			.map((text) => ({ text, source: "clause" })),
+		{
+			text:
+				buildSignificantPhrase(title, 5) ||
+				buildSignificantPhrase(shortTitle, 5) ||
+				buildSignificantPhrase(seoTitle, 5),
+			source: "significant",
+		},
+	];
+	const significant = chooseBestThumbnailHeadlineCandidate(headlineCandidates);
 	if (significant) return significant;
 	if (primaryTopic) return `${primaryTopic} NEWS`;
 	return intent === "legal" ? "CASE UPDATE" : "BIG UPDATE";
 }
 
-function normalizeHeadlineText(text = "", maxWords = 4) {
-	const words = normalizeDisplayWords(text).slice(0, maxWords);
-	let out = words.join(" ").trim();
+function normalizeHeadlineText(text = "", maxWords = 4, options = {}) {
+	const maxChars = Number(options?.maxChars) || 26;
+	let out = normalizeHeadlineCandidate(text, maxWords, maxChars);
 	if (!out) out = "BIG UPDATE";
-	while (out.length > 26 && words.length > 1) {
-		words.pop();
-		out = words.join(" ").trim();
-	}
 	return out.toUpperCase();
 }
 
@@ -1172,17 +1425,27 @@ function buildThumbnailTextPlan({
 		topics,
 		intent,
 	});
-	const overrideClean = normalizeHeadlineText(overrideHeadline || "", 4);
-	const derivedClean = normalizeHeadlineText(derivedHeadline, 4);
+	const overrideClean = normalizeHeadlineText(overrideHeadline || "", 5, {
+		maxChars: 30,
+	});
+	const overrideRawClean = normalizeDisplayWords(overrideHeadline || "")
+		.join(" ")
+		.trim();
+	const derivedClean = normalizeHeadlineText(derivedHeadline, 5, {
+		maxChars: 30,
+	});
 	const preferredHeadline =
 		overrideHeadline &&
 		!GENERIC_THUMBNAIL_HEADLINES.has(overrideClean) &&
-		overrideClean.length >= 6
+		overrideClean.length >= 6 &&
+		!isLikelyIncompleteThumbnailHeadline(overrideRawClean) &&
+		!isLikelyIncompleteThumbnailHeadline(overrideClean)
 			? overrideHeadline
 			: derivedHeadline || overrideHeadline;
 	const primaryHeadline = normalizeHeadlineText(
 		preferredHeadline || derivedClean,
-		4,
+		5,
+		{ maxChars: 30 },
 	);
 	const badgeText = chooseBadgeText({
 		intent,
