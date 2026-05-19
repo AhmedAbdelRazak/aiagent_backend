@@ -10,7 +10,7 @@
  *
  * 2) Presenter looks natural (less creepy):
  *    - Generate stable expression-aware Runway baseline clips (wide, calm)
- *    - Rotate baseline variants for presenter segments to avoid visible looping
+ *    - Generate and rotate 3 calm baseline variants for presenter segments
  *    - Cap gestures; avoid hands; stabilize prompt
  *
  * 3) Presenter wardrobe adjustment (classy outfit):
@@ -648,10 +648,10 @@ const BASELINE_DUR_SEC = clampNumber(
 	10,
 );
 const BASELINE_VARIANTS = Math.floor(
-	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 1, 1, 4),
+	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 3, 1, 4),
 );
 const BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ?? 1,
+	process.env.LONG_VIDEO_BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ?? 3,
 	1,
 	4,
 ));
@@ -664,7 +664,7 @@ const LOCK_PRESENTER_VIDEO_EXPRESSION = envFlag(
 );
 const BASELINE_STOP_AFTER_CLEAN_PASS = envFlag(
 	"LONG_VIDEO_BASELINE_STOP_AFTER_CLEAN_PASS",
-	true,
+	false,
 );
 const CAMERA_ZOOM_OUT = clampNumber(
 	process.env.LONG_VIDEO_CAMERA_ZOOM_OUT ?? 0.96,
@@ -880,7 +880,7 @@ const OPENING_PRESENTER_USE_HERO_SYNC = envFlag(
 	false,
 );
 const OPENING_PRESENTER_BASELINE_TRIES = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_OPENING_PRESENTER_BASELINE_TRIES ?? 1,
+	process.env.LONG_VIDEO_OPENING_PRESENTER_BASELINE_TRIES ?? 3,
 	1,
 	3,
 ));
@@ -12015,10 +12015,12 @@ function buildBaselinePrompt(
 
 	const variantHint =
 		variant === 1
-			? "Use a slightly different blink cadence and include two tiny conversational beats: one soft emphasis nod or chin dip, and one small shoulder-breath/posture reset. Keep movement natural, restrained, and never looped."
+			? "Variant one: calm anchor take with a natural blink cadence, one soft emphasis nod or chin dip, and one small shoulder-breath/posture reset. Keep movement natural, restrained, and never looped."
 			: variant === 2
-				? "Use the motion-rescue take: keep the presenter calm but clearly alive with blink, breath, micro jaw movement, one brief side glance back to lens, and a tiny shoulder-settling shift. No still-photo frames."
-				: "";
+				? "Variant two: calm listening take with different blink timing, subtle eye refocus, tiny breathing in the shoulders, and one brief side glance returning to the lens. No still-photo frames."
+				: variant === 3
+					? "Variant three: calm explanatory take with a different natural rhythm, one tiny posture reset, a restrained micro nod, realistic breathing, and relaxed eye contact. No dramatic gestures."
+					: "";
 	const variantLine = variantHint
 		? `Motion variation: ${variantHint}`
 		: "Motion variation: natural unique blink timing and tiny posture settling; avoid matching any prior clip exactly.";
@@ -12033,6 +12035,7 @@ Framing: medium shot, upper torso to mid torso, moderate headroom, camera at a c
 This must be a real moving presenter video, not a still image, frozen photo, looping freeze-frame, or camera-only zoom. The face, eyes, jaw, shoulders, and breathing must show continuous subtle human motion in every second of the clip.
 ${expressionLine}
 ${variantLine}
+Reality target: closest-to-real human motion possible, calm and premium, with no extravagant movement, no theatrical acting, no exaggerated gestures, and no obvious AI morphing.
 Motion: ${motionHint}
 Motion floor: never hold the same facial pose for more than half a second. If the presenter is listening silently, keep small blinks, eye refocus, gentle breathing, and tiny posture settling visible without becoming theatrical.
 Mouth and jaw: lips mostly relaxed and lightly closed, with only tiny speech-ready jaw readiness; do not form syllables, lip-sync, over-open vowels, show a toothy smile, warp the mouth, stretch the cheeks, or make puppet-like motion.
@@ -26809,16 +26812,22 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			baselinePresenterVideos.set(expr, list);
 		};
 		const pickBaselineVariant = (expr, seed = 0) => {
-			const list =
+			let rawList =
 				baselinePresenterVideos.get(expr) ||
 				baselinePresenterVideos.get("neutral") ||
 				[];
+			if (!rawList.length) {
+				const first = baselinePresenterVideos.values().next().value;
+				rawList = Array.isArray(first) ? first : first ? [first] : [];
+			}
+			const list = rawList
+				.map((item) => normalizeBaselineItem(item))
+				.filter((item) => item.path)
+				.sort((a, b) => (Number(a.variant) || 0) - (Number(b.variant) || 0));
 			if (!list.length) return null;
-			const hash = crypto
-				.createHash("sha256")
-				.update(`${jobId}:${expr}:${seed}`)
-				.digest();
-			const idx = hash.readUInt32BE(0) % list.length;
+			const jobShift = Math.abs(seedFromJobId(jobId)) % list.length;
+			const idx =
+				(Math.abs(Math.floor(Number(seed) || 0)) + jobShift) % list.length;
 			return normalizeBaselineItem(list[idx]).path || null;
 		};
 		const pickBaselineDefault = () => {
@@ -26850,11 +26859,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					addPath(item.path);
 				}
 			};
+			addPath(pickBaselineVariant(expr, seed));
 			addRanked(expr);
 			if (expr !== "warm") addRanked("warm");
 			if (expr !== "thoughtful") addRanked("thoughtful");
 			if (expr !== "neutral") addRanked("neutral");
-			addPath(pickBaselineVariant(expr, seed));
 			addPath(pickBestBaselineVariant(expr));
 			addPath(pickBaselineDefault());
 			return out.slice(0, Math.max(1, Number(limit) || 1));
@@ -27135,6 +27144,10 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		}
 
 		const baselineDefault = pickBaselineDefault();
+		const presenterBaselineCandidateLimit = Math.min(
+			3,
+			Math.max(1, BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION),
+		);
 
 		updateJob(jobId, { progressPct: 50 });
 
@@ -27143,7 +27156,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const introBaselineCandidates = pickBaselineCandidates(
 			introExpression,
 			0,
-			OPENING_PRESENTER_BASELINE_TRIES,
+			Math.max(OPENING_PRESENTER_BASELINE_TRIES, presenterBaselineCandidateLimit),
 		);
 		const introCameraMotion = inferCameraMotionPlan({
 			text: introTextFinal,
@@ -27281,9 +27294,23 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const baselineCandidates = pickBaselineCandidates(
 				exprKey,
 				seg.index,
-				mustUsePresenter ? OPENING_PRESENTER_BASELINE_TRIES : 1,
+				mustUsePresenter
+					? Math.max(
+							OPENING_PRESENTER_BASELINE_TRIES,
+							presenterBaselineCandidateLimit,
+						)
+					: presenterBaselineCandidateLimit,
 			);
 			const baselineSource = baselineCandidates[0] || baselineDefault;
+			if ((seg.visualType || "presenter") === "presenter") {
+				logJob(jobId, "presenter baseline selected", {
+					segment: seg.index,
+					renderLabel: seg.renderLabel || String(seg.index),
+					expression: exprKey,
+					baseline: baselineSource ? path.basename(baselineSource) : null,
+					candidateCount: baselineCandidates.length,
+				});
+			}
 			let norm = null;
 			const plannedVisualType = seg.visualType || "presenter";
 			let actualVisualType = plannedVisualType;
