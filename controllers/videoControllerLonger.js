@@ -10,7 +10,7 @@
  *
  * 2) Presenter looks natural (less creepy):
  *    - Generate stable expression-aware Runway baseline clips (wide, calm)
- *    - Generate and rotate 3 calm baseline variants for presenter segments
+ *    - Generate up to 5 calm baseline attempts to rotate 3 accepted variants
  *    - Cap gestures; avoid hands; stabilize prompt
  *
  * 3) Presenter wardrobe adjustment (classy outfit):
@@ -647,14 +647,33 @@ const BASELINE_DUR_SEC = clampNumber(
 	6,
 	10,
 );
+// Generate a few extra attempts only if earlier Runway takes fail QA. We still
+// keep at most three accepted clips so presenter rotation stays coherent.
 const BASELINE_VARIANTS = Math.floor(
-	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 3, 1, 4),
+	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 5, 1, 6),
 );
 const BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION = Math.floor(clampNumber(
 	process.env.LONG_VIDEO_BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ?? 3,
 	1,
 	4,
 ));
+const BASELINE_IDENTITY_QA_ENABLED = envFlag(
+	"LONG_VIDEO_BASELINE_IDENTITY_QA",
+	true,
+);
+const BASELINE_IDENTITY_QA_MODEL =
+	String(process.env.LONG_VIDEO_BASELINE_IDENTITY_QA_MODEL || CHAT_MODEL).trim() ||
+	CHAT_MODEL;
+const BASELINE_IDENTITY_QA_MIN_SCORE = clampNumber(
+	process.env.LONG_VIDEO_BASELINE_IDENTITY_QA_MIN_SCORE ?? 0.78,
+	0.5,
+	0.98,
+);
+const BASELINE_IDENTITY_QA_MAX_DISTORTION_SCORE = clampNumber(
+	process.env.LONG_VIDEO_BASELINE_IDENTITY_QA_MAX_DISTORTION_SCORE ?? 0.28,
+	0,
+	0.8,
+);
 const BASELINE_MAX_EXPRESSIONS = Math.floor(
 	clampNumber(process.env.LONG_VIDEO_BASELINE_MAX_EXPRESSIONS ?? 1, 1, 4),
 );
@@ -1143,9 +1162,14 @@ function getLongVideoRuntimeProfile() {
 		fingerprint: LONG_VIDEO_CONTROLLER_FINGERPRINT,
 		baselineDurSec: BASELINE_DUR_SEC,
 		baselineVariants: BASELINE_VARIANTS,
+		baselineAcceptedTarget: BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION,
 		baselineNearPassEnabled: PRESENTER_BASELINE_MOTION_NEAR_PASS_ENABLED,
 		baselineMaxFreezeRatio: PRESENTER_BASELINE_MOTION_MAX_FREEZE_RATIO,
 		baselineMaxFreezeSec: PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC,
+		baselineIdentityQaEnabled: BASELINE_IDENTITY_QA_ENABLED,
+		baselineIdentityQaMinScore: BASELINE_IDENTITY_QA_MIN_SCORE,
+		baselineIdentityQaMaxDistortionScore:
+			BASELINE_IDENTITY_QA_MAX_DISTORTION_SCORE,
 		requireLipsync: REQUIRE_LIPSYNC,
 		requireRealPresenterVideo: REQUIRE_REAL_PRESENTER_VIDEO,
 		allowStaticPresenterFallback: ALLOW_STATIC_PRESENTER_FALLBACK,
@@ -1935,6 +1959,24 @@ function detectFileType(filePath) {
 		return { kind: "video", ext: "webm" };
 
 	return null;
+}
+
+function imageMimeTypeForPath(filePath) {
+	const detected = detectFileType(filePath);
+	const ext = String(detected?.ext || path.extname(filePath || ""))
+		.toLowerCase()
+		.replace(/^\./, "");
+	if (ext === "png") return "image/png";
+	if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+	if (ext === "webp") return "image/webp";
+	if (ext === "gif") return "image/gif";
+	return "image/jpeg";
+}
+
+function imagePathToDataUrl(filePath) {
+	if (!filePath || !fs.existsSync(filePath)) return "";
+	const b64 = fs.readFileSync(filePath).toString("base64");
+	return `data:${imageMimeTypeForPath(filePath)};base64,${b64}`;
 }
 
 async function hashFileSha1(filePath) {
@@ -11570,7 +11612,7 @@ function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 	return [
 		`Match DemoVideo.mp4 and motion_reference.mp4: locked tripod camera with a perfectly stable frame, upright seated posture, shoulders square, ${handLine}, calm direct eye contact, natural unhurried blinks, mild brow life, soft chin dips, subtle breathing and posture settling.`,
 		"Keep visible human motion alive throughout the whole clip: a blink or eye refocus every few seconds, tiny jaw readiness, natural breathing in the shoulders, and one small conversational nod or micro-shift.",
-		"Allow one brief side-thought glance then return to lens; warm beats may have only a super light, mostly closed-mouth smile, never a toothy grin.",
+		"Keep mostly direct lens contact; any eye refocus must be tiny and natural, not a side-looking performance. Warm beats may have only a super light, mostly closed-mouth smile, never a toothy grin.",
 		"No camera shake, background drift, swaying, lunging, head tilts, looped nodding, wide eyes, theatrical reactions, motionless face, or frozen statue behavior.",
 	].join(" ");
 }
@@ -12013,14 +12055,23 @@ function buildBaselinePrompt(
 		expressionLine =
 			"Expression: thoughtful and composed, neutral mouth, gentle eye focus, settled brows.";
 
-	const variantHint =
-		variant === 1
-			? "Variant one: calm anchor take with a natural blink cadence, one soft emphasis nod or chin dip, and one small shoulder-breath/posture reset. Keep movement natural, restrained, and never looped."
-			: variant === 2
-				? "Variant two: calm listening take with different blink timing, subtle eye refocus, tiny breathing in the shoulders, and one brief side glance returning to the lens. No still-photo frames."
-				: variant === 3
-					? "Variant three: calm explanatory take with a different natural rhythm, one tiny posture reset, a restrained micro nod, realistic breathing, and relaxed eye contact. No dramatic gestures."
-					: "";
+	let variantHint = "";
+	if (variant === 1) {
+		variantHint =
+			"Variant one: calm anchor take with a natural blink cadence, one soft emphasis nod or chin dip, and one small shoulder-breath/posture reset. Keep movement natural, restrained, and never looped.";
+	} else if (variant === 2) {
+		variantHint =
+			"Variant two: calm listening take with different blink timing, subtle eye refocus, tiny breathing in the shoulders, and one almost invisible posture settle. Keep direct lens contact; no side-looking performance.";
+	} else if (variant === 3) {
+		variantHint =
+			"Variant three: calm explanatory take with a different natural rhythm, one tiny posture reset, a restrained micro nod, realistic breathing, and relaxed eye contact. No dramatic gestures.";
+	} else if (variant === 4) {
+		variantHint =
+			"Variant four: calm rescue take focused on usable realism: continuous small blinks, slight shoulder breathing, one tiny chin dip, and stable direct eye contact. Prioritize identity lock over movement.";
+	} else if (variant === 5) {
+		variantHint =
+			"Variant five: calm fallback take with very subtle human liveliness, different blink spacing, soft jaw readiness, and tiny torso settling. No pose freeze and no personality change.";
+	}
 	const variantLine = variantHint
 		? `Motion variation: ${variantHint}`
 		: "Motion variation: natural unique blink timing and tiny posture settling; avoid matching any prior clip exactly.";
@@ -12029,7 +12080,8 @@ function buildBaselinePrompt(
 		: PRESENTER_MOTION_STYLE;
 
 	return `
-Photorealistic talking-head video of the SAME man as the reference image. Preserve exact identity: shaved head, glasses, eye spacing, nose, beard line, mouth, jaw, skin texture, age, and face proportions; no beautifying, face morphing, or feature drift.
+Photorealistic talking-head video of the SAME man as the reference image. Treat the input image as an identity lock, not a loose inspiration. Preserve exact identity: shaved head, glasses shape and position, eye spacing, nose, beard line, mouth, jaw, skin texture, age, face width, and face proportions. Do not recast him, beautify him, slim or widen the face, change the glasses, change the beard, change age, change skin texture, or create a different-looking presenter.
+All variants must look like the same presenter recorded in the same session. Variety is only blink timing, breathing, and tiny posture rhythm; never identity, wardrobe, lighting, camera, expression, or face geometry.
 Keep the same studio, lighting, wardrobe, desk, and static empty background; no extra people, reflections, text, screens, candles, flames, or moving background.
 Framing: medium shot, upper torso to mid torso, moderate headroom, camera at a comfortable distance.
 This must be a real moving presenter video, not a still image, frozen photo, looping freeze-frame, or camera-only zoom. The face, eyes, jaw, shoulders, and breathing must show continuous subtle human motion in every second of the clip.
@@ -12037,9 +12089,9 @@ ${expressionLine}
 ${variantLine}
 Reality target: closest-to-real human motion possible, calm and premium, with no extravagant movement, no theatrical acting, no exaggerated gestures, and no obvious AI morphing.
 Motion: ${motionHint}
-Motion floor: never hold the same facial pose for more than half a second. If the presenter is listening silently, keep small blinks, eye refocus, gentle breathing, and tiny posture settling visible without becoming theatrical.
-Mouth and jaw: lips mostly relaxed and lightly closed, with only tiny speech-ready jaw readiness; do not form syllables, lip-sync, over-open vowels, show a toothy smile, warp the mouth, stretch the cheeks, or make puppet-like motion.
-Eyes: relaxed with natural reflections and blink cadence; direct lens contact; no glassy stare, wide eyes, frequent side glances, surprise, skepticism, smirks, or dramatic brow lifts.
+Motion floor: never hold the same facial pose for more than half a second. If the presenter is listening silently, keep small blinks, eye refocus, gentle breathing, and tiny posture settling visible without becoming theatrical. If preserving the face conflicts with motion, choose smaller motion while still avoiding a frozen photo.
+Mouth and jaw: lips mostly relaxed and lightly closed, with only tiny speech-ready jaw readiness; do not form syllables, lip-sync, over-open vowels, show a toothy smile, warp the mouth, stretch the cheeks, expose odd teeth, or make puppet-like motion.
+Eyes/glasses: relaxed eyes with natural reflections and blink cadence; direct lens contact; glasses must stay stable and realistic; no glassy stare, wide eyes, frequent side glances, surprise, skepticism, smirks, dramatic brow lifts, drifting glasses, mismatched eyes, melted frames, or facial asymmetry.
 Wardrobe/hands: clean collar/lapels/sleeves; hands low or out of frame, never covering the face.
 Camera/framing: locked tripod shot; no camera shake, no frame vibration, no reframing, no breathing zoom, no drifting background edges, no rolling wobble. Do NOT try to lip-sync.
 `.trim();
@@ -20901,6 +20953,206 @@ async function evaluatePresenterVideoMotion({
 	return { ...qa, acceptedNearPass, originalIssues };
 }
 
+async function extractVideoFrameForQa({
+	videoPath,
+	outPath,
+	atSec,
+	scaleWidth = 640,
+}) {
+	if (!videoPath || !fs.existsSync(videoPath)) {
+		throw new Error("qa_video_missing");
+	}
+	const seekSec = Math.max(0, Number(atSec) || 0);
+	await spawnBin(
+		ffmpegPath,
+		[
+			"-ss",
+			seekSec.toFixed(3),
+			"-i",
+			videoPath,
+			"-frames:v",
+			"1",
+			"-vf",
+			`scale=${Math.floor(scaleWidth)}:-2`,
+			"-q:v",
+			"3",
+			"-y",
+			outPath,
+		],
+		"extract_presenter_identity_frame",
+		{ timeoutMs: 60000 },
+	);
+	if (!fs.existsSync(outPath)) throw new Error("qa_frame_missing");
+	return outPath;
+}
+
+async function evaluatePresenterIdentityQa({
+	referenceImagePath,
+	videoPath,
+	tmpDir,
+	jobId,
+	label,
+	expression,
+	variant,
+}) {
+	const baseResult = {
+		pass: true,
+		skipped: true,
+		identityScore: 1,
+		distortionScore: 0,
+		reason: "",
+	};
+	if (!BASELINE_IDENTITY_QA_ENABLED) {
+		return { ...baseResult, reason: "disabled" };
+	}
+	if (!process.env.CHATGPT_API_TOKEN) {
+		return { ...baseResult, reason: "openai_key_missing" };
+	}
+	if (!referenceImagePath || !fs.existsSync(referenceImagePath)) {
+		return { ...baseResult, reason: "reference_missing" };
+	}
+	if (!videoPath || !fs.existsSync(videoPath)) {
+		throw new Error(`presenter_identity_qa_failed:${label}:video_missing`);
+	}
+
+	const safeLabel = String(label || "baseline").replace(/[^a-z0-9_-]/gi, "_");
+	const framePaths = [];
+	try {
+		const durSec = (await probeDurationSecondsCached(videoPath)) || BASELINE_DUR_SEC;
+		const sampleTimes = Array.from(
+			new Set(
+				[
+					clampNumber(1.1, 0.1, Math.max(0.1, durSec - 0.2)),
+					clampNumber(durSec * 0.58, 0.1, Math.max(0.1, durSec - 0.2)),
+				].map((n) => Number((Number(n) || 0.1).toFixed(2))),
+			),
+		).slice(0, 2);
+		for (let i = 0; i < sampleTimes.length; i++) {
+			const framePath = path.join(
+				tmpDir,
+				`identity_${safeLabel}_${i + 1}_${jobId}.jpg`,
+			);
+			await extractVideoFrameForQa({
+				videoPath,
+				outPath: framePath,
+				atSec: sampleTimes[i],
+			});
+			framePaths.push(framePath);
+		}
+		if (!framePaths.length) {
+			return { ...baseResult, reason: "no_frames" };
+		}
+
+		const content = [
+			{
+				type: "text",
+				text: `
+You are a strict but practical visual QA reviewer for a YouTube presenter pipeline.
+Compare the reference presenter image to the generated video frames.
+
+Pass only if the generated frames clearly look like the same man from the reference and are usable in the same video:
+- same shaved head, glasses shape/position, eye spacing, nose, beard line, mouth, jaw, face width/proportions, skin tone/texture, age, wardrobe, and studio feel
+- no obvious AI distortion: warped mouth, drifting glasses, melted glasses, mismatched eyes, changed beard line, changed face shape, rubber skin, extra teeth, severe asymmetry, or a different-looking presenter
+
+Ignore tiny normal differences from blinking, subtle expression, compression, and small pose movement.
+Reject only meaningful identity drift or visible facial distortion.
+
+Return JSON only:
+{
+  "pass": true,
+  "identityScore": 0.0,
+  "distortionScore": 0.0,
+  "reason": "short practical reason"
+}
+identityScore is 0 to 1 where 1 is exact same person.
+distortionScore is 0 to 1 where 0 is no visible distortion and 1 is severe distortion.
+`.trim(),
+			},
+			{
+				type: "image_url",
+				image_url: { url: imagePathToDataUrl(referenceImagePath) },
+			},
+			...framePaths.map((framePath) => ({
+				type: "image_url",
+				image_url: { url: imagePathToDataUrl(framePath) },
+			})),
+		];
+
+		const resp = await openai.chat.completions.create({
+			model: BASELINE_IDENTITY_QA_MODEL,
+			messages: [{ role: "user", content }],
+		});
+		const parsed = parseJsonFlexible(resp?.choices?.[0]?.message?.content || "");
+		if (!parsed || typeof parsed !== "object") {
+			logJob(jobId, "baseline identity qa skipped", {
+				label,
+				expression,
+				variant,
+				error: "identity_qa_parse_failed",
+			});
+			return { ...baseResult, reason: "identity_qa_parse_failed" };
+		}
+		const identityScore = clampNumber(
+			Number(parsed?.identityScore ?? parsed?.identity_score ?? 0),
+			0,
+			1,
+		);
+		const distortionScore = clampNumber(
+			Number(parsed?.distortionScore ?? parsed?.distortion_score ?? 1),
+			0,
+			1,
+		);
+		const parsedPass =
+			parsed?.pass === true ||
+			String(parsed?.pass || "")
+				.trim()
+				.toLowerCase() === "true";
+		const pass =
+			parsedPass &&
+			identityScore >= BASELINE_IDENTITY_QA_MIN_SCORE &&
+			distortionScore <= BASELINE_IDENTITY_QA_MAX_DISTORTION_SCORE;
+		const reason = String(parsed?.reason || "").slice(0, 220);
+		logJob(jobId, "baseline identity qa", {
+			label,
+			expression,
+			variant,
+			pass,
+			identityScore: Number(identityScore.toFixed(3)),
+			distortionScore: Number(distortionScore.toFixed(3)),
+			minIdentityScore: BASELINE_IDENTITY_QA_MIN_SCORE,
+			maxDistortionScore: BASELINE_IDENTITY_QA_MAX_DISTORTION_SCORE,
+			reason,
+		});
+		if (!pass) {
+			throw new Error(
+				`presenter_identity_qa_failed:${label}:identity=${identityScore.toFixed(
+					2,
+				)}:distortion=${distortionScore.toFixed(2)}:${reason || "rejected"}`,
+			);
+		}
+		return {
+			pass,
+			skipped: false,
+			identityScore,
+			distortionScore,
+			reason,
+		};
+	} catch (e) {
+		if (String(e?.message || "").startsWith("presenter_identity_qa_failed:")) {
+			throw e;
+		}
+		logJob(jobId, "baseline identity qa skipped", {
+			label,
+			expression,
+			variant,
+			error: e?.message || String(e),
+		});
+		return { ...baseResult, reason: e?.message || String(e) };
+	} finally {
+		for (const framePath of framePaths) safeUnlink(framePath);
+	}
+}
+
 async function assertPresenterVideoHasMotion({
 	videoPath,
 	jobId,
@@ -26469,6 +26721,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			baselineExpressions: presenterExpressionCount,
 			baselineExpressionBudget: BASELINE_MAX_EXPRESSIONS,
 			baselineVariants: BASELINE_VARIANTS,
+			baselineAcceptedTarget: BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION,
+			baselineIdentityQa: BASELINE_IDENTITY_QA_ENABLED,
 		});
 		const premiumPresenterSegments = [];
 		for (const seg of timeline) {
@@ -26778,6 +27032,20 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					const aNear = a.acceptedNearPass ? 1 : 0;
 					const bNear = b.acceptedNearPass ? 1 : 0;
 					if (aNear !== bNear) return aNear - bNear;
+					const aIdentity = Number.isFinite(Number(a.identityScore))
+						? Number(a.identityScore)
+						: 1;
+					const bIdentity = Number.isFinite(Number(b.identityScore))
+						? Number(b.identityScore)
+						: 1;
+					if (aIdentity !== bIdentity) return bIdentity - aIdentity;
+					const aDistortion = Number.isFinite(Number(a.distortionScore))
+						? Number(a.distortionScore)
+						: 0;
+					const bDistortion = Number.isFinite(Number(b.distortionScore))
+						? Number(b.distortionScore)
+						: 0;
+					if (aDistortion !== bDistortion) return aDistortion - bDistortion;
 					const aRatio = Number.isFinite(Number(a.freezeRatio))
 						? Number(a.freezeRatio)
 						: 1;
@@ -26794,7 +27062,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					if (aFreeze !== bFreeze) return aFreeze - bFreeze;
 					return (Number(a.variant) || 0) - (Number(b.variant) || 0);
 				});
-		const pushBaselineVariant = (expr, clipPath, motionQa = null, variant = 0) => {
+		const pushBaselineVariant = (
+			expr,
+			clipPath,
+			motionQa = null,
+			variant = 0,
+			identityQa = null,
+		) => {
 			if (!clipPath) return;
 			const list = baselinePresenterVideos.get(expr) || [];
 			list.push({
@@ -26807,6 +27081,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					: 0,
 				maxFreezeSec: Number.isFinite(Number(motionQa?.maxFreezeSec))
 					? Number(motionQa.maxFreezeSec)
+					: 0,
+				identityScore: Number.isFinite(Number(identityQa?.identityScore))
+					? Number(identityQa.identityScore)
+					: 1,
+				distortionScore: Number.isFinite(Number(identityQa?.distortionScore))
+					? Number(identityQa.distortionScore)
 					: 0,
 			});
 			baselinePresenterVideos.set(expr, list);
@@ -27010,7 +27290,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							label: `baseline_${expr}_v${v + 1}`,
 							mode: "baseline",
 						});
-						pushBaselineVariant(expr, syncReady, motionQa, v + 1);
+						const identityQa = await evaluatePresenterIdentityQa({
+							referenceImagePath: presenterLocal,
+							videoPath: syncReady,
+							tmpDir,
+							jobId,
+							label: `baseline_${expr}_v${v + 1}`,
+							expression: expr,
+							variant: v + 1,
+						});
+						pushBaselineVariant(expr, syncReady, motionQa, v + 1, identityQa);
 						logJob(jobId, "baseline presenter ready", {
 							expression: expr,
 							variant: v + 1,
@@ -27019,6 +27308,15 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							motionQa: {
 								maxFreezeSec: Number((motionQa.maxFreezeSec || 0).toFixed(3)),
 								freezeRatio: Number((motionQa.freezeRatio || 0).toFixed(3)),
+							},
+							identityQa: {
+								skipped: Boolean(identityQa.skipped),
+								identityScore: Number(
+									(identityQa.identityScore || 0).toFixed(3),
+								),
+								distortionScore: Number(
+									(identityQa.distortionScore || 0).toFixed(3),
+								),
 							},
 						});
 						acceptedBaselineCount += 1;
@@ -27045,6 +27343,19 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							error: e.message,
 						});
 					}
+				}
+				if (
+					acceptedBaselineCount > 0 &&
+					acceptedBaselineCount < BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION
+				) {
+					logJob(jobId, "baseline expression underfilled", {
+						expression: expr,
+						acceptedBaselineCount,
+						targetAcceptedVariants:
+							BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION,
+						attempts: BASELINE_VARIANTS,
+						reason: "accepted fewer identity-and-motion-safe variants than target",
+					});
 				}
 				if (acceptedBaselineCount > 0) successfulBaselineExpressions += 1;
 			}
