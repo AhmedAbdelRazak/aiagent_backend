@@ -5,7 +5,7 @@
  * Key improvements (mapped to Amad's requirements):
  * 1) No voice stutter / no silent gaps:
  *    - Generate TTS per segment -> convert to WAV -> remove leading/trailing silence
- *    - Compute ONE global atempo factor to perfectly fill narration duration (no padding)
+ *    - Apply ONE global atempo factor for consistent brisk narration (no padding)
  *    - Avoid aresample async drift correction (removes "stutter" artifacts)
  *
  * 2) Presenter looks natural (less creepy):
@@ -30,7 +30,7 @@
  *    - Explicit transition language between segments
  *
  * 9) No empty/silent parts:
- *    - Silence removed; no apad; durations filled via global atempo
+ *    - Silence removed; no apad; pacing handled via global atempo
  *
  * 10) Code cleaned:
  *    - Removed unused/fragile paths (perf-ref vision, per-segment Runway by default)
@@ -497,8 +497,25 @@ const AUDIO_CHANNELS = 1; // mono voice for stability + smaller sync payload
 const TRIM_LEADING_SILENCE = true;
 const LEAD_SILENCE_MIN_SEC = clampNumber(0.04, 0.02, 0.2);
 const LEAD_SILENCE_THRESHOLD_DB = clampNumber(-45, -60, -35);
-const GLOBAL_ATEMPO_MIN = 0.95;
-const GLOBAL_ATEMPO_MAX = 1.07;
+const ALLOW_SLOW_NARRATION_TO_TARGET = envFlag(
+	"LONG_VIDEO_ALLOW_SLOW_NARRATION_TO_TARGET",
+	false,
+);
+const REWRITE_FOR_NARRATION_DURATION = envFlag(
+	"LONG_VIDEO_REWRITE_FOR_NARRATION_DURATION",
+	false,
+);
+const GLOBAL_ATEMPO_MIN = clampNumber(
+	process.env.LONG_VIDEO_GLOBAL_ATEMPO_MIN ??
+		(ALLOW_SLOW_NARRATION_TO_TARGET ? 0.95 : 1.0),
+	0.85,
+	1.05,
+);
+const GLOBAL_ATEMPO_MAX = clampNumber(
+	process.env.LONG_VIDEO_GLOBAL_ATEMPO_MAX ?? 1.12,
+	Math.max(1.0, GLOBAL_ATEMPO_MIN),
+	1.18,
+);
 const INTRO_ATEMPO_MIN = clampNumber(
 	process.env.LONG_VIDEO_INTRO_ATEMPO_MIN ?? 0.95,
 	0.85,
@@ -512,7 +529,11 @@ const INTRO_ATEMPO_MAX = clampNumber(
 const OUTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
 const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
-const VOICE_SPEED_BOOST = clampNumber(1.015, 0.98, 1.08);
+const VOICE_SPEED_BOOST = clampNumber(
+	process.env.LONG_VIDEO_VOICE_SPEED_BOOST ?? 1.06,
+	1,
+	1.12,
+);
 const FORCE_NEUTRAL_VOICEOVER = true;
 const ALIGN_INTRO_OUTRO_ATEMPO = true;
 const ALLOW_NARRATION_OVERRUN = true;
@@ -16529,6 +16550,8 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 				"- For digital wellbeing, phone habits, screen time, attention, rest, or sleep topics, write with practical empathy. Make viewers feel understood, not judged.",
 				"- Do not frame the topic like breaking news. Avoid generic phrases such as \"what happened\", \"why people are reacting\", \"key reporting\", or \"the headline\" unless there is an actual current event.",
 				"- Use concrete everyday scenes: waking up, waiting in line, bedtime scrolling, lock-screen alerts, and transition moments that get filled by the phone.",
+				"- Keep the tone adult and direct. Avoid schoolteacher reassurance, therapy-talk loops, or explaining obvious feelings too slowly.",
+				"- Surface the uncomfortable but fair tradeoff: phones make life easier, but constant alerts and feeds can train attention away from quiet, sleep, and sustained thought.",
 				"- Keep advice realistic and testable. Prefer small boundaries, experiments, and environmental changes over sweeping digital-detox promises.",
 				"- Do not invent named studies, journals, researchers, or reporting. If source links are not provided, keep claims high-level and practical.",
 			],
@@ -16960,6 +16983,8 @@ function buildDynamicRetentionGuide({
 
 	const lines = [
 		"- Retention should come from the facts and angle, not manufactured hype. Use a human creator voice: clear, opinion-aware, and curious.",
+		"- Make the central tension feel adult and specific: who benefits, who pays the cost, what changes if the claim is true, and what the evidence does not prove yet.",
+		"- Be controversial only where the facts or clearly labeled analysis support it. Use strong framing for real tradeoffs, not for unsupported accusations.",
 		"- Vary the segment openings. Do not let multiple segments in a row start with the same connective style like \"That matters\", \"Still\", \"So\", or \"And\".",
 		"- Every 3-4 segments, add a natural pattern interrupt: a contrast, a viewer-facing question, a consequence, or a sharper read that makes the next beat feel earned.",
 		"- Keep the audience-oriented thread alive: why this matters, what changes if it is true, and what viewers are still waiting to see.",
@@ -16983,6 +17008,7 @@ function buildDynamicRetentionGuide({
 	} else if (isDigitalWellbeing) {
 		lines.push(
 			"- For digital wellbeing topics, retention should come from recognizable daily moments, not news framing: morning reach, waiting-line checks, notification tension, bedtime scrolling, and protected quiet.",
+			"- Avoid therapy-like over-explaining. Assume an intelligent adult audience and name the uncomfortable tradeoff between convenience, connection, attention, sleep, and calm.",
 		);
 	} else if (isGaming || isEntertainment) {
 		lines.push(
@@ -17507,11 +17533,13 @@ ${retentionGuide}
 
 Style rules (IMPORTANT):
 - If Countdown structure is present above, it overrides generic hook rules: segment 0 starts with the highest rank prefix, not a separate intro.
-- Keep pacing steady and conversational; no sudden speed-ups.
-- Brisk, coherent American news-presenter delivery; avoid drawn-out phrasing, rushed clutter, or choppy sentence fragments.
+- Keep pacing steady, brisk, and conversational; write for a natural fast presenter cadence without sounding rushed.
+- Brisk, coherent American news-presenter delivery; avoid drawn-out phrasing, childish over-explaining, rushed clutter, or choppy sentence fragments.
 - Write for spoken delivery, not article copy. Never open a normal segment with a headline-style label followed by a colon; countdown prefixes like "#5- Paris" are allowed when Countdown structure is present.
 - Avoid abstract or unnatural phrases a real host would not say out loud, such as "loss circle" or stiff framing like "the angle today is".
-- Keep the delivery composed and natural, not shouty. The writing should feel sharp, engaging, and lightly provocative when the story supports it, but never reckless, insulting, or overhyped.
+- Keep the delivery composed and natural, not shouty. The writing should feel sharp, engaging, and lightly provocative when facts or clearly labeled analysis support it, but never reckless, insulting, or overhyped.
+- Aim for intelligent adult viewers: skip obvious moralizing, avoid therapy-talk loops, and compress simple ideas into sharper, more memorable lines.
+- Controversial but factual: name the real tradeoff, disagreement, incentive, or cost; then separate what is confirmed, what is inference, and what remains uncertain.
 - Sound like a real creator, not a press release. No "Ladies and gentlemen", no "In conclusion", no corporate tone.
 - Viewer-first editorial stance: stand with ordinary people affected by the issue. Evaluate companies, institutions, governments, schools, platforms, and authorities by their human impact. Do not shame viewers or blame people for pressure they did not create. For neutral general news or pure entertainment trends, stay fair and factual, but keep the human consequence visible.
 - Keep it natural, not forced. For serious politics, diplomacy, legal stories, tragedies, or conflict, avoid casual filler like "real quick" or "here's the thing"; for lighter topics, use at most one friendly pivot per topic.
@@ -17538,7 +17566,7 @@ Style rules (IMPORTANT):
 - Prioritize genuinely interesting facts (history, timeline, behind-the-scenes, credible rumors, estimates) without overstating.
 - If you mention a rumor or estimate from listed source context, label it clearly as unconfirmed and attribute it. Without source links, do not introduce rumors or estimates.
 - Use source attribution only for topics marked with source links in the Source policy. Do not invent named outlets, journals, studies, researchers, or "reporting" for topics with no source links.
-- Target duration is a guideline; if clarity needs more time, it's OK to run longer, but still try to stay close to the target.
+- Target duration is secondary to quality and pace; stay reasonably close, but do not pad, slow down, or soften the script just to fill time.
 - Avoid repeating the topic question or using vague filler phrasing; be specific and helpful.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
 - No redundancy: do not restate the same fact or idea in different words.
@@ -18949,7 +18977,8 @@ Rules:
 - If a prior-video reference line is specified, include it exactly once and naturally.
 - Avoid repeating the same sentence, same stock bridge, or same step order from earlier videos.
 - Use different concrete examples where possible.
-- Keep the tone empathetic, useful, and creator-like.
+- Keep the tone empathetic, useful, creator-like, and brisk; avoid slow reassurance or over-explaining obvious ideas.
+- Use fair factual tension where supported: name the tradeoff, disagreement, incentive, or cost without inventing claims.
 - Use source attribution only for topics marked with source links in the Source policy; otherwise do not invent named outlets, journals, studies, researchers, or reporting.
 - ${ctaRule}
 - Category-specific guidance:
@@ -19122,6 +19151,8 @@ Rules:
 - No redundancy: each segment adds a new detail or angle with concrete, interesting facts.
 - Add one fresh, concrete detail or implication per segment when possible.
 - Structure each topic around one clear angle; keep facts in service of that angle.
+- Keep the rewrite brisk and adult. Compress obvious reassurance, remove slow schoolteacher phrasing, and make the strongest supported tension arrive earlier.
+- Add controlled controversy where it is fair: name the tradeoff, incentive, disagreement, or cost, then clearly separate confirmed facts from analysis or uncertainty.
 - Remove stock bridge phrases like "that is the turn", "the next detail changes how...", or repeated "the answer depends..." phrasing. Replace them with topic-specific, human transitions.
 - Do not reuse any sentence verbatim across segments.
 - Preserve curiosity gaps: open with tension and delay the payoff by at least one sentence or segment.
@@ -25836,16 +25867,21 @@ async function runLongVideoJob(
 				allowOverage ||
 				ratioDelta <= REWRITE_CLOSE_RATIO_DELTA ||
 				driftSec <= toleranceSec * REWRITE_CLOSE_DRIFT_MULT;
+			const shouldSlowToTarget =
+				ALLOW_SLOW_NARRATION_TO_TARGET &&
+				rawAtempo < 1 &&
+				(ratioDelta >= 0.04 || driftSec > toleranceSec);
+			const shouldSpeedToTarget =
+				rawAtempo > 1 && (ratioDelta >= 0.04 || driftSec > toleranceSec);
 			const shouldTimeStretch =
-				!voiceoverUrlLocked && (ratioDelta >= 0.04 || driftSec > toleranceSec);
+				!voiceoverUrlLocked && (shouldSlowToTarget || shouldSpeedToTarget);
 			globalAtempo = shouldTimeStretch
 				? clampNumber(rawAtempo, GLOBAL_ATEMPO_MIN, GLOBAL_ATEMPO_MAX)
 				: 1;
 			const shouldApplyVoiceSpeedBoost =
 				!voiceoverUrlLocked &&
 				VOICE_SPEED_BOOST &&
-				VOICE_SPEED_BOOST !== 1 &&
-				rawAtempo >= 1;
+				VOICE_SPEED_BOOST !== 1;
 			if (shouldApplyVoiceSpeedBoost) {
 				globalAtempo = clampNumber(
 					globalAtempo * VOICE_SPEED_BOOST,
@@ -25853,8 +25889,10 @@ async function runLongVideoJob(
 					GLOBAL_ATEMPO_MAX,
 				);
 			}
+			const willApplyAtempo =
+				globalAtempo > 0 && Math.abs(globalAtempo - 1) >= 0.0005;
 			const projectedNarrationSec =
-				shouldTimeStretch && globalAtempo > 0
+				willApplyAtempo
 					? sumCleanDur / globalAtempo
 					: sumCleanDur;
 			const projectedDriftSec = Math.abs(
@@ -25866,7 +25904,7 @@ async function runLongVideoJob(
 				projectedOverageSec > 0 &&
 				projectedOverageSec <= maxOverageSec;
 			const atempoCanRecover =
-				shouldTimeStretch &&
+				willApplyAtempo &&
 				(projectedDriftSec <= toleranceSec || projectedAllowOverage);
 			const closeEnough = rawCloseEnough || atempoCanRecover;
 			logJob(jobId, "global atempo computed", {
@@ -25883,6 +25921,9 @@ async function runLongVideoJob(
 				closeEnough,
 				atempoCanRecover,
 				shouldTimeStretch,
+				shouldSlowToTarget,
+				shouldSpeedToTarget,
+				willApplyAtempo,
 				allowOverage,
 				overageSec: Number(overageSec.toFixed(3)),
 				projectedOverageSec: Number(projectedOverageSec.toFixed(3)),
@@ -25890,10 +25931,13 @@ async function runLongVideoJob(
 				attempt,
 				voiceSpeedBoost: VOICE_SPEED_BOOST,
 				voiceSpeedBoostApplied: Boolean(shouldApplyVoiceSpeedBoost),
+				durationRewriteEnabled: REWRITE_FOR_NARRATION_DURATION,
+				allowSlowNarrationToTarget: ALLOW_SLOW_NARRATION_TO_TARGET,
 			});
 
 			const needsRewrite =
 				!voiceoverUrlLocked &&
+				REWRITE_FOR_NARRATION_DURATION &&
 				!allowOverage &&
 				!atempoCanRecover &&
 				!closeEnough &&
@@ -25976,6 +26020,8 @@ ${timingSourcePolicy.text}
 Rules:
 ${timingToneRule}
 ${timingCasualRule}
+- Keep the timing rewrite brisk and adult; do not add padding, slow explanatory loops, or childlike reassurance just to fill seconds.
+- Preserve factual tension: supported tradeoffs, incentives, disagreement, and uncertainty should stay clear and specific.
 - For entertainment topics (film, TV, music, awards), add ONE or TWO short grounded reactionary opinions per topic (brief clauses only). Keep them fair, specific, and clearly separate from sourced facts.
 - Keep EXACTLY ${segments.length} segments.
 - Preserve smooth transitions.
@@ -26250,16 +26296,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			};
 		});
 
-		// sanity: trim tiny rounding error
+		// Log target drift without forcing padding or slowdown; pacing is quality-first.
 		if (timeline.length) {
 			const finalEnd = timeline[timeline.length - 1].endSec;
 			const desired = Number(
 				(introDurationSec + narrationTargetSec).toFixed(3),
 			);
 			if (Math.abs(finalEnd - desired) > 0.08) {
-				logJob(jobId, "timeline end differs from target (small drift)", {
+				logJob(jobId, "timeline end differs from narration target", {
 					finalEnd,
 					desired,
+					driftSec: Number(Math.abs(finalEnd - desired).toFixed(3)),
+					qualityFirstPacing: !REWRITE_FOR_NARRATION_DURATION,
 				});
 			}
 		}
@@ -26285,6 +26333,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			totalPlannedSec: Number(totalPlannedSec.toFixed(3)),
 			totalActualSec: Number(totalActualSec.toFixed(3)),
 			outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC || 0),
+			atempo: Number(globalAtempo.toFixed(4)),
+			qualityFirstPacing: !REWRITE_FOR_NARRATION_DURATION,
 		});
 		logJob(jobId, "final segment durations", {
 			segments: timeline.map((seg) => ({
