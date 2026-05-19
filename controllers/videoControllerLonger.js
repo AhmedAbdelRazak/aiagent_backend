@@ -327,7 +327,7 @@ const DEFAULT_PRESENTER_MOTION_VIDEO_URL =
 const STUDIO_EMPTY_PROMPT =
 	"Studio is empty and locked; remove any background people from the reference; no people in the background, no passersby, no background figures or silhouettes, no reflections of people, no photos/posters/screens showing people, no mannequins or statues, no human-shaped shadows; background must be static with no moving elements, screens, mirrors, or window activity; if any windows or reflective surfaces exist, show only empty, still, blurred scenery with no human shapes; no candles, candle holders, or open flames anywhere; remove any candles from the reference.";
 const PRESENTER_MOTION_STYLE =
-	"locked-off tripod talking-head shot with a fixed frame; background edges stay perfectly locked with no camera shake, reframing, breathing zoom, rolling wobble, or drifting crop; human, credible seated presenter motion in the host's understated style; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, exaggerated sadness, exaggerated excitement, or repeated gesture patterns";
+	"locked-off tripod talking-head shot with a fixed frame; background edges stay perfectly locked with no camera shake, reframing, breathing zoom, rolling wobble, or drifting crop; human, credible seated presenter motion in the host's understated style; direct lens contact; head upright and centered with subtle conversational life, including tiny neck corrections, occasional soft chin dips, and one or two light emphasis nods across the shot; no forward/back head travel, no scale or zoom illusion, no side-to-side sway, and no jerky turns; shoulders and torso grounded but not frozen, with subtle breathing and small natural posture settling; hands low, relaxed, and mostly out of frame with only brief small emphasis gestures; natural blink cadence, mild brow movement, and visible speech-ready jaw and lip behavior that stays restrained and realistic; emotional read stays composed and even from start to finish; a trace smile only when appropriate, mostly closed-mouth or barely parted, with no toothy grin; avoid robotic motion, visible loops, frozen staring, surprise, skepticism, smirks, exaggerated sadness, exaggerated excitement, or repeated gesture patterns";
 
 // Output defaults
 const DEFAULT_OUTPUT_RATIO = "1280:720";
@@ -445,8 +445,8 @@ const DEFAULT_OUTRO_SEC = clampNumber(
 	OUTRO_MAX_SEC,
 );
 const OUTRO_SMILE_TAIL_SEC = clampNumber(
-	process.env.LONG_VIDEO_OUTRO_SMILE_TAIL_SEC ?? 1.25,
-	0.8,
+	process.env.LONG_VIDEO_OUTRO_SMILE_TAIL_SEC ?? 0,
+	0,
 	2.4,
 );
 const INTRO_VIDEO_BLUR_SIGMA = clampNumber(2.6, 0, 8);
@@ -634,6 +634,13 @@ const BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION = Math.floor(clampNumber(
 	1,
 	4,
 ));
+const BASELINE_MAX_EXPRESSIONS = Math.floor(
+	clampNumber(process.env.LONG_VIDEO_BASELINE_MAX_EXPRESSIONS ?? 1, 1, 4),
+);
+const LOCK_PRESENTER_VIDEO_EXPRESSION = envFlag(
+	"LONG_VIDEO_LOCK_PRESENTER_VIDEO_EXPRESSION",
+	true,
+);
 const BASELINE_STOP_AFTER_CLEAN_PASS = envFlag(
 	"LONG_VIDEO_BASELINE_STOP_AFTER_CLEAN_PASS",
 	true,
@@ -985,10 +992,18 @@ const IMAGE_SEGMENT_MIN_UNIQUE_RATIO = clampNumber(0.5, 0.4, 1);
 const ENABLE_PRESENTER_RUN_MERGE = true;
 const MERGE_REQUIRED_PRESENTER_RUNS = envFlag(
 	"LONG_VIDEO_MERGE_REQUIRED_PRESENTER_RUNS",
-	false,
+	true,
 );
-const PRESENTER_RUN_MERGE_MAX_SEC = clampNumber(22, 8, 30);
-const PRESENTER_RUN_MERGE_MAX_SEGMENTS = clampNumber(3, 2, 4);
+const PRESENTER_RUN_MERGE_MAX_SEC = clampNumber(
+	process.env.LONG_VIDEO_PRESENTER_RUN_MERGE_MAX_SEC ?? 28,
+	8,
+	36,
+);
+const PRESENTER_RUN_MERGE_MAX_SEGMENTS = clampNumber(
+	process.env.LONG_VIDEO_PRESENTER_RUN_MERGE_MAX_SEGMENTS ?? 4,
+	2,
+	5,
+);
 const IMAGE_SEARCH_MAX_QUERY_VARIANTS = clampNumber(12, 4, 16);
 const IMAGE_SEARCH_CANDIDATE_MULTIPLIER = clampNumber(9, 2, 12);
 const IMAGE_SEARCH_MIN_RANKED_POOL_MULTIPLIER = clampNumber(
@@ -1354,6 +1369,48 @@ function extractSourceTokensFromContext(contextItems = []) {
 	return Array.from(tokens);
 }
 
+function topicHasAttributionSource(topic = {}, topicContext = {}) {
+	const ctx = Array.isArray(topicContext?.context)
+		? topicContext.context
+		: Array.isArray(topicContext)
+			? topicContext
+			: [];
+	const hasContextLink = ctx.some(
+		(item) => item && typeof item !== "string" && isHttpUrl(item.link || ""),
+	);
+	if (hasContextLink) return true;
+	const articles = Array.isArray(topic?.trendStory?.articles)
+		? topic.trendStory.articles
+		: [];
+	return articles.some((article) => isHttpUrl(article?.url || ""));
+}
+
+function buildTopicSourcePolicyPromptBlock(topics = [], topicContexts = []) {
+	const safeTopics = Array.isArray(topics) ? topics : [];
+	const lines = safeTopics.map((topic, idx) => {
+		const label = cleanTopicLabel(
+			topic?.displayTopic || topic?.topic || `Topic ${idx + 1}`,
+		);
+		const hasSources = topicHasAttributionSource(topic, topicContexts?.[idx]);
+		return `- Topic ${idx + 1} (${label}): ${
+			hasSources
+				? "source links are available; attribute only those listed sources near factual or disputed claims."
+				: 'no source links are available; do not cite named outlets, journals, "studies", "reviews", "researchers", or "reporting". Keep claims high-level and practical.'
+		}`;
+	});
+	const anySources = safeTopics.some((topic, idx) =>
+		topicHasAttributionSource(topic, topicContexts?.[idx]),
+	);
+	return {
+		anySources,
+		text: `Source policy:\n${
+			lines.length
+				? lines.join("\n")
+				: '- No source links are available; do not invent named sources or reporting.'
+		}`,
+	};
+}
+
 function segmentHasAttribution(text = "", sourceTokens = []) {
 	const lower = String(text || "").toLowerCase();
 	const hasCue = ATTRIBUTION_CUE_RE.test(lower);
@@ -1363,6 +1420,79 @@ function segmentHasAttribution(text = "", sourceTokens = []) {
 	if (hasSource && /\b(reports?|according|per|via|says|said)\b/i.test(lower))
 		return true;
 	return false;
+}
+
+const UNSUPPORTED_ATTRIBUTION_PATTERNS = [
+	/\b(?:according\s+to|reported\s+by|as\s+reported\s+by|per|via|sources?\s+say)\b/i,
+	/\b(?:reports?|reported|reporting)\s+(?:actually\s+)?(?:suggest|suggests|say|says|said|show|shows|confirm|confirms|support|supports)\b/i,
+	/\b(?:key|latest|strongest)\s+reporting\b/i,
+	/\breporting\s+(?:actually\s+)?(?:supports|confirms|suggests|shows|says)\b/i,
+	/\b(?:reviews?|studies?)\s+in\s+[A-Z][A-Za-z&.\-\s]{2,90}\s+(?:suggest|show|shows|find|finds|say|says|warn|warns)\b/i,
+	/\b(?:[A-Z][a-z]+\s+)?researchers?\s+(?:have\s+long\s+)?(?:warned|warn|say|said|suggest|suggested|found|find)\b/i,
+	/\bCurrent\s+Opinion\s+in\s+Psychology\b/,
+];
+
+function segmentHasUnsupportedAttribution(text = "") {
+	const raw = String(text || "");
+	return UNSUPPORTED_ATTRIBUTION_PATTERNS.some((rx) => rx.test(raw));
+}
+
+function findUnsupportedAttributionSegments({
+	script,
+	topics = [],
+	topicContexts = [],
+} = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	const out = [];
+	for (let i = 0; i < segments.length; i++) {
+		const segment = segments[i] || {};
+		const topicIndex =
+			Number.isFinite(Number(segment.topicIndex)) && Number(segment.topicIndex) >= 0
+				? Number(segment.topicIndex)
+				: 0;
+		if (topicHasAttributionSource(topics?.[topicIndex], topicContexts?.[topicIndex]))
+			continue;
+		if (segmentHasUnsupportedAttribution(segment.text || "")) {
+			out.push(Number.isFinite(Number(segment.index)) ? Number(segment.index) : i);
+		}
+	}
+	return out;
+}
+
+function uppercaseFirstAlpha(text = "") {
+	return String(text || "").replace(/^(\s*["'(\[]*)([a-z])/, (m, prefix, ch) =>
+		`${prefix}${String(ch || "").toUpperCase()}`,
+	);
+}
+
+function stripUnsupportedAttributionPhrasing(text = "") {
+	let cleaned = sanitizeSegmentText(text || "");
+	if (!cleaned) return cleaned;
+	cleaned = cleaned
+		.replace(
+			/^\s*(?:according\s+to|as\s+reported\s+by|reported\s+by|per|via)\s+[^,]{2,110},\s*/i,
+			"",
+		)
+		.replace(
+			/\b(?:the\s+)?(?:latest|key|strongest)?\s*reporting\s+(?:actually\s+)?(?:supports|confirms|suggests|shows|says)\s+(?:that\s+)?/gi,
+			"",
+		)
+		.replace(
+			/\b(?:reports?|reported)\s+(?:suggest|suggests|say|says|said|show|shows|confirm|confirms|support|supports)\s+(?:that\s+)?/gi,
+			"",
+		)
+		.replace(
+			/\b(?:reviews?|studies?)\s+in\s+[A-Z][A-Za-z&.\-\s]{2,110}\s+(?:suggest|show|shows|find|finds|say|says|warn|warns)\s+(?:that\s+)?/gi,
+			"",
+		)
+		.replace(
+			/\b(?:[A-Z][a-z]+\s+)?researchers?\s+(?:have\s+long\s+)?(?:warned|warn|say|said|suggest|suggested|found|find)\s+(?:that\s+)?/gi,
+			"",
+		)
+		.replace(/\s+/g, " ")
+		.trim();
+	cleaned = uppercaseFirstAlpha(cleaned);
+	return sanitizeSegmentText(cleaned || text);
 }
 
 /* ---------------------------------------------------------------
@@ -3516,6 +3646,10 @@ function applyLongVideoScriptGuards({
 	topics = [],
 	wordCaps = [],
 	priorVideoPlan = null,
+	categoryLabel = "",
+	mood = "neutral",
+	includeOutro = true,
+	outroText = "",
 } = {}) {
 	let guarded = sanitizeScriptVisualCueLeaks(script, topics);
 	guarded = applyPromptBriefToScript({
@@ -3528,6 +3662,16 @@ function applyLongVideoScriptGuards({
 		priorVideoPlan,
 		wordCaps,
 	});
+	if (includeOutro) {
+		guarded = removeContentCtasForSeparateOutro({
+			script: guarded,
+			topics,
+			wordCaps,
+			categoryLabel,
+			mood,
+			outroText,
+		});
+	}
 	return guarded;
 }
 
@@ -5377,6 +5521,15 @@ async function enrichPreScriptVisualBeatsWithFeedVideo({
 		const meta = buildVisualGroundingTopicMeta(topic, topicContexts, topicIndex);
 		const topicLabel =
 			String(topic.displayTopic || topic.topic || "").trim() || meta.label || "";
+		if (
+			isEvergreenNonNewsVisualTopic({
+				category,
+				topicLabel,
+				text: topicLabel,
+			})
+		) {
+			continue;
+		}
 		const topicTokens = topicTokensFromTitle(topicLabel);
 		for (const beat of beats) {
 			if (probed >= PRE_SCRIPT_VISUAL_VIDEO_BEAT_PROBE_LIMIT) break;
@@ -6496,14 +6649,43 @@ async function fetchWikimediaImageUrls(query = "", limit = 3) {
 	}
 }
 
+const VISUAL_QUERY_BOUNDARY_STOP_TOKENS = new Set([
+	"a",
+	"an",
+	"and",
+	"for",
+	"is",
+	"of",
+	"or",
+	"please",
+	"subscribe",
+	"the",
+	"to",
+	"your",
+]);
+
 function sanitizeOverlayQuery(query = "") {
 	const cleaned = String(query || "")
 		.replace(/[^a-z0-9\s]/gi, " ")
 		.replace(/\s+/g, " ")
 		.trim()
 		.slice(0, 120);
-	if (cleaned.length <= 80) return cleaned;
-	const clipped = cleaned.slice(0, 80);
+	const tokens = cleaned.split(/\s+/).filter(Boolean);
+	while (
+		tokens.length > 1 &&
+		VISUAL_QUERY_BOUNDARY_STOP_TOKENS.has(tokens[tokens.length - 1].toLowerCase())
+	) {
+		tokens.pop();
+	}
+	while (
+		tokens.length > 1 &&
+		VISUAL_QUERY_BOUNDARY_STOP_TOKENS.has(tokens[0].toLowerCase())
+	) {
+		tokens.shift();
+	}
+	const normalized = tokens.join(" ").trim();
+	if (normalized.length <= 80) return normalized;
+	const clipped = normalized.slice(0, 80);
 	const lastSpace = clipped.lastIndexOf(" ");
 	return (lastSpace >= 48 ? clipped.slice(0, lastSpace) : clipped).trim();
 }
@@ -6754,6 +6936,19 @@ const GENERIC_NEAR_IMAGE_MODIFIERS = [
 	"location photo",
 ];
 
+function isEvergreenNonNewsVisualTopic({
+	category = "",
+	topicLabel = "",
+	text = "",
+} = {}) {
+	const hay = `${category || ""} ${topicLabel || ""} ${text || ""}`;
+	return (
+		isDigitalWellbeingTopic({ categoryLabel: category, text: hay }) ||
+		isSocialConnectionTopic({ categoryLabel: category, text: hay }) ||
+		isPersonalFinanceCostOfLivingTopic({ categoryLabel: category, text: hay })
+	);
+}
+
 function buildCategoryImageQueryModifiers(category = "", topicLabel = "") {
 	const hay = `${category || ""} ${topicLabel || ""}`.toLowerCase();
 	if (/\b(sports?|nba|nfl|mlb|nhl|wnba|basketball|football|baseball|hockey|soccer|ufc|boxing)\b/.test(hay)) {
@@ -6769,6 +6964,15 @@ function buildCategoryImageQueryModifiers(category = "", topicLabel = "") {
 	}
 	if (/\b(music|album|song|concert|tour|artist|singer|rapper)\b/.test(hay)) {
 		return ["official portrait", "performance photo", "red carpet photo"];
+	}
+	if (isDigitalWellbeingTopic({ categoryLabel: category, text: topicLabel })) {
+		return [
+			"screen time photo",
+			"phone notifications photo",
+			"bedtime scrolling phone",
+			"phone on table photo",
+			"quiet phone photo",
+		];
 	}
 	if (isSensitiveTopicText(topicLabel)) {
 		return ["official portrait", "official statement", "tribute photo"];
@@ -6820,6 +7024,14 @@ function buildTopicNearImageQueries(
 	{ topicKeywords = [], articleTitles = [], category = "" } = {},
 ) {
 	const base = cleanTopicCandidate(topicLabel);
+	const evergreenNonNews = isEvergreenNonNewsVisualTopic({
+		category,
+		topicLabel,
+		text: [
+			...(Array.isArray(topicKeywords) ? topicKeywords : []),
+			...(Array.isArray(articleTitles) ? articleTitles : []),
+		].join(" "),
+	});
 	const rawContextTexts = [
 		topicLabel,
 		...(Array.isArray(topicKeywords) ? topicKeywords : []),
@@ -6835,7 +7047,7 @@ function buildTopicNearImageQueries(
 		push(base);
 		for (const modifier of uniqueStrings(
 			[
-				...GENERIC_NEAR_IMAGE_MODIFIERS,
+				...(evergreenNonNews ? [] : GENERIC_NEAR_IMAGE_MODIFIERS),
 				...buildCategoryImageQueryModifiers(category, topicLabel),
 			],
 			{ limit: 10 },
@@ -6858,7 +7070,7 @@ function buildTopicNearImageQueries(
 		if (base && !phrase.toLowerCase().includes(base.toLowerCase())) {
 			push(mergeImageQueryTerms(base, phrase));
 		}
-		push(`${phrase} news photo`);
+		push(evergreenNonNews ? `${phrase} photo` : `${phrase} news photo`);
 	}
 
 	return uniqueStrings(queries, { limit: 16 });
@@ -6866,6 +7078,7 @@ function buildTopicNearImageQueries(
 
 function buildCategoryVideoQueryModifiers(category = "", topicLabel = "") {
 	const hay = `${category} ${topicLabel}`.toLowerCase();
+	if (isEvergreenNonNewsVisualTopic({ category, topicLabel })) return [];
 	const mods = ["news video", "footage", "press conference video"];
 	if (
 		/\b(court|trial|lawsuit|legal|crime|murder|conviction|appeal|hearing|police|sheriff|judge|jury)\b/i.test(
@@ -6895,6 +7108,18 @@ function buildTopicNearVideoQueries(
 	topicLabel = "",
 	{ topicKeywords = [], articleTitles = [], category = "" } = {},
 ) {
+	if (
+		isEvergreenNonNewsVisualTopic({
+			category,
+			topicLabel,
+			text: [
+				...(Array.isArray(topicKeywords) ? topicKeywords : []),
+				...(Array.isArray(articleTitles) ? articleTitles : []),
+			].join(" "),
+		})
+	) {
+		return [];
+	}
 	const base = cleanTopicCandidate(topicLabel);
 	const queries = [];
 	const push = (raw) => {
@@ -6932,6 +7157,15 @@ function buildSegmentVideoQueryVariants({
 	category = "",
 	maxVariants = FEED_VIDEO_QUERY_LIMIT,
 } = {}) {
+	if (
+		isEvergreenNonNewsVisualTopic({
+			category,
+			topicLabel,
+			text: `${baseQuery || ""} ${segmentText || ""}`,
+		})
+	) {
+		return [];
+	}
 	const imageLike = buildSegmentImageQueryVariants({
 		baseQuery,
 		topicLabel,
@@ -7049,6 +7283,11 @@ async function collectFeedVideoCandidateEntriesForSegment({
 	jobId = null,
 } = {}) {
 	if (!FEED_VIDEO_ENABLED) return [];
+	const evergreenNonNews = isEvergreenNonNewsVisualTopic({
+		category,
+		topicLabel,
+		text: `${query || ""} ${meta.segmentText || ""}`,
+	});
 	const entries = [];
 	const push = (raw, sourceType) => {
 		const entry = normalizeFeedVideoCandidateEntry(raw, sourceType);
@@ -7080,25 +7319,27 @@ async function collectFeedVideoCandidateEntriesForSegment({
 		}
 	}
 
-	const videoQueries = uniqueStrings(
-		[
-			...buildSegmentVideoQueryVariants({
-				baseQuery: query,
-				topicLabel,
-				segmentText: meta.segmentText || "",
-				topicKeywords: meta.keywordHints,
-				articleTitles: meta.articleTitles,
-				category,
-				maxVariants: FEED_VIDEO_QUERY_LIMIT,
-			}),
-			...(Array.isArray(queryVariants) ? queryVariants : []).map((q) =>
-				/\b(video|footage|clip)\b/i.test(q) ? q : `${q} video`,
-			),
-		],
-		{ limit: FEED_VIDEO_QUERY_LIMIT },
-	);
+	const videoQueries = evergreenNonNews
+		? []
+		: uniqueStrings(
+				[
+					...buildSegmentVideoQueryVariants({
+						baseQuery: query,
+						topicLabel,
+						segmentText: meta.segmentText || "",
+						topicKeywords: meta.keywordHints,
+						articleTitles: meta.articleTitles,
+						category,
+						maxVariants: FEED_VIDEO_QUERY_LIMIT,
+					}),
+					...(Array.isArray(queryVariants) ? queryVariants : []).map((q) =>
+						/\b(video|footage|clip)\b/i.test(q) ? q : `${q} video`,
+					),
+				],
+				{ limit: FEED_VIDEO_QUERY_LIMIT },
+			);
 
-	if (FEED_VIDEO_SEARCH_ENABLED) {
+	if (FEED_VIDEO_SEARCH_ENABLED && videoQueries.length) {
 		for (const videoQuery of videoQueries) {
 			if (GOOGLE_CSE_ID && GOOGLE_CSE_KEY) {
 				const items = await fetchCseItems([videoQuery], {
@@ -8067,6 +8308,11 @@ async function groundScriptInValidatedVisuals({
 		if (
 			PRE_TTS_VISUAL_VIDEO_PROBE_ENABLED &&
 			FEED_VIDEO_ENABLED &&
+			!isEvergreenNonNewsVisualTopic({
+				category,
+				topicLabel: effectiveTopicLabel,
+				text: `${bestQuery || currentQuery || ""} ${seg.text || ""}`,
+			}) &&
 			videoProbeUsed < PRE_TTS_VISUAL_VIDEO_PROBE_SEGMENT_LIMIT
 		) {
 			const videoKey = `video::${topicIndex}::${bestQuery || currentQuery}`;
@@ -9571,6 +9817,7 @@ async function fetchFallbackImageUrlsForSegment({
 	seedUrls = [],
 	jobId,
 	allowCseContext = CSE_CONTEXT_FALLBACK_ENABLED,
+	allowNewsFallback = NEWS_IMAGE_FALLBACK_ENABLED,
 }) {
 	const target = clampNumber(Number(limit) || 4, 1, 8);
 	const urls = [];
@@ -9590,15 +9837,17 @@ async function fetchFallbackImageUrlsForSegment({
 		{ limit: 5 },
 	);
 	const newsArticleUrls = [];
-	for (const relatedQuery of relatedQueries) {
-		if (newsArticleUrls.length >= NEWS_IMAGE_FALLBACK_LIMIT) break;
-		const urls = await fetchNewsArticleUrlsForImages({
-			query: relatedQuery,
-			topicLabel,
-			limit: NEWS_IMAGE_FALLBACK_LIMIT,
-			jobId,
-		});
-		newsArticleUrls.push(...urls);
+	if (allowNewsFallback) {
+		for (const relatedQuery of relatedQueries) {
+			if (newsArticleUrls.length >= NEWS_IMAGE_FALLBACK_LIMIT) break;
+			const urls = await fetchNewsArticleUrlsForImages({
+				query: relatedQuery,
+				topicLabel,
+				limit: NEWS_IMAGE_FALLBACK_LIMIT,
+				jobId,
+			});
+			newsArticleUrls.push(...urls);
+		}
 	}
 	const directArticleUrls = (Array.isArray(articleUrls) ? articleUrls : []).filter(
 		(u) => {
@@ -10154,6 +10403,11 @@ async function prepareImageSegments({
 		const { query, topicLabel } = resolveSegmentImageQuery(seg, topics);
 		const meta = topicMetaByIndex.get(topicIndex) || {};
 		const effectiveTopicLabel = topicLabel || meta.label || "";
+		const evergreenNonNewsVisual = isEvergreenNonNewsVisualTopic({
+			category,
+			topicLabel: effectiveTopicLabel,
+			text: `${query || ""} ${seg.text || ""}`,
+		});
 		const topicTokens = topicTokensFromTitle(effectiveTopicLabel || "");
 		const segmentTokens = extractSegmentMatchTokens(
 			seg.text || "",
@@ -10189,7 +10443,15 @@ async function prepareImageSegments({
 
 		let feedVideoDownload = { localPaths: [], usedUrls: [] };
 		let feedVideoCandidates = [];
+		const hasExplicitFeedVideoAssets = Boolean(
+			(Array.isArray(meta.videoUrls) && meta.videoUrls.length) ||
+				(Array.isArray(meta.potentialVideos) && meta.potentialVideos.length) ||
+				(Array.isArray(seg.feedVideoCandidates) && seg.feedVideoCandidates.length),
+		);
+		const allowSegmentFeedVideo =
+			!evergreenNonNewsVisual || hasExplicitFeedVideoAssets;
 		if (
+			allowSegmentFeedVideo &&
 			feedVideoSegmentLimit > 0 &&
 			feedVideoSegmentsUsed < feedVideoSegmentLimit &&
 			feedVideoSegmentsAttempted < FEED_VIDEO_MAX_SEGMENT_ATTEMPTS &&
@@ -10323,7 +10585,9 @@ async function prepareImageSegments({
 			baseRelevanceOpts,
 		);
 		if (relevantBeforeFallback.length < renderTargetCount) {
-			const fallbackKey = `${query}||${effectiveTopicLabel}`;
+			const fallbackKey = `${query}||${effectiveTopicLabel}||news:${
+				NEWS_IMAGE_FALLBACK_ENABLED && !evergreenNonNewsVisual ? "1" : "0"
+			}`;
 			fallbackUrls = fallbackCache.get(fallbackKey);
 			if (!fallbackUrls) {
 				fallbackUrls = await fetchFallbackImageUrlsForSegment({
@@ -10337,6 +10601,8 @@ async function prepareImageSegments({
 					seedUrls: trustedSeedUrls,
 					category,
 					jobId,
+					allowNewsFallback:
+						NEWS_IMAGE_FALLBACK_ENABLED && !evergreenNonNewsVisual,
 				});
 				fallbackCache.set(fallbackKey, fallbackUrls);
 			}
@@ -10606,7 +10872,9 @@ async function prepareImageSegments({
 
 		if (localPaths.length < renderTargetCount) {
 			const missing = Math.max(0, renderTargetCount - localPaths.length);
-			const fallbackKey = `${query}||${effectiveTopicLabel}`;
+			const fallbackKey = `${query}||${effectiveTopicLabel}||news:${
+				NEWS_IMAGE_FALLBACK_ENABLED && !evergreenNonNewsVisual ? "1" : "0"
+			}`;
 			fallbackUrls =
 				fallbackCache.get(fallbackKey) ||
 				(await fetchFallbackImageUrlsForSegment({
@@ -10620,6 +10888,8 @@ async function prepareImageSegments({
 					seedUrls: trustedSeedUrls,
 					category,
 					jobId,
+					allowNewsFallback:
+						NEWS_IMAGE_FALLBACK_ENABLED && !evergreenNonNewsVisual,
 				}));
 			fallbackCache.set(fallbackKey, fallbackUrls);
 			for (const url of fallbackUrls || []) {
@@ -10681,9 +10951,13 @@ async function prepareImageSegments({
 						articleTitles: meta.articleTitles,
 						category,
 					}),
-					`${effectiveTopicLabel} news photo`,
-					`${effectiveTopicLabel} press photo`,
-					`${effectiveTopicLabel} event photo`,
+					...(evergreenNonNewsVisual
+						? []
+						: [
+								`${effectiveTopicLabel} news photo`,
+								`${effectiveTopicLabel} press photo`,
+								`${effectiveTopicLabel} event photo`,
+							]),
 					effectiveTopicLabel,
 				].filter(Boolean),
 				{ limit: Math.max(3, GOOGLE_IMAGES_VARIANT_LIMIT) },
@@ -11275,7 +11549,7 @@ function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 	return [
 		`Match DemoVideo.mp4 and motion_reference.mp4: locked tripod camera with a perfectly stable frame, upright seated posture, shoulders square, ${handLine}, calm direct eye contact, natural unhurried blinks, mild brow life, soft chin dips, subtle breathing and posture settling.`,
 		"Keep visible human motion alive throughout the whole clip: a blink or eye refocus every few seconds, tiny jaw readiness, natural breathing in the shoulders, and one small conversational nod or micro-shift.",
-		"Allow one brief side-thought glance then return to lens; warm beats may have a small authentic smile.",
+		"Allow one brief side-thought glance then return to lens; warm beats may have only a super light, mostly closed-mouth smile, never a toothy grin.",
 		"No camera shake, background drift, swaying, lunging, head tilts, looped nodding, wide eyes, theatrical reactions, motionless face, or frozen statue behavior.",
 	].join(" ");
 }
@@ -11707,10 +11981,10 @@ function buildBaselinePrompt(
 		"Expression: calm professional neutral, settled brows, relaxed eyes, no smile.";
 	if (expr === "warm")
 		expressionLine =
-			"Expression: friendly approachable warmth with a brief small natural smile like the reference, not a grin.";
+			"Expression: friendly approachable warmth with only a super light, mostly closed-mouth smile; no toothy grin, no cheek stretching, no big smile.";
 	if (expr === "excited")
 		expressionLine =
-			"Expression: engaged and attentive but restrained, tiny smile allowed, no raised-brow surprise or wide eyes.";
+			"Expression: engaged and attentive but restrained, tiny mostly closed-mouth smile allowed; no teeth-baring grin, raised-brow surprise, or wide eyes.";
 	if (expr === "serious")
 		expressionLine =
 			"Expression: neutral and steady, soft eye contact, no frown or exaggerated concern.";
@@ -11740,7 +12014,7 @@ ${expressionLine}
 ${variantLine}
 Motion: ${motionHint}
 Motion floor: never hold the same facial pose for more than half a second. If the presenter is listening silently, keep small blinks, eye refocus, gentle breathing, and tiny posture settling visible without becoming theatrical.
-Mouth and jaw: lips mostly relaxed and lightly closed, with only tiny speech-ready jaw readiness; do not form syllables, lip-sync, over-open vowels, warp the mouth, stretch the cheeks, or make puppet-like motion.
+Mouth and jaw: lips mostly relaxed and lightly closed, with only tiny speech-ready jaw readiness; do not form syllables, lip-sync, over-open vowels, show a toothy smile, warp the mouth, stretch the cheeks, or make puppet-like motion.
 Eyes: relaxed with natural reflections and blink cadence; direct lens contact; no glassy stare, wide eyes, frequent side glances, surprise, skepticism, smirks, or dramatic brow lifts.
 Wardrobe/hands: clean collar/lapels/sleeves; hands low or out of frame, never covering the face.
 Camera/framing: locked tripod shot; no camera shake, no frame vibration, no reframing, no breathing zoom, no drifting background edges, no rolling wobble. Do NOT try to lip-sync.
@@ -12971,6 +13245,23 @@ function isSocialConnectionTopic({
 	);
 }
 
+function isDigitalWellbeingTopic({
+	topics = [],
+	categoryLabel = "",
+	text = "",
+} = {}) {
+	const hay = promptTopicHaystack(topics, `${categoryLabel || ""} ${text || ""}`);
+	const hasDeviceOrFeed =
+		/\b(phone|smartphone|screen\s*time|scrolling|doomscrolling|notification|notifications|lock\s*screen|digital\s+detox|social\s+media|apps?|algorithm|feed|device|devices)\b/i.test(
+			hay,
+		);
+	const hasWellbeingPressure =
+		/\b(peace|calm|rest|mental\s+health|anxiety|stress|stressed|overwhelm|overstimulated|burnout|focus|attention|sleep|bedtime|dopamine|addict|addiction|habit|boundaries|distraction|mind|wellbeing|well-being|wellness|silence|quiet)\b/i.test(
+			hay,
+		);
+	return hasDeviceOrFeed && hasWellbeingPressure;
+}
+
 function isWeakPromptOpeningSegment(text = "", topicLabel = "") {
 	const clean = normalizeWhitespace(text);
 	if (!clean) return true;
@@ -13388,6 +13679,32 @@ function buildSubtleVideoExpressionPlan(
 		else plan[idx] = "neutral";
 	}
 	return plan;
+}
+
+function chooseLockedPresenterVideoExpression({
+	segments = [],
+	topics = [],
+	categoryLabel = "",
+	mood = "neutral",
+} = {}) {
+	const text = [
+		categoryLabel,
+		...(Array.isArray(topics)
+			? topics.map((t) => [t?.displayTopic, t?.topic, t?.angle].filter(Boolean).join(" "))
+			: []),
+		...(Array.isArray(segments) ? segments.map((s) => s?.text || "") : []),
+	]
+		.filter(Boolean)
+		.join(" ");
+	if (mood === "serious" || isSensitiveTopicText(text)) return "neutral";
+	if (
+		isDigitalWellbeingTopic({ topics, categoryLabel, text }) ||
+		isSocialConnectionTopic({ topics, categoryLabel, text }) ||
+		isPersonalFinanceCostOfLivingTopic({ topics, categoryLabel, text })
+	) {
+		return "warm";
+	}
+	return "neutral";
 }
 
 const CAMERA_EMPHASIS_TEXT_TOKENS = [
@@ -15249,6 +15566,16 @@ function formatAgendaList(items = []) {
 function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
 	const labels = buildIntroTopicLabels(topics, 6);
 	const text = `${shortTitle || ""} ${labels.join(" ")}`.toLowerCase();
+	if (isDigitalWellbeingTopic({ topics, text: shortTitle })) {
+		return {
+			beats: [
+				"why the phone feels restful but keeps stimulation high",
+				"where attention gets taxed before you notice",
+				"the small boundaries that make quiet feel available again",
+			],
+			cardSubtitle: "Why It Drains You and What Helps",
+		};
+	}
 	if (isSocialConnectionTopic({ topics, text: shortTitle })) {
 		return {
 			beats: [
@@ -15369,6 +15696,16 @@ function buildIntroCardTitle({ title = "", shortTitle = "" } = {}) {
 
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	void jobId;
+	if (
+		isDigitalWellbeingTopic({
+			topics,
+			text: `${shortTitle || ""} ${mood || ""}`,
+		})
+	) {
+		return sanitizeIntroOutroLine(
+			`Hi guys, it's ${INTRO_HOST_NAME}. If your phone feels like a break but leaves you more drained, let's unpack where the peace disappears and what helps bring it back.`,
+		);
+	}
 	if (
 		isSocialConnectionTopic({
 			topics,
@@ -15659,6 +15996,96 @@ function enforceCtaQuestion(text = "", mood = "neutral") {
 	if (!t) t = "Quick final thought.";
 	if (hasSubscribe) return `${t}. ${commentQuestion}`;
 	return `${t}. ${combinedCta}`;
+}
+
+function sentenceLooksLikeContentCta(sentence = "") {
+	const t = String(sentence || "").toLowerCase();
+	if (!t) return false;
+	const hasDirectCta =
+		/\b(like|subscribe|comment|drop\s+a\s+comment|tap\s+like)\b/i.test(t);
+	const hasTellMeCta =
+		/\b(tell\s+me|let\s+me\s+know)\b.{0,60}\b(what|which|if|whether|your|you)\b/i.test(
+			t,
+		);
+	const hasEngagementQuestion =
+		/\b(what\s+(?:app|detail|part|habit|cost|moment|do\s+you\s+think)|which\s+(?:detail|app|cost|part)|does\s+this\s+make|would\s+you)\b/i.test(
+			t,
+		);
+	return hasDirectCta || hasTellMeCta || (hasEngagementQuestion && /\?/.test(t));
+}
+
+function stripSeparateOutroCtaSentences(text = "") {
+	const sentences = splitSentences(text);
+	if (!sentences.length) return sanitizeSegmentText(text);
+	const kept = sentences.filter((sentence) => !sentenceLooksLikeContentCta(sentence));
+	return sanitizeSegmentText(kept.join(" "));
+}
+
+function buildSeparateOutroContentLanding({
+	topics = [],
+	categoryLabel = "",
+	mood = "neutral",
+} = {}) {
+	const topicLabel = cleanTopicLabel(
+		topics?.[0]?.displayTopic || topics?.[0]?.topic || "",
+	);
+	if (isDigitalWellbeingTopic({ topics, categoryLabel, text: topicLabel })) {
+		return "The goal is not a perfect phone habit. It is protecting enough quiet for your mind to settle again.";
+	}
+	if (isSocialConnectionTopic({ topics, categoryLabel, text: topicLabel })) {
+		return "The goal is not a perfect social life. It is one honest opening where connection can start to feel possible again.";
+	}
+	if (isPersonalFinanceCostOfLivingTopic({ topics, categoryLabel, text: topicLabel })) {
+		return "The goal is not perfect discipline. It is seeing the pattern clearly enough to protect the next decision.";
+	}
+	if (mood === "serious") {
+		return "For now, the cleanest read is to separate what is confirmed from what still needs time.";
+	}
+	return "That is the part worth watching next: whether the pattern keeps repeating, or finally starts to change.";
+}
+
+function removeContentCtasForSeparateOutro({
+	script = {},
+	topics = [],
+	wordCaps = [],
+	categoryLabel = "",
+	mood = "neutral",
+	outroText = "",
+} = {}) {
+	if (!script || !Array.isArray(script.segments) || !script.segments.length)
+		return script;
+	const outroKey = normalizeQaText(outroText);
+	const segments = script.segments.map((seg, idx, arr) => {
+		const original = sanitizeSegmentText(seg?.text || "");
+		if (!original) return { ...seg, text: original };
+		const originalKey = normalizeQaText(original);
+		const isLast = idx === arr.length - 1;
+		const sameAsOutro =
+			Boolean(outroKey && originalKey) &&
+			(originalKey === outroKey ||
+				originalKey.includes(outroKey) ||
+				outroKey.includes(originalKey));
+		const stripped = stripSeparateOutroCtaSentences(original);
+		const mostlyCta =
+			sentenceLooksLikeContentCta(original) &&
+			(countWords(stripped) < 6 || countWords(stripped) < countWords(original) / 2);
+		let text = stripped;
+		if (sameAsOutro || mostlyCta || (isLast && countWords(text) < 6)) {
+			text = buildSeparateOutroContentLanding({
+				topics,
+				categoryLabel,
+				mood,
+			});
+		}
+		const cap =
+			Number(wordCaps[seg.index] || wordCaps[idx] || 0) ||
+			Math.max(18, countWords(text) + 2);
+		return {
+			...seg,
+			text: sanitizeSegmentText(trimSegmentToCap(text, cap + 4)),
+		};
+	});
+	return { ...script, segments };
 }
 
 function enforceSegmentCompleteness(
@@ -16037,7 +16464,6 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 	const isSports = isSportsCategoryLabel(categoryLabel, topics);
 	const isPolitics = isPoliticsCategoryLabel(categoryLabel, topics);
 	const isHealth = isHealthCategoryLabel(categoryLabel, topics);
-	const isSocial = isSocialConnectionTopic({ topics, categoryLabel });
 	const topicText = (Array.isArray(topics) ? topics : [])
 		.map((topic) =>
 			[
@@ -16050,6 +16476,12 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 				.join(" "),
 		)
 		.join(" ");
+	const isDigitalWellbeing = isDigitalWellbeingTopic({
+		topics,
+		categoryLabel,
+		text: topicText,
+	});
+	const isSocial = isSocialConnectionTopic({ topics, categoryLabel });
 	const isSensitiveSportsStory = isSports && isSensitiveTopicText(topicText);
 	if (isPolitics) {
 		return {
@@ -16085,6 +16517,24 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 		};
 	}
 
+	if (isDigitalWellbeing) {
+		return {
+			isSports: false,
+			isPolitics: false,
+			isHealth: false,
+			isSocial: true,
+			isWellbeing: true,
+			isSerious: false,
+			lines: [
+				"- For digital wellbeing, phone habits, screen time, attention, rest, or sleep topics, write with practical empathy. Make viewers feel understood, not judged.",
+				"- Do not frame the topic like breaking news. Avoid generic phrases such as \"what happened\", \"why people are reacting\", \"key reporting\", or \"the headline\" unless there is an actual current event.",
+				"- Use concrete everyday scenes: waking up, waiting in line, bedtime scrolling, lock-screen alerts, and transition moments that get filled by the phone.",
+				"- Keep advice realistic and testable. Prefer small boundaries, experiments, and environmental changes over sweeping digital-detox promises.",
+				"- Do not invent named studies, journals, researchers, or reporting. If source links are not provided, keep claims high-level and practical.",
+			],
+		};
+	}
+
 	if (isSocial) {
 		return {
 			isSports: false,
@@ -16111,7 +16561,8 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 			isSerious: false,
 			lines: [
 				"- Write for spoken delivery first. Translate keyword-style phrases into natural sentences a presenter would actually say.",
-				"- Attribute the reporting source, analyst, or outlet itself. Do not treat a platform host like YouTube, TikTok, Reddit, Instagram, or X as the authority.",
+				"- When source context exists, attribute the reporting source, analyst, or outlet itself. Do not treat a platform host like YouTube, TikTok, Reddit, Instagram, or X as the authority.",
+				"- When source context is missing, do not invent named outlets, journals, studies, researchers, or reporting. Keep claims high-level and clearly framed as analysis or practical advice.",
 				"- Avoid search-query phrasing unless it is essential to the hook. After the opening, stay in story mode, not search-results mode.",
 				"- Avoid symbol-heavy wording that sounds awkward in voiceover. Prefer naturally spoken phrasing over shorthand.",
 			],
@@ -16491,6 +16942,10 @@ function buildDynamicRetentionGuide({
 		isSensitiveTopicText(topicText);
 	const isSports = Boolean(categoryGuide?.isSports);
 	const isEntertainment = isEntertainmentTopicText(topicText);
+	const isDigitalWellbeing = isDigitalWellbeingTopic({
+		topics,
+		text: topicText,
+	});
 	const isGaming =
 		/\b(video\s*game|gaming|gameplay|trailer|demo|console|playstation|xbox|nintendo|steam|rpg|studio|developer|patch|combat|open world)\b/i.test(
 			hay,
@@ -16524,6 +16979,10 @@ function buildDynamicRetentionGuide({
 	if (isSensitive) {
 		lines.push(
 			"- For sensitive, legal, political, conflict, tragedy, or public-safety topics, pattern interrupts must be sober reframes, not jokes or casual bits.",
+		);
+	} else if (isDigitalWellbeing) {
+		lines.push(
+			"- For digital wellbeing topics, retention should come from recognizable daily moments, not news framing: morning reach, waiting-line checks, notification tension, bedtime scrolling, and protected quiet.",
 		);
 	} else if (isGaming || isEntertainment) {
 		lines.push(
@@ -16974,6 +17433,10 @@ async function generateScript({
 					})
 					.join("\n")
 			: "- (none)";
+	const sourcePolicy = buildTopicSourcePolicyPromptBlock(
+		safeTopics,
+		topicContexts,
+	);
 	const titlePromiseGuide = buildTitlePromisePromptBlock({
 		topics: safeTopics,
 		topicContexts,
@@ -17013,6 +17476,8 @@ ${contextLines}
 
 Sources for attribution (use when referencing facts):
 ${sourceLines}
+
+${sourcePolicy.text}
 
 Topic context guidance:
 ${topicContextGuide}
@@ -17071,8 +17536,8 @@ Style rules (IMPORTANT):
 - If the frontend prompt includes an Opening line, use that exact line as the first spoken sentence of segment 0 unless it would be unsafe or factually false.
 - If the frontend prompt includes a Title, use it as the script title unless source verification clearly requires a more precise version.
 - Prioritize genuinely interesting facts (history, timeline, behind-the-scenes, credible rumors, estimates) without overstating.
-- If you mention a rumor or estimate, label it clearly as unconfirmed and attribute it (\"reports suggest\", \"according to [source]\").
-- Include at least one brief source attribution per topic using the provided context (e.g., \"According to Variety...\"). Put attribution close to the claim when the point is sensitive, disputed, or potentially controversial.
+- If you mention a rumor or estimate from listed source context, label it clearly as unconfirmed and attribute it. Without source links, do not introduce rumors or estimates.
+- Use source attribution only for topics marked with source links in the Source policy. Do not invent named outlets, journals, studies, researchers, or "reporting" for topics with no source links.
 - Target duration is a guideline; if clarity needs more time, it's OK to run longer, but still try to stay close to the target.
 - Avoid repeating the topic question or using vague filler phrasing; be specific and helpful.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
@@ -17089,7 +17554,7 @@ Style rules (IMPORTANT):
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - Segment 0 must be a strong hook that makes people stay.
-- Segment 0 should open with a tension, disagreement, contradiction, or "what people assume vs what the reporting actually suggests" line in the first sentence.
+- Segment 0 should open with a tension, disagreement, contradiction, or "what people assume vs what the evidence or pattern suggests" line in the first sentence.
 - Do NOT start segment 0 with "Quick update on..." or restate the intro line; the intro handles that.
 - Segment 0 should read like the very next sentence after the intro, continuing the same thought without reintroducing the topic.
 - Do NOT start segment 0 with transition phrases like "And now", "Now", "Next up", or "Let's talk about".
@@ -17104,7 +17569,7 @@ Style rules (IMPORTANT):
 - Let each segment land fully. If a line needs one more clause to sound finished in spoken delivery, use it instead of clipping the thought.
 - Before the final closing line, end the content with a short tension line, hope line, or open loop; avoid soft wrap-ups or reflective closing phrases.
 - No long lists. If you must list, cap at 3 items.
-- If you are unsure about a detail, say "reports suggest" or "early signs".
+- If listed source context supports uncertainty, say "reports suggest" or "early signs"; without source links, avoid reporting language and keep the point general.
 - ${ctaLine}
 - Topic questions must be short and end with a single question mark.
 - Provide "shortTitle": 2-5 words, punchy and easy to read.
@@ -17534,6 +17999,14 @@ function analyzeScriptQuality({
 	for (const warning of speakability.warnings || []) {
 		if (!warnings.includes(warning)) warnings.push(warning);
 	}
+	const unsupportedAttributionSegments = findUnsupportedAttributionSegments({
+		script,
+		topics,
+		topicContexts,
+	});
+	if (unsupportedAttributionSegments.length) {
+		warnings.push("unsupported_attribution_without_sources");
+	}
 	const titlePromiseCoverage = analyzeTitlePromiseCoverage({
 		script,
 		topics,
@@ -17546,6 +18019,7 @@ function analyzeScriptQuality({
 		duplicatePairs.length > 0 ||
 		missingAttributionTopics.length > 0 ||
 		trendCoverage.missingTopics.length > 0 ||
+		unsupportedAttributionSegments.length > 0 ||
 		titlePromiseCoverage.missing.length > 0 ||
 		veryShortSegments.length > 0 ||
 		tooManyShortSegments ||
@@ -17573,6 +18047,7 @@ function analyzeScriptQuality({
 			speechAwkwardSegments: speakability.stats?.speechAwkwardSegments || [],
 			stockPhraseSegments: speakability.stats?.stockPhraseSegments || [],
 			repeatedSentenceGroups: speakability.stats?.repeatedSentenceGroups || [],
+			unsupportedAttributionSegments,
 			titlePromiseMissing: titlePromiseCoverage.missing.map((item) => ({
 				topicIndex: item.topicIndex,
 				key: item.key,
@@ -17680,6 +18155,25 @@ function buildShortSegmentExtension({
 						"That keeps the focus on what the record actually supports, not the loudest interpretation.",
 						"The useful line is evidence first, interpretation second.",
 				],
+		);
+	}
+	if (
+		categoryGuide?.isWellbeing ||
+		isDigitalWellbeingTopic({ topics, text: topicLabel })
+	) {
+		return pick(
+			isQuestion
+				? [
+						"The useful question is which phone moment could become quiet again first.",
+						"The next step is small: choose one transition your phone no longer gets by default.",
+						"The practical test is whether one protected pocket of silence changes the day.",
+					]
+				: [
+						"That keeps the advice realistic: protect one small pocket of quiet before trying to redesign your whole life.",
+						"The useful shift is to treat quiet as something you schedule, not something the phone leaves behind.",
+						"A small boundary works because it gives your attention a place to land before the next alert arrives.",
+						"The pressure softens when the phone stops owning every transition by default.",
+					],
 		);
 	}
 	if (categoryGuide?.isSocial || isSocialConnectionTopic({ topics, text: topicLabel })) {
@@ -17896,6 +18390,42 @@ function repairBlockingScriptArtifacts({
 	return { script: { ...script, segments: repaired }, changed };
 }
 
+function repairUnsupportedAttributions({
+	script,
+	topics = [],
+	topicContexts = [],
+	wordCaps = [],
+} = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return { script, changed: [] };
+	const changed = [];
+	const repaired = segments.map((segment, idx) => {
+		const topicIndex =
+			Number.isFinite(Number(segment?.topicIndex)) &&
+			Number(segment.topicIndex) >= 0
+				? Number(segment.topicIndex)
+				: 0;
+		if (topicHasAttributionSource(topics?.[topicIndex], topicContexts?.[topicIndex]))
+			return segment;
+		if (!segmentHasUnsupportedAttribution(segment?.text || "")) return segment;
+		const original = sanitizeSegmentText(segment?.text || "");
+		let text = stripUnsupportedAttributionPhrasing(original);
+		const cap = Number(wordCaps?.[segment.index] || wordCaps?.[idx] || 0);
+		if (cap) text = trimSegmentToCap(text, Math.max(cap, 12));
+		text = sanitizeSegmentText(text);
+		if (text && text !== original) {
+			changed.push({
+				index: Number.isFinite(Number(segment?.index)) ? Number(segment.index) : idx,
+				from: original,
+				to: text,
+			});
+			return { ...segment, text };
+		}
+		return segment;
+	});
+	return { script: { ...script, segments: repaired }, changed };
+}
+
 function repairShortScriptSegments({
 	script,
 	topics = [],
@@ -17985,6 +18515,7 @@ function repairEarlyCuriosityGap({
 function repairResidualScriptQuality({
 	script,
 	topics = [],
+	topicContexts = [],
 	wordCaps = [],
 	categoryLabel = "",
 	shortsGuardrails = null,
@@ -18014,6 +18545,19 @@ function repairResidualScriptQuality({
 			changed: artifactRepair.changed,
 		});
 	}
+	const unsupportedAttributionRepair = repairUnsupportedAttributions({
+		script: current,
+		topics,
+		topicContexts,
+		wordCaps,
+	});
+	current = unsupportedAttributionRepair.script;
+	if (unsupportedAttributionRepair.changed.length) {
+		repairs.push({
+			type: "unsupported_attributions",
+			changed: unsupportedAttributionRepair.changed,
+		});
+	}
 	const earlyRepair = repairEarlyCuriosityGap({
 		script: current,
 		shortsGuardrails,
@@ -18037,6 +18581,8 @@ function blockingScriptQualityIssues(qa = {}) {
 		issues.push("repeated_sentences");
 	if ((stats.platformAttributionSegments || []).length)
 		issues.push("bad_platform_attribution");
+	if ((stats.unsupportedAttributionSegments || []).length)
+		issues.push("unsupported_source_attribution");
 	if ((stats.searchMetaSegments || []).length >= 2)
 		issues.push("search_meta_phrasing");
 	return issues;
@@ -18373,6 +18919,7 @@ async function rewriteSegmentsForPriorNovelty({
 					.join("\n")
 			: "- (none)";
 	const capsLine = wordCaps.map((c, i) => `#${i}: <= ${c} words`).join(", ");
+	const sourcePolicy = buildTopicSourcePolicyPromptBlock(topics, topicContexts);
 	const ctaRule = includeOutro
 		? "Do not add like/subscribe/comment CTAs inside content segments; the separate outro handles that."
 		: "The final segment may include one short engagement question.";
@@ -18386,6 +18933,8 @@ ${promptBriefGuide}
 
 Fresh context:
 ${contextLines}
+
+${sourcePolicy.text}
 
 Mood: ${mood}
 Category: ${categoryLabel || "General"}
@@ -18401,6 +18950,7 @@ Rules:
 - Avoid repeating the same sentence, same stock bridge, or same step order from earlier videos.
 - Use different concrete examples where possible.
 - Keep the tone empathetic, useful, and creator-like.
+- Use source attribution only for topics marked with source links in the Source policy; otherwise do not invent named outlets, journals, studies, researchers, or reporting.
 - ${ctaRule}
 - Category-specific guidance:
 ${categoryGuide.lines.join("\n")}
@@ -18535,17 +19085,20 @@ async function rewriteSegmentsForQuality({
 	});
 	const promptBriefGuide = buildPromptBriefInstructionBlock(topics);
 	const priorVideoGuide = buildPriorVideoScriptGuide(priorVideoPlan);
+	const sourcePolicy = buildTopicSourcePolicyPromptBlock(topics, topicContexts);
 	const rewriteCtaRule = includeOutro
 		? "- Do NOT add engagement questions, like requests, subscribe requests, or comment CTAs inside the content; the separate closing line handles that. End with a clean takeaway, hopeful implication, or open loop."
 		: "- End the last segment of each topic with a short engagement question. Do NOT add like/subscribe CTAs.";
 
 	const rewritePrompt = `
-Improve this script for clarity, interesting facts, and attribution.
+Improve this script for clarity, concrete detail, and spoken flow.
 Target narration duration: ~${Number(narrationTargetSec || 0).toFixed(1)}s
 Mood: ${mood}
 Category: ${categoryLabel || "General"}
 Topic summaries:
 ${topicSummaries.join("\n")}
+
+${sourcePolicy.text}
 
 ${trendSignalLabel}
 ${trendSignalLines}
@@ -18578,11 +19131,11 @@ Rules:
 - Preserve any frontend-requested opening line as the first spoken sentence of segment 0.
 - Preserve any frontend-requested title unless a factual correction is necessary.
 - Keep the overall delivery controlled and professional; avoid excited phrasing and exclamation points, but let the writing feel sharp and engaging.
-- If the story is controversial, surface what people are arguing about, what the reporting supports, and what still is not fully settled.
+- If the story is controversial and source links exist, surface what people are arguing about, what the reporting supports, and what still is not fully settled. Without source links, frame the debate as a high-level tension, not sourced reporting.
 - For death, injury, legal, health, or public-safety stories, keep the rewrite sober: confirmed facts first, uncertainty clearly labeled, no emotional overacting, and one human/community implication when sourced.
 - If the headline promises "what it means", include a practical implication, not only a caution that details are limited.
 - If the request, script title, or final title promises price, release details, availability, or what to expect, directly answer that promise with sourced details when available. If context does not confirm a detail, say that clearly instead of skipping it.
-- Add at least one short attribution per topic when sources are available (e.g., "According to Variety..."). Put the attribution near the controversial or factual claim it supports.
+- Add source attribution only when that topic is marked with source links in the Source policy. Do not invent named outlets, journals, studies, researchers, or "reporting" for topics with no source links.
 - Attribute the outlet or analyst, not the hosting platform. Never use phrases like "According to YouTube" or "According to TikTok".
 - Rewrite keyword-style phrasing into natural spoken language that a presenter and ElevenLabs voice can deliver cleanly.
 - Avoid scoreboard shorthand, symbol-heavy phrasing, and awkward query fragments.
@@ -19081,6 +19634,8 @@ async function buildSeoMetadata({
 	lockTitle = false,
 	titleInstructions = [],
 	priorVideoPlan = null,
+	categoryLabel = "",
+	topicContexts = [],
 }) {
 	let seoTitle = String(scriptTitle || "").trim();
 	const topicLine = topics
@@ -19088,6 +19643,15 @@ async function buildSeoMetadata({
 		.filter(Boolean)
 		.join(" | ");
 	const scriptSupport = normalizeWhitespace(scriptText).slice(0, 2200);
+	const isEvergreenExplainer = isEvergreenNonNewsVisualTopic({
+		category: categoryLabel,
+		topicLabel: topicLine,
+		text: scriptSupport,
+	});
+	const formatLabel = isEvergreenExplainer
+		? "educational explainer"
+		: "long-form news brief";
+	const sourcePolicy = buildTopicSourcePolicyPromptBlock(topics, topicContexts);
 	const titleInstructionLines = uniqueStrings(
 		(Array.isArray(titleInstructions) ? titleInstructions : [titleInstructions])
 			.map((line) => normalizeWhitespace(line))
@@ -19106,7 +19670,7 @@ async function buildSeoMetadata({
 
 	if (process.env.CHATGPT_API_TOKEN && !lockTitle) {
 		try {
-			const titlePrompt = `Write ONE SEO-friendly YouTube title (max 90 characters) for a long-form news brief covering: ${topicLine}.
+			const titlePrompt = `Write ONE SEO-friendly YouTube title (max 90 characters) for a ${formatLabel} covering: ${topicLine}.
 Use natural search phrasing, clean punctuation, and human headline case. No quotes, no hashtags.
 The title must be fully supported by the script excerpt below. Do NOT promise price, release date, availability, allegations, scores, or "what to expect" unless the script explicitly covers that detail. If the script is mostly analysis/reaction, title it as analysis/reaction.
 ${frontendTitleGuide}
@@ -19129,9 +19693,11 @@ ${scriptSupport || "(none)"}`;
 	let seoDescription = "";
 	if (process.env.CHATGPT_API_TOKEN) {
 		try {
-			const descPrompt = `Write a YouTube description (max 180 words) for a long-form news brief titled "${seoTitle}".
+			const descPrompt = `Write a YouTube description (max 180 words) for a ${formatLabel} titled "${seoTitle}".
 Make the first 2 lines keyword-rich for search. Use short sentences. Add a friendly CTA to comment and like (not pushy). End with 5-7 relevant hashtags.
 ${priorVideoPlan?.hasPriorVideos ? "This is a follow-up, so mention that the video adds a fresh angle without inventing details. A related-video links block will be appended separately." : ""}
+${sourcePolicy.text}
+Do not call this breaking news or cite named journals, studies, researchers, outlets, or reporting unless the source policy says that source links exist.
 Only mention facts that are supported by this script excerpt:
 ${scriptSupport || "(none)"}`;
 			const descResp = await openai.chat.completions.create({
@@ -22247,7 +22813,7 @@ Framing: medium shot (not too close, not too far), upper torso to mid torso, mod
 This must be a real moving presenter video, not a still photo, freeze-frame, or camera-only zoom; show continuous subtle human face, eye, jaw, shoulder, and breathing motion.
 Action: calm intro delivery with hands resting on the desk; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
-Expression: ${introFace}. Calm and neutral, composed and professional with a very subtle, light smile (barely noticeable, not constant).
+Expression: ${introFace}. Calm and neutral, composed and professional with at most a very subtle, mostly closed-mouth light smile (barely noticeable, not constant, no toothy grin).
 Mouth and jaw: natural speech-ready jaw and lip behavior with readable but restrained openings and soft lip compression between phrases; avoid robotic, stiff, under-animated, or puppet-like mouth shapes.
 Facial consistency: keep the emotional read restrained and stable; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; keep direct camera contact; no glassy or robotic eyes, no frequent side glances, and no exaggerated widening.
@@ -22264,7 +22830,7 @@ Framing: medium shot (not too close, not too far), upper torso to mid torso, mod
 This must be a real moving presenter video, not a still photo, freeze-frame, or camera-only zoom; show continuous subtle human face, eye, jaw, shoulder, and breathing motion.
 Action: small, natural intro posture with hands resting; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
 Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
-Expression: ${introFace}. Calm and neutral; very subtle, light smile only (barely noticeable), not constant.
+Expression: ${introFace}. Calm and neutral; very subtle, mostly closed-mouth light smile only (barely noticeable), not constant, no toothy grin.
 Mouth and jaw: natural, economical speech preparation with measured openings and soft lip compression between phrases; avoid robotic, stiff, or puppet-like mouth shapes.
 Facial consistency: keep the emotional read restrained and stable; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
 Eyes: comfortable, natural, relaxed with realistic blink cadence; keep direct camera contact; no glassy or robotic eyes, no frequent side glances, and no exaggerated widening.
@@ -22971,11 +23537,16 @@ function buildBackgroundMusicSearchPlan({
 		categoryLabel,
 		text: topic,
 	});
+	const digitalWellbeing = isDigitalWellbeingTopic({
+		topics,
+		categoryLabel,
+		text: topic,
+	});
 	const serious = String(mood || "").toLowerCase() === "serious";
-	if (personalFinance || socialConnection || serious) {
+	if (personalFinance || socialConnection || digitalWellbeing || serious) {
 		return {
 			fuzzytags:
-				socialConnection
+				socialConnection || digitalWellbeing
 					? "calm, acoustic, ambient, hopeful, piano, soft, instrumental"
 					: "documentary, calm, ambient, corporate, piano, hopeful, instrumental",
 			speed: ["low", "medium"],
@@ -24119,6 +24690,8 @@ async function runLongVideoJob(
 			topics: topicPicks,
 			wordCaps,
 			priorVideoPlan,
+			categoryLabel,
+			mood: voiceTonePlan?.mood,
 		});
 		if (priorVideoPlan?.hasPriorVideos) {
 			let noveltyEstimate = null;
@@ -24143,6 +24716,8 @@ async function runLongVideoJob(
 					topics: topicPicks,
 					wordCaps,
 					priorVideoPlan,
+					categoryLabel,
+					mood: voiceTonePlan?.mood,
 				});
 				noveltyEstimate = estimatePriorNovelty(script, priorVideoPlan);
 				logJob(jobId, "prior novelty estimate", {
@@ -24176,6 +24751,41 @@ async function runLongVideoJob(
 			stats: qaResult.stats,
 		});
 		logJob(jobId, "shorts guardrails", shortsGuardrails);
+		const initialUnsupportedAttributionRepair = repairUnsupportedAttributions({
+			script,
+			topics: topicPicks,
+			topicContexts,
+			wordCaps,
+		});
+		if (initialUnsupportedAttributionRepair.changed.length) {
+			script = applyLongVideoScriptGuards({
+				script: initialUnsupportedAttributionRepair.script,
+				topics: topicPicks,
+				wordCaps,
+				priorVideoPlan,
+				categoryLabel,
+				mood: voiceTonePlan?.mood,
+			});
+			qaResult = analyzeScriptQuality({
+				script,
+				topics: topicPicks,
+				topicContexts,
+				wordCaps,
+				categoryLabel,
+			});
+			shortsGuardrails = analyzeShortsGuardrails(script);
+			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
+			logJob(jobId, "script unsupported attribution repaired", {
+				repairs: initialUnsupportedAttributionRepair.changed,
+				qa: {
+					pass: qaResult.pass,
+					needsRewrite: qaResult.needsRewrite,
+					issues: qaResult.issues,
+					warnings: qaResult.warnings,
+					stats: qaResult.stats,
+				},
+			});
+		}
 
 		for (let qaAttempt = 0; qaAttempt < MAX_QA_REWRITES; qaAttempt++) {
 			if (!qaResult.needsRewrite) break;
@@ -24200,6 +24810,8 @@ async function runLongVideoJob(
 					topics: topicPicks,
 					wordCaps,
 					priorVideoPlan,
+					categoryLabel,
+					mood: voiceTonePlan?.mood,
 				});
 			} catch (e) {
 				logJob(jobId, "script qa rewrite failed", {
@@ -24249,6 +24861,8 @@ async function runLongVideoJob(
 			topics: topicPicks,
 			wordCaps,
 			priorVideoPlan,
+			categoryLabel,
+			mood: voiceTonePlan?.mood,
 		});
 		if (attributionFix.didInsert) {
 			qaResult = analyzeScriptQuality({
@@ -24269,6 +24883,7 @@ async function runLongVideoJob(
 		const residualRepair = repairResidualScriptQuality({
 			script,
 			topics: topicPicks,
+			topicContexts,
 			wordCaps,
 			categoryLabel,
 			shortsGuardrails,
@@ -24279,6 +24894,8 @@ async function runLongVideoJob(
 				topics: topicPicks,
 				wordCaps,
 				priorVideoPlan,
+				categoryLabel,
+				mood: voiceTonePlan?.mood,
 			});
 			qaResult = analyzeScriptQuality({
 				script,
@@ -24315,6 +24932,8 @@ async function runLongVideoJob(
 				topics: topicPicks,
 				wordCaps,
 				priorVideoPlan,
+				categoryLabel,
+				mood: voiceTonePlan?.mood,
 			});
 			qaResult = analyzeScriptQuality({
 				script,
@@ -24348,6 +24967,43 @@ async function runLongVideoJob(
 		for (let repairPass = 0; repairPass < 3; repairPass += 1) {
 			const blockingQa = blockingScriptQualityIssues(qaResult);
 			if (!blockingQa.length) break;
+			if (blockingQa.includes("unsupported_source_attribution")) {
+				const finalUnsupportedRepair = repairUnsupportedAttributions({
+					script,
+					topics: topicPicks,
+					topicContexts,
+					wordCaps,
+				});
+				if (finalUnsupportedRepair.changed.length) {
+					script = applyLongVideoScriptGuards({
+						script: finalUnsupportedRepair.script,
+						topics: topicPicks,
+						wordCaps,
+						priorVideoPlan,
+						categoryLabel,
+						mood: voiceTonePlan?.mood,
+					});
+					qaResult = analyzeScriptQuality({
+						script,
+						topics: topicPicks,
+						topicContexts,
+						wordCaps,
+						categoryLabel,
+					});
+					logJob(jobId, "script final unsupported attribution repair", {
+						repairPass: repairPass + 1,
+						repairs: finalUnsupportedRepair.changed,
+						qa: {
+							pass: qaResult.pass,
+							needsRewrite: qaResult.needsRewrite,
+							issues: qaResult.issues,
+							warnings: qaResult.warnings,
+							stats: qaResult.stats,
+						},
+					});
+					continue;
+				}
+			}
 			const finalArtifactRepair = repairBlockingScriptArtifacts({
 				script,
 				topics: topicPicks,
@@ -24360,6 +25016,8 @@ async function runLongVideoJob(
 				topics: topicPicks,
 				wordCaps,
 				priorVideoPlan,
+				categoryLabel,
+				mood: voiceTonePlan?.mood,
 			});
 			qaResult = analyzeScriptQuality({
 				script,
@@ -24404,7 +25062,16 @@ async function runLongVideoJob(
 			jobId,
 			plannedImagePositions: preTtsVisualPlan.imagePositions,
 		});
-		if (visualGrounding?.script) script = visualGrounding.script;
+		if (visualGrounding?.script) {
+			script = applyLongVideoScriptGuards({
+				script: visualGrounding.script,
+				topics: topicPicks,
+				wordCaps,
+				priorVideoPlan,
+				categoryLabel,
+				mood: voiceTonePlan?.mood,
+			});
+		}
 		if (visualGrounding?.summary) {
 			updateJob(jobId, {
 				meta: {
@@ -24629,6 +25296,8 @@ async function runLongVideoJob(
 			lockTitle: shouldLockPromptBriefTitle(primaryPromptBrief(topicPicks)),
 			titleInstructions: collectPromptSeoTitleInstructions(topicPicks),
 			priorVideoPlan,
+			categoryLabel,
+			topicContexts,
 		});
 		const promptYoutubeCategoryLabel = resolveYoutubeCategoryLabelForPrompt({
 			categoryLabel,
@@ -24670,6 +25339,24 @@ async function runLongVideoJob(
 			sanitizeIntroOutroLine(outroLine) || String(outroLine || "").trim();
 		let introTextFinal = introText;
 		let outroTextFinal = outroText;
+		const contentCtaCleanedScript = removeContentCtasForSeparateOutro({
+			script,
+			topics: topicPicks,
+			wordCaps,
+			categoryLabel,
+			mood: voiceTonePlan?.mood,
+			outroText: outroTextFinal,
+		});
+		if (
+			JSON.stringify((contentCtaCleanedScript.segments || []).map((s) => s.text)) !==
+			JSON.stringify((script.segments || []).map((s) => s.text))
+		) {
+			script = contentCtaCleanedScript;
+			logJob(jobId, "content CTA removed for separate outro", {
+				outroText: outroTextFinal,
+				lastSegment: script.segments?.[script.segments.length - 1]?.text || "",
+			});
+		}
 		const introExpression = isPersonalFinanceCostOfLivingTopic({
 			topics: topicPicks,
 			categoryLabel,
@@ -25145,7 +25832,7 @@ async function runLongVideoJob(
 				overageSec > 0 &&
 				overageSec <= maxOverageSec;
 			const withinTolerance = driftSec <= toleranceSec || allowOverage;
-			const closeEnough =
+			const rawCloseEnough =
 				allowOverage ||
 				ratioDelta <= REWRITE_CLOSE_RATIO_DELTA ||
 				driftSec <= toleranceSec * REWRITE_CLOSE_DRIFT_MULT;
@@ -25154,34 +25841,61 @@ async function runLongVideoJob(
 			globalAtempo = shouldTimeStretch
 				? clampNumber(rawAtempo, GLOBAL_ATEMPO_MIN, GLOBAL_ATEMPO_MAX)
 				: 1;
-			if (!voiceoverUrlLocked && VOICE_SPEED_BOOST && VOICE_SPEED_BOOST !== 1) {
+			const shouldApplyVoiceSpeedBoost =
+				!voiceoverUrlLocked &&
+				VOICE_SPEED_BOOST &&
+				VOICE_SPEED_BOOST !== 1 &&
+				rawAtempo >= 1;
+			if (shouldApplyVoiceSpeedBoost) {
 				globalAtempo = clampNumber(
 					globalAtempo * VOICE_SPEED_BOOST,
 					GLOBAL_ATEMPO_MIN,
 					GLOBAL_ATEMPO_MAX,
 				);
 			}
+			const projectedNarrationSec =
+				shouldTimeStretch && globalAtempo > 0
+					? sumCleanDur / globalAtempo
+					: sumCleanDur;
+			const projectedDriftSec = Math.abs(
+				projectedNarrationSec - narrationTargetSec,
+			);
+			const projectedOverageSec = projectedNarrationSec - narrationTargetSec;
+			const projectedAllowOverage =
+				ALLOW_NARRATION_OVERRUN &&
+				projectedOverageSec > 0 &&
+				projectedOverageSec <= maxOverageSec;
+			const atempoCanRecover =
+				shouldTimeStretch &&
+				(projectedDriftSec <= toleranceSec || projectedAllowOverage);
+			const closeEnough = rawCloseEnough || atempoCanRecover;
 			logJob(jobId, "global atempo computed", {
 				sumCleanDur: Number(sumCleanDur.toFixed(3)),
 				narrationTargetSec: Number(narrationTargetSec.toFixed(3)),
 				atempo: Number(globalAtempo.toFixed(4)),
 				rawAtempo: Number(rawAtempo.toFixed(4)),
 				driftSec: Number(driftSec.toFixed(3)),
+				projectedNarrationSec: Number(projectedNarrationSec.toFixed(3)),
+				projectedDriftSec: Number(projectedDriftSec.toFixed(3)),
 				withinTolerance,
 				toleranceSec: Number(toleranceSec.toFixed(3)),
 				ratioDelta: Number(ratioDelta.toFixed(3)),
 				closeEnough,
+				atempoCanRecover,
 				shouldTimeStretch,
 				allowOverage,
 				overageSec: Number(overageSec.toFixed(3)),
+				projectedOverageSec: Number(projectedOverageSec.toFixed(3)),
 				maxOverageSec: Number(maxOverageSec.toFixed(3)),
 				attempt,
 				voiceSpeedBoost: VOICE_SPEED_BOOST,
+				voiceSpeedBoostApplied: Boolean(shouldApplyVoiceSpeedBoost),
 			});
 
 			const needsRewrite =
 				!voiceoverUrlLocked &&
 				!allowOverage &&
+				!atempoCanRecover &&
 				!closeEnough &&
 				(!withinTolerance ||
 					rawAtempo < GLOBAL_ATEMPO_MIN ||
@@ -25238,6 +25952,10 @@ async function runLongVideoJob(
 				topicContexts,
 			});
 			const timingPromptBriefGuide = buildPromptBriefInstructionBlock(topicPicks);
+			const timingSourcePolicy = buildTopicSourcePolicyPromptBlock(
+				topicPicks,
+				topicContexts,
+			);
 
 			const rewritePrompt = `
 Rewrite this script to better fit ~${narrationTargetSec.toFixed(
@@ -25252,6 +25970,8 @@ Topic assignment by segment (do NOT change order): ${topicsLine}
 ${timingPromiseGuide}
 
 ${timingPromptBriefGuide}
+
+${timingSourcePolicy.text}
 
 Rules:
 ${timingToneRule}
@@ -25277,8 +25997,8 @@ ${timingCasualRule}
 - Preserve any frontend-requested title unless a factual correction is necessary.
 - Keep the overall delivery calm and professional; avoid excited phrasing and exclamation points, but let the writing feel sharp and engaging. For entertainment topics only, allow brief grounded reactionary asides.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
-- Preserve source attributions already in the text; keep at least one brief attribution per topic when possible, and keep attribution close to any disputed or controversial claim.
-- If the story is controversial, say what people are divided over and what the reporting actually supports.
+- Preserve source attributions only when that topic is marked with source links in the Source policy. Remove invented named outlets, journals, studies, researchers, or "reporting" from topics with no source links.
+- If the story is controversial and source links exist, say what people are divided over and what the reporting actually supports. Without source links, frame the divide as a high-level tension.
 - For death, injury, legal, health, or public-safety stories, keep confirmed facts and unknown details clearly separated; include human/community stakes without dramatic language.
 - If the headline promises "what it means", include a practical implication when the provided context supports one.
 - If the request, script title, or final title promises price, release details, availability, or what to expect, preserve those concrete details while adjusting length. If context does not confirm the detail, preserve the clear "not confirmed" wording.
@@ -25349,7 +26069,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const timingReadySegments = timingPromiseRepair.repairs.length
 				? timingPromiseRepair.script.segments
 				: fillerLimited;
-			segments.splice(0, segments.length, ...timingReadySegments);
+			const timingNoCta = removeContentCtasForSeparateOutro({
+				script: { ...script, segments: timingReadySegments },
+				topics: topicPicks,
+				wordCaps: adjustedCaps,
+				categoryLabel,
+				mood: voiceTonePlan?.mood,
+			});
+			segments.splice(0, segments.length, ...(timingNoCta.segments || timingReadySegments));
 			segments = segments.map((s) => ({
 				...s,
 				text: sanitizeSegmentText(s.text),
@@ -25673,7 +26400,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			presenterContentSec;
 		const estimatedRunwayBaselineSec =
 			ENABLE_RUNWAY_BASELINE && RUNWAY_API_KEY
-				? presenterExpressionCount * BASELINE_VARIANTS * BASELINE_DUR_SEC
+				? Math.min(presenterExpressionCount, BASELINE_MAX_EXPRESSIONS) *
+					BASELINE_VARIANTS *
+					BASELINE_DUR_SEC
 				: 0;
 		logJob(jobId, "cost-sensitive render budget", {
 			presenterRatio: CONTENT_PRESENTER_RATIO,
@@ -25685,6 +26414,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				estimatedRunwayBaselineSec.toFixed(3),
 			),
 			baselineExpressions: presenterExpressionCount,
+			baselineExpressionBudget: BASELINE_MAX_EXPRESSIONS,
 			baselineVariants: BASELINE_VARIANTS,
 		});
 		const premiumPresenterSegments = [];
@@ -25897,11 +26627,27 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const presenterOnlySegments = segments.filter((s) =>
 			presenterSegSet.has(s.index),
 		);
-		const presenterVideoPlan = buildSubtleVideoExpressionPlan(
-			presenterOnlySegments,
-			voiceTonePlan?.mood,
-			jobId,
-		);
+		const lockedPresenterExpression = LOCK_PRESENTER_VIDEO_EXPRESSION
+			? chooseLockedPresenterVideoExpression({
+					segments: presenterOnlySegments,
+					topics: topicPicks,
+					categoryLabel,
+					mood: voiceTonePlan?.mood,
+				})
+			: "";
+		const presenterVideoPlan = LOCK_PRESENTER_VIDEO_EXPRESSION
+			? presenterOnlySegments.map(() => lockedPresenterExpression || "neutral")
+			: buildSubtleVideoExpressionPlan(
+					presenterOnlySegments,
+					voiceTonePlan?.mood,
+					jobId,
+				);
+		if (LOCK_PRESENTER_VIDEO_EXPRESSION && presenterOnlySegments.length) {
+			logJob(jobId, "presenter video expression locked", {
+				expression: lockedPresenterExpression || "neutral",
+				segments: presenterOnlySegments.map((seg) => seg.index),
+			});
+		}
 		const presenterPlanByIndex = new Map();
 		presenterOnlySegments.forEach((seg, idx) => {
 			presenterPlanByIndex.set(seg.index, presenterVideoPlan[idx] || "neutral");
@@ -26074,8 +26820,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				].filter(Boolean),
 			),
 		);
-		if (!expressionsNeeded.includes("neutral"))
-			expressionsNeeded.unshift("neutral");
+		if (LOCK_PRESENTER_VIDEO_EXPRESSION && lockedPresenterExpression) {
+			const withoutLocked = expressionsNeeded.filter(
+				(expr) => expr !== lockedPresenterExpression,
+			);
+			expressionsNeeded.splice(
+				0,
+				expressionsNeeded.length,
+				lockedPresenterExpression,
+				...withoutLocked,
+			);
+		}
+		if (!expressionsNeeded.includes("neutral")) expressionsNeeded.push("neutral");
 
 		let lastPresenterMotionError = "";
 		if (presenterIsVideo) {
@@ -26104,7 +26860,15 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			ENABLE_RUNWAY_BASELINE &&
 			RUNWAY_API_KEY
 		) {
+			let successfulBaselineExpressions = 0;
 			for (const expr of expressionsNeeded) {
+				if (successfulBaselineExpressions >= BASELINE_MAX_EXPRESSIONS) {
+					logJob(jobId, "baseline expression budget reached", {
+						budget: BASELINE_MAX_EXPRESSIONS,
+						skippedExpression: expr,
+					});
+					break;
+				}
 				let acceptedBaselineCount = 0;
 				for (let v = 0; v < BASELINE_VARIANTS; v++) {
 					try {
@@ -26223,6 +26987,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						});
 					}
 				}
+				if (acceptedBaselineCount > 0) successfulBaselineExpressions += 1;
 			}
 		}
 		if (!baselinePresenterVideos.size) {
@@ -26781,68 +27546,75 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				});
 
 				// Calm tail after the outro line (silent + fade-out).
-				const tailBaseline =
-					pickBaselineVariant("warm", 2) ||
-					pickBaselineVariant("neutral", 2) ||
-					outroBaseline ||
-					baselineDefault;
-				const tailBaselineDur = await probeDurationSeconds(tailBaseline);
-				const tailStart = Math.max(0, tailBaselineDur - OUTRO_SMILE_TAIL_SEC);
-				const tailRaw = path.join(tmpDir, `outro_tail_raw_${jobId}.mp4`);
-				await spawnBin(
-					ffmpegPath,
-					[
-						"-ss",
-						tailStart.toFixed(3),
-						"-i",
-						tailBaseline,
-						"-t",
-						OUTRO_SMILE_TAIL_SEC.toFixed(3),
-						"-an",
-						"-vf",
-						"setpts=PTS-STARTPTS",
-						"-c:v",
-						"libx264",
-						"-preset",
-						INTERMEDIATE_PRESET,
-						"-crf",
-						String(INTERMEDIATE_VIDEO_CRF),
-						"-pix_fmt",
-						"yuv420p",
-						"-movflags",
-						"+faststart",
-						"-y",
-						tailRaw,
-					],
-					"outro_tail_cut",
-					{ timeoutMs: 120000 },
-				);
-				const tailFit = path.join(tmpDir, `outro_tail_fit_${jobId}.mp4`);
-				await fitVideoToDuration(tailRaw, OUTRO_SMILE_TAIL_SEC, tailFit);
-				safeUnlink(tailRaw);
+				if (OUTRO_SMILE_TAIL_SEC > 0.05) {
+					const tailBaseline =
+						outroBaseline ||
+						pickBaselineVariant("warm", 2) ||
+						pickBaselineVariant("neutral", 2) ||
+						baselineDefault;
+					const tailBaselineDur = await probeDurationSeconds(tailBaseline);
+					const tailStart = Math.max(0, tailBaselineDur - OUTRO_SMILE_TAIL_SEC);
+					const tailRaw = path.join(tmpDir, `outro_tail_raw_${jobId}.mp4`);
+					await spawnBin(
+						ffmpegPath,
+						[
+							"-ss",
+							tailStart.toFixed(3),
+							"-i",
+							tailBaseline,
+							"-t",
+							OUTRO_SMILE_TAIL_SEC.toFixed(3),
+							"-an",
+							"-vf",
+							"setpts=PTS-STARTPTS",
+							"-c:v",
+							"libx264",
+							"-preset",
+							INTERMEDIATE_PRESET,
+							"-crf",
+							String(INTERMEDIATE_VIDEO_CRF),
+							"-pix_fmt",
+							"yuv420p",
+							"-movflags",
+							"+faststart",
+							"-y",
+							tailRaw,
+						],
+						"outro_tail_cut",
+						{ timeoutMs: 120000 },
+					);
+					const tailFit = path.join(tmpDir, `outro_tail_fit_${jobId}.mp4`);
+					await fitVideoToDuration(tailRaw, OUTRO_SMILE_TAIL_SEC, tailFit);
+					safeUnlink(tailRaw);
 
-				const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
-				await createSilentWav({
-					durationSec: OUTRO_SMILE_TAIL_SEC,
-					outPath: tailSilence,
-				});
-				const tailWithAudio = path.join(tmpDir, `outro_tail_audio_${jobId}.mp4`);
-				await mergeVideoWithAudio(tailFit, tailSilence, tailWithAudio);
-				safeUnlink(tailSilence);
-				safeUnlink(tailFit);
+					const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
+					await createSilentWav({
+						durationSec: OUTRO_SMILE_TAIL_SEC,
+						outPath: tailSilence,
+					});
+					const tailWithAudio = path.join(
+						tmpDir,
+						`outro_tail_audio_${jobId}.mp4`,
+					);
+					await mergeVideoWithAudio(tailFit, tailSilence, tailWithAudio);
+					safeUnlink(tailSilence);
+					safeUnlink(tailFit);
 
-				const outroTail = path.join(tmpDir, `outro_tail_${jobId}.mp4`);
-				await normalizeClip(tailWithAudio, outroTail, output, {
-					zoomOut: CAMERA_ZOOM_OUT,
-					fadeOutOnly: true,
-				});
-				safeUnlink(tailWithAudio);
+					const outroTail = path.join(tmpDir, `outro_tail_${jobId}.mp4`);
+					await normalizeClip(tailWithAudio, outroTail, output, {
+						zoomOut: CAMERA_ZOOM_OUT,
+						fadeOutOnly: true,
+					});
+					safeUnlink(tailWithAudio);
 
-				outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
-				await concatClips([outroTalk, outroTail], outroPath, {
-					...output,
-					softTransitions: false,
-				});
+					outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
+					await concatClips([outroTalk, outroTail], outroPath, {
+						...output,
+						softTransitions: false,
+					});
+				} else {
+					outroPath = outroTalk;
+				}
 			} catch (e) {
 				outroPath = "";
 				outroActualVisualType = "image_rescue";
@@ -27104,9 +27876,17 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		let videoDocId = null;
 		try {
 			if (user?._id) {
+				const contentScriptLines = (script.segments || [])
+					.map((s) => String(s.text || "").trim())
+					.filter(Boolean);
+				const outroDocKey = normalizeQaText(outroTextFinal);
 				const scriptText = [
 					introTextFinal,
-					...script.segments.map((s) => s.text),
+					...contentScriptLines.filter((line, idx) => {
+						if (idx !== contentScriptLines.length - 1) return true;
+						const lineKey = normalizeQaText(line);
+						return !outroDocKey || (lineKey !== outroDocKey && !lineKey.includes(outroDocKey));
+					}),
 					outroTextFinal,
 				]
 					.filter(Boolean)
