@@ -55,7 +55,7 @@ const dayjs = require("dayjs");
 const { google } = require("googleapis");
 const { OpenAI } = require("openai");
 const cloudinary = require("cloudinary").v2;
-const { generateThumbnailPackage } = require("../assets/thumbnailDesigner");
+const { generateThumbnailPackage } = require("../assets/thumbnailDesigner2");
 const {
 	generatePresenterAdjustedImage,
 } = require("../assets/presenterAdjustments");
