@@ -179,7 +179,7 @@ function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
 			id: "soft_cyan_wellness",
 			accent: "0x00C2FF",
 			tagColor: "0x102A43",
-			textPanelOpacity: 0.78,
+			textPanelOpacity: 0.86,
 			brief:
 				"cinematic wellness/editorial contrast, cyan night-to-morning glow, polished mental-fatigue story energy, clean premium YouTube frame",
 		};
@@ -224,6 +224,7 @@ function buildComfyPrompt({
 		The text is already planned separately: headline "${safeHeadline}", badge "${safeBadge}", optional subject "${safeSubline}".
 		Do not render text. Leave a clean readable left-side text area for those exact words to be added after generation.
 		Remove or paint over any words, captions, screenshot fragments, labels, or text-like artifacts already visible in the source feed image, especially near the lower-left text-safe panel.
+		Do not hallucinate a new left-side person or scene. Keep the source feed image recognizable; enhance lighting and depth only.
 		Keep the right-side presenter in the same position and scale. Preserve identity, glasses, beard, hairline, face shape, expression, shoulders, dark outfit, and camera-facing pose.
 		Do not redraw, beautify, age, distort, crop, or change the presenter face. The original presenter panel will be restored after this step.
 		Polish the whole visual plate: stronger contrast, richer depth, cleaner lighting, crisp subject separation, premium editorial color, high-end YouTube thumbnail energy, mobile-readable composition.
@@ -743,9 +744,9 @@ function renderDesigner2VisualSeed({
 		`[1:v]scale=572:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=540:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=1.03,setsar=1[presenter]`,
 		`[bg][topic]overlay=0:0[tmp0]`,
 		`[tmp0]drawbox=x=0:y=0:w=740:h=${THUMBNAIL_HEIGHT}:color=black@0.05:t=fill[tmp1]`,
-		`[tmp1]drawbox=x=38:y=350:w=660:h=328:color=black@0.68:t=fill[tmp2]`,
-		`[tmp2]drawbox=x=38:y=350:w=660:h=3:color=${accentColor}@0.95:t=fill[tmp3]`,
-		`[tmp3]drawbox=x=38:y=350:w=7:h=328:color=${accentColor}@0.96:t=fill[tmp4]`,
+		`[tmp1]drawbox=x=36:y=334:w=664:h=368:color=black@0.74:t=fill[tmp2]`,
+		`[tmp2]drawbox=x=36:y=334:w=664:h=3:color=${accentColor}@0.95:t=fill[tmp3]`,
+		`[tmp3]drawbox=x=36:y=334:w=7:h=368:color=${accentColor}@0.96:t=fill[tmp4]`,
 		`[tmp4]drawbox=x=0:y=0:w=740:h=7:color=${accentColor}@0.18:t=fill[tmp5]`,
 		`[tmp5]drawbox=x=0:y=0:w=7:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.18:t=fill[tmp6]`,
 		`[tmp6]drawbox=x=682:y=0:w=58:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.14:t=fill[tmp7]`,
@@ -783,6 +784,58 @@ function renderDesigner2VisualSeed({
 		path: outputPath,
 		method: "designer2_visual_seed",
 	};
+}
+
+function restoreSharpFeedPanel({
+	jobId,
+	tmpDir,
+	basePath,
+	topicReferencePath,
+	accent = ACCENT_PALETTE.default,
+	log,
+}) {
+	if (!topicReferencePath) return "";
+	ensureImageFile(basePath, 5000);
+	ensureImageFile(topicReferencePath, 5000);
+	const outputPath = path.join(tmpDir, `thumb_feed_sharp_${jobId}.jpg`);
+	const accentColor = normalizeAccentColor(accent || "0x00C2FF");
+	const filters = [
+		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,setsar=1[base]`,
+		`[1:v]scale=740:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=740:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.08:saturation=1.06:brightness=0.01,unsharp=5:5:0.70:5:5:0.02,setsar=1[feed]`,
+		`[base][feed]overlay=0:0[tmp0]`,
+		`[tmp0]drawbox=x=0:y=0:w=740:h=${THUMBNAIL_HEIGHT}:color=black@0.03:t=fill[tmp1]`,
+		`[tmp1]drawbox=x=0:y=0:w=740:h=7:color=${accentColor}@0.16:t=fill[tmp2]`,
+		`[tmp2]drawbox=x=0:y=0:w=7:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.16:t=fill[tmp3]`,
+		`[tmp3]drawbox=x=682:y=0:w=58:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.10:t=fill[tmp4]`,
+		`[tmp4]drawbox=x=732:y=0:w=8:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.98:t=fill[outv]`,
+	];
+	runFfmpeg(
+		[
+			"-i",
+			basePath,
+			"-i",
+			topicReferencePath,
+			"-filter_complex",
+			filters.join(";"),
+			"-map",
+			"[outv]",
+			"-frames:v",
+			"1",
+			"-q:v",
+			"1",
+			"-y",
+			outputPath,
+		],
+		"thumbnail_designer2_feed_restore",
+	);
+	ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+	if (typeof log === "function") {
+		log("thumbnailDesigner2 feed image restored sharp", {
+			path: path.basename(outputPath),
+			source: path.basename(topicReferencePath),
+		});
+	}
+	return outputPath;
 }
 
 async function generateComfyFirstThumbnailPackage(args = {}) {
@@ -913,6 +966,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		log,
 	});
 	let comfyPlate = null;
+	let feedRestoredPath = "";
 	let presenterLockedPath = "";
 	let finalPlate = null;
 	try {
@@ -935,10 +989,18 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		});
 		if (!comfyPlate?.path) throw new Error("comfyui_plate_missing");
 
-		presenterLockedPath = lockPresenterPanel({
+		feedRestoredPath = restoreSharpFeedPanel({
 			jobId,
 			tmpDir,
 			basePath: comfyPlate.path,
+			topicReferencePath: topicReferencePaths[0],
+			accent,
+			log,
+		});
+		presenterLockedPath = lockPresenterPanel({
+			jobId,
+			tmpDir,
+			basePath: feedRestoredPath || comfyPlate.path,
 			presenterLocalPath,
 			label: "comfy_presenter_locked",
 			log,
@@ -974,6 +1036,9 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 			safeUnlink(comfyPlate.path);
 		}
 		safeUnlink(draft.path);
+		if (feedRestoredPath && finalPlate?.path !== feedRestoredPath) {
+			safeUnlink(feedRestoredPath);
+		}
 		if (presenterLockedPath && finalPlate?.path !== presenterLockedPath) {
 			safeUnlink(presenterLockedPath);
 		}

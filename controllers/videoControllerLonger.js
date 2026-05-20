@@ -2050,8 +2050,14 @@ function validateCreateBody(body = {}, controllerConfig = {}) {
 	const voiceoverUrl = String(
 		body.voiceoverUrl || body.narrationUrl || body.audioUrl || "",
 	).trim();
+	const skipPresenterAdjustments = Boolean(
+		body.skipPresenterAdjustments ||
+			body.disablePresenterAdjustments ||
+			body.skipWardrobeEdit ||
+			body.disableWardrobeEdit,
+	);
 	const enableRunwayPresenterMotion = cfg.enableRunwayPresenterMotion;
-	const enableWardrobeEdit = cfg.enableWardrobeEdit;
+	const enableWardrobeEdit = cfg.enableWardrobeEdit && !skipPresenterAdjustments;
 	const stopAfterThumbnail = Boolean(
 		body.stopAfterThumbnail ||
 			body.thumbnailOnly ||
@@ -2079,6 +2085,7 @@ function validateCreateBody(body = {}, controllerConfig = {}) {
 			stopAfterThumbnail,
 			enableRunwayPresenterMotion,
 			enableWardrobeEdit,
+			skipPresenterAdjustments,
 			youtubeAccessToken: String(body.youtubeAccessToken || "").trim(),
 			youtubeRefreshToken: String(body.youtubeRefreshToken || "").trim(),
 			youtubeTokenExpiresAt: body.youtubeTokenExpiresAt || "",
@@ -24431,6 +24438,7 @@ async function runLongVideoJob(
 			disableMusic,
 			dryRun,
 			stopAfterThumbnail,
+			skipPresenterAdjustments,
 			overlayAssets,
 			youtubeAccessToken,
 			youtubeRefreshToken,
@@ -24498,6 +24506,7 @@ async function runLongVideoJob(
 			hasRunway: Boolean(RUNWAY_API_KEY),
 			enableRunwayPresenterMotion: Boolean(enableRunwayPresenterMotion),
 			enableWardrobeEdit: Boolean(enableWardrobeEdit),
+			skipPresenterAdjustments: Boolean(skipPresenterAdjustments),
 			disableYouTubeUpload: Boolean(controllerOptions.disableYouTubeUpload),
 			stopAfterThumbnail: Boolean(stopAfterThumbnail),
 			voiceIdLocked: effectiveVoiceId,
@@ -25566,6 +25575,11 @@ async function runLongVideoJob(
 		} else if (enableWardrobeEdit && !presenterIsImage) {
 			logJob(jobId, "presenter adjustments skipped (non-image presenter)", {
 				detected: presenterIsVideo ? "video" : "unknown",
+			});
+		} else if (!enableWardrobeEdit && presenterIsImage) {
+			logJob(jobId, "presenter adjustments skipped (disabled)", {
+				reason: skipPresenterAdjustments ? "request" : "config",
+				thumbnailSource: path.basename(presenterThumbnailLocal || presenterLocal),
 			});
 		}
 
