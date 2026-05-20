@@ -143,6 +143,14 @@ function normalizeWhitespace(value = "") {
 		.trim();
 }
 
+function normalizeDrawtextTypography(value = "") {
+	return String(value || "")
+		.replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+		.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+		.replace(/[\u2013\u2014]/g, "-")
+		.replace(/\u2026/g, "...");
+}
+
 function ensureDir(dirPath) {
 	if (dirPath) fs.mkdirSync(dirPath, { recursive: true });
 }
@@ -218,7 +226,7 @@ function resolveThumbnailFontFile() {
 
 function escapeDrawtext(value = "") {
 	const placeholder = "__NL__";
-	return String(value || "")
+	return normalizeDrawtextTypography(value)
 		.replace(/\r\n|\r|\n/g, placeholder)
 		.replace(/\\/g, "\\\\")
 		.replace(/,/g, "\\,")
