@@ -179,7 +179,7 @@ function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
 			id: "soft_cyan_wellness",
 			accent: "0x00C2FF",
 			tagColor: "0x102A43",
-			textPanelOpacity: 0.97,
+			textPanelOpacity: 1,
 			brief:
 				"cinematic wellness/editorial contrast, cyan night-to-morning glow, polished mental-fatigue story energy, clean premium YouTube frame",
 		};

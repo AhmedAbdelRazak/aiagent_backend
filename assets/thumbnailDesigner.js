@@ -699,7 +699,7 @@ function chooseAccentColor(intent, text = "") {
 function safeOpacity(value, fallback = 0.34) {
 	const n = Number(value);
 	if (!Number.isFinite(n)) return fallback;
-	return Math.min(0.78, Math.max(0.18, n));
+	return Math.min(1, Math.max(0.18, n));
 }
 
 function buildStyleDirectionLine(styleProfile = {}) {
@@ -794,7 +794,7 @@ function chooseLockedTextOverlayLayout(styleProfile = {}) {
 			badgeX: 64,
 			badgeY: 378,
 			maxTextWidth: 604,
-			panelOpacity: 0.97,
+			panelOpacity: 1,
 			badgeBox: false,
 			badgeFontSize: 34,
 			badgeHeadlineGapPx: 22,
