@@ -198,6 +198,7 @@ function buildComfyPrompt({
 	intent = "general",
 	styleProfile = {},
 	hasFeedImage = false,
+	feedSource = "",
 }) {
 	const topicText =
 		normalizeWhitespace(primaryTopicLabel?.(topics)) ||
@@ -209,8 +210,11 @@ function buildComfyPrompt({
 	const safeHeadline = normalizeWhitespace(headline || "main story");
 	const safeBadge = normalizeWhitespace(badgeText || "spotlight");
 	const safeSubline = normalizeWhitespace(sublineText || topicText);
+	const sourceType = normalizeWhitespace(feedSource).toLowerCase();
 	const feedLine = hasFeedImage
-		? "The left side already contains the real feed/story image. Preserve its main subject and context, then relight, sharpen, simplify, and frame it as a premium thumbnail story cue."
+		? sourceType === "comfy_generated_fallback"
+			? "The left side contains an AI-generated topic reference used only because no reliable orchestrator feed image was available. Keep it symbolic, non-fabricated, and visually clear; polish it into a premium thumbnail story cue."
+			: "The left side already contains the orchestrator-provided feed/story image. Preserve its main subject and context, then relight, sharpen, simplify, and frame it as a premium thumbnail story cue."
 		: "No reliable feed image is present. Keep the left side symbolic and non-fabricated; use environment, objects, color, and editorial lighting instead of inventing real people.";
 
 	return normalizeWhitespace(`
@@ -561,6 +565,7 @@ async function generateComfyThumbnailPlate({
 	intent,
 	styleProfile,
 	hasFeedImage,
+	feedSource = "",
 	log,
 }) {
 	const config = getComfyConfig();
@@ -577,6 +582,7 @@ async function generateComfyThumbnailPlate({
 		intent,
 		styleProfile,
 		hasFeedImage,
+		feedSource,
 	});
 	if (typeof log === "function") {
 		log("thumbnailDesigner2 comfy plate starting", {
@@ -590,6 +596,7 @@ async function generateComfyThumbnailPlate({
 			sampler: config.sampler,
 			scheduler: config.scheduler,
 			hasFeedImage,
+			feedSource,
 		});
 	}
 
@@ -849,6 +856,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		jobId,
 		log,
 	});
+	let topicReferenceSource = topicReferencePaths.length ? "orchestrator" : "none";
 	let generatedFeed = null;
 	if (!topicReferencePaths.length) {
 		try {
@@ -865,6 +873,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 			});
 			if (generatedFeed?.path) {
 				topicReferencePaths = [generatedFeed.path];
+				topicReferenceSource = "comfy_generated_fallback";
 				if (typeof log === "function") {
 					log("thumbnailDesigner2 comfy feed selected", {
 						path: path.basename(generatedFeed.path),
@@ -889,6 +898,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 			preferTopicLead: Boolean(topicReferencePaths.length),
 			intent,
 			topicReferenceCount: topicReferencePaths.length,
+			topicReferenceSource,
 			primaryTopic: primaryTopicLabel(topics),
 		});
 	}
@@ -919,6 +929,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 			intent,
 			styleProfile,
 			hasFeedImage: Boolean(topicReferencePaths.length),
+			feedSource: topicReferenceSource,
 			log,
 		});
 		if (!comfyPlate?.path) throw new Error("comfyui_plate_missing");
@@ -1008,6 +1019,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 			steps: comfyPlate.steps,
 			cfg: comfyPlate.cfg,
 			denoise: comfyPlate.denoise,
+			feedSource: topicReferenceSource,
 		},
 	};
 }

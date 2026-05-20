@@ -2052,6 +2052,11 @@ function validateCreateBody(body = {}, controllerConfig = {}) {
 	).trim();
 	const enableRunwayPresenterMotion = cfg.enableRunwayPresenterMotion;
 	const enableWardrobeEdit = cfg.enableWardrobeEdit;
+	const stopAfterThumbnail = Boolean(
+		body.stopAfterThumbnail ||
+			body.thumbnailOnly ||
+			body.debugStopAfterThumbnail,
+	);
 	const disableMusic = false;
 
 	return {
@@ -2071,6 +2076,7 @@ function validateCreateBody(body = {}, controllerConfig = {}) {
 			musicUrl: "",
 			disableMusic,
 			dryRun: Boolean(body.dryRun),
+			stopAfterThumbnail,
 			enableRunwayPresenterMotion,
 			enableWardrobeEdit,
 			youtubeAccessToken: String(body.youtubeAccessToken || "").trim(),
@@ -4153,6 +4159,27 @@ function normalizePromptOutroLine(text = "") {
 	return sanitizeIntroOutroLine(trimSegmentToCap(raw, 24));
 }
 
+function splitPromptVisualHintList(text = "") {
+	const raw = normalizeWhitespace(text);
+	if (!raw) return [];
+	const cleaned = raw
+		.replace(/^(?:visuals?|b-?roll|feed images?|image ideas?)\s*:\s*/i, "")
+		.replace(/\b(?:and|plus)\b/gi, ",");
+	return uniqueStrings(
+		cleaned
+			.split(/[;,|/]+/)
+			.map((part) =>
+				cleanTopicLabel(
+					part
+						.replace(/\b(?:visuals?|shots?|scenes?|images?|photos?)\b/gi, "")
+						.trim(),
+				),
+			)
+			.filter((part) => part && countWords(part) >= 2 && countWords(part) <= 8),
+		{ limit: 10 },
+	);
+}
+
 function parseStructuredPromptBrief(promptText = "") {
 	const rawOriginal = String(promptText || "").trim();
 	const raw = normalizePromptBriefInput(rawOriginal);
@@ -4342,9 +4369,13 @@ function parseStructuredPromptBrief(promptText = "") {
 			primaryTopic ? `${primaryTopic} chart` : "",
 			promptHeading ? `${promptHeading} news photo` : "",
 			...(thumbnailText ? [`${primaryTopic} ${thumbnailText}`] : []),
-			...(fields.visuals ? [fields.visuals] : []),
-			...(fields.feed_images ? [fields.feed_images] : []),
-			...(fields.feed_videos ? [fields.feed_videos] : []),
+			...(fields.visuals ? splitPromptVisualHintList(fields.visuals) : []),
+			...(fields.feed_images
+				? splitPromptVisualHintList(fields.feed_images)
+				: []),
+			...(fields.feed_videos
+				? splitPromptVisualHintList(fields.feed_videos)
+				: []),
 		].filter(Boolean),
 		{ limit: 10 },
 	);
@@ -13966,6 +13997,7 @@ function extractArticleFacts(story) {
 function buildThumbnailSignalsFromTopicPick(topicPick) {
 	const t = topicPick || {};
 	const story = t.trendStory || t || {};
+	const promptBrief = t.promptBrief || parseStructuredPromptBrief(t.promptText);
 	const displayTopic = String(
 		t.displayTopic || t.topic || story.title || story.rawTitle || "",
 	).trim();
@@ -13995,6 +14027,12 @@ function buildThumbnailSignalsFromTopicPick(topicPick) {
 		: Array.isArray(t.imageSearchQueries)
 			? t.imageSearchQueries
 			: [];
+	const directImageHints = Array.isArray(t.imageSearchHints)
+		? t.imageSearchHints
+		: [];
+	const promptImageHints = Array.isArray(promptBrief?.imageHints)
+		? promptBrief.imageHints
+		: [];
 	const entityNames = Array.isArray(story.entityNames)
 		? story.entityNames
 		: Array.isArray(t.entityNames)
@@ -14013,9 +14051,12 @@ function buildThumbnailSignalsFromTopicPick(topicPick) {
 		searchPhrases: searchPhrases
 			.map((s) => String(s || "").trim())
 			.filter(Boolean),
-		imageSearchQueries: imageSearchQueries
-			.map((s) => String(s || "").trim())
-			.filter(Boolean),
+		imageSearchQueries: uniqueStrings(
+			[...imageSearchQueries, ...directImageHints, ...promptImageHints]
+				.map((s) => String(s || "").trim())
+				.filter(Boolean),
+			{ limit: 14 },
+		),
 		entityNames: entityNames.map((s) => String(s || "").trim()).filter(Boolean),
 		imageComment: String(story.imageComment || t.imageComment || "").trim(),
 		angle: String(t.angle || "").trim(),
@@ -14366,8 +14407,13 @@ function buildTopicImageQueries({ signals }) {
 			dynamicQueries.push(mergeImageQueryTerms(core, phrase));
 		}
 		dynamicQueries.push(`${phrase} news photo`);
+		dynamicQueries.push(`${phrase} editorial photo`);
 	}
+	const directQueries = imageSearchQueries
+		.map((q) => sanitizeOverlayQuery(q))
+		.filter(Boolean);
 	const genericQueries = [
+		`${core} editorial photo`,
 		`${core} news photo`,
 		`${core} event photo`,
 		`${core} press photo`,
@@ -14378,7 +14424,9 @@ function buildTopicImageQueries({ signals }) {
 		genericQueries.unshift(`${core} portrait`, `${core} interview`);
 	}
 
-	return uniqueStrings([...dynamicQueries, ...genericQueries], { limit: 6 });
+	return uniqueStrings([...directQueries, ...dynamicQueries, ...genericQueries], {
+		limit: 8,
+	});
 }
 
 function buildThumbnailHookPlan({ title, topicPicks }) {
@@ -24344,6 +24392,7 @@ async function runLongVideoJob(
 			musicUrl,
 			disableMusic,
 			dryRun,
+			stopAfterThumbnail,
 			overlayAssets,
 			youtubeAccessToken,
 			youtubeRefreshToken,
@@ -24412,6 +24461,7 @@ async function runLongVideoJob(
 			enableRunwayPresenterMotion: Boolean(enableRunwayPresenterMotion),
 			enableWardrobeEdit: Boolean(enableWardrobeEdit),
 			disableYouTubeUpload: Boolean(controllerOptions.disableYouTubeUpload),
+			stopAfterThumbnail: Boolean(stopAfterThumbnail),
 			voiceIdLocked: effectiveVoiceId,
 			hasYouTubeTokens,
 		});
@@ -25566,7 +25616,27 @@ async function runLongVideoJob(
 				pose: thumbResult?.pose || null,
 				accent: thumbResult?.accent || null,
 				variants: thumbVariants.map((v) => v.variant).filter(Boolean),
+				method: thumbResult?.method || null,
+				comfy: thumbResult?.comfy || null,
 			});
+			if (stopAfterThumbnail) {
+				updateJob(jobId, {
+					status: "completed",
+					progressPct: 35,
+					finalVideoUrl: null,
+					meta: {
+						...JOBS.get(jobId)?.meta,
+						thumbnailOnly: true,
+						thumbnailUrl: thumbnailUrl || "",
+						thumbnailPublicId: thumbnailPublicId || "",
+					},
+				});
+				logJob(jobId, "thumbnail-only stop requested", {
+					thumbnailUrl: thumbnailUrl || "",
+					method: thumbResult?.method || null,
+				});
+				return;
+			}
 		} catch (e) {
 			logJob(jobId, "thumbnail generation failed (hard stop)", {
 				error: e.message,
