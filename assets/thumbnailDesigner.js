@@ -148,6 +148,14 @@ function normalizeDrawtextTypography(value = "") {
 		.replace(/[\u2018\u2019\u201A\u201B]/g, "'")
 		.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
 		.replace(/([A-Za-z])\?([A-Za-z])/g, "$1'$2")
+		.replace(/\b([Yy])ou'?re\b/g, "$1ou Are")
+		.replace(/\b([Ww])e'?re\b/g, "$1e Are")
+		.replace(/\b([Tt])hey'?re\b/g, "$1hey Are")
+		.replace(/\b([Ii])t'?s\b/g, "$1t Is")
+		.replace(/\b([Tt])hat'?s\b/g, "$1hat Is")
+		.replace(/\b([Dd])on'?t\b/g, "$1o Not")
+		.replace(/\b([Cc])an'?t\b/g, "$1annot")
+		.replace(/'/g, "")
 		.replace(/[\u2013\u2014]/g, "-")
 		.replace(/\u2026/g, "...");
 }
