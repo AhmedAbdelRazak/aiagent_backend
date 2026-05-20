@@ -43,6 +43,7 @@ const {
 } = require("./middlewares/securityMiddleware");
 const {
 	startGeneratedFilesSweeper,
+	sanitizeGeneratedFiles,
 } = require("./utils/generatedFiles");
 const {
 	getMasterPasswordOverrideStatus,
@@ -307,9 +308,15 @@ app.use(
 // Local-only quick test (direct port)
 app.get("/", (req, res) => res.send("Hello from AgentAI API"));
 
-// Public test through Nginx: https://yourdomain.com/api/health
 app.get("/api/health", (req, res) => {
 	const dbState = mongoose.connection.readyState; // 0=disconnected,1=connected,2=connecting,3=disconnecting
+	if (IS_PRODUCTION) {
+		return res.json({
+			ok: dbState === 1,
+			timestamp: new Date().toISOString(),
+		});
+	}
+
 	res.json({
 		ok: true,
 		env: NODE_ENV,
@@ -604,6 +611,8 @@ async function applyScheduleFailureBackoff(
 }
 
 async function handleSchedule(sched) {
+	sanitizeGeneratedWorkspace("before scheduled job");
+
 	const nowPST = dayjs().tz(PST_TZ);
 	const runContext = {
 		runId: crypto.randomUUID(),
@@ -937,6 +946,8 @@ async function handleSchedule(sched) {
 			runContext,
 		});
 		return;
+	} finally {
+		sanitizeGeneratedWorkspace("after scheduled job");
 	}
 
 	/* 3) compute nextRun (PST wall-clock time) */
@@ -1087,6 +1098,7 @@ const shortsCronTask = ENABLE_SCHEDULER ? cron.schedule(
 		} catch (err) {
 			console.error("[ShortsCron] fatal:", err?.message || err);
 		} finally {
+			sanitizeGeneratedWorkspace("after shorts cron");
 			shortsProcessing = false;
 		}
 	},
@@ -1241,6 +1253,17 @@ const MONGO_DEV_MAX_RETRIES = Math.max(
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sanitizeGeneratedWorkspace(reason) {
+	try {
+		sanitizeGeneratedFiles();
+	} catch (err) {
+		console.warn(
+			`[GeneratedFiles] sanitizer failed${reason ? ` (${reason})` : ""}:`,
+			err?.message || err,
+		);
+	}
 }
 
 function isPortInUseError(err) {

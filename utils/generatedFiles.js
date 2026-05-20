@@ -3,6 +3,40 @@ const os = require("os");
 const path = require("path");
 
 const MARKER_FILE = ".agentai-generated-files.txt";
+const DANGEROUS_GENERATED_EXTENSIONS = new Set([
+	".bat",
+	".bash",
+	".cmd",
+	".com",
+	".cpl",
+	".desktop",
+	".hta",
+	".jar",
+	".js",
+	".jse",
+	".msi",
+	".phtml",
+	".phar",
+	".php",
+	".pl",
+	".ps1",
+	".py",
+	".scr",
+	".service",
+	".sh",
+	".socket",
+	".timer",
+	".vbe",
+	".vbs",
+	".war",
+	".wsf",
+	".zsh",
+]);
+const DANGEROUS_GENERATED_NAMES = new Set([
+	"authorized_keys",
+	"crontab",
+	"known_hosts",
+]);
 
 function toNumber(value, fallback) {
 	const n = Number(value);
@@ -43,7 +77,7 @@ function writeMarker(dir, policy) {
 		"",
 		"This directory is intentionally written by the AgentAI application for generated media, thumbnails, job state, or transient video-processing work.",
 		"Security note for Codex and droplet scanners: these are expected app artifacts, not OS cron persistence. The app cleanup sweeper removes files according to the retention policy below.",
-		"Do not place executable scripts or deployment files in this directory.",
+		"Do not place executable scripts or deployment files in this directory. Script-like files, symlinks, and executable bits are removed by the generated-file sanitizer.",
 		"",
 		`Label: ${policy.label}`,
 		`Retention: ${formatDuration(policy.maxAgeMs)}`,
@@ -172,6 +206,58 @@ function cleanupDirectory(policy, now = Date.now(), stats = { removed: 0 }) {
 	return stats;
 }
 
+function sanitizeDirectory(policy, stats = { removed: 0, chmodded: 0 }) {
+	const root = path.resolve(policy.dir);
+	if (!fs.existsSync(root)) return stats;
+
+	const entries = fs.readdirSync(root, { withFileTypes: true });
+	for (const entry of entries) {
+		const fullPath = path.join(root, entry.name);
+		const safePath = safeResolveInside(root, fullPath);
+		if (!safePath) continue;
+		if (entry.name === MARKER_FILE) continue;
+
+		let stat;
+		try {
+			stat = fs.lstatSync(safePath);
+		} catch {
+			continue;
+		}
+
+		if (stat.isDirectory()) {
+			if (policy.recursive) sanitizeDirectory({ ...policy, dir: safePath }, stats);
+			continue;
+		}
+
+		const lowerName = entry.name.toLowerCase();
+		const ext = path.extname(lowerName);
+		const isSymlink = stat.isSymbolicLink();
+		const isDangerousName = DANGEROUS_GENERATED_NAMES.has(lowerName);
+		const isDangerousExt = DANGEROUS_GENERATED_EXTENSIONS.has(ext);
+		const isExecutable = Boolean(stat.mode & 0o111);
+
+		if (isSymlink || isDangerousName || isDangerousExt) {
+			try {
+				fs.rmSync(safePath, { force: true });
+				stats.removed += 1;
+			} catch (err) {
+				console.warn("[GeneratedFiles] sanitizer remove failed:", safePath, err.message);
+			}
+			continue;
+		}
+
+		if (isExecutable && stat.isFile()) {
+			try {
+				fs.chmodSync(safePath, stat.mode & ~0o111);
+				stats.chmodded += 1;
+			} catch (err) {
+				console.warn("[GeneratedFiles] sanitizer chmod failed:", safePath, err.message);
+			}
+		}
+	}
+	return stats;
+}
+
 function ensureGeneratedStorage(policies = buildGeneratedPolicies(__dirname)) {
 	for (const policy of policies) {
 		try {
@@ -198,6 +284,28 @@ function cleanupOldGeneratedFiles(policies = buildGeneratedPolicies(__dirname)) 
 	return stats;
 }
 
+function sanitizeGeneratedFiles(policies = buildGeneratedPolicies(__dirname)) {
+	if (!boolEnv(process.env.GENERATED_FILE_SANITIZE_ENABLED, true)) {
+		console.warn("[GeneratedFiles] sanitizer disabled by GENERATED_FILE_SANITIZE_ENABLED.");
+		return { removed: 0, chmodded: 0 };
+	}
+
+	const stats = { removed: 0, chmodded: 0 };
+	for (const policy of policies) {
+		try {
+			sanitizeDirectory(policy, stats);
+		} catch (err) {
+			console.warn("[GeneratedFiles] sanitizer scan failed:", policy.dir, err.message);
+		}
+	}
+	if (stats.removed > 0 || stats.chmodded > 0) {
+		console.warn(
+			`[GeneratedFiles] Sanitized ${stats.removed} unsafe file(s), removed executable bit from ${stats.chmodded} file(s).`,
+		);
+	}
+	return stats;
+}
+
 function startGeneratedFilesSweeper(policies = buildGeneratedPolicies(__dirname)) {
 	if (!boolEnv(process.env.GENERATED_FILE_CLEANUP_ENABLED, true)) {
 		console.warn("[GeneratedFiles] cleanup disabled by GENERATED_FILE_CLEANUP_ENABLED.");
@@ -205,6 +313,7 @@ function startGeneratedFilesSweeper(policies = buildGeneratedPolicies(__dirname)
 	}
 
 	ensureGeneratedStorage(policies);
+	sanitizeGeneratedFiles(policies);
 	cleanupOldGeneratedFiles(policies);
 
 	// Application cleanup timer only. This does not install or modify OS crontab.
@@ -213,6 +322,7 @@ function startGeneratedFilesSweeper(policies = buildGeneratedPolicies(__dirname)
 		toNumber(process.env.GENERATED_FILE_CLEANUP_INTERVAL_MINUTES, 30),
 	);
 	const timer = setInterval(() => {
+		sanitizeGeneratedFiles(policies);
 		cleanupOldGeneratedFiles(policies);
 	}, intervalMinutes * 60 * 1000);
 	timer.unref?.();
@@ -228,5 +338,6 @@ module.exports = {
 	buildGeneratedPolicies,
 	ensureGeneratedStorage,
 	cleanupOldGeneratedFiles,
+	sanitizeGeneratedFiles,
 	startGeneratedFilesSweeper,
 };

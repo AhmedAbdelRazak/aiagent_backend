@@ -1716,18 +1716,24 @@ async function closeBrowser(reason) {
 }
 
 async function launchBrowser() {
+  const useSandbox =
+    /^(1|true|yes|on)$/i.test(String(process.env.PUPPETEER_USE_SANDBOX || "")) ||
+    Boolean(process.env.CHROME_DEVEL_SANDBOX);
+  const browserArgs = [
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+  ];
+  if (!useSandbox) {
+    browserArgs.unshift("--no-sandbox", "--disable-setuid-sandbox");
+  }
+
   const launched = await puppeteer.launch({
     headless: true,
     protocolTimeout: PROTOCOL_TIMEOUT,
     executablePath:
       process.env.CHROME_BIN || // production path
       puppeteer.executablePath(), // dev fallback
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-    ],
+    args: browserArgs,
   });
 
   launched.on("disconnected", () => {
