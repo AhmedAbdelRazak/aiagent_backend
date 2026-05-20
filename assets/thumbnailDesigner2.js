@@ -34,6 +34,14 @@ const {
 const DEFAULT_COMFY_URL = "http://127.0.0.1:8188";
 const DEFAULT_MODEL = "Realistic_Vision_V6.0_NV_B1_fp16.safetensors";
 
+let ffmpegPath = "";
+try {
+	// eslint-disable-next-line import/no-extraneous-dependencies
+	ffmpegPath = require("ffmpeg-static");
+} catch {
+	ffmpegPath = process.platform === "win32" ? "ffmpeg.exe" : "/usr/bin/ffmpeg";
+}
+
 function requireInternals() {
 	const missing = [
 		["buildContextText", buildContextText],
@@ -87,6 +95,29 @@ function getComfyConfig() {
 		scheduler: normalizeWhitespace(
 			process.env.THUMBNAIL_DESIGNER2_COMFY_SCHEDULER || "normal",
 		),
+		feedEnabled: truthyEnv(
+			process.env.THUMBNAIL_DESIGNER2_COMFY_FEED_ENABLED,
+			true,
+		),
+		feedWidth: numberEnv("THUMBNAIL_DESIGNER2_COMFY_FEED_WIDTH", 768, 384, 1024),
+		feedHeight: numberEnv(
+			"THUMBNAIL_DESIGNER2_COMFY_FEED_HEIGHT",
+			432,
+			216,
+			768,
+		),
+		feedSteps: numberEnv("THUMBNAIL_DESIGNER2_COMFY_FEED_STEPS", 2, 1, 12),
+		feedCfg: numberEnv("THUMBNAIL_DESIGNER2_COMFY_FEED_CFG", 5.2, 1, 9),
+		feedSampler: normalizeWhitespace(
+			process.env.THUMBNAIL_DESIGNER2_COMFY_FEED_SAMPLER ||
+				process.env.THUMBNAIL_DESIGNER2_COMFY_SAMPLER ||
+				"euler",
+		),
+		feedScheduler: normalizeWhitespace(
+			process.env.THUMBNAIL_DESIGNER2_COMFY_FEED_SCHEDULER ||
+				process.env.THUMBNAIL_DESIGNER2_COMFY_SCHEDULER ||
+				"normal",
+		),
 		timeoutMs: numberEnv(
 			"THUMBNAIL_DESIGNER2_COMFY_TIMEOUT_MS",
 			20 * 60 * 1000,
@@ -107,6 +138,53 @@ function getComfyConfig() {
 					: "/home/ahmedadmin/ai-lab/ComfyUI/output"),
 		),
 	};
+}
+
+function runFfmpeg(args, label = "ffmpeg") {
+	if (!ffmpegPath) throw new Error("ffmpeg_unavailable");
+	try {
+		require("child_process").execFileSync(
+			ffmpegPath,
+			["-hide_banner", "-loglevel", "error", ...args],
+			{
+				maxBuffer: 64 * 1024 * 1024,
+				stdio: ["ignore", "pipe", "pipe"],
+				windowsHide: true,
+			},
+		);
+	} catch (error) {
+		const stderr = String(error?.stderr || error?.message || "").trim();
+		throw new Error(`${label}_failed${stderr ? `:${stderr}` : ""}`);
+	}
+}
+
+function normalizeAccentColor(value = "") {
+	const raw = String(value || "")
+		.trim()
+		.replace(/^0x/i, "")
+		.replace(/^#/, "");
+	if (/^[0-9a-f]{6}$/i.test(raw)) return `0x${raw.toUpperCase()}`;
+	return "0x00C2FF";
+}
+
+function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
+	const hay = normalizeWhitespace(contextText).toLowerCase();
+	if (
+		/\b(tired|fatigue|burnout|sleep|resting|rest|overloaded|mental noise|drained|exhausted|worrying|scrolling)\b/.test(
+			hay,
+		)
+	) {
+		return {
+			...styleProfile,
+			id: "soft_cyan_wellness",
+			accent: "0x00C2FF",
+			tagColor: "0x102A43",
+			textPanelOpacity: 0.58,
+			brief:
+				"cinematic wellness/editorial contrast, cyan night-to-morning glow, polished mental-fatigue story energy, clean premium YouTube frame",
+		};
+	}
+	return styleProfile;
 }
 
 function buildComfyPrompt({
@@ -144,8 +222,37 @@ function buildComfyPrompt({
 		Keep the right-side presenter in the same position and scale. Preserve identity, glasses, beard, hairline, face shape, expression, shoulders, dark outfit, and camera-facing pose.
 		Do not redraw, beautify, age, distort, crop, or change the presenter face. The original presenter panel will be restored after this step.
 		Polish the whole visual plate: stronger contrast, richer depth, cleaner lighting, crisp subject separation, premium editorial color, high-end YouTube thumbnail energy, mobile-readable composition.
-		Keep the left feed image dominant and clear; avoid busy collage, random body-part crops, fake faces, fake screenshots, text blocks, signs, logos, or watermarks.
+		Make the left feed image dominant, bright enough to understand, and visually specific to the topic. Add tasteful cyan/blue editorial glow, curved light streaks, depth, a premium divider, and a designed lower-left text-safe panel like a sophisticated news/sports YouTube thumbnail.
+		Keep the main story subject visible above/behind the text-safe panel, not buried in darkness. Avoid busy collage, random body-part crops, fake faces, fake screenshots, text blocks, signs, logos, or watermarks.
 		Intent: ${intent}. Topic: ${topicText}. Style: ${styleBrief || "premium editorial thumbnail"}.
+	`);
+}
+
+function buildComfyFeedPrompt({
+	title,
+	shortTitle,
+	seoTitle,
+	topics = [],
+	contextText = "",
+	styleProfile = {},
+}) {
+	const topicText =
+		normalizeWhitespace(primaryTopicLabel?.(topics)) ||
+		normalizeWhitespace(shortTitle) ||
+		normalizeWhitespace(title) ||
+		normalizeWhitespace(seoTitle) ||
+		"current story";
+	const styleBrief = normalizeWhitespace(styleProfile.brief || "");
+	return normalizeWhitespace(`
+		Create one photorealistic editorial feed image for the left side of a YouTube thumbnail.
+		No presenter, no host, no text, no typography, no watermark, no UI.
+		Topic: ${topicText}.
+		Context and visual hints: ${normalizeWhitespace(contextText).slice(0, 1200)}.
+		For a tiredness, burnout, mental fatigue, sleep, rest, or overloaded-life topic, show a relatable cinematic scene:
+		a tired adult near a laptop at night, coffee cup, messy desk, notebook or unfinished task list, soft morning light or window glow, calm realistic mood, practical not medical.
+		Make it feel like a high-quality news/editorial feed photo with clear subject, strong depth, cinematic lighting, premium contrast, and space near the lower-left for later headline text.
+		Avoid hospital scenes, medical diagnosis, horror, melodrama, fake celebrities, extra limbs, distorted faces, words, letters, captions, logos, and screenshots.
+		Style: ${styleBrief || "premium editorial photo, cinematic cyan highlights"}.
 	`);
 }
 
@@ -237,6 +344,75 @@ function buildWorkflow(config, prompt, uploadedImageName) {
 			class_type: "SaveImage",
 			inputs: {
 				filename_prefix: "agentai_thumbnail2_comfy_plate",
+				images: ["8", 0],
+			},
+		},
+	};
+}
+
+function buildTextToImageWorkflow(config, prompt, options = {}) {
+	const width = options.width || config.feedWidth || config.width;
+	const height = options.height || config.feedHeight || config.height;
+	const steps = options.steps || config.feedSteps || config.steps;
+	const cfg = options.cfg || config.feedCfg || config.cfg;
+	const sampler = options.sampler || config.feedSampler || config.sampler;
+	const scheduler = options.scheduler || config.feedScheduler || config.scheduler;
+	const prefix = options.prefix || "agentai_thumbnail2_feed";
+	return {
+		"4": {
+			class_type: "CheckpointLoaderSimple",
+			inputs: {
+				ckpt_name: config.model,
+			},
+		},
+		"6": {
+			class_type: "CLIPTextEncode",
+			inputs: {
+				text: prompt,
+				clip: ["4", 1],
+			},
+		},
+		"7": {
+			class_type: "CLIPTextEncode",
+			inputs: {
+				text: buildNegativePrompt(),
+				clip: ["4", 1],
+			},
+		},
+		"5": {
+			class_type: "EmptyLatentImage",
+			inputs: {
+				width,
+				height,
+				batch_size: 1,
+			},
+		},
+		"3": {
+			class_type: "KSampler",
+			inputs: {
+				seed: randomSeed(),
+				steps,
+				cfg,
+				sampler_name: sampler,
+				scheduler,
+				denoise: 1,
+				model: ["4", 0],
+				positive: ["6", 0],
+				negative: ["7", 0],
+				latent_image: ["5", 0],
+			},
+		},
+		"8": {
+			class_type: "VAEDecode",
+			inputs: {
+				samples: ["3", 0],
+				vae: ["4", 2],
+			},
+		},
+		"9": {
+			class_type: "SaveImage",
+			inputs: {
+				filename_prefix: prefix,
 				images: ["8", 0],
 			},
 		},
@@ -469,6 +645,138 @@ async function generateComfyThumbnailPlate({
 	}
 }
 
+async function generateComfyFeedReference({
+	jobId,
+	tmpDir,
+	title,
+	shortTitle,
+	seoTitle,
+	topics,
+	contextText,
+	styleProfile,
+	log,
+}) {
+	const config = getComfyConfig();
+	if (!config.enabled || !config.feedEnabled) return null;
+	const prompt = buildComfyFeedPrompt({
+		title,
+		shortTitle,
+		seoTitle,
+		topics,
+		contextText,
+		styleProfile,
+	});
+	if (typeof log === "function") {
+		log("thumbnailDesigner2 comfy feed starting", {
+			url: config.url,
+			model: config.model,
+			width: config.feedWidth,
+			height: config.feedHeight,
+			steps: config.feedSteps,
+			cfg: config.feedCfg,
+			sampler: config.feedSampler,
+			scheduler: config.feedScheduler,
+		});
+	}
+	await comfyRequest(config, "GET", "/system_stats", null, { timeout: 8000 });
+	const queued = await comfyRequest(config, "POST", "/prompt", {
+		client_id: crypto.randomUUID(),
+		prompt: buildTextToImageWorkflow(config, prompt, {
+			width: config.feedWidth,
+			height: config.feedHeight,
+			steps: config.feedSteps,
+			cfg: config.feedCfg,
+			sampler: config.feedSampler,
+			scheduler: config.feedScheduler,
+			prefix: "agentai_thumbnail2_feed",
+		}),
+	});
+	const promptId = queued?.prompt_id;
+	if (!promptId) throw new Error("comfyui_feed_prompt_id_missing");
+	const image = await waitForComfyImage(config, promptId);
+	const localPath = await resolveComfyOutputToLocalPath(
+		config,
+		image,
+		tmpDir,
+		`${jobId}_feed`,
+	);
+	if (typeof log === "function") {
+		log("thumbnailDesigner2 comfy feed ready", {
+			promptId,
+			filename: image.filename || "",
+			subfolder: image.subfolder || "",
+			type: image.type || "output",
+			path: path.basename(localPath),
+		});
+	}
+	return {
+		path: localPath,
+		outputPath: resolveComfyFilePath(config, image),
+		method: "comfyui_feed_reference",
+	};
+}
+
+function renderDesigner2VisualSeed({
+	jobId,
+	tmpDir,
+	presenterLocalPath,
+	topicReferencePaths = [],
+	accent = ACCENT_PALETTE.default,
+	log,
+}) {
+	const heroSource = topicReferencePaths[0] || presenterLocalPath;
+	ensureImageFile(heroSource, 5000);
+	ensureImageFile(presenterLocalPath, 5000);
+	const outputPath = path.join(tmpDir, `thumb_designer2_seed_${jobId}.jpg`);
+	const accentColor = normalizeAccentColor(accent || "0x00C2FF");
+	const filters = [
+		`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=0.96:brightness=-0.015,gblur=sigma=24,setsar=1[bg]`,
+		`[0:v]scale=740:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=740:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.12:saturation=1.10:brightness=0.012,unsharp=5:5:0.62:5:5:0.02,setsar=1[topic]`,
+		`[1:v]scale=572:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=540:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=1.03,setsar=1[presenter]`,
+		`[bg][topic]overlay=0:0[tmp0]`,
+		`[tmp0]drawbox=x=0:y=0:w=740:h=${THUMBNAIL_HEIGHT}:color=black@0.05:t=fill[tmp1]`,
+		`[tmp1]drawbox=x=38:y=386:w=650:h=246:color=black@0.48:t=fill[tmp2]`,
+		`[tmp2]drawbox=x=38:y=386:w=650:h=3:color=${accentColor}@0.95:t=fill[tmp3]`,
+		`[tmp3]drawbox=x=38:y=386:w=7:h=246:color=${accentColor}@0.96:t=fill[tmp4]`,
+		`[tmp4]drawbox=x=0:y=0:w=740:h=7:color=${accentColor}@0.18:t=fill[tmp5]`,
+		`[tmp5]drawbox=x=0:y=0:w=7:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.18:t=fill[tmp6]`,
+		`[tmp6]drawbox=x=682:y=0:w=58:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.14:t=fill[tmp7]`,
+		`[tmp7][presenter]overlay=740:0[tmp8]`,
+		`[tmp8]drawbox=x=732:y=0:w=8:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.98:t=fill[tmp9]`,
+		`[tmp9]drawbox=x=726:y=0:w=20:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.18:t=fill[outv]`,
+	];
+	runFfmpeg(
+		[
+			"-i",
+			heroSource,
+			"-i",
+			presenterLocalPath,
+			"-filter_complex",
+			filters.join(";"),
+			"-map",
+			"[outv]",
+			"-frames:v",
+			"1",
+			"-q:v",
+			"1",
+			"-y",
+			outputPath,
+		],
+		"thumbnail_designer2_seed_compose",
+	);
+	ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+	if (typeof log === "function") {
+		log("thumbnailDesigner2 visual seed ready", {
+			path: path.basename(outputPath),
+			usesTopicHero: Boolean(topicReferencePaths.length),
+		});
+	}
+	return {
+		path: outputPath,
+		method: "designer2_visual_seed",
+	};
+}
+
 async function generateComfyFirstThumbnailPackage(args = {}) {
 	requireInternals();
 	const {
@@ -515,7 +823,10 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		intent,
 		contextText: styleContextText,
 	});
-	const styleProfile = chooseThumbnailStyleProfile(intent, styleContextText);
+	const styleProfile = enhanceDesigner2StyleProfile(
+		chooseThumbnailStyleProfile(intent, styleContextText),
+		styleContextText,
+	);
 	const accent =
 		styleProfile.accent ||
 		chooseAccentColor(intent, styleContextText) ||
@@ -532,12 +843,42 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		});
 	}
 
-	const topicReferencePaths = await collectTopicReferenceImages({
+	let topicReferencePaths = await collectTopicReferenceImages({
 		topics,
 		tmpDir,
 		jobId,
 		log,
 	});
+	let generatedFeed = null;
+	if (!topicReferencePaths.length) {
+		try {
+			generatedFeed = await generateComfyFeedReference({
+				jobId,
+				tmpDir,
+				title,
+				shortTitle,
+				seoTitle,
+				topics,
+				contextText,
+				styleProfile,
+				log,
+			});
+			if (generatedFeed?.path) {
+				topicReferencePaths = [generatedFeed.path];
+				if (typeof log === "function") {
+					log("thumbnailDesigner2 comfy feed selected", {
+						path: path.basename(generatedFeed.path),
+					});
+				}
+			}
+		} catch (error) {
+			if (typeof log === "function") {
+				log("thumbnailDesigner2 comfy feed unavailable", {
+					error: error?.message || String(error),
+				});
+			}
+		}
+	}
 
 	if (typeof log === "function") {
 		log("thumbnail route selected", {
@@ -552,7 +893,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		});
 	}
 
-	const draft = renderTopicLeadVisualSeed({
+	const draft = renderDesigner2VisualSeed({
 		jobId: `${jobId}_comfy_draft`,
 		tmpDir,
 		presenterLocalPath,
@@ -623,6 +964,16 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		safeUnlink(draft.path);
 		if (presenterLockedPath && finalPlate?.path !== presenterLockedPath) {
 			safeUnlink(presenterLockedPath);
+		}
+		if (generatedFeed?.outputPath) {
+			cleanupComfyFile(
+				generatedFeed.outputPath,
+				log,
+				"thumbnailDesigner2 comfy feed cleaned",
+			);
+		}
+		if (generatedFeed?.path && generatedFeed.path !== generatedFeed.outputPath) {
+			safeUnlink(generatedFeed.path);
 		}
 	}
 
