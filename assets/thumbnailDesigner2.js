@@ -190,6 +190,27 @@ async function waitForComfyImage(config, promptId) {
 	throw new Error("comfyui_thumbnail_seed_timeout");
 }
 
+async function freeComfyMemory(config, log) {
+	try {
+		await comfyRequest(config, "POST", "/free", {
+			unload_models: true,
+			free_memory: true,
+		});
+		if (typeof log === "function") {
+			log("thumbnailDesigner2 comfy memory released", {
+				unloadModels: true,
+				freeMemory: true,
+			});
+		}
+	} catch (error) {
+		if (typeof log === "function") {
+			log("thumbnailDesigner2 comfy memory release skipped", {
+				error: error?.message || String(error),
+			});
+		}
+	}
+}
+
 function comfyImageUrl(config, image) {
 	const params = new URLSearchParams({
 		filename: image.filename || "",
@@ -233,6 +254,7 @@ async function generateComfySeedReference({
 	if (!promptId) throw new Error("comfyui_prompt_id_missing");
 	const image = await waitForComfyImage(config, promptId);
 	const url = comfyImageUrl(config, image);
+	await freeComfyMemory(config, log);
 
 	if (typeof log === "function") {
 		log("thumbnailDesigner2 comfy seed ready", {
