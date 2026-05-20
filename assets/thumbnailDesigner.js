@@ -438,6 +438,14 @@ async function downloadImageToPath({ url, tmpDir, basename }) {
 function topicLabelHasPersonAnchor(label = "") {
 	const normalized = normalizeWhitespace(label);
 	if (!normalized) return false;
+	if (
+		/^(what|when|where|why|how|who|did|does|do|is|are|was|were|can|could|will|would|should|has|have|had|may|might)\b/i.test(
+			normalized,
+		) ||
+		/\?/.test(normalized)
+	) {
+		return false;
+	}
 	if (looksLikeLikelyPersonName(normalized)) return true;
 	const words = normalized
 		.split(/\s+/)

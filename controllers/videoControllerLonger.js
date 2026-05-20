@@ -2355,6 +2355,13 @@ const PROMPT_CATEGORY_RULES = [
 		],
 	},
 	{
+		label: "Lifestyle",
+		weight: 5,
+		patterns: [
+			/\b(mental\s+fatigue|burnout|overloaded|always\s+tired|tired\s+after|tired\s+even|exhausted|drained|fake\s+rest|sleep|resting|rest|self\s+care|wellness|routine|mind\s+never\s+clocked\s+out|mental\s+noise)\b/i,
+		],
+	},
+	{
 		label: "SocialIssues",
 		weight: 6,
 		patterns: [
@@ -9599,6 +9606,7 @@ const SOFT_PERSON_THUMBNAIL_SOURCE_TYPES = new Set([
 ]);
 
 function thumbnailTopicHasPersonAnchor(label = "") {
+	if (looksLikeQuestionTopic(label)) return false;
 	if (looksLikePersonName(label)) return true;
 	const words = cleanTopicLabel(label)
 		.replace(/[^a-zA-Z\s'.-]/g, " ")
@@ -13126,6 +13134,28 @@ function primaryPromptThumbnailText(topics = []) {
 	return "";
 }
 
+function secondaryPromptThumbnailBadge(topics = []) {
+	const text = normalizeWhitespace(
+		(Array.isArray(topics) ? topics : [])
+			.map((topic) => {
+				const brief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
+				return [
+					...(Array.isArray(brief?.mustIncludeLines)
+						? brief.mustIncludeLines
+						: []),
+					...(Array.isArray(brief?.briefLines) ? brief.briefLines : []),
+					topic?.promptText || "",
+				].join(" ");
+			})
+			.join(" "),
+	);
+	if (/\bmental noise\b/i.test(text)) return "MENTAL NOISE";
+	if (/\bfake rest\b/i.test(text)) return "FAKE REST";
+	if (/\boverloaded\b/i.test(text)) return "OVERLOADED";
+	if (/\bburnout\b/i.test(text)) return "BURNOUT";
+	return "";
+}
+
 function primaryPromptOutroText(topics = []) {
 	for (const topic of Array.isArray(topics) ? topics : []) {
 		const brief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
@@ -14482,6 +14512,7 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 		}
 	}
 	const promptBadge = primaryPromptThumbnailText(topics);
+	const promptSecondaryBadge = secondaryPromptThumbnailBadge(topics);
 	const topicHay = [
 		title || "",
 		signals.displayTopic || "",
@@ -14513,8 +14544,8 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 
 	return {
 		intent,
-		headline: resolvedHeadline,
-		badgeText: resolvedBadge,
+		headline: promptBadge || resolvedHeadline,
+		badgeText: promptBadge ? promptSecondaryBadge || resolvedBadge : resolvedBadge,
 		imageQueries: buildTopicImageQueries({ signals, intent }),
 	};
 }
@@ -25547,10 +25578,11 @@ async function runLongVideoJob(
 			if (promptThumbnailText) {
 				hookPlan = {
 					...(hookPlan || {}),
-					badgeText: promptThumbnailText,
+					headline: promptThumbnailText,
 				};
 				thumbLog("thumbnail prompt text override", {
-					badgeText: promptThumbnailText,
+					headline: promptThumbnailText,
+					badgeText: hookPlan?.badgeText || "",
 				});
 			}
 			if (hookPlan) thumbLog("thumbnail hook plan (computed)", hookPlan);
@@ -25580,7 +25612,7 @@ async function runLongVideoJob(
 				log: thumbLog,
 				requireTopicImages: true,
 				overrideHeadline: hookHeadline,
-				overrideBadgeText: promptThumbnailText || hookPlan?.badgeText,
+				overrideBadgeText: hookPlan?.badgeText,
 				overrideIntent: hookPlan?.intent,
 				overrideTopicImageQueries: hookPlan?.imageQueries,
 			});
