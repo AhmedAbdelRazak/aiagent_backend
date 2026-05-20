@@ -1,6 +1,8 @@
 /** @format */
 
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const axios = require("axios");
 const baseDesigner = require("./thumbnailDesigner");
 
@@ -220,6 +222,42 @@ function comfyImageUrl(config, image) {
 	return `${config.url}/view?${params.toString()}`;
 }
 
+function resolveComfyOutputPath(image = {}) {
+	const outputRoot = normalizeWhitespace(
+		process.env.COMFYUI_OUTPUT_DIR ||
+			(process.platform === "win32"
+				? ""
+				: "/home/ahmedadmin/ai-lab/ComfyUI/output"),
+	);
+	if (!outputRoot || image.type !== "output" || !image.filename) return "";
+	const root = path.resolve(outputRoot);
+	const resolved = path.resolve(root, image.subfolder || "", image.filename);
+	return resolved === root || !resolved.startsWith(`${root}${path.sep}`)
+		? ""
+		: resolved;
+}
+
+function cleanupComfySeed(seed, log) {
+	const outputPath = seed?.outputPath || "";
+	if (!outputPath) return;
+	try {
+		if (fs.existsSync(outputPath)) {
+			fs.unlinkSync(outputPath);
+			if (typeof log === "function") {
+				log("thumbnailDesigner2 comfy seed cleaned", {
+					file: path.basename(outputPath),
+				});
+			}
+		}
+	} catch (error) {
+		if (typeof log === "function") {
+			log("thumbnailDesigner2 comfy seed cleanup skipped", {
+				error: error?.message || String(error),
+			});
+		}
+	}
+}
+
 async function generateComfySeedReference({
 	jobId,
 	title,
@@ -271,6 +309,7 @@ async function generateComfySeedReference({
 		width: config.width,
 		height: config.height,
 		method: "comfyui_realistic_vision_seed",
+		outputPath: resolveComfyOutputPath(image),
 	};
 }
 
@@ -302,10 +341,15 @@ async function generateThumbnailPackage(args = {}) {
 		if (getComfyConfig().strict) throw error;
 	}
 
-	const result = await baseDesigner.generateThumbnailPackage({
-		...args,
-		topics: withComfySeedTopic(args.topics, seed),
-	});
+	let result;
+	try {
+		result = await baseDesigner.generateThumbnailPackage({
+			...args,
+			topics: withComfySeedTopic(args.topics, seed),
+		});
+	} finally {
+		cleanupComfySeed(seed, args.log);
+	}
 
 	return {
 		...result,
