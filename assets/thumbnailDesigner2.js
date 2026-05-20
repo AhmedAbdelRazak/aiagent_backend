@@ -838,6 +838,65 @@ function restoreSharpFeedPanel({
 	return outputPath;
 }
 
+function applyDesigner2EditorialPolish({
+	jobId,
+	tmpDir,
+	basePath,
+	accent = ACCENT_PALETTE.default,
+	log,
+}) {
+	ensureImageFile(basePath, 5000);
+	const outputPath = path.join(tmpDir, `thumb_designer2_polished_${jobId}.jpg`);
+	const accentColor = normalizeAccentColor(accent || "0x00C2FF");
+	const filters = [
+		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos`,
+		`crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2`,
+		"setsar=1",
+		`drawbox=x=0:y=0:w=740:h=6:color=${accentColor}@0.36:t=fill`,
+		`drawbox=x=0:y=${THUMBNAIL_HEIGHT - 6}:w=740:h=6:color=${accentColor}@0.26:t=fill`,
+		`drawbox=x=0:y=0:w=6:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.32:t=fill`,
+		`drawbox=x=0:y=24:w=330:h=4:color=${accentColor}@0.58:t=fill`,
+		`drawbox=x=0:y=39:w=250:h=3:color=white@0.24:t=fill`,
+		`drawbox=x=0:y=54:w=180:h=2:color=${accentColor}@0.28:t=fill`,
+		`drawbox=x=0:y=318:w=730:h=4:color=${accentColor}@0.88:t=fill`,
+		`drawbox=x=0:y=318:w=730:h=40:color=${accentColor}@0.05:t=fill`,
+		`drawbox=x=0:y=${THUMBNAIL_HEIGHT - 2}:w=730:h=2:color=white@0.16:t=fill`,
+		`drawbox=x=42:y=354:w=654:h=278:color=white@0.07:t=2`,
+		`drawbox=x=42:y=354:w=654:h=2:color=${accentColor}@0.45:t=fill`,
+		`drawbox=x=730:y=0:w=18:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.28:t=fill`,
+		`drawbox=x=735:y=0:w=6:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.98:t=fill`,
+		`drawbox=x=742:y=0:w=2:h=${THUMBNAIL_HEIGHT}:color=white@0.42:t=fill`,
+		`drawbox=x=744:y=0:w=6:h=${THUMBNAIL_HEIGHT}:color=black@0.42:t=fill`,
+		`drawbox=x=0:y=0:w=iw:h=ih:color=white@0.09:t=2`,
+		"format=yuv420p",
+	];
+	runFfmpeg(
+		[
+			"-i",
+			basePath,
+			"-vf",
+			filters.join(","),
+			"-frames:v",
+			"1",
+			"-q:v",
+			"1",
+			"-y",
+			outputPath,
+		],
+		"thumbnail_designer2_editorial_polish",
+	);
+	ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+	if (typeof log === "function") {
+		log("thumbnailDesigner2 editorial polish ready", {
+			path: path.basename(outputPath),
+		});
+	}
+	return {
+		path: outputPath,
+		method: "comfyui_img2img_text_locked",
+	};
+}
+
 async function generateComfyFirstThumbnailPackage(args = {}) {
 	requireInternals();
 	const {
@@ -968,6 +1027,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 	let comfyPlate = null;
 	let feedRestoredPath = "";
 	let presenterLockedPath = "";
+	let textOverlayPath = "";
 	let finalPlate = null;
 	try {
 		comfyPlate = await generateComfyThumbnailPlate({
@@ -1005,7 +1065,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 			label: "comfy_presenter_locked",
 			log,
 		});
-		finalPlate = renderLockedThumbnailTextOverlay({
+		const textOverlayPlate = renderLockedThumbnailTextOverlay({
 			jobId,
 			tmpDir,
 			basePath: presenterLockedPath,
@@ -1016,6 +1076,23 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 			styleProfile,
 			log,
 		});
+		textOverlayPath = textOverlayPlate.path;
+		finalPlate = textOverlayPlate;
+		try {
+			finalPlate = applyDesigner2EditorialPolish({
+				jobId,
+				tmpDir,
+				basePath: textOverlayPlate.path,
+				accent,
+				log,
+			});
+		} catch (error) {
+			if (typeof log === "function") {
+				log("thumbnailDesigner2 editorial polish skipped", {
+					error: error?.message || String(error),
+				});
+			}
+		}
 		finalPlate.method = "comfyui_img2img_text_locked";
 		ensureThumbnailFile(finalPlate.path, THUMBNAIL_MIN_BYTES);
 
@@ -1041,6 +1118,9 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		}
 		if (presenterLockedPath && finalPlate?.path !== presenterLockedPath) {
 			safeUnlink(presenterLockedPath);
+		}
+		if (textOverlayPath && finalPlate?.path !== textOverlayPath) {
+			safeUnlink(textOverlayPath);
 		}
 		if (generatedFeed?.outputPath) {
 			cleanupComfyFile(
