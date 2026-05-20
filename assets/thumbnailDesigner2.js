@@ -179,7 +179,7 @@ function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
 			id: "soft_cyan_wellness",
 			accent: "0x00C2FF",
 			tagColor: "0x102A43",
-			textPanelOpacity: 0.58,
+			textPanelOpacity: 0.78,
 			brief:
 				"cinematic wellness/editorial contrast, cyan night-to-morning glow, polished mental-fatigue story energy, clean premium YouTube frame",
 		};
@@ -223,6 +223,7 @@ function buildComfyPrompt({
 		${feedLine}
 		The text is already planned separately: headline "${safeHeadline}", badge "${safeBadge}", optional subject "${safeSubline}".
 		Do not render text. Leave a clean readable left-side text area for those exact words to be added after generation.
+		Remove or paint over any words, captions, screenshot fragments, labels, or text-like artifacts already visible in the source feed image, especially near the lower-left text-safe panel.
 		Keep the right-side presenter in the same position and scale. Preserve identity, glasses, beard, hairline, face shape, expression, shoulders, dark outfit, and camera-facing pose.
 		Do not redraw, beautify, age, distort, crop, or change the presenter face. The original presenter panel will be restored after this step.
 		Polish the whole visual plate: stronger contrast, richer depth, cleaner lighting, crisp subject separation, premium editorial color, high-end YouTube thumbnail energy, mobile-readable composition.
@@ -742,9 +743,9 @@ function renderDesigner2VisualSeed({
 		`[1:v]scale=572:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=540:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,eq=contrast=1.05:saturation=1.03,setsar=1[presenter]`,
 		`[bg][topic]overlay=0:0[tmp0]`,
 		`[tmp0]drawbox=x=0:y=0:w=740:h=${THUMBNAIL_HEIGHT}:color=black@0.05:t=fill[tmp1]`,
-		`[tmp1]drawbox=x=38:y=386:w=650:h=246:color=black@0.48:t=fill[tmp2]`,
-		`[tmp2]drawbox=x=38:y=386:w=650:h=3:color=${accentColor}@0.95:t=fill[tmp3]`,
-		`[tmp3]drawbox=x=38:y=386:w=7:h=246:color=${accentColor}@0.96:t=fill[tmp4]`,
+		`[tmp1]drawbox=x=38:y=350:w=660:h=328:color=black@0.68:t=fill[tmp2]`,
+		`[tmp2]drawbox=x=38:y=350:w=660:h=3:color=${accentColor}@0.95:t=fill[tmp3]`,
+		`[tmp3]drawbox=x=38:y=350:w=7:h=328:color=${accentColor}@0.96:t=fill[tmp4]`,
 		`[tmp4]drawbox=x=0:y=0:w=740:h=7:color=${accentColor}@0.18:t=fill[tmp5]`,
 		`[tmp5]drawbox=x=0:y=0:w=7:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.18:t=fill[tmp6]`,
 		`[tmp6]drawbox=x=682:y=0:w=58:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.14:t=fill[tmp7]`,

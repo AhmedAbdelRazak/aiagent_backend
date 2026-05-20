@@ -782,6 +782,25 @@ function chooseLockedTextOverlayLayout(styleProfile = {}) {
 			accentRail: true,
 		};
 	}
+	if (id === "soft_cyan_wellness") {
+		return {
+			id: "wellness_editorial_anchor",
+			panelX: 38,
+			panelY: 350,
+			panelW: 660,
+			panelH: 328,
+			headlineX: 64,
+			headlineY: 452,
+			badgeX: 64,
+			badgeY: 388,
+			maxTextWidth: 604,
+			panelOpacity: 0.78,
+			badgeBox: false,
+			badgeFontSize: 34,
+			badgeHeadlineGapPx: 22,
+			accentRail: true,
+		};
+	}
 	if (id === "gaming_teal_ember") {
 		return {
 			id: "gaming_editorial_anchor",

@@ -14197,6 +14197,13 @@ function inferIntentFromSignals({ title, signals }) {
 		.toLowerCase();
 
 	if (THUMBNAIL_SERIOUS_UPDATE_RE.test(hay)) return "serious_update";
+	if (
+		/\b(always tired|mental fatigue|burnout|fake rest|sleep|resting|rest|overloaded|drained|exhausted|mental noise|mind never clocked out|sunlight walk|unfinished tasks)\b/.test(
+			hay,
+		)
+	) {
+		return "general";
+	}
 	for (const rule of THUMBNAIL_INTENT_RULES) {
 		if (rule.re.test(hay)) return rule.intent;
 	}
