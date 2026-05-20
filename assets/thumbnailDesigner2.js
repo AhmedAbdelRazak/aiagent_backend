@@ -33,6 +33,8 @@ const {
 
 const DEFAULT_COMFY_URL = "http://127.0.0.1:8188";
 const DEFAULT_MODEL = "Realistic_Vision_V6.0_NV_B1_fp16.safetensors";
+const DESIGNER2_TOPIC_PANEL_W = 740;
+const DESIGNER2_BROADCAST_OVERLAY_MIN_BYTES = 1024 * 1024;
 
 let ffmpegPath = "";
 try {
@@ -86,14 +88,14 @@ function getComfyConfig() {
 		),
 		width: numberEnv("THUMBNAIL_DESIGNER2_COMFY_WIDTH", 768, 384, 1024),
 		height: numberEnv("THUMBNAIL_DESIGNER2_COMFY_HEIGHT", 432, 216, 768),
-		steps: numberEnv("THUMBNAIL_DESIGNER2_COMFY_STEPS", 4, 1, 24),
+		steps: numberEnv("THUMBNAIL_DESIGNER2_COMFY_STEPS", 8, 1, 24),
 		cfg: numberEnv("THUMBNAIL_DESIGNER2_COMFY_CFG", 4.4, 1, 9),
-		denoise: numberEnv("THUMBNAIL_DESIGNER2_COMFY_DENOISE", 0.38, 0.15, 0.7),
+		denoise: numberEnv("THUMBNAIL_DESIGNER2_COMFY_DENOISE", 0.28, 0.15, 0.7),
 		sampler: normalizeWhitespace(
-			process.env.THUMBNAIL_DESIGNER2_COMFY_SAMPLER || "euler",
+			process.env.THUMBNAIL_DESIGNER2_COMFY_SAMPLER || "dpmpp_2m",
 		),
 		scheduler: normalizeWhitespace(
-			process.env.THUMBNAIL_DESIGNER2_COMFY_SCHEDULER || "normal",
+			process.env.THUMBNAIL_DESIGNER2_COMFY_SCHEDULER || "karras",
 		),
 		feedEnabled: truthyEnv(
 			process.env.THUMBNAIL_DESIGNER2_COMFY_FEED_ENABLED,
@@ -125,6 +127,19 @@ function getComfyConfig() {
 			60 * 60 * 1000,
 		),
 		pollMs: numberEnv("THUMBNAIL_DESIGNER2_COMFY_POLL_MS", 2500, 1000, 10000),
+		maxTempC: numberEnv("THUMBNAIL_DESIGNER2_MAX_TEMP_C", 93, 70, 105),
+		preflightMaxTempC: numberEnv(
+			"THUMBNAIL_DESIGNER2_PREFLIGHT_MAX_TEMP_C",
+			88,
+			50,
+			100,
+		),
+		preflightCooldownMs: numberEnv(
+			"THUMBNAIL_DESIGNER2_PREFLIGHT_COOLDOWN_MS",
+			2 * 60 * 1000,
+			0,
+			15 * 60 * 1000,
+		),
 		inputDir: normalizeWhitespace(
 			process.env.COMFYUI_INPUT_DIR ||
 				(process.platform === "win32"
@@ -165,6 +180,497 @@ function normalizeAccentColor(value = "") {
 		.replace(/^#/, "");
 	if (/^[0-9a-f]{6}$/i.test(raw)) return `0x${raw.toUpperCase()}`;
 	return "0x00C2FF";
+}
+
+function clampNumber(value, min, max) {
+	const n = Number(value);
+	if (!Number.isFinite(n)) return min;
+	return Math.max(min, Math.min(max, n));
+}
+
+function clampByte(value) {
+	return Math.round(clampNumber(value, 0, 255));
+}
+
+function parseRgbColor(value = "", fallback = "0x00C2FF") {
+	const normalized = normalizeAccentColor(value || fallback).replace(/^0x/i, "");
+	const raw = /^[0-9a-f]{6}$/i.test(normalized)
+		? normalized
+		: normalizeAccentColor(fallback).replace(/^0x/i, "");
+	return {
+		r: parseInt(raw.slice(0, 2), 16),
+		g: parseInt(raw.slice(2, 4), 16),
+		b: parseInt(raw.slice(4, 6), 16),
+	};
+}
+
+function mixRgb(a, b, amount = 0.5) {
+	const t = clampNumber(amount, 0, 1);
+	return {
+		r: clampByte(a.r * (1 - t) + b.r * t),
+		g: clampByte(a.g * (1 - t) + b.g * t),
+		b: clampByte(a.b * (1 - t) + b.b * t),
+	};
+}
+
+function brightenRgb(color, amount = 0.35) {
+	return mixRgb(color, { r: 255, g: 255, b: 255 }, amount);
+}
+
+function deepenRgb(color, amount = 0.35) {
+	return mixRgb(color, { r: 0, g: 0, b: 0 }, amount);
+}
+
+function blendOverlayPixel(buffer, width, height, x, y, color, alpha = 1) {
+	const px = Math.round(x);
+	const py = Math.round(y);
+	if (px < 0 || py < 0 || px >= width || py >= height) return;
+	const srcA = clampNumber(alpha, 0, 1);
+	if (srcA <= 0) return;
+	const index = (py * width + px) * 4;
+	const dstA = buffer[index + 3] / 255;
+	const outA = srcA + dstA * (1 - srcA);
+	if (outA <= 0) return;
+	buffer[index] = clampByte(
+		(color.r * srcA + buffer[index] * dstA * (1 - srcA)) / outA,
+	);
+	buffer[index + 1] = clampByte(
+		(color.g * srcA + buffer[index + 1] * dstA * (1 - srcA)) / outA,
+	);
+	buffer[index + 2] = clampByte(
+		(color.b * srcA + buffer[index + 2] * dstA * (1 - srcA)) / outA,
+	);
+	buffer[index + 3] = clampByte(outA * 255);
+}
+
+function drawSoftBrush(buffer, width, height, cx, cy, radius, color, alpha, power = 1.6) {
+	const r = Math.max(1, Number(radius) || 1);
+	const minX = Math.max(0, Math.floor(cx - r));
+	const maxX = Math.min(width - 1, Math.ceil(cx + r));
+	const minY = Math.max(0, Math.floor(cy - r));
+	const maxY = Math.min(height - 1, Math.ceil(cy + r));
+	const r2 = r * r;
+	for (let y = minY; y <= maxY; y++) {
+		for (let x = minX; x <= maxX; x++) {
+			const dx = x - cx;
+			const dy = y - cy;
+			const d2 = dx * dx + dy * dy;
+			if (d2 > r2) continue;
+			const falloff = Math.pow(1 - Math.sqrt(d2) / r, power);
+			blendOverlayPixel(buffer, width, height, x, y, color, alpha * falloff);
+		}
+	}
+}
+
+function drawSoftLine(
+	buffer,
+	width,
+	height,
+	x1,
+	y1,
+	x2,
+	y2,
+	color,
+	{ alpha = 0.8, thickness = 3, glow = 0 } = {},
+) {
+	const distance = Math.max(1, Math.hypot(x2 - x1, y2 - y1));
+	const steps = Math.ceil(distance / Math.max(1.5, thickness * 0.65));
+	if (glow > 0) {
+		for (let i = 0; i <= steps; i++) {
+			const t = i / steps;
+			drawSoftBrush(
+				buffer,
+				width,
+				height,
+				x1 + (x2 - x1) * t,
+				y1 + (y2 - y1) * t,
+				glow,
+				color,
+				alpha * 0.2,
+				2.4,
+			);
+		}
+	}
+	for (let i = 0; i <= steps; i++) {
+		const t = i / steps;
+		drawSoftBrush(
+			buffer,
+			width,
+			height,
+			x1 + (x2 - x1) * t,
+			y1 + (y2 - y1) * t,
+			thickness,
+			color,
+			alpha,
+			0.55,
+		);
+	}
+}
+
+function drawArc(
+	buffer,
+	width,
+	height,
+	cx,
+	cy,
+	radius,
+	startDeg,
+	endDeg,
+	color,
+	{ alpha = 0.8, thickness = 3, glow = 0 } = {},
+) {
+	const sweep = Math.abs(endDeg - startDeg);
+	const steps = Math.max(24, Math.ceil((sweep / 360) * radius * 2.8));
+	const start = (startDeg * Math.PI) / 180;
+	const end = (endDeg * Math.PI) / 180;
+	if (glow > 0) {
+		for (let i = 0; i <= steps; i++) {
+			const t = i / steps;
+			const angle = start + (end - start) * t;
+			drawSoftBrush(
+				buffer,
+				width,
+				height,
+				cx + Math.cos(angle) * radius,
+				cy + Math.sin(angle) * radius,
+				glow,
+				color,
+				alpha * 0.18,
+				2.4,
+			);
+		}
+	}
+	for (let i = 0; i <= steps; i++) {
+		const t = i / steps;
+		const angle = start + (end - start) * t;
+		drawSoftBrush(
+			buffer,
+			width,
+			height,
+			cx + Math.cos(angle) * radius,
+			cy + Math.sin(angle) * radius,
+			thickness,
+			color,
+			alpha,
+			0.6,
+		);
+	}
+}
+
+function drawRectFrame(
+	buffer,
+	width,
+	height,
+	x,
+	y,
+	w,
+	h,
+	color,
+	{ alpha = 0.65, thickness = 2, glow = 0 } = {},
+) {
+	drawSoftLine(buffer, width, height, x, y, x + w, y, color, {
+		alpha,
+		thickness,
+		glow,
+	});
+	drawSoftLine(buffer, width, height, x, y, x, y + h, color, {
+		alpha,
+		thickness,
+		glow,
+	});
+	drawSoftLine(buffer, width, height, x, y + h, x + w, y + h, color, {
+		alpha: alpha * 0.45,
+		thickness,
+		glow: glow * 0.5,
+	});
+	drawSoftLine(buffer, width, height, x + w, y, x + w, y + h, color, {
+		alpha: alpha * 0.28,
+		thickness,
+		glow: glow * 0.45,
+	});
+}
+
+function fillSoftRect(buffer, width, height, x, y, w, h, color, alpha = 0.2) {
+	const minX = Math.max(0, Math.round(x));
+	const maxX = Math.min(width - 1, Math.round(x + w));
+	const minY = Math.max(0, Math.round(y));
+	const maxY = Math.min(height - 1, Math.round(y + h));
+	for (let py = minY; py <= maxY; py++) {
+		for (let px = minX; px <= maxX; px++) {
+			blendOverlayPixel(buffer, width, height, px, py, color, alpha);
+		}
+	}
+}
+
+function drawLeftPanelVignette(buffer, width, height, topicPanelW) {
+	for (let y = 0; y < height; y++) {
+		const bottom = Math.max(0, (y - height * 0.42) / (height * 0.58));
+		const top = Math.max(0, 1 - y / (height * 0.42));
+		for (let x = 0; x < topicPanelW; x++) {
+			const edge = Math.max(0, 1 - x / 150);
+			const seam = Math.max(0, (x - (topicPanelW - 96)) / 96);
+			const alpha = bottom * 0.16 + top * edge * 0.1 + seam * 0.12;
+			if (alpha > 0.006) {
+				blendOverlayPixel(
+					buffer,
+					width,
+					height,
+					x,
+					y,
+					{ r: 0, g: 0, b: 0 },
+					alpha,
+				);
+			}
+		}
+	}
+}
+
+function panelGeometryForDesigner2(styleProfile = {}) {
+	const id = String(styleProfile?.id || "").toLowerCase();
+	if (id === "soft_cyan_wellness") {
+		return { x: 38, y: 320, w: 662, h: 400 };
+	}
+	if (id === "magenta_pop") {
+		return { x: 38, y: 380, w: 660, h: 254 };
+	}
+	if (id === "electric_cyan" || id === "gaming_teal_ember") {
+		return { x: 40, y: 386, w: 648, h: 248 };
+	}
+	return { x: 42, y: 372, w: 650, h: 268 };
+}
+
+function writePamRgba(filePath, width, height, rgbaBuffer) {
+	const header = Buffer.from(
+		`P7\nWIDTH ${width}\nHEIGHT ${height}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n`,
+		"ascii",
+	);
+	fs.writeFileSync(filePath, Buffer.concat([header, rgbaBuffer]));
+	const stat = fs.statSync(filePath);
+	if (!stat || stat.size < DESIGNER2_BROADCAST_OVERLAY_MIN_BYTES) {
+		throw new Error("thumbnail_designer2_overlay_too_small");
+	}
+	return filePath;
+}
+
+function createDesigner2BroadcastOverlay({
+	jobId,
+	tmpDir,
+	accent = ACCENT_PALETTE.default,
+	styleProfile = {},
+	stage = "background",
+}) {
+	const width = THUMBNAIL_WIDTH;
+	const height = THUMBNAIL_HEIGHT;
+	const topicPanelW = DESIGNER2_TOPIC_PANEL_W;
+	const overlayPath = path.join(
+		tmpDir,
+		`thumb_designer2_${stage}_overlay_${jobId}.pam`,
+	);
+	const pixels = Buffer.alloc(width * height * 4);
+	const accentRgb = parseRgbColor(accent || "0x00C2FF");
+	const bright = brightenRgb(accentRgb, 0.48);
+	const hot = brightenRgb(accentRgb, 0.72);
+	const deep = deepenRgb(accentRgb, 0.48);
+	const white = { r: 255, g: 255, b: 255 };
+	const panel = panelGeometryForDesigner2(styleProfile);
+
+	if (stage === "background") {
+		drawLeftPanelVignette(pixels, width, height, topicPanelW);
+		drawSoftBrush(pixels, width, height, 68, 38, 190, bright, 0.34, 1.9);
+		drawSoftBrush(pixels, width, height, 710, 210, 220, accentRgb, 0.24, 2.1);
+		drawSoftBrush(pixels, width, height, 312, 690, 250, deep, 0.22, 1.8);
+		drawSoftBrush(pixels, width, height, 610, 620, 210, accentRgb, 0.16, 2.2);
+		fillSoftRect(
+			pixels,
+			width,
+			height,
+			panel.x - 2,
+			panel.y - 14,
+			panel.w + 18,
+			panel.h + 20,
+			{ r: 0, g: 0, b: 0 },
+			0.12,
+		);
+		drawArc(pixels, width, height, 720, 350, 695, 150, 263, bright, {
+			alpha: 0.72,
+			thickness: 3,
+			glow: 18,
+		});
+		drawArc(pixels, width, height, 725, 352, 625, 156, 257, hot, {
+			alpha: 0.48,
+			thickness: 2,
+			glow: 14,
+		});
+		drawArc(pixels, width, height, 695, 440, 780, 202, 270, accentRgb, {
+			alpha: 0.56,
+			thickness: 3,
+			glow: 20,
+		});
+		drawArc(pixels, width, height, 450, 360, 306, -48, 50, bright, {
+			alpha: 0.72,
+			thickness: 4,
+			glow: 24,
+		});
+		drawArc(pixels, width, height, 452, 360, 326, -48, 50, deep, {
+			alpha: 0.28,
+			thickness: 7,
+			glow: 10,
+		});
+		drawSoftLine(pixels, width, height, 735, 0, 735, height, accentRgb, {
+			alpha: 0.72,
+			thickness: 3,
+			glow: 18,
+		});
+		drawSoftLine(pixels, width, height, 742, 0, 742, height, white, {
+			alpha: 0.16,
+			thickness: 1,
+			glow: 4,
+		});
+		drawSoftLine(pixels, width, height, 0, 24, 338, 24, bright, {
+			alpha: 0.58,
+			thickness: 3,
+			glow: 9,
+		});
+		drawSoftLine(pixels, width, height, 0, 42, 252, 42, white, {
+			alpha: 0.18,
+			thickness: 2,
+			glow: 5,
+		});
+	} else {
+		drawRectFrame(pixels, width, height, panel.x, panel.y, panel.w, panel.h, bright, {
+			alpha: 0.62,
+			thickness: 2,
+			glow: 7,
+		});
+		drawSoftLine(
+			pixels,
+			width,
+			height,
+			panel.x,
+			panel.y,
+			panel.x,
+			panel.y + panel.h,
+			accentRgb,
+			{ alpha: 0.92, thickness: 4, glow: 10 },
+		);
+		drawSoftLine(
+			pixels,
+			width,
+			height,
+			panel.x + 18,
+			panel.y + 22,
+			panel.x + 68,
+			panel.y + 22,
+			hot,
+			{ alpha: 0.58, thickness: 3, glow: 6 },
+		);
+		drawSoftLine(
+			pixels,
+			width,
+			height,
+			panel.x + 18,
+			panel.y + 36,
+			panel.x + 44,
+			panel.y + 36,
+			white,
+			{ alpha: 0.22, thickness: 2, glow: 4 },
+		);
+		drawArc(pixels, width, height, 450, 360, 306, -44, 50, accentRgb, {
+			alpha: 0.42,
+			thickness: 3,
+			glow: 14,
+		});
+		drawSoftLine(pixels, width, height, 735, 0, 735, height, accentRgb, {
+			alpha: 0.86,
+			thickness: 4,
+			glow: 14,
+		});
+		drawSoftLine(pixels, width, height, 744, 0, 744, height, { r: 0, g: 0, b: 0 }, {
+			alpha: 0.26,
+			thickness: 5,
+			glow: 0,
+		});
+		drawSoftLine(pixels, width, height, 0, 0, topicPanelW, 0, white, {
+			alpha: 0.16,
+			thickness: 1,
+			glow: 0,
+		});
+		drawSoftLine(pixels, width, height, 0, height - 1, topicPanelW, height - 1, white, {
+			alpha: 0.14,
+			thickness: 1,
+			glow: 0,
+		});
+	}
+
+	return writePamRgba(overlayPath, width, height, pixels);
+}
+
+function applyDesigner2BroadcastOverlay({
+	jobId,
+	tmpDir,
+	basePath,
+	accent = ACCENT_PALETTE.default,
+	styleProfile = {},
+	stage = "background",
+	label = "broadcast",
+	log,
+}) {
+	ensureImageFile(basePath, 5000);
+	const outputPath = path.join(
+		tmpDir,
+		`thumb_designer2_${safeOverlaySlug(label)}_${jobId}.jpg`,
+	);
+	const overlayPath = createDesigner2BroadcastOverlay({
+		jobId,
+		tmpDir,
+		accent,
+		styleProfile,
+		stage,
+	});
+	try {
+		runFfmpeg(
+			[
+				"-i",
+				basePath,
+				"-i",
+				overlayPath,
+				"-filter_complex",
+				[
+					`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,` +
+						`crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,setsar=1,format=rgba[base]`,
+					"[1:v]format=rgba[fx]",
+					"[base][fx]overlay=0:0,format=yuv420p[outv]",
+				].join(";"),
+				"-map",
+				"[outv]",
+				"-frames:v",
+				"1",
+				"-q:v",
+				"1",
+				"-y",
+				outputPath,
+			],
+			`thumbnail_designer2_${label}`,
+		);
+		ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+		if (typeof log === "function") {
+			log("thumbnailDesigner2 broadcast overlay ready", {
+				stage,
+				path: path.basename(outputPath),
+			});
+		}
+		return outputPath;
+	} finally {
+		safeUnlink(overlayPath);
+	}
+}
+
+function safeOverlaySlug(value = "") {
+	return String(value || "overlay")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "_")
+		.replace(/^_+|_+$/g, "")
+		.slice(0, 32);
 }
 
 function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
@@ -228,7 +734,8 @@ function buildComfyPrompt({
 		Keep the right-side presenter in the same position and scale. Preserve identity, glasses, beard, hairline, face shape, expression, shoulders, dark outfit, and camera-facing pose.
 		Do not redraw, beautify, age, distort, crop, or change the presenter face. The original presenter panel will be restored after this step.
 		Polish the whole visual plate: stronger contrast, richer depth, cleaner lighting, crisp subject separation, premium editorial color, high-end YouTube thumbnail energy, mobile-readable composition.
-		Make the left feed image dominant, bright enough to understand, and visually specific to the topic. Add tasteful cyan/blue editorial glow, curved light streaks, depth, a premium divider, and a designed lower-left text-safe panel like a sophisticated news/sports YouTube thumbnail.
+		Make the left feed image dominant, bright enough to understand, and visually specific to the topic. Aim for a designed broadcast-package left side: curved neon arcs, topic-matched accent glows, subtle gradients, depth, a premium divider, and a dark glass lower-left text-safe shelf like a sophisticated news/sports/tech YouTube thumbnail.
+		Use the accent implied by the style instead of forcing one repeated color. The deterministic compositor will add final arcs, rails, and divider treatment after this step, so keep those areas clean and compatible.
 		Keep the main story subject visible above/behind the text-safe panel, not buried in darkness. Avoid busy collage, random body-part crops, fake faces, fake screenshots, text blocks, signs, logos, or watermarks.
 		Intent: ${intent}. Topic: ${topicText}. Style: ${styleBrief || "premium editorial thumbnail"}.
 	`);
@@ -436,6 +943,122 @@ async function comfyRequest(config, method, pathname, data, options = {}) {
 	return response.data;
 }
 
+function readTempFileC(filePath) {
+	try {
+		const raw = Number(fs.readFileSync(filePath, "utf8").trim());
+		if (!Number.isFinite(raw)) return null;
+		const celsius = raw > 1000 ? raw / 1000 : raw;
+		return celsius >= 15 && celsius <= 125 ? celsius : null;
+	} catch {
+		return null;
+	}
+}
+
+function readMaxCpuTemperatureC() {
+	if (process.platform === "win32") return null;
+	const values = [];
+	try {
+		const thermalRoot = "/sys/class/thermal";
+		for (const entry of fs.readdirSync(thermalRoot)) {
+			if (!/^thermal_zone\d+$/.test(entry)) continue;
+			const zoneDir = path.join(thermalRoot, entry);
+			const type = normalizeWhitespace(
+				fs.existsSync(path.join(zoneDir, "type"))
+					? fs.readFileSync(path.join(zoneDir, "type"), "utf8")
+					: "",
+			).toLowerCase();
+			if (
+				type &&
+				!/cpu|pkg|package|x86|core|acpi|thermal|pch|k10|zen/i.test(type)
+			) {
+				continue;
+			}
+			const temp = readTempFileC(path.join(zoneDir, "temp"));
+			if (temp != null) values.push(temp);
+		}
+	} catch {}
+	try {
+		const hwmonRoot = "/sys/class/hwmon";
+		for (const hwmon of fs.readdirSync(hwmonRoot)) {
+			const dir = path.join(hwmonRoot, hwmon);
+			for (const entry of fs.readdirSync(dir)) {
+				const match = entry.match(/^temp(\d+)_input$/);
+				if (!match) continue;
+				const labelPath = path.join(dir, `temp${match[1]}_label`);
+				const label = normalizeWhitespace(
+					fs.existsSync(labelPath) ? fs.readFileSync(labelPath, "utf8") : "",
+				).toLowerCase();
+				if (
+					label &&
+					!/cpu|package|core|tdie|tctl|x86|k10|zen|sensor/i.test(label)
+				) {
+					continue;
+				}
+				const temp = readTempFileC(path.join(dir, entry));
+				if (temp != null) values.push(temp);
+			}
+		}
+	} catch {}
+	if (!values.length) return null;
+	return Math.max(...values);
+}
+
+function sleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+async function interruptComfy(config, log, reason = {}) {
+	try {
+		await comfyRequest(config, "POST", "/interrupt", {});
+		if (typeof log === "function") {
+			log("thumbnailDesigner2 comfy interrupted", reason);
+		}
+	} catch (error) {
+		if (typeof log === "function") {
+			log("thumbnailDesigner2 comfy interrupt failed", {
+				...reason,
+				error: error?.message || String(error),
+			});
+		}
+	}
+}
+
+async function waitForSafeComfyTemperature(config, log, label = "comfy") {
+	const initialTemp = readMaxCpuTemperatureC();
+	if (initialTemp == null) return;
+	if (initialTemp < config.preflightMaxTempC) return;
+	const started = Date.now();
+	if (typeof log === "function") {
+		log("thumbnailDesigner2 temperature cooldown starting", {
+			label,
+			tempC: Number(initialTemp.toFixed(1)),
+			targetC: config.preflightMaxTempC,
+			maxTempC: config.maxTempC,
+			cooldownMs: config.preflightCooldownMs,
+		});
+	}
+	let temp = initialTemp;
+	while (
+		temp != null &&
+		temp >= config.preflightMaxTempC &&
+		Date.now() - started < config.preflightCooldownMs
+	) {
+		await sleep(Math.min(15000, Math.max(3000, config.pollMs)));
+		temp = readMaxCpuTemperatureC();
+	}
+	if (temp != null && temp >= config.preflightMaxTempC) {
+		throw new Error(
+			`comfyui_temperature_preflight_too_hot:${temp.toFixed(1)}C`,
+		);
+	}
+	if (typeof log === "function") {
+		log("thumbnailDesigner2 temperature cooldown complete", {
+			label,
+			tempC: temp == null ? null : Number(temp.toFixed(1)),
+		});
+	}
+}
+
 async function uploadComfyInput(config, filePath) {
 	const form = new FormData();
 	form.append("image", fs.createReadStream(filePath), {
@@ -451,10 +1074,20 @@ async function uploadComfyInput(config, filePath) {
 	return response.data;
 }
 
-async function waitForComfyImage(config, promptId) {
+async function waitForComfyImage(config, promptId, log, label = "plate") {
 	const deadline = Date.now() + config.timeoutMs;
 	while (Date.now() < deadline) {
 		await new Promise((resolve) => setTimeout(resolve, config.pollMs));
+		const tempC = readMaxCpuTemperatureC();
+		if (tempC != null && tempC >= config.maxTempC) {
+			await interruptComfy(config, log, {
+				label,
+				promptId,
+				tempC: Number(tempC.toFixed(1)),
+				maxTempC: config.maxTempC,
+			});
+			throw new Error(`comfyui_temperature_limit:${tempC.toFixed(1)}C`);
+		}
 		const history = await comfyRequest(
 			config,
 			"GET",
@@ -597,12 +1230,15 @@ async function generateComfyThumbnailPlate({
 			denoise: config.denoise,
 			sampler: config.sampler,
 			scheduler: config.scheduler,
+			maxTempC: config.maxTempC,
+			preflightMaxTempC: config.preflightMaxTempC,
 			hasFeedImage,
 			feedSource,
 		});
 	}
 
 	await comfyRequest(config, "GET", "/system_stats", null, { timeout: 8000 });
+	await waitForSafeComfyTemperature(config, log, "plate");
 	const uploadedInput = await uploadComfyInput(config, draftPath);
 	const inputPath = resolveComfyFilePath(config, {
 		filename: uploadedInput.name || uploadedInput.filename,
@@ -616,7 +1252,7 @@ async function generateComfyThumbnailPlate({
 		});
 		const promptId = queued?.prompt_id;
 		if (!promptId) throw new Error("comfyui_prompt_id_missing");
-		const image = await waitForComfyImage(config, promptId);
+		const image = await waitForComfyImage(config, promptId, log, "plate");
 		const localPath = await resolveComfyOutputToLocalPath(config, image, tmpDir, jobId);
 		await freeComfyMemory(config, log);
 
@@ -685,9 +1321,12 @@ async function generateComfyFeedReference({
 			cfg: config.feedCfg,
 			sampler: config.feedSampler,
 			scheduler: config.feedScheduler,
+			maxTempC: config.maxTempC,
+			preflightMaxTempC: config.preflightMaxTempC,
 		});
 	}
 	await comfyRequest(config, "GET", "/system_stats", null, { timeout: 8000 });
+	await waitForSafeComfyTemperature(config, log, "feed");
 	const queued = await comfyRequest(config, "POST", "/prompt", {
 		client_id: crypto.randomUUID(),
 		prompt: buildTextToImageWorkflow(config, prompt, {
@@ -702,7 +1341,7 @@ async function generateComfyFeedReference({
 	});
 	const promptId = queued?.prompt_id;
 	if (!promptId) throw new Error("comfyui_feed_prompt_id_missing");
-	const image = await waitForComfyImage(config, promptId);
+	const image = await waitForComfyImage(config, promptId, log, "feed");
 	const localPath = await resolveComfyOutputToLocalPath(
 		config,
 		image,
@@ -843,58 +1482,57 @@ function applyDesigner2EditorialPolish({
 	tmpDir,
 	basePath,
 	accent = ACCENT_PALETTE.default,
+	styleProfile = {},
 	log,
 }) {
 	ensureImageFile(basePath, 5000);
 	const outputPath = path.join(tmpDir, `thumb_designer2_polished_${jobId}.jpg`);
-	const accentColor = normalizeAccentColor(accent || "0x00C2FF");
-	const filters = [
-		`scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos`,
-		`crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2`,
-		"setsar=1",
-		`drawbox=x=0:y=0:w=740:h=6:color=${accentColor}@0.36:t=fill`,
-		`drawbox=x=0:y=${THUMBNAIL_HEIGHT - 6}:w=740:h=6:color=${accentColor}@0.26:t=fill`,
-		`drawbox=x=0:y=0:w=6:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.32:t=fill`,
-		`drawbox=x=0:y=24:w=330:h=4:color=${accentColor}@0.58:t=fill`,
-		`drawbox=x=0:y=39:w=250:h=3:color=white@0.24:t=fill`,
-		`drawbox=x=0:y=54:w=180:h=2:color=${accentColor}@0.28:t=fill`,
-		`drawbox=x=0:y=318:w=730:h=4:color=${accentColor}@0.88:t=fill`,
-		`drawbox=x=0:y=318:w=730:h=40:color=${accentColor}@0.05:t=fill`,
-		`drawbox=x=0:y=${THUMBNAIL_HEIGHT - 2}:w=730:h=2:color=white@0.16:t=fill`,
-		`drawbox=x=42:y=354:w=654:h=278:color=white@0.07:t=2`,
-		`drawbox=x=42:y=354:w=654:h=2:color=${accentColor}@0.45:t=fill`,
-		`drawbox=x=730:y=0:w=18:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.28:t=fill`,
-		`drawbox=x=735:y=0:w=6:h=${THUMBNAIL_HEIGHT}:color=${accentColor}@0.98:t=fill`,
-		`drawbox=x=742:y=0:w=2:h=${THUMBNAIL_HEIGHT}:color=white@0.42:t=fill`,
-		`drawbox=x=744:y=0:w=6:h=${THUMBNAIL_HEIGHT}:color=black@0.42:t=fill`,
-		`drawbox=x=0:y=0:w=iw:h=ih:color=white@0.09:t=2`,
-		"format=yuv420p",
-	];
-	runFfmpeg(
-		[
-			"-i",
-			basePath,
-			"-vf",
-			filters.join(","),
-			"-frames:v",
-			"1",
-			"-q:v",
-			"1",
-			"-y",
-			outputPath,
-		],
-		"thumbnail_designer2_editorial_polish",
-	);
-	ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
-	if (typeof log === "function") {
-		log("thumbnailDesigner2 editorial polish ready", {
-			path: path.basename(outputPath),
-		});
+	const overlayPath = createDesigner2BroadcastOverlay({
+		jobId,
+		tmpDir,
+		accent,
+		styleProfile,
+		stage: "foreground",
+	});
+	try {
+		runFfmpeg(
+			[
+				"-i",
+				basePath,
+				"-i",
+				overlayPath,
+				"-filter_complex",
+				[
+					`[0:v]scale=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,` +
+						`crop=${THUMBNAIL_WIDTH}:${THUMBNAIL_HEIGHT}:(iw-ow)/2:(ih-oh)/2,setsar=1,` +
+						"eq=contrast=1.028:saturation=1.035:brightness=0.002,unsharp=5:5:0.34:3:3:0.04,format=rgba[base]",
+					"[1:v]format=rgba[fx]",
+					"[base][fx]overlay=0:0,drawbox=x=0:y=0:w=iw:h=ih:color=white@0.08:t=2,format=yuv420p[outv]",
+				].join(";"),
+				"-map",
+				"[outv]",
+				"-frames:v",
+				"1",
+				"-q:v",
+				"1",
+				"-y",
+				outputPath,
+			],
+			"thumbnail_designer2_editorial_polish",
+		);
+		ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+		if (typeof log === "function") {
+			log("thumbnailDesigner2 editorial polish ready", {
+				path: path.basename(outputPath),
+			});
+		}
+		return {
+			path: outputPath,
+			method: "comfyui_img2img_text_locked",
+		};
+	} finally {
+		safeUnlink(overlayPath);
 	}
-	return {
-		path: outputPath,
-		method: "comfyui_img2img_text_locked",
-	};
 }
 
 async function generateComfyFirstThumbnailPackage(args = {}) {
@@ -1027,6 +1665,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 	let comfyPlate = null;
 	let feedRestoredPath = "";
 	let presenterLockedPath = "";
+	let broadcastPath = "";
 	let textOverlayPath = "";
 	let finalPlate = null;
 	try {
@@ -1065,10 +1704,30 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 			label: "comfy_presenter_locked",
 			log,
 		});
+		let textBasePath = presenterLockedPath;
+		try {
+			broadcastPath = applyDesigner2BroadcastOverlay({
+				jobId,
+				tmpDir,
+				basePath: presenterLockedPath,
+				accent,
+				styleProfile,
+				stage: "background",
+				label: "broadcast_backplate",
+				log,
+			});
+			textBasePath = broadcastPath;
+		} catch (error) {
+			if (typeof log === "function") {
+				log("thumbnailDesigner2 broadcast backplate skipped", {
+					error: error?.message || String(error),
+				});
+			}
+		}
 		const textOverlayPlate = renderLockedThumbnailTextOverlay({
 			jobId,
 			tmpDir,
-			basePath: presenterLockedPath,
+			basePath: textBasePath,
 			headline: textPlan.primaryHeadline,
 			badgeText: textPlan.badgeText,
 			sublineText: textPlan.sublineText,
@@ -1084,6 +1743,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 				tmpDir,
 				basePath: textOverlayPlate.path,
 				accent,
+				styleProfile,
 				log,
 			});
 		} catch (error) {
@@ -1118,6 +1778,9 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		}
 		if (presenterLockedPath && finalPlate?.path !== presenterLockedPath) {
 			safeUnlink(presenterLockedPath);
+		}
+		if (broadcastPath && finalPlate?.path !== broadcastPath) {
+			safeUnlink(broadcastPath);
 		}
 		if (textOverlayPath && finalPlate?.path !== textOverlayPath) {
 			safeUnlink(textOverlayPath);
