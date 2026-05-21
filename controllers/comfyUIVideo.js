@@ -58,9 +58,9 @@ function getComfyVideoConfig(overrides = {}) {
 		outputDir:
 			normalizeWhitespace(process.env.COMFYUI_OUTPUT_DIR) ||
 			(root ? path.join(root, "output") : ""),
-		width: numberEnv("COMFY_VIDEO_WIDTH", 768, 256, 1280),
-		height: numberEnv("COMFY_VIDEO_HEIGHT", 432, 256, 1280),
-		fps: numberEnv("COMFY_VIDEO_FPS", 15, 6, 30),
+		width: numberEnv("COMFY_VIDEO_WIDTH", 640, 256, 1280),
+		height: numberEnv("COMFY_VIDEO_HEIGHT", 360, 256, 1280),
+		fps: numberEnv("COMFY_VIDEO_FPS", 12, 6, 30),
 		crf: Math.round(numberEnv("COMFY_VIDEO_CRF", 20, 15, 35)),
 		durationSec: numberEnv("COMFY_VIDEO_DURATION_SEC", 6, 2, 20),
 		timeoutMs: numberEnv("COMFY_VIDEO_TIMEOUT_MS", 35 * 60 * 1000, 60 * 1000, 90 * 60 * 1000),
@@ -77,11 +77,11 @@ function getComfyVideoConfig(overrides = {}) {
 		cropFactor: numberEnv("COMFY_VIDEO_CROP_FACTOR", 1.7, 1.5, 2.5),
 		retargetingEyes: numberEnv("COMFY_VIDEO_RETARGETING_EYES", 0.12, 0, 1),
 		retargetingMouth: numberEnv("COMFY_VIDEO_RETARGETING_MOUTH", 0.28, 0, 1),
-		headMotionIntensity: numberEnv("COMFY_VIDEO_HEAD_MOTION_INTENSITY", 1, 0.35, 1.7),
-		mouthMotionIntensity: numberEnv("COMFY_VIDEO_MOUTH_MOTION_INTENSITY", 1, 0.35, 1.7),
+		headMotionIntensity: numberEnv("COMFY_VIDEO_HEAD_MOTION_INTENSITY", 1.15, 0.35, 1.7),
+		mouthMotionIntensity: numberEnv("COMFY_VIDEO_MOUTH_MOTION_INTENSITY", 1.05, 0.35, 1.7),
 		expressionMotionIntensity: numberEnv(
 			"COMFY_VIDEO_EXPRESSION_MOTION_INTENSITY",
-			1,
+			0.9,
 			0.4,
 			1.6,
 		),
