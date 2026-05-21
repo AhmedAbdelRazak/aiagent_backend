@@ -835,7 +835,7 @@ function buildComfyFeedPrompt({
 	const aiCompanionLine = hasDesigner2AiCompanionSignal(
 		`${topicText} ${contextText}`,
 	)
-		? "For an AI companion, chatbot romance, loneliness, or emotional attachment topic, show a cinematic but non-branded scene: a real adult looking at a glowing phone or laptop at night, abstract AI chat light, soft human silhouette, subtle robot/AI presence through reflections or light only, emotional tech tension, no readable interface text."
+		? "For an AI companion, chatbot romance, loneliness, or emotional attachment topic, show a sharp cinematic but non-branded scene: a real adult at night holding or looking at a glowing phone or laptop, legible hands/face/side profile, abstract AI chat light or luminous message shapes with no readable text, subtle robot/AI presence only through reflections or light, emotional tech tension, crisp subject separation, not a blurred silhouette."
 		: "";
 	return normalizeWhitespace(`
 		Create one photorealistic editorial feed image for the left side of a YouTube thumbnail.
@@ -859,7 +859,7 @@ function buildNegativePrompt() {
 		bad eyes, bad beard, bad mouth, bad anatomy, extra fingers, extra limbs,
 		duplicate people, cropped head, out of frame, waxy skin, plastic skin,
 		cartoon, anime, illustration, painting, low quality, blurry, noisy,
-		muddy lighting, cluttered composition, oversaturated, overexposed,
+		faceless silhouette, indistinct figure, muddy lighting, cluttered composition, oversaturated, overexposed,
 		underexposed, random celebrity, fabricated portrait
 	`);
 }
@@ -1381,10 +1381,18 @@ async function generateComfyFeedReference({
 	topics,
 	contextText,
 	styleProfile,
+	qualityProfile = "",
 	log,
 }) {
 	const config = getComfyConfig();
 	if (!config.enabled || !config.feedEnabled) return null;
+	const highQualityAbstractFeed = qualityProfile === "abstract_ai_companion";
+	const feedSteps = highQualityAbstractFeed
+		? Math.max(config.feedSteps, 6)
+		: config.feedSteps;
+	const feedCfg = highQualityAbstractFeed ? Math.min(config.feedCfg, 4.8) : config.feedCfg;
+	const feedSampler = highQualityAbstractFeed ? "dpmpp_2m" : config.feedSampler;
+	const feedScheduler = highQualityAbstractFeed ? "karras" : config.feedScheduler;
 	const prompt = buildComfyFeedPrompt({
 		title,
 		shortTitle,
@@ -1399,12 +1407,13 @@ async function generateComfyFeedReference({
 			model: config.model,
 			width: config.feedWidth,
 			height: config.feedHeight,
-			steps: config.feedSteps,
-			cfg: config.feedCfg,
-			sampler: config.feedSampler,
-			scheduler: config.feedScheduler,
+			steps: feedSteps,
+			cfg: feedCfg,
+			sampler: feedSampler,
+			scheduler: feedScheduler,
 			maxTempC: config.maxTempC,
 			preflightMaxTempC: config.preflightMaxTempC,
+			qualityProfile: qualityProfile || null,
 		});
 	}
 	await comfyRequest(config, "GET", "/system_stats", null, { timeout: 8000 });
@@ -1414,10 +1423,10 @@ async function generateComfyFeedReference({
 		prompt: buildTextToImageWorkflow(config, prompt, {
 			width: config.feedWidth,
 			height: config.feedHeight,
-			steps: config.feedSteps,
-			cfg: config.feedCfg,
-			sampler: config.feedSampler,
-			scheduler: config.feedScheduler,
+			steps: feedSteps,
+			cfg: feedCfg,
+			sampler: feedSampler,
+			scheduler: feedScheduler,
 			prefix: "agentai_thumbnail2_feed",
 		}),
 	});
@@ -1711,6 +1720,7 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 				topics,
 				contextText,
 				styleProfile,
+				qualityProfile: reason,
 				log,
 			});
 			if (generatedFeed?.path) {
