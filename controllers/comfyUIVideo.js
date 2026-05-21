@@ -389,6 +389,7 @@ function smoothVideoFps({ sourcePath, outputPath, outputFps, durationSec, crf = 
 	const fps = Math.round(clampNumber(outputFps, 0, 0, 30));
 	if (!fps || !sourcePath || !outputPath || sourcePath === outputPath) return sourcePath;
 	const duration = clampNumber(durationSec, 0, 0, 120);
+	const targetFrames = duration > 0 ? Math.max(1, Math.round(duration * fps)) : 0;
 	ensureDir(path.dirname(outputPath));
 	if (typeof log === "function") {
 		log("comfy video fps smoothing starting", {
@@ -402,7 +403,7 @@ function smoothVideoFps({ sourcePath, outputPath, outputFps, durationSec, crf = 
 		"-i",
 		sourcePath,
 		"-vf",
-		`minterpolate=fps=${fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,tpad=stop_mode=clone:stop_duration=1`,
+		`minterpolate=fps=${fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,tpad=stop_mode=clone:stop_duration=2,fps=${fps}`,
 		"-r",
 		String(fps),
 		"-c:v",
@@ -417,6 +418,7 @@ function smoothVideoFps({ sourcePath, outputPath, outputFps, durationSec, crf = 
 		"+faststart",
 	];
 	if (duration > 0) args.push("-t", duration.toFixed(3));
+	if (targetFrames > 0) args.push("-frames:v", String(targetFrames));
 	args.push(outputPath);
 	runFfmpeg(args, "comfy_video_fps_smoothing");
 	if (typeof log === "function") {
