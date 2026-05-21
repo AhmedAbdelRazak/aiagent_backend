@@ -56,9 +56,11 @@ const { google } = require("googleapis");
 const { OpenAI } = require("openai");
 const cloudinary = require("cloudinary").v2;
 const { generateThumbnailPackage } = require("../assets/thumbnailDesigner2");
+// Placeholder for the prior OpenAI wardrobe editor, kept for easy rollback:
+// const { generatePresenterAdjustedImage } = require("../assets/presenterAdjustments");
 const {
 	generatePresenterAdjustedImage,
-} = require("../assets/presenterAdjustments");
+} = require("../assets/presenterAdjustments2");
 const {
 	assertOpenAIImageReady,
 	editImageToPath,

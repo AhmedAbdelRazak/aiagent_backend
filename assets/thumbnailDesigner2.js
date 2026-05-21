@@ -2,6 +2,7 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const axios = require("axios");
 const FormData = require("form-data");
@@ -127,12 +128,12 @@ function getComfyConfig() {
 			60 * 60 * 1000,
 		),
 		pollMs: numberEnv("THUMBNAIL_DESIGNER2_COMFY_POLL_MS", 2500, 1000, 10000),
-		maxTempC: numberEnv("THUMBNAIL_DESIGNER2_MAX_TEMP_C", 93, 70, 105),
+		maxTempC: numberEnv("THUMBNAIL_DESIGNER2_MAX_TEMP_C", 92, 70, 92),
 		preflightMaxTempC: numberEnv(
 			"THUMBNAIL_DESIGNER2_PREFLIGHT_MAX_TEMP_C",
-			88,
+			86,
 			50,
-			100,
+			90,
 		),
 		preflightCooldownMs: numberEnv(
 			"THUMBNAIL_DESIGNER2_PREFLIGHT_COOLDOWN_MS",
@@ -151,6 +152,24 @@ function getComfyConfig() {
 				(process.platform === "win32"
 					? ""
 					: "/home/ahmedadmin/ai-lab/ComfyUI/output"),
+		),
+		maxDiskUsedPercent: numberEnv(
+			"THUMBNAIL_DESIGNER2_MAX_DISK_USED_PERCENT",
+			40,
+			10,
+			95,
+		),
+		maxMemUsedPercent: numberEnv(
+			"THUMBNAIL_DESIGNER2_MAX_MEM_USED_PERCENT",
+			90,
+			50,
+			99,
+		),
+		minMemAvailableMb: numberEnv(
+			"THUMBNAIL_DESIGNER2_MIN_MEM_AVAILABLE_MB",
+			4096,
+			512,
+			14000,
 		),
 	};
 }
@@ -699,6 +718,17 @@ function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
 			textPanelOpacity: 1,
 			brief:
 				"cinematic wellness/editorial contrast, cyan night-to-morning glow, polished mental-fatigue story energy, clean premium YouTube frame",
+			};
+	}
+	if (hasDesigner2FreeHappinessSignal(hay)) {
+		return {
+			...styleProfile,
+			id: "warm_green_wellbeing",
+			accent: "0x22C55E",
+			tagColor: "0x163326",
+			textPanelOpacity: 0.8,
+			brief:
+				"warm optimistic self-improvement editorial contrast, clean green and soft golden sunlight, crisp practical wellbeing story cue, premium YouTube frame",
 		};
 	}
 	return styleProfile;
@@ -709,6 +739,18 @@ function hasDesigner2AiCompanionSignal(contextText = "") {
 	return (
 		/\b(ai|chatbot|companions?|robot|artificial intelligence)\b/.test(hay) &&
 		/\b(love|romance|romantic|relationship|girlfriend|boyfriend|lonely|intimacy|attachment|dependence|falling|emotional)\b/.test(
+			hay,
+		)
+	);
+}
+
+function hasDesigner2FreeHappinessSignal(contextText = "") {
+	const hay = normalizeWhitespace(contextText).toLowerCase();
+	return (
+		/\b(happier|happiness|happy|free|gratitude|grateful|simple living|walk|walking|call someone|calling a friend|help someone|journaling|journal|loneliness|lonely|self-improvement|feel better)\b/.test(
+			hay,
+		) &&
+		/\b(money|spending|spend|buy|purchase|budget|\$0|zero dollars|without spending|cost of living)\b/.test(
 			hay,
 		)
 	);
@@ -797,6 +839,8 @@ function buildComfyPrompt({
 	const feedLine = hasFeedImage
 		? aiCompanionFeed
 			? "The left side contains an AI-generated device-focused AI companion reference. Preserve the phone/laptop/glow story cue; do not introduce people, faces, hands, readable text, or screenshot UI."
+			: sourceType === "comfy_generated_conceptual"
+			? "The left side contains an AI-generated object-led conceptual reference. Preserve the crisp symbolic story cue, clean negative space, and practical emotional context; do not introduce people, faces, hands, readable text, or clutter."
 			: sourceType === "comfy_generated_fallback"
 			? "The left side contains an AI-generated topic reference used only because no reliable orchestrator feed image was available. Keep it symbolic, non-fabricated, and visually clear; polish it into a premium thumbnail story cue."
 			: "The left side already contains the orchestrator-provided feed/story image. Preserve its main subject and context, then relight, sharpen, simplify, and frame it as a premium thumbnail story cue."
@@ -844,12 +888,18 @@ function buildComfyFeedPrompt({
 	)
 		? "For an AI companion, chatbot romance, loneliness, or emotional attachment topic, show a sharp cinematic but non-branded object-only scene: glowing phone and laptop on a dark desk at night, empty chair, glass reflections, luminous abstract chat-bubble light and soft heart-shaped glow, subtle robot/AI presence only through reflections or light, emotional tech tension, crisp subject separation, no people, no faces, no hands, no readable text, not a blurred silhouette."
 		: "";
+	const freeHappinessLine = hasDesigner2FreeHappinessSignal(
+		`${topicText} ${contextText}`,
+	)
+		? "For a happiness without spending money, simple living, gratitude, or money-stress topic, make the image object-led and crystal clear: warm sunlight on a public park bench or small kitchen table, blank gratitude journal, simple coffee mug, phone placed face down or with an unreadable dark screen, a few coins or closed wallet as a subtle money cue, soft greenery in the background, hopeful practical mood. No faces, no hands, no family group, no readable text, no shopping scene, no luxury products, no fake UI."
+		: "";
 	return normalizeWhitespace(`
 		Create one photorealistic editorial feed image for the left side of a YouTube thumbnail.
 		No presenter, no host, no text, no typography, no watermark, no UI.
 		Topic: ${topicText}.
 		Context and visual hints: ${normalizeWhitespace(contextText).slice(0, 1200)}.
 		${aiCompanionLine}
+		${freeHappinessLine}
 		For a tiredness, burnout, mental fatigue, sleep, rest, or overloaded-life topic, show a relatable cinematic scene:
 		a tired adult near a laptop at night, coffee cup, messy desk, notebook or unfinished task list, soft morning light or window glow, calm realistic mood, practical not medical.
 		Make it feel like a high-quality news/editorial feed photo with clear subject, strong depth, cinematic lighting, premium contrast, and space near the lower-left for later headline text.
@@ -1094,6 +1144,95 @@ function readMaxCpuTemperatureC() {
 	return Math.max(...values);
 }
 
+function readMemorySnapshot() {
+	if (process.platform !== "win32") {
+		try {
+			const raw = fs.readFileSync("/proc/meminfo", "utf8");
+			const getKb = (key) => {
+				const match = raw.match(new RegExp(`^${key}:\\s+(\\d+)\\s+kB`, "m"));
+				return match ? Number(match[1]) : 0;
+			};
+			const totalKb = getKb("MemTotal");
+			const availableKb = getKb("MemAvailable") || getKb("MemFree");
+			if (totalKb > 0 && availableKb > 0) {
+				return {
+					memAvailableMb: Math.round(availableKb / 1024),
+					memUsedPercent:
+						Math.round(((totalKb - availableKb) / totalKb) * 1000) / 10,
+				};
+			}
+		} catch {}
+	}
+	const total = os.totalmem();
+	const free = os.freemem();
+	return {
+		memAvailableMb: Math.round(free / 1024 / 1024),
+		memUsedPercent:
+			total > 0 ? Math.round(((total - free) / total) * 1000) / 10 : null,
+	};
+}
+
+function readDiskUsedPercent(config = {}) {
+	const candidates = [
+		config.outputDir,
+		config.inputDir,
+		process.cwd(),
+	].filter(Boolean);
+	const target = candidates[0] || process.cwd();
+	if (process.platform === "win32") return null;
+	try {
+		const out = require("child_process")
+			.execFileSync("df", ["-P", target], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+			})
+			.trim()
+			.split(/\r?\n/)
+			.pop();
+		const parts = String(out || "").trim().split(/\s+/);
+		const used = parts[4] || "";
+		const parsed = Number(String(used).replace("%", ""));
+		return Number.isFinite(parsed) ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+function systemSnapshot(config = {}) {
+	return {
+		tempC: readMaxCpuTemperatureC(),
+		...readMemorySnapshot(),
+		diskUsedPercent: readDiskUsedPercent(config),
+	};
+}
+
+function assertSystemGuards(config, snap = {}) {
+	if (
+		snap.diskUsedPercent != null &&
+		snap.diskUsedPercent > config.maxDiskUsedPercent
+	) {
+		throw new Error(
+			`comfyui_disk_guard:${snap.diskUsedPercent}>${config.maxDiskUsedPercent}`,
+		);
+	}
+	if (
+		snap.memAvailableMb != null &&
+		snap.memAvailableMb < config.minMemAvailableMb
+	) {
+		throw new Error(
+			`comfyui_memory_guard:${snap.memAvailableMb}<${config.minMemAvailableMb}`,
+		);
+	}
+	if (
+		snap.memUsedPercent != null &&
+		snap.memUsedPercent >= config.maxMemUsedPercent
+	) {
+		throw new Error(
+			`comfyui_memory_used_guard:${snap.memUsedPercent}>=${config.maxMemUsedPercent}`,
+		);
+	}
+}
+
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
@@ -1115,7 +1254,9 @@ async function interruptComfy(config, log, reason = {}) {
 }
 
 async function waitForSafeComfyTemperature(config, log, label = "comfy") {
-	const initialTemp = readMaxCpuTemperatureC();
+	const initialSnap = systemSnapshot(config);
+	assertSystemGuards(config, initialSnap);
+	const initialTemp = initialSnap.tempC;
 	if (initialTemp == null) return;
 	if (initialTemp < config.preflightMaxTempC) return;
 	const started = Date.now();
@@ -1135,7 +1276,9 @@ async function waitForSafeComfyTemperature(config, log, label = "comfy") {
 		Date.now() - started < config.preflightCooldownMs
 	) {
 		await sleep(Math.min(15000, Math.max(3000, config.pollMs)));
-		temp = readMaxCpuTemperatureC();
+		const snap = systemSnapshot(config);
+		assertSystemGuards(config, snap);
+		temp = snap.tempC;
 	}
 	if (temp != null && temp >= config.preflightMaxTempC) {
 		throw new Error(
@@ -1169,7 +1312,19 @@ async function waitForComfyImage(config, promptId, log, label = "plate") {
 	const deadline = Date.now() + config.timeoutMs;
 	while (Date.now() < deadline) {
 		await new Promise((resolve) => setTimeout(resolve, config.pollMs));
-		const tempC = readMaxCpuTemperatureC();
+		const snap = systemSnapshot(config);
+		try {
+			assertSystemGuards(config, snap);
+		} catch (error) {
+			await interruptComfy(config, log, {
+				label,
+				promptId,
+				...snap,
+				reason: "system_guard",
+			});
+			throw error;
+		}
+		const tempC = snap.tempC;
 		if (tempC != null && tempC >= config.maxTempC) {
 			await interruptComfy(config, log, {
 				label,
@@ -1396,14 +1551,35 @@ async function generateComfyFeedReference({
 	const config = getComfyConfig();
 	if (!config.enabled || !config.feedEnabled) return null;
 	const highQualityAbstractFeed = qualityProfile === "abstract_ai_companion";
+	const highQualityConceptualFeed = qualityProfile === "conceptual_free_happiness";
+	const feedWidth = highQualityConceptualFeed
+		? Math.max(config.feedWidth, 896)
+		: config.feedWidth;
+	const feedHeight = highQualityConceptualFeed
+		? Math.max(config.feedHeight, 768)
+		: config.feedHeight;
 	const feedSteps = highQualityAbstractFeed
 		? Math.max(config.feedSteps, 6)
+		: highQualityConceptualFeed
+		? Math.max(config.feedSteps, 10)
 		: config.feedSteps;
-	const feedCfg = highQualityAbstractFeed ? Math.min(config.feedCfg, 4.8) : config.feedCfg;
-	const feedSampler = highQualityAbstractFeed ? "dpmpp_2m" : config.feedSampler;
-	const feedScheduler = highQualityAbstractFeed ? "karras" : config.feedScheduler;
+	const feedCfg = highQualityAbstractFeed
+		? Math.min(config.feedCfg, 4.8)
+		: highQualityConceptualFeed
+		? Math.min(Math.max(config.feedCfg, 5.2), 6)
+		: config.feedCfg;
+	const feedSampler =
+		highQualityAbstractFeed || highQualityConceptualFeed
+			? "dpmpp_2m"
+			: config.feedSampler;
+	const feedScheduler =
+		highQualityAbstractFeed || highQualityConceptualFeed
+			? "karras"
+			: config.feedScheduler;
 	const feedNegativePromptExtra = highQualityAbstractFeed
 		? "people, person, human, woman, man, child, teen, face, portrait, eyes, mouth, hair, hands, fingers, arms, body, bare shoulder, bedroom portrait, sleeping face, sensual pose, cropped body, distorted hands"
+		: highQualityConceptualFeed
+		? "people, person, human, family, group, child, face, portrait, eyes, mouth, hair, hands, fingers, arms, body, shopping mall, luxury store, brand, product logo, readable phone screen, receipt text, distorted objects"
 		: "";
 	const prompt = buildComfyFeedPrompt({
 		title,
@@ -1417,8 +1593,8 @@ async function generateComfyFeedReference({
 		log("thumbnailDesigner2 comfy feed starting", {
 			url: config.url,
 			model: config.model,
-			width: config.feedWidth,
-			height: config.feedHeight,
+			width: feedWidth,
+			height: feedHeight,
 			steps: feedSteps,
 			cfg: feedCfg,
 			sampler: feedSampler,
@@ -1433,8 +1609,8 @@ async function generateComfyFeedReference({
 	const queued = await comfyRequest(config, "POST", "/prompt", {
 		client_id: crypto.randomUUID(),
 		prompt: buildTextToImageWorkflow(config, prompt, {
-			width: config.feedWidth,
-			height: config.feedHeight,
+			width: feedWidth,
+			height: feedHeight,
 			steps: feedSteps,
 			cfg: feedCfg,
 			sampler: feedSampler,
@@ -1742,6 +1918,8 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 				topicReferenceSource =
 					reason === "abstract_ai_companion"
 						? "comfy_generated_ai_companion"
+						: reason === "conceptual_free_happiness"
+						? "comfy_generated_conceptual"
 						: "comfy_generated_fallback";
 				if (typeof log === "function") {
 					log("thumbnailDesigner2 comfy feed selected", {
@@ -1765,6 +1943,12 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 		hasDesigner2AiCompanionSignal(styleContextText)
 	) {
 		await tryGeneratedFeedReference("abstract_ai_companion");
+	}
+	if (
+		!generatedFeedAttempted &&
+		hasDesigner2FreeHappinessSignal(styleContextText)
+	) {
+		await tryGeneratedFeedReference("conceptual_free_happiness");
 	}
 	if (!topicReferencePaths.length && !generatedFeedAttempted) {
 		await tryGeneratedFeedReference("missing_orchestrator_reference");

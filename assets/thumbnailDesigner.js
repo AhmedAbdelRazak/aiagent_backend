@@ -1205,6 +1205,34 @@ function normalizeHeadlineCandidate(text = "", maxWords = 4, maxChars = 26) {
 	return kept.join(" ").trim();
 }
 
+function normalizeCurrencyHeadlineCandidate(
+	text = "",
+	maxWords = 4,
+	maxChars = 26,
+) {
+	if (!/\$\s*\d/.test(String(text || ""))) return "";
+	const tokens =
+		normalizeWhitespace(text)
+			.replace(/[_|:;/\\-]+/g, " ")
+			.match(/\$+\s*\d+(?:[.,]\d+)?[a-zA-Z]*|[a-zA-Z0-9']+|[!?]+/g) ||
+		[];
+	const normalized = tokens
+		.map((token) =>
+			String(token || "")
+				.replace(/\$\s+/g, "$")
+				.toUpperCase(),
+		)
+		.filter(Boolean);
+	if (!normalized.length) return "";
+	const kept = [];
+	for (const token of normalized) {
+		const candidate = [...kept, token].join(" ").trim();
+		if (kept.length >= maxWords || candidate.length > maxChars) break;
+		kept.push(token);
+	}
+	return kept.join(" ").trim();
+}
+
 function splitHeadlineClauses(text = "") {
 	return normalizeWhitespace(text)
 		.replace(/[.!?]+/g, "|")
@@ -1379,7 +1407,9 @@ function deriveHeadlineFromTitle({
 
 function normalizeHeadlineText(text = "", maxWords = 4, options = {}) {
 	const maxChars = Number(options?.maxChars) || 26;
-	let out = normalizeHeadlineCandidate(text, maxWords, maxChars);
+	let out =
+		normalizeCurrencyHeadlineCandidate(text, maxWords, maxChars) ||
+		normalizeHeadlineCandidate(text, maxWords, maxChars);
 	if (!out) out = "BIG UPDATE";
 	return out.toUpperCase();
 }
