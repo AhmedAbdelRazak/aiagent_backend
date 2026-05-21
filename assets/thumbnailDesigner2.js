@@ -793,16 +793,23 @@ function buildComfyPrompt({
 	const safeBadge = normalizeWhitespace(badgeText || "spotlight");
 	const safeSubline = normalizeWhitespace(sublineText || topicText);
 	const sourceType = normalizeWhitespace(feedSource).toLowerCase();
+	const aiCompanionFeed = sourceType === "comfy_generated_ai_companion";
 	const feedLine = hasFeedImage
-		? sourceType === "comfy_generated_fallback"
+		? aiCompanionFeed
+			? "The left side contains an AI-generated device-focused AI companion reference. Preserve the phone/laptop/glow story cue; do not introduce people, faces, hands, readable text, or screenshot UI."
+			: sourceType === "comfy_generated_fallback"
 			? "The left side contains an AI-generated topic reference used only because no reliable orchestrator feed image was available. Keep it symbolic, non-fabricated, and visually clear; polish it into a premium thumbnail story cue."
 			: "The left side already contains the orchestrator-provided feed/story image. Preserve its main subject and context, then relight, sharpen, simplify, and frame it as a premium thumbnail story cue."
 		: "No reliable feed image is present. Keep the left side symbolic and non-fabricated; use environment, objects, color, and editorial lighting instead of inventing real people.";
+	const aiCompanionGuard = aiCompanionFeed
+		? "For this AI companion thumbnail, keep the left story side object-led: glowing phone, laptop, dark desk, reflections, and luminous abstract chat shapes only. No human figure, no portrait, no cropped face, no hands."
+		: "";
 
 	return normalizeWhitespace(`
 		Image-to-image polish of one complete 16:9 YouTube thumbnail visual plate.
 		Use the input image as the layout blueprint: story/feed visual on the left, presenter on the right.
 		${feedLine}
+		${aiCompanionGuard}
 		The text is already planned separately: headline "${safeHeadline}", badge "${safeBadge}", optional subject "${safeSubline}".
 		Do not render text. Leave a clean readable left-side text area for those exact words to be added after generation.
 		Remove or paint over any words, captions, screenshot fragments, labels, or text-like artifacts already visible in the source feed image, especially near the lower-left text-safe panel.
@@ -835,7 +842,7 @@ function buildComfyFeedPrompt({
 	const aiCompanionLine = hasDesigner2AiCompanionSignal(
 		`${topicText} ${contextText}`,
 	)
-		? "For an AI companion, chatbot romance, loneliness, or emotional attachment topic, show a sharp cinematic but non-branded scene: close over-the-shoulder or hands-only view of a real adult holding a glowing phone or working at a laptop at night, crisp natural hands, no visible face, no readable text, abstract AI chat light or luminous message shapes, subtle robot/AI presence only through reflections or light, emotional tech tension, crisp subject separation, not a blurred silhouette."
+		? "For an AI companion, chatbot romance, loneliness, or emotional attachment topic, show a sharp cinematic but non-branded object-only scene: glowing phone and laptop on a dark desk at night, empty chair, glass reflections, luminous abstract chat-bubble light and soft heart-shaped glow, subtle robot/AI presence only through reflections or light, emotional tech tension, crisp subject separation, no people, no faces, no hands, no readable text, not a blurred silhouette."
 		: "";
 	return normalizeWhitespace(`
 		Create one photorealistic editorial feed image for the left side of a YouTube thumbnail.
@@ -851,7 +858,7 @@ function buildComfyFeedPrompt({
 	`);
 }
 
-function buildNegativePrompt() {
+function buildNegativePrompt(extra = "") {
 	return normalizeWhitespace(`
 		text, letters, words, subtitles, captions, logo, watermark, signature,
 		UI screenshot, fake interface, poster text, misspelled text, duplicated text,
@@ -860,7 +867,8 @@ function buildNegativePrompt() {
 		duplicate people, cropped head, out of frame, waxy skin, plastic skin,
 		cartoon, anime, illustration, painting, low quality, blurry, noisy,
 		faceless silhouette, indistinct figure, muddy lighting, cluttered composition, oversaturated, overexposed,
-		underexposed, random celebrity, fabricated portrait
+		underexposed, random celebrity, fabricated portrait,
+		${extra}
 	`);
 }
 
@@ -953,6 +961,7 @@ function buildTextToImageWorkflow(config, prompt, options = {}) {
 	const sampler = options.sampler || config.feedSampler || config.sampler;
 	const scheduler = options.scheduler || config.feedScheduler || config.scheduler;
 	const prefix = options.prefix || "agentai_thumbnail2_feed";
+	const negativePromptExtra = normalizeWhitespace(options.negativePromptExtra || "");
 	return {
 		"4": {
 			class_type: "CheckpointLoaderSimple",
@@ -970,7 +979,7 @@ function buildTextToImageWorkflow(config, prompt, options = {}) {
 		"7": {
 			class_type: "CLIPTextEncode",
 			inputs: {
-				text: buildNegativePrompt(),
+				text: buildNegativePrompt(negativePromptExtra),
 				clip: ["4", 1],
 			},
 		},
@@ -1393,6 +1402,9 @@ async function generateComfyFeedReference({
 	const feedCfg = highQualityAbstractFeed ? Math.min(config.feedCfg, 4.8) : config.feedCfg;
 	const feedSampler = highQualityAbstractFeed ? "dpmpp_2m" : config.feedSampler;
 	const feedScheduler = highQualityAbstractFeed ? "karras" : config.feedScheduler;
+	const feedNegativePromptExtra = highQualityAbstractFeed
+		? "people, person, human, woman, man, child, teen, face, portrait, eyes, mouth, hair, hands, fingers, arms, body, bare shoulder, bedroom portrait, sleeping face, sensual pose, cropped body, distorted hands"
+		: "";
 	const prompt = buildComfyFeedPrompt({
 		title,
 		shortTitle,
@@ -1428,6 +1440,7 @@ async function generateComfyFeedReference({
 			sampler: feedSampler,
 			scheduler: feedScheduler,
 			prefix: "agentai_thumbnail2_feed",
+			negativePromptExtra: feedNegativePromptExtra,
 		}),
 	});
 	const promptId = queued?.prompt_id;
