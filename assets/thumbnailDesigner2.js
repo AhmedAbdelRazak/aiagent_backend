@@ -835,7 +835,7 @@ function buildComfyFeedPrompt({
 	const aiCompanionLine = hasDesigner2AiCompanionSignal(
 		`${topicText} ${contextText}`,
 	)
-		? "For an AI companion, chatbot romance, loneliness, or emotional attachment topic, show a sharp cinematic but non-branded scene: a real adult at night holding or looking at a glowing phone or laptop, legible hands/face/side profile, abstract AI chat light or luminous message shapes with no readable text, subtle robot/AI presence only through reflections or light, emotional tech tension, crisp subject separation, not a blurred silhouette."
+		? "For an AI companion, chatbot romance, loneliness, or emotional attachment topic, show a sharp cinematic but non-branded scene: close over-the-shoulder or hands-only view of a real adult holding a glowing phone or working at a laptop at night, crisp natural hands, no visible face, no readable text, abstract AI chat light or luminous message shapes, subtle robot/AI presence only through reflections or light, emotional tech tension, crisp subject separation, not a blurred silhouette."
 		: "";
 	return normalizeWhitespace(`
 		Create one photorealistic editorial feed image for the left side of a YouTube thumbnail.
