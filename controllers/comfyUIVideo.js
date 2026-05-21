@@ -373,9 +373,10 @@ async function downloadComfyFile(config, file, outPath) {
 	return outPath;
 }
 
-function smoothVideoFps({ sourcePath, outputPath, outputFps, crf = 20, log }) {
+function smoothVideoFps({ sourcePath, outputPath, outputFps, durationSec, crf = 20, log }) {
 	const fps = Math.round(clampNumber(outputFps, 0, 0, 30));
 	if (!fps || !sourcePath || !outputPath || sourcePath === outputPath) return sourcePath;
+	const duration = clampNumber(durationSec, 0, 0, 120);
 	ensureDir(path.dirname(outputPath));
 	if (typeof log === "function") {
 		log("comfy video fps smoothing starting", {
@@ -384,29 +385,28 @@ function smoothVideoFps({ sourcePath, outputPath, outputFps, crf = 20, log }) {
 			outputFps: fps,
 		});
 	}
-	runFfmpeg(
-		[
-			"-y",
-			"-i",
-			sourcePath,
-			"-vf",
-			`minterpolate=fps=${fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1`,
-			"-r",
-			String(fps),
-			"-c:v",
-			"libx264",
-			"-preset",
-			"veryfast",
-			"-crf",
-			String(Math.round(clampNumber(crf, 20, 15, 35))),
-			"-pix_fmt",
-			"yuv420p",
-			"-movflags",
-			"+faststart",
-			outputPath,
-		],
-		"comfy_video_fps_smoothing",
-	);
+	const args = [
+		"-y",
+		"-i",
+		sourcePath,
+		"-vf",
+		`minterpolate=fps=${fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,tpad=stop_mode=clone:stop_duration=1`,
+		"-r",
+		String(fps),
+		"-c:v",
+		"libx264",
+		"-preset",
+		"veryfast",
+		"-crf",
+		String(Math.round(clampNumber(crf, 20, 15, 35))),
+		"-pix_fmt",
+		"yuv420p",
+		"-movflags",
+		"+faststart",
+	];
+	if (duration > 0) args.push("-t", duration.toFixed(3));
+	args.push(outputPath);
+	runFfmpeg(args, "comfy_video_fps_smoothing");
 	if (typeof log === "function") {
 		log("comfy video fps smoothing ready", {
 			path: outputPath,
@@ -932,6 +932,7 @@ async function comfyImageToVideo({
 				sourcePath: rawPath,
 				outputPath: finalPath,
 				outputFps,
+				durationSec: duration,
 				crf: config.crf,
 				log,
 			});
