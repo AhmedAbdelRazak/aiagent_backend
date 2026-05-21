@@ -75,8 +75,16 @@ function getComfyVideoConfig(overrides = {}) {
 		),
 		maxDiskUsedPercent: numberEnv("COMFY_VIDEO_MAX_DISK_USED_PERCENT", 40, 10, 95),
 		cropFactor: numberEnv("COMFY_VIDEO_CROP_FACTOR", 1.7, 1.5, 2.5),
-		retargetingEyes: numberEnv("COMFY_VIDEO_RETARGETING_EYES", 0, 0, 1),
-		retargetingMouth: numberEnv("COMFY_VIDEO_RETARGETING_MOUTH", 0, 0, 1),
+		retargetingEyes: numberEnv("COMFY_VIDEO_RETARGETING_EYES", 0.12, 0, 1),
+		retargetingMouth: numberEnv("COMFY_VIDEO_RETARGETING_MOUTH", 0.28, 0, 1),
+		headMotionIntensity: numberEnv("COMFY_VIDEO_HEAD_MOTION_INTENSITY", 1, 0.35, 1.7),
+		mouthMotionIntensity: numberEnv("COMFY_VIDEO_MOUTH_MOTION_INTENSITY", 1, 0.35, 1.7),
+		expressionMotionIntensity: numberEnv(
+			"COMFY_VIDEO_EXPRESSION_MOTION_INTENSITY",
+			1,
+			0.4,
+			1.6,
+		),
 		keepComfyOutputs: truthyEnv(process.env.COMFY_VIDEO_KEEP_OUTPUTS, false),
 		keepComfyInputs: truthyEnv(process.env.COMFY_VIDEO_KEEP_INPUTS, false),
 		...overrides,
@@ -465,45 +473,127 @@ function inferExpressionFromPrompt(promptText = "", fallback = "neutral") {
 	return normalizeExpression(fallback);
 }
 
-function expressionPresets(expression = "neutral") {
+function scalePreset(preset, config = {}) {
+	const head = clampNumber(config.headMotionIntensity, 1, 0.35, 1.7);
+	const mouth = clampNumber(config.mouthMotionIntensity, 1, 0.35, 1.7);
+	const expression = clampNumber(config.expressionMotionIntensity, 1, 0.4, 1.6);
+	return {
+		...preset,
+		rotate_pitch: Number(preset.rotate_pitch || 0) * head,
+		rotate_yaw: Number(preset.rotate_yaw || 0) * head,
+		rotate_roll: Number(preset.rotate_roll || 0) * head,
+		blink: Number(preset.blink || 0) * expression,
+		eyebrow: Number(preset.eyebrow || 0) * expression,
+		wink: Number(preset.wink || 0) * expression,
+		pupil_x: Number(preset.pupil_x || 0) * expression,
+		pupil_y: Number(preset.pupil_y || 0) * expression,
+		aaa: Number(preset.aaa || 0) * mouth,
+		eee: Number(preset.eee || 0) * mouth,
+		woo: Number(preset.woo || 0) * mouth,
+		smile: Number(preset.smile || 0) * expression,
+	};
+}
+
+function expressionPresets(expression = "neutral", config = {}) {
 	const expr = normalizeExpression(expression);
 	const base = [
-		{ rotate_pitch: 0, rotate_yaw: -0.8, blink: 1.5, eyebrow: 0, aaa: 1, smile: 0 },
-		{ rotate_pitch: -0.8, rotate_yaw: 0.8, blink: 0, eyebrow: 0.3, aaa: 2, smile: 0.02 },
-		{ rotate_pitch: 0.6, rotate_yaw: 0, blink: 2.5, eyebrow: 0, aaa: 0, smile: 0 },
-	];
+		{
+			rotate_pitch: -0.2,
+			rotate_yaw: -1.5,
+			rotate_roll: -0.35,
+			blink: 0.2,
+			eyebrow: 0.15,
+			aaa: 8,
+			eee: 1.4,
+			woo: 0.2,
+			smile: 0.01,
+		},
+		{
+			rotate_pitch: -1.4,
+			rotate_yaw: 1.1,
+			rotate_roll: 0.45,
+			blink: 0,
+			eyebrow: 0.35,
+			aaa: 15,
+			eee: 3.4,
+			woo: 0.7,
+			smile: 0.03,
+		},
+		{
+			rotate_pitch: 0.8,
+			rotate_yaw: 0.2,
+			rotate_roll: 0,
+			blink: 4.2,
+			eyebrow: 0,
+			aaa: 3,
+			eee: 0.2,
+			woo: 0.1,
+			smile: 0,
+		},
+		{
+			rotate_pitch: -0.4,
+			rotate_yaw: -0.9,
+			rotate_roll: -0.2,
+			blink: 0,
+			eyebrow: 0.1,
+			aaa: 6,
+			eee: 0.3,
+			woo: 3.4,
+			smile: 0.02,
+		},
+		{
+			rotate_pitch: 0.5,
+			rotate_yaw: 1.6,
+			rotate_roll: 0.35,
+			blink: 0.3,
+			eyebrow: 0.2,
+			aaa: 11,
+			eee: 2.1,
+			woo: 1.2,
+			smile: 0.02,
+		},
+	].map((preset) => scalePreset(preset, config));
 	if (expr === "warm") {
 		return base.map((p, i) => ({
 			...p,
-			smile: [0.08, 0.12, 0.06][i] || 0.08,
-			eyebrow: [0.2, 0.4, 0.1][i] || 0.2,
+			smile: p.smile + ([0.06, 0.09, 0.04, 0.07, 0.08][i] || 0.06),
+			eyebrow: p.eyebrow + ([0.2, 0.35, 0.05, 0.15, 0.25][i] || 0.15),
 		}));
 	}
 	if (expr === "excited") {
 		return base.map((p, i) => ({
 			...p,
-			rotate_pitch: [-1.2, -0.4, 0.5][i] || p.rotate_pitch,
-			eyebrow: [0.8, 1.1, 0.5][i] || 0.8,
-			aaa: [3, 4, 1][i] || 2,
-			smile: [0.05, 0.08, 0.04][i] || 0.05,
+			rotate_pitch: p.rotate_pitch * 1.12,
+			rotate_yaw: p.rotate_yaw * 1.08,
+			eyebrow: p.eyebrow + ([0.45, 0.75, 0.25, 0.35, 0.5][i] || 0.35),
+			aaa: p.aaa * 1.18,
+			eee: p.eee * 1.12,
+			smile: p.smile + ([0.04, 0.06, 0.03, 0.04, 0.05][i] || 0.04),
 		}));
 	}
 	if (expr === "serious") {
 		return base.map((p, i) => ({
 			...p,
-			rotate_pitch: [0.4, -0.4, 0.2][i] || p.rotate_pitch,
-			eyebrow: [-0.4, -0.2, -0.3][i] || -0.3,
-			aaa: [0, 1, 0][i] || 0,
-			smile: -0.02,
+			rotate_pitch: p.rotate_pitch * 0.85 + ([0.25, -0.15, 0.2, 0, 0.15][i] || 0),
+			rotate_yaw: p.rotate_yaw * 0.82,
+			eyebrow: -0.25 + (i === 1 ? 0.12 : 0),
+			aaa: p.aaa * 0.82,
+			eee: p.eee * 0.9,
+			woo: p.woo * 0.9,
+			smile: -0.015,
 		}));
 	}
 	if (expr === "thoughtful") {
 		return base.map((p, i) => ({
 			...p,
-			rotate_yaw: [-1.2, 0.4, 0.9][i] || p.rotate_yaw,
-			pupil_x: [-0.8, 0, 0.5][i] || 0,
-			eyebrow: [0, 0.2, 0][i] || 0,
-			smile: 0,
+			rotate_pitch: p.rotate_pitch * 0.82,
+			rotate_yaw: p.rotate_yaw + ([-0.45, -0.2, 0.25, 0.4, 0.15][i] || 0),
+			pupil_x: [-0.8, -0.2, 0.45, 0.15, 0.6][i] || 0,
+			aaa: p.aaa * 0.74,
+			eee: p.eee * 0.82,
+			woo: p.woo * 0.82,
+			eyebrow: p.eyebrow * 0.65,
+			smile: p.smile * 0.35,
 		}));
 	}
 	return base;
@@ -511,22 +601,22 @@ function expressionPresets(expression = "neutral") {
 
 function buildMotionCommand({ durationSec, fps, expressionCount }) {
 	const targetFrames = Math.max(12, Math.round(durationSec * fps));
+	const usableCount = Math.max(1, Number(expressionCount) || 1);
+	const changeFrames = Math.max(3, Math.round(fps * 0.22));
+	const holdFrames = Math.max(2, Math.round(fps * 0.13));
+	const pattern = [1, 2, 4, 5, 3, 2, 0, 1, 4, 2, 5, 0];
 	const sequence = [];
 	let frames = 0;
-	let idx = 1;
+	let patternIndex = 0;
 	while (frames < targetFrames) {
-		const change = Math.min(5, Math.max(2, targetFrames - frames));
-		const hold = Math.min(8, Math.max(0, targetFrames - frames - change));
+		const rawIdx = pattern[patternIndex % pattern.length];
+		const idx = rawIdx > usableCount ? ((rawIdx - 1) % usableCount) + 1 : rawIdx;
+		const remaining = targetFrames - frames;
+		const change = Math.max(1, Math.min(changeFrames, remaining));
+		const hold = Math.max(0, Math.min(holdFrames, remaining - change));
 		sequence.push(`${idx} = ${change}:${hold}`);
 		frames += change + hold;
-		idx = idx >= expressionCount ? 0 : idx + 1;
-		if (idx === 0 && frames < targetFrames) {
-			const backChange = Math.min(4, Math.max(2, targetFrames - frames));
-			const backHold = Math.min(7, Math.max(0, targetFrames - frames - backChange));
-			sequence.push(`0 = ${backChange}:${backHold}`);
-			frames += backChange + backHold;
-			idx = 1;
-		}
+		patternIndex += 1;
 	}
 	return sequence.join("\n");
 }
@@ -562,7 +652,7 @@ function buildAdvancedLivePortraitWorkflow({
 	fps,
 	filenamePrefix,
 }) {
-	const presets = expressionPresets(expression);
+	const presets = expressionPresets(expression, config);
 	const workflow = {
 		"1": {
 			class_type: "LoadImage",
@@ -711,6 +801,11 @@ async function comfyImageToVideo({
 			ratio,
 			width: config.width,
 			height: config.height,
+			headMotionIntensity: config.headMotionIntensity,
+			mouthMotionIntensity: config.mouthMotionIntensity,
+			expressionMotionIntensity: config.expressionMotionIntensity,
+			retargetingEyes: config.retargetingEyes,
+			retargetingMouth: config.retargetingMouth,
 			maxTempC: config.maxTempC,
 			preflightMaxTempC: config.preflightMaxTempC,
 			maxDiskUsedPercent: config.maxDiskUsedPercent,
@@ -755,6 +850,9 @@ async function comfyImageToVideo({
 			durationSec: duration,
 			fps,
 			expression: expr,
+			headMotionIntensity: config.headMotionIntensity,
+			mouthMotionIntensity: config.mouthMotionIntensity,
+			expressionMotionIntensity: config.expressionMotionIntensity,
 			promptText,
 			comfyOutput: outputFile,
 			comfyInputPath: uploadedInputPath,
