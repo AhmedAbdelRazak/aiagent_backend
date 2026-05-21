@@ -108,17 +108,17 @@ function getComfyConfig() {
 			216,
 			768,
 		),
-		feedSteps: numberEnv("THUMBNAIL_DESIGNER2_COMFY_FEED_STEPS", 2, 1, 12),
-		feedCfg: numberEnv("THUMBNAIL_DESIGNER2_COMFY_FEED_CFG", 5.2, 1, 9),
+		feedSteps: numberEnv("THUMBNAIL_DESIGNER2_COMFY_FEED_STEPS", 6, 1, 12),
+		feedCfg: numberEnv("THUMBNAIL_DESIGNER2_COMFY_FEED_CFG", 4.8, 1, 9),
 		feedSampler: normalizeWhitespace(
 			process.env.THUMBNAIL_DESIGNER2_COMFY_FEED_SAMPLER ||
 				process.env.THUMBNAIL_DESIGNER2_COMFY_SAMPLER ||
-				"euler",
+				"dpmpp_2m",
 		),
 		feedScheduler: normalizeWhitespace(
 			process.env.THUMBNAIL_DESIGNER2_COMFY_FEED_SCHEDULER ||
 				process.env.THUMBNAIL_DESIGNER2_COMFY_SCHEDULER ||
-				"normal",
+				"karras",
 		),
 		timeoutMs: numberEnv(
 			"THUMBNAIL_DESIGNER2_COMFY_TIMEOUT_MS",
@@ -671,8 +671,8 @@ function safeOverlaySlug(value = "") {
 function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
 	const hay = normalizeWhitespace(contextText).toLowerCase();
 	if (
-		/\b(ai|chatbot|companion|robot|artificial intelligence)\b/.test(hay) &&
-		/\b(love|romance|romantic|relationship|girlfriend|boyfriend|lonely|intimacy|attachment|dependence)\b/.test(
+		/\b(ai|chatbot|companions?|robot|artificial intelligence)\b/.test(hay) &&
+		/\b(love|romance|romantic|relationship|girlfriend|boyfriend|lonely|intimacy|attachment|dependence|falling|emotional)\b/.test(
 			hay,
 		)
 	) {
@@ -707,8 +707,8 @@ function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
 function hasDesigner2AiCompanionSignal(contextText = "") {
 	const hay = normalizeWhitespace(contextText).toLowerCase();
 	return (
-		/\b(ai|chatbot|companion|robot|artificial intelligence)\b/.test(hay) &&
-		/\b(love|romance|romantic|relationship|girlfriend|boyfriend|lonely|intimacy|attachment|dependence)\b/.test(
+		/\b(ai|chatbot|companions?|robot|artificial intelligence)\b/.test(hay) &&
+		/\b(love|romance|romantic|relationship|girlfriend|boyfriend|lonely|intimacy|attachment|dependence|falling|emotional)\b/.test(
 			hay,
 		)
 	);
@@ -832,11 +832,17 @@ function buildComfyFeedPrompt({
 		normalizeWhitespace(seoTitle) ||
 		"current story";
 	const styleBrief = normalizeWhitespace(styleProfile.brief || "");
+	const aiCompanionLine = hasDesigner2AiCompanionSignal(
+		`${topicText} ${contextText}`,
+	)
+		? "For an AI companion, chatbot romance, loneliness, or emotional attachment topic, show a cinematic but non-branded scene: a real adult looking at a glowing phone or laptop at night, abstract AI chat light, soft human silhouette, subtle robot/AI presence through reflections or light only, emotional tech tension, no readable interface text."
+		: "";
 	return normalizeWhitespace(`
 		Create one photorealistic editorial feed image for the left side of a YouTube thumbnail.
 		No presenter, no host, no text, no typography, no watermark, no UI.
 		Topic: ${topicText}.
 		Context and visual hints: ${normalizeWhitespace(contextText).slice(0, 1200)}.
+		${aiCompanionLine}
 		For a tiredness, burnout, mental fatigue, sleep, rest, or overloaded-life topic, show a relatable cinematic scene:
 		a tired adult near a laptop at night, coffee cup, messy desk, notebook or unfinished task list, soft morning light or window glow, calm realistic mood, practical not medical.
 		Make it feel like a high-quality news/editorial feed photo with clear subject, strong depth, cinematic lighting, premium contrast, and space near the lower-left for later headline text.
@@ -1692,7 +1698,9 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 	});
 	let topicReferenceSource = topicReferencePaths.length ? "orchestrator" : "none";
 	let generatedFeed = null;
-	if (!topicReferencePaths.length) {
+	let generatedFeedAttempted = false;
+	const tryGeneratedFeedReference = async (reason) => {
+		generatedFeedAttempted = true;
 		try {
 			generatedFeed = await generateComfyFeedReference({
 				jobId,
@@ -1706,10 +1714,16 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 				log,
 			});
 			if (generatedFeed?.path) {
+				const replacedReferences = topicReferencePaths.length;
 				topicReferencePaths = [generatedFeed.path];
-				topicReferenceSource = "comfy_generated_fallback";
+				topicReferenceSource =
+					reason === "abstract_ai_companion"
+						? "comfy_generated_ai_companion"
+						: "comfy_generated_fallback";
 				if (typeof log === "function") {
 					log("thumbnailDesigner2 comfy feed selected", {
+						reason,
+						replacedReferences,
 						path: path.basename(generatedFeed.path),
 					});
 				}
@@ -1721,6 +1735,16 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 				});
 			}
 		}
+	};
+
+	if (
+		topicReferencePaths.length &&
+		hasDesigner2AiCompanionSignal(styleContextText)
+	) {
+		await tryGeneratedFeedReference("abstract_ai_companion");
+	}
+	if (!topicReferencePaths.length && !generatedFeedAttempted) {
+		await tryGeneratedFeedReference("missing_orchestrator_reference");
 	}
 
 	if (typeof log === "function") {
