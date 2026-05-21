@@ -476,10 +476,10 @@ function createDesigner2BroadcastOverlay({
 
 	if (stage === "background") {
 		drawLeftPanelVignette(pixels, width, height, topicPanelW);
-		drawSoftBrush(pixels, width, height, 68, 38, 190, bright, 0.34, 1.9);
-		drawSoftBrush(pixels, width, height, 710, 210, 220, accentRgb, 0.24, 2.1);
-		drawSoftBrush(pixels, width, height, 312, 690, 250, deep, 0.22, 1.8);
-		drawSoftBrush(pixels, width, height, 610, 620, 210, accentRgb, 0.16, 2.2);
+		drawSoftBrush(pixels, width, height, 64, 34, 170, bright, 0.26, 1.95);
+		drawSoftBrush(pixels, width, height, 710, 240, 210, accentRgb, 0.16, 2.15);
+		drawSoftBrush(pixels, width, height, 286, 690, 250, deep, 0.2, 1.8);
+		drawSoftBrush(pixels, width, height, 602, 624, 210, accentRgb, 0.12, 2.25);
 		fillSoftRect(
 			pixels,
 			width,
@@ -491,48 +491,43 @@ function createDesigner2BroadcastOverlay({
 			{ r: 0, g: 0, b: 0 },
 			0.12,
 		);
-		drawArc(pixels, width, height, 720, 350, 695, 150, 263, bright, {
-			alpha: 0.72,
+		drawArc(pixels, width, height, 740, 342, 720, 154, 254, bright, {
+			alpha: 0.44,
 			thickness: 3,
-			glow: 18,
+			glow: 16,
 		});
-		drawArc(pixels, width, height, 725, 352, 625, 156, 257, hot, {
-			alpha: 0.48,
+		drawArc(pixels, width, height, 758, 346, 646, 158, 250, hot, {
+			alpha: 0.3,
 			thickness: 2,
-			glow: 14,
+			glow: 11,
 		});
-		drawArc(pixels, width, height, 695, 440, 780, 202, 270, accentRgb, {
-			alpha: 0.56,
-			thickness: 3,
-			glow: 20,
-		});
-		drawArc(pixels, width, height, 450, 360, 306, -48, 50, bright, {
-			alpha: 0.72,
+		drawArc(pixels, width, height, 420, 378, 336, -52, 42, bright, {
+			alpha: 0.62,
 			thickness: 4,
-			glow: 24,
+			glow: 22,
 		});
-		drawArc(pixels, width, height, 452, 360, 326, -48, 50, deep, {
-			alpha: 0.28,
-			thickness: 7,
-			glow: 10,
+		drawArc(pixels, width, height, 426, 382, 356, -52, 42, deep, {
+			alpha: 0.22,
+			thickness: 6,
+			glow: 8,
 		});
 		drawSoftLine(pixels, width, height, 735, 0, 735, height, accentRgb, {
-			alpha: 0.72,
+			alpha: 0.66,
 			thickness: 3,
-			glow: 18,
+			glow: 15,
 		});
 		drawSoftLine(pixels, width, height, 742, 0, 742, height, white, {
-			alpha: 0.16,
+			alpha: 0.13,
 			thickness: 1,
 			glow: 4,
 		});
 		drawSoftLine(pixels, width, height, 0, 24, 338, 24, bright, {
-			alpha: 0.58,
+			alpha: 0.44,
 			thickness: 3,
 			glow: 9,
 		});
 		drawSoftLine(pixels, width, height, 0, 42, 252, 42, white, {
-			alpha: 0.18,
+			alpha: 0.14,
 			thickness: 2,
 			glow: 5,
 		});
@@ -676,6 +671,22 @@ function safeOverlaySlug(value = "") {
 function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
 	const hay = normalizeWhitespace(contextText).toLowerCase();
 	if (
+		/\b(ai|chatbot|companion|robot|artificial intelligence)\b/.test(hay) &&
+		/\b(love|romance|romantic|relationship|girlfriend|boyfriend|lonely|intimacy|attachment|dependence)\b/.test(
+			hay,
+		)
+	) {
+		return {
+			...styleProfile,
+			id: "magenta_pop",
+			accent: "0xFF3EA5",
+			tagColor: "0x32133E",
+			textPanelOpacity: 0.66,
+			brief:
+				"premium AI-companion editorial contrast, hot magenta and electric cyan glow, intimate tech-story energy, clean broadcast thumbnail frame",
+		};
+	}
+	if (
 		/\b(tired|fatigue|burnout|sleep|resting|rest|overloaded|mental noise|drained|exhausted|worrying|scrolling)\b/.test(
 			hay,
 		)
@@ -691,6 +702,71 @@ function enhanceDesigner2StyleProfile(styleProfile = {}, contextText = "") {
 		};
 	}
 	return styleProfile;
+}
+
+function hasDesigner2AiCompanionSignal(contextText = "") {
+	const hay = normalizeWhitespace(contextText).toLowerCase();
+	return (
+		/\b(ai|chatbot|companion|robot|artificial intelligence)\b/.test(hay) &&
+		/\b(love|romance|romantic|relationship|girlfriend|boyfriend|lonely|intimacy|attachment|dependence)\b/.test(
+			hay,
+		)
+	);
+}
+
+function isDesigner2WeakHeadline(headline = "") {
+	const words = normalizeWhitespace(headline)
+		.toUpperCase()
+		.split(/\s+/)
+		.filter(Boolean);
+	if (!words.length) return true;
+	const normalized = words.join(" ");
+	const last = words[words.length - 1];
+	if (
+		/^(A|AN|AND|ARE|AS|AT|BE|BY|FOR|FROM|IN|INTO|IS|OF|ON|OR|THE|TO|WITH|WITHOUT|YOUR|MY|OUR|THEIR)$/i.test(
+			last,
+		)
+	) {
+		return true;
+	}
+	if (/^WHAT MAKES\b/.test(normalized) && words.length >= 5) return true;
+	if (/^HOW TO\b/.test(normalized) && words.length <= 3) return true;
+	return false;
+}
+
+function refineDesigner2TextPlan({
+	textPlan = {},
+	title,
+	shortTitle,
+	seoTitle,
+	topics = [],
+	intent,
+} = {}) {
+	const contextText = buildContextText({ title, shortTitle, seoTitle, topics });
+	const headline = normalizeWhitespace(textPlan.primaryHeadline || "");
+	if (!isDesigner2WeakHeadline(headline)) return textPlan;
+
+	if (hasDesigner2AiCompanionSignal(contextText)) {
+		return {
+			...textPlan,
+			primaryHeadline: "FALLING FOR AI",
+			badgeText: textPlan.badgeText || "BREAKDOWN",
+			sublineText: "Why It Feels Real",
+		};
+	}
+
+	if (/\b(why|what makes|how it works|explained|breakdown)\b/i.test(contextText)) {
+		return {
+			...textPlan,
+			primaryHeadline:
+				intent === "tech" || /\b(ai|tech|app|robot|software)\b/i.test(contextText)
+					? "WHY IT WORKS"
+					: "WHAT CHANGED",
+			sublineText: textPlan.sublineText || textPlan.primaryTopic || "",
+		};
+	}
+
+	return textPlan;
 }
 
 function buildComfyPrompt({
@@ -1562,14 +1638,21 @@ async function generateComfyFirstThumbnailPackage(args = {}) {
 	const intent =
 		normalizeWhitespace(overrideIntent) ||
 		inferThumbnailIntent({ title, shortTitle, seoTitle, topics });
-	const textPlan = buildThumbnailTextPlan({
+	const textPlan = refineDesigner2TextPlan({
+		textPlan: buildThumbnailTextPlan({
+			title,
+			shortTitle,
+			seoTitle,
+			topics,
+			intent,
+			overrideHeadline,
+			overrideBadgeText,
+		}),
 		title,
 		shortTitle,
 		seoTitle,
 		topics,
 		intent,
-		overrideHeadline,
-		overrideBadgeText,
 	});
 	const styleContextText = normalizeWhitespace(
 		`${contextText} ${textPlan.primaryHeadline} ${textPlan.badgeText} ${
