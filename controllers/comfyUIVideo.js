@@ -60,7 +60,8 @@ function getComfyVideoConfig(overrides = {}) {
 			(root ? path.join(root, "output") : ""),
 		width: numberEnv("COMFY_VIDEO_WIDTH", 640, 256, 1280),
 		height: numberEnv("COMFY_VIDEO_HEIGHT", 360, 256, 1280),
-		fps: numberEnv("COMFY_VIDEO_FPS", 12, 6, 30),
+		fps: numberEnv("COMFY_VIDEO_FPS", 12, 5, 30),
+		outputFps: numberEnv("COMFY_VIDEO_OUTPUT_FPS", 0, 0, 30),
 		crf: Math.round(numberEnv("COMFY_VIDEO_CRF", 20, 15, 35)),
 		durationSec: numberEnv("COMFY_VIDEO_DURATION_SEC", 6, 2, 20),
 		timeoutMs: numberEnv("COMFY_VIDEO_TIMEOUT_MS", 35 * 60 * 1000, 60 * 1000, 90 * 60 * 1000),
@@ -74,6 +75,7 @@ function getComfyVideoConfig(overrides = {}) {
 			15 * 60 * 1000,
 		),
 		maxDiskUsedPercent: numberEnv("COMFY_VIDEO_MAX_DISK_USED_PERCENT", 40, 10, 95),
+		minMemAvailableMb: numberEnv("COMFY_VIDEO_MIN_MEM_AVAILABLE_MB", 3072, 512, 14000),
 		cropFactor: numberEnv("COMFY_VIDEO_CROP_FACTOR", 1.7, 1.5, 2.5),
 		retargetingEyes: numberEnv("COMFY_VIDEO_RETARGETING_EYES", 0.12, 0, 1),
 		retargetingMouth: numberEnv("COMFY_VIDEO_RETARGETING_MOUTH", 0.28, 0, 1),
@@ -85,6 +87,7 @@ function getComfyVideoConfig(overrides = {}) {
 			0.4,
 			1.6,
 		),
+		freeAfterRun: truthyEnv(process.env.COMFY_VIDEO_FREE_AFTER_RUN, false),
 		keepComfyOutputs: truthyEnv(process.env.COMFY_VIDEO_KEEP_OUTPUTS, false),
 		keepComfyInputs: truthyEnv(process.env.COMFY_VIDEO_KEEP_INPUTS, false),
 		...overrides,
@@ -258,6 +261,14 @@ async function waitForSafeComfyTemperature(config, log, stage = "video") {
 				`comfy_video_disk_guard:${snap.diskUsedPercent}>${config.maxDiskUsedPercent}`,
 			);
 		}
+		if (
+			snap.memAvailableMb != null &&
+			snap.memAvailableMb < config.minMemAvailableMb
+		) {
+			throw new Error(
+				`comfy_video_memory_guard:${snap.memAvailableMb}<${config.minMemAvailableMb}`,
+			);
+		}
 		if (snap.tempC == null || snap.tempC < config.preflightMaxTempC) return;
 		if (Date.now() - started >= config.preflightCooldownMs) {
 			throw new Error(`comfy_video_preflight_hot:${snap.tempC.toFixed(1)}C`);
@@ -290,6 +301,24 @@ async function freeComfyMemory(config, log) {
 				error: error?.message || String(error),
 			});
 		}
+	}
+}
+
+async function releaseComfyAfterRun(config, log, { force = false, reason = "success" } = {}) {
+	const snap = systemSnapshot(config);
+	const lowMemory =
+		snap.memAvailableMb != null &&
+		snap.memAvailableMb < Math.max(config.minMemAvailableMb * 2, 4096);
+	if (force || config.freeAfterRun || lowMemory) {
+		await freeComfyMemory(config, log);
+		return;
+	}
+	if (typeof log === "function") {
+		log("comfy video model kept warm", {
+			reason,
+			memAvailableMb: snap.memAvailableMb,
+			minMemAvailableMb: config.minMemAvailableMb,
+		});
 	}
 }
 
@@ -344,6 +373,49 @@ async function downloadComfyFile(config, file, outPath) {
 	return outPath;
 }
 
+function smoothVideoFps({ sourcePath, outputPath, outputFps, crf = 20, log }) {
+	const fps = Math.round(clampNumber(outputFps, 0, 0, 30));
+	if (!fps || !sourcePath || !outputPath || sourcePath === outputPath) return sourcePath;
+	ensureDir(path.dirname(outputPath));
+	if (typeof log === "function") {
+		log("comfy video fps smoothing starting", {
+			source: path.basename(sourcePath),
+			output: path.basename(outputPath),
+			outputFps: fps,
+		});
+	}
+	runFfmpeg(
+		[
+			"-y",
+			"-i",
+			sourcePath,
+			"-vf",
+			`minterpolate=fps=${fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1`,
+			"-r",
+			String(fps),
+			"-c:v",
+			"libx264",
+			"-preset",
+			"veryfast",
+			"-crf",
+			String(Math.round(clampNumber(crf, 20, 15, 35))),
+			"-pix_fmt",
+			"yuv420p",
+			"-movflags",
+			"+faststart",
+			outputPath,
+		],
+		"comfy_video_fps_smoothing",
+	);
+	if (typeof log === "function") {
+		log("comfy video fps smoothing ready", {
+			path: outputPath,
+			outputFps: fps,
+		});
+	}
+	return outputPath;
+}
+
 function collectVideoFiles(value, found = []) {
 	if (!value) return found;
 	if (Array.isArray(value)) {
@@ -378,6 +450,19 @@ async function waitForComfyVideo(config, promptId, log) {
 			});
 			throw new Error(
 				`comfy_video_disk_guard:${snap.diskUsedPercent}>${config.maxDiskUsedPercent}`,
+			);
+		}
+		if (
+			snap.memAvailableMb != null &&
+			snap.memAvailableMb < config.minMemAvailableMb
+		) {
+			await interruptComfy(config, log, {
+				reason: "memory_guard",
+				memAvailableMb: snap.memAvailableMb,
+				minMemAvailableMb: config.minMemAvailableMb,
+			});
+			throw new Error(
+				`comfy_video_memory_guard:${snap.memAvailableMb}<${config.minMemAvailableMb}`,
 			);
 		}
 		if (snap.tempC != null && snap.tempC >= config.maxTempC) {
@@ -602,8 +687,8 @@ function expressionPresets(expression = "neutral", config = {}) {
 function buildMotionCommand({ durationSec, fps, expressionCount }) {
 	const targetFrames = Math.max(12, Math.round(durationSec * fps));
 	const usableCount = Math.max(1, Number(expressionCount) || 1);
-	const changeFrames = Math.max(3, Math.round(fps * 0.22));
-	const holdFrames = Math.max(2, Math.round(fps * 0.13));
+	const changeFrames = fps <= 6 ? 2 : Math.max(3, Math.round(fps * 0.22));
+	const holdFrames = fps <= 6 ? 1 : Math.max(2, Math.round(fps * 0.13));
 	const pattern = [1, 2, 4, 5, 3, 2, 0, 1, 4, 2, 5, 0];
 	const sequence = [];
 	let frames = 0;
@@ -756,7 +841,8 @@ async function comfyImageToVideo({
 	await waitForSafeComfyTemperature(config, log, label);
 
 	const duration = clampNumber(durationSec, config.durationSec, 2, 20);
-	const fps = Math.round(clampNumber(config.fps, 15, 6, 30));
+	const fps = Math.round(clampNumber(config.fps, 12, 5, 30));
+	const outputFps = Math.round(clampNumber(config.outputFps, 0, 0, 30));
 	const expr = inferExpressionFromPrompt(promptText, expression || "neutral");
 	const workDir =
 		tmpDir || path.join(os.tmpdir(), "agentai_comfy_video", sanitizeName(jobId));
@@ -798,6 +884,7 @@ async function comfyImageToVideo({
 			expression: expr,
 			durationSec: duration,
 			fps,
+			outputFps: outputFps > fps ? outputFps : fps,
 			ratio,
 			width: config.width,
 			height: config.height,
@@ -809,10 +896,13 @@ async function comfyImageToVideo({
 			maxTempC: config.maxTempC,
 			preflightMaxTempC: config.preflightMaxTempC,
 			maxDiskUsedPercent: config.maxDiskUsedPercent,
+			minMemAvailableMb: config.minMemAvailableMb,
+			freeAfterRun: config.freeAfterRun,
 		});
 	}
 
 	let outputFile = null;
+	let rawDownloadedPath = "";
 	try {
 		const queued = await comfyRequest(config, "POST", "/prompt", {
 			client_id: crypto.randomUUID(),
@@ -831,8 +921,24 @@ async function comfyImageToVideo({
 		const finalPath =
 			outputPath ||
 			path.join(workDir, `${filenamePrefix}_${Date.now()}.mp4`);
-		await downloadComfyFile(config, outputFile, finalPath);
-		await freeComfyMemory(config, log);
+		const rawPath =
+			outputFps > fps
+				? path.join(workDir, `${filenamePrefix}_${Date.now()}_raw_${fps}fps.mp4`)
+				: finalPath;
+		rawDownloadedPath = rawPath === finalPath ? "" : rawPath;
+		await downloadComfyFile(config, outputFile, rawPath);
+		if (outputFps > fps) {
+			smoothVideoFps({
+				sourcePath: rawPath,
+				outputPath: finalPath,
+				outputFps,
+				crf: config.crf,
+				log,
+			});
+			safeUnlink(rawPath);
+			rawDownloadedPath = "";
+		}
+		await releaseComfyAfterRun(config, log, { reason: "success" });
 		if (typeof log === "function") {
 			log("comfy video ready", {
 				promptId,
@@ -849,18 +955,21 @@ async function comfyImageToVideo({
 			model: "ComfyUI-AdvancedLivePortrait",
 			durationSec: duration,
 			fps,
+			outputFps: outputFps > fps ? outputFps : fps,
 			expression: expr,
 			headMotionIntensity: config.headMotionIntensity,
 			mouthMotionIntensity: config.mouthMotionIntensity,
 			expressionMotionIntensity: config.expressionMotionIntensity,
+			freeAfterRun: config.freeAfterRun,
 			promptText,
 			comfyOutput: outputFile,
 			comfyInputPath: uploadedInputPath,
 		};
 	} catch (error) {
-		await freeComfyMemory(config, log);
+		await releaseComfyAfterRun(config, log, { force: true, reason: "error" });
 		throw error;
 	} finally {
+		if (rawDownloadedPath) safeUnlink(rawDownloadedPath);
 		if (!config.keepComfyInputs && uploadedInputPath) {
 			safeUnlink(uploadedInputPath);
 			if (typeof log === "function") {
