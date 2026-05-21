@@ -79,6 +79,18 @@ function getComfyVideoConfig(overrides = {}) {
 		cropFactor: numberEnv("COMFY_VIDEO_CROP_FACTOR", 1.7, 1.5, 2.5),
 		retargetingEyes: numberEnv("COMFY_VIDEO_RETARGETING_EYES", 0.12, 0, 1),
 		retargetingMouth: numberEnv("COMFY_VIDEO_RETARGETING_MOUTH", 0.28, 0, 1),
+		drivingVideoName: normalizeWhitespace(process.env.COMFY_VIDEO_DRIVING_VIDEO || ""),
+		drivingFrameLoadCap: Math.round(
+			numberEnv("COMFY_VIDEO_DRIVING_FRAME_LOAD_CAP", 0, 0, 600),
+		),
+		drivingSelectEveryNth: Math.round(
+			numberEnv("COMFY_VIDEO_DRIVING_SELECT_EVERY_NTH", 1, 1, 120),
+		),
+		drivingSkipFirstFrames: Math.round(
+			numberEnv("COMFY_VIDEO_DRIVING_SKIP_FIRST_FRAMES", 0, 0, 10000),
+		),
+		drivingWidth: Math.round(numberEnv("COMFY_VIDEO_DRIVING_WIDTH", 512, 0, 2048)),
+		drivingHeight: Math.round(numberEnv("COMFY_VIDEO_DRIVING_HEIGHT", 512, 0, 2048)),
 		headMotionIntensity: numberEnv("COMFY_VIDEO_HEAD_MOTION_INTENSITY", 1.15, 0.35, 1.7),
 		mouthMotionIntensity: numberEnv("COMFY_VIDEO_MOUTH_MOTION_INTENSITY", 1.05, 0.35, 1.7),
 		expressionMotionIntensity: numberEnv(
@@ -794,6 +806,69 @@ function buildAdvancedLivePortraitWorkflow({
 	return workflow;
 }
 
+function buildDrivenLivePortraitWorkflow({
+	uploadedImageName,
+	drivingVideoName,
+	config,
+	durationSec,
+	fps,
+	filenamePrefix,
+}) {
+	const frameCap =
+		config.drivingFrameLoadCap > 0
+			? config.drivingFrameLoadCap
+			: Math.max(1, Math.round(durationSec * fps));
+	return {
+		"1": {
+			class_type: "LoadImage",
+			inputs: { image: uploadedImageName },
+		},
+		"2": {
+			class_type: "VHS_LoadVideo",
+			inputs: {
+				video: drivingVideoName,
+				force_rate: 0,
+				custom_width: config.drivingWidth,
+				custom_height: config.drivingHeight,
+				frame_load_cap: frameCap,
+				skip_first_frames: config.drivingSkipFirstFrames,
+				select_every_nth: config.drivingSelectEveryNth,
+				format: "None",
+			},
+		},
+		"50": {
+			class_type: "AdvancedLivePortrait",
+			inputs: {
+				retargeting_eyes: config.retargetingEyes,
+				retargeting_mouth: config.retargetingMouth,
+				crop_factor: config.cropFactor,
+				turn_on: true,
+				tracking_src_vid: false,
+				animate_without_vid: false,
+				command: "",
+				src_images: ["1", 0],
+				driving_images: ["2", 0],
+			},
+		},
+		"60": {
+			class_type: "VHS_VideoCombine",
+			inputs: {
+				images: ["50", 0],
+				frame_rate: fps,
+				loop_count: 0,
+				filename_prefix: filenamePrefix,
+				format: "video/h264-mp4",
+				pix_fmt: "yuv420p",
+				crf: config.crf,
+				save_metadata: false,
+				trim_to_audio: false,
+				pingpong: false,
+				save_output: true,
+			},
+		},
+	};
+}
+
 function parseComfyUri(value = "") {
 	const raw = String(value || "");
 	const match = raw.match(/^comfy:\/\/(input|output)\/(.+)$/i);
@@ -820,6 +895,25 @@ async function comfyCreateEphemeralUpload({ filePath, filename, config: cfg } = 
 	};
 }
 
+function prepareDrivingVideoInput(config, drivingVideo, jobId) {
+	const raw = normalizeWhitespace(drivingVideo || "");
+	if (!raw) return { name: "", path: "", cleanup: false };
+	if (fs.existsSync(raw)) {
+		const ext = path.extname(raw) || ".mp4";
+		const name = `comfy_driving_${sanitizeName(jobId)}${ext}`;
+		const target = path.join(config.inputDir, name);
+		ensureDir(config.inputDir);
+		fs.copyFileSync(raw, target);
+		return { name, path: target, cleanup: true };
+	}
+	const name = path.basename(raw);
+	const target = path.join(config.inputDir, name);
+	if (config.inputDir && fs.existsSync(target)) {
+		return { name, path: target, cleanup: false };
+	}
+	return { name: raw, path: "", cleanup: false };
+}
+
 async function comfyImageToVideo({
 	runwayImageUri,
 	comfyUri,
@@ -830,6 +924,8 @@ async function comfyImageToVideo({
 	jobId = crypto.randomUUID(),
 	label = "comfy_video",
 	expression,
+	drivingVideoName,
+	drivingVideoPath,
 	outputPath,
 	tmpDir,
 	config: cfg,
@@ -844,6 +940,9 @@ async function comfyImageToVideo({
 	const fps = Math.round(clampNumber(config.fps, 12, 5, 30));
 	const outputFps = Math.round(clampNumber(config.outputFps, 0, 0, 30));
 	const expr = inferExpressionFromPrompt(promptText, expression || "neutral");
+	const drivingVideo = normalizeWhitespace(
+		drivingVideoPath || drivingVideoName || config.drivingVideoName,
+	);
 	const workDir =
 		tmpDir || path.join(os.tmpdir(), "agentai_comfy_video", sanitizeName(jobId));
 	ensureDir(workDir);
@@ -876,6 +975,7 @@ async function comfyImageToVideo({
 		});
 	}
 
+	const preparedDrivingVideo = prepareDrivingVideoInput(config, drivingVideo, jobId);
 	const filenamePrefix = `agentai_comfy_video_${sanitizeName(label)}_${sanitizeName(jobId)}`;
 	if (typeof log === "function") {
 		log("comfy video starting", {
@@ -893,6 +993,10 @@ async function comfyImageToVideo({
 			expressionMotionIntensity: config.expressionMotionIntensity,
 			retargetingEyes: config.retargetingEyes,
 			retargetingMouth: config.retargetingMouth,
+			drivingVideo: preparedDrivingVideo.name || "",
+			drivingFrameLoadCap: config.drivingFrameLoadCap,
+			drivingSelectEveryNth: config.drivingSelectEveryNth,
+			drivingSkipFirstFrames: config.drivingSkipFirstFrames,
 			maxTempC: config.maxTempC,
 			preflightMaxTempC: config.preflightMaxTempC,
 			maxDiskUsedPercent: config.maxDiskUsedPercent,
@@ -906,14 +1010,23 @@ async function comfyImageToVideo({
 	try {
 		const queued = await comfyRequest(config, "POST", "/prompt", {
 			client_id: crypto.randomUUID(),
-			prompt: buildAdvancedLivePortraitWorkflow({
-				uploadedImageName: uploaded.name || uploaded.filename,
-				config,
-				expression: expr,
-				durationSec: duration,
-				fps,
-				filenamePrefix,
-			}),
+			prompt: preparedDrivingVideo.name
+				? buildDrivenLivePortraitWorkflow({
+						uploadedImageName: uploaded.name || uploaded.filename,
+						drivingVideoName: preparedDrivingVideo.name,
+						config,
+						durationSec: duration,
+						fps,
+						filenamePrefix,
+					})
+				: buildAdvancedLivePortraitWorkflow({
+						uploadedImageName: uploaded.name || uploaded.filename,
+						config,
+						expression: expr,
+						durationSec: duration,
+						fps,
+						filenamePrefix,
+					}),
 		});
 		const promptId = queued?.prompt_id;
 		if (!promptId) throw new Error("comfy_video_prompt_id_missing");
@@ -958,6 +1071,7 @@ async function comfyImageToVideo({
 			fps,
 			outputFps: outputFps > fps ? outputFps : fps,
 			expression: expr,
+			drivingVideo: preparedDrivingVideo.name || "",
 			headMotionIntensity: config.headMotionIntensity,
 			mouthMotionIntensity: config.mouthMotionIntensity,
 			expressionMotionIntensity: config.expressionMotionIntensity,
@@ -971,6 +1085,14 @@ async function comfyImageToVideo({
 		throw error;
 	} finally {
 		if (rawDownloadedPath) safeUnlink(rawDownloadedPath);
+		if (preparedDrivingVideo.cleanup) {
+			safeUnlink(preparedDrivingVideo.path);
+			if (typeof log === "function") {
+				log("comfy video driving input cleaned", {
+					file: path.basename(preparedDrivingVideo.path),
+				});
+			}
+		}
 		if (!config.keepComfyInputs && uploadedInputPath) {
 			safeUnlink(uploadedInputPath);
 			if (typeof log === "function") {
@@ -1018,6 +1140,7 @@ async function runCli() {
 		promptText: argValue("--prompt", "calm professional presenter, natural blinks and tiny nod"),
 		durationSec: Number(argValue("--duration", "6")),
 		expression: argValue("--expression", "warm"),
+		drivingVideoPath: argValue("--driving-video", ""),
 		jobId,
 		label: argValue("--label", "advanced_liveportrait_test"),
 		outputPath,
@@ -1039,6 +1162,7 @@ module.exports = {
 	comfyCreateEphemeralUpload,
 	comfyImageToVideo,
 	buildAdvancedLivePortraitWorkflow,
+	buildDrivenLivePortraitWorkflow,
 	buildMotionCommand,
 	inferExpressionFromPrompt,
 	normalizeExpression,
