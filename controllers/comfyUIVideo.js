@@ -89,6 +89,26 @@ function safeUnlink(filePath) {
 	} catch {}
 }
 
+function cleanupComfyPrefix(config, filenamePrefix, log) {
+	const prefix = String(filenamePrefix || "");
+	if (!prefix) return;
+	for (const dir of [config.inputDir, config.outputDir]) {
+		if (!dir || !fs.existsSync(dir)) continue;
+		for (const file of fs.readdirSync(dir)) {
+			if (!file.startsWith(prefix)) continue;
+			const fullPath = path.join(dir, file);
+			try {
+				if (fs.statSync(fullPath).isFile()) {
+					fs.unlinkSync(fullPath);
+					if (typeof log === "function") {
+						log("comfy video sidecar cleaned", { file });
+					}
+				}
+			} catch {}
+		}
+	}
+}
+
 function ensureDir(dir) {
 	if (dir) fs.mkdirSync(dir, { recursive: true });
 }
@@ -757,6 +777,7 @@ async function comfyImageToVideo({
 					file: path.basename(resolvedOutput || outputFile.filename || ""),
 				});
 			}
+			cleanupComfyPrefix(config, filenamePrefix, log);
 		}
 	}
 }
