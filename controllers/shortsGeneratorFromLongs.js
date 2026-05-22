@@ -81,6 +81,11 @@ const SHORTS_UPLOAD_GAP_HOURS = clampNumber(
 	24,
 	168,
 );
+const SHORTS_UPLOAD_FIRST_IMMEDIATELY = !["0", "false", "no", "off"].includes(
+	String(process.env.SHORTS_UPLOAD_FIRST_IMMEDIATELY ?? "true")
+		.trim()
+		.toLowerCase(),
+);
 const SHORTS_WATERMARK_TEXT = "https://serenejannat.com";
 const SHORTS_WATERMARK_OPACITY = 0.55;
 const SHORTS_WATERMARK_MARGIN_PCT = 0.035;
@@ -89,6 +94,35 @@ const SHORTS_WATERMARK_FONT_PCT_LANDSCAPE = 0.028;
 
 function nowIso() {
 	return new Date().toISOString();
+}
+
+function addHours(date, hours) {
+	const base = date instanceof Date && !Number.isNaN(date.getTime())
+		? date
+		: new Date();
+	return new Date(base.getTime() + Number(hours || 0) * 60 * 60 * 1000);
+}
+
+function safeResolveInside(root, target) {
+	const rootPath = path.resolve(root);
+	const targetPath = path.resolve(target);
+	const rel = path.relative(rootPath, targetPath);
+	if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
+		return targetPath;
+	}
+	return "";
+}
+
+function safeUnlink(filePath) {
+	try {
+		if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+	} catch {}
+}
+
+function cleanupDownloadedSource(source) {
+	if (!source || source.source !== "download" || !source.path) return;
+	const safePath = safeResolveInside(SHORTS_SOURCE_DIR, source.path);
+	if (safePath) safeUnlink(safePath);
 }
 
 function isHttpUrl(u) {
@@ -750,8 +784,97 @@ async function uploadShortClip({ video, shortDoc, clipIndex }) {
 	});
 }
 
-exports.createShortsFromLong = async (req, res) => {
+async function uploadNextReadyShortForVideo({
+	video,
+	fullVideoUrl = "",
+	markFailed = true,
+} = {}) {
+	const shortsToUpload = await ShortVideo.find({
+		longVideo: video._id,
+		status: "ready",
+	}).sort({ orderIndex: 1, createdAt: 1 });
+
+	if (!shortsToUpload.length) {
+		return { attempted: false, uploaded: false, reason: "no_ready_shorts" };
+	}
+
+	const shortDoc = shortsToUpload[0];
+	if (!shortDoc.localPath || !fs.existsSync(shortDoc.localPath)) {
+		const error = "short_local_file_missing";
+		shortDoc.status = markFailed ? "failed" : "ready";
+		shortDoc.lastError = error;
+		await shortDoc.save();
+		return {
+			attempted: true,
+			uploaded: false,
+			clipId: String(shortDoc.clipId || ""),
+			orderIndex: Number(shortDoc.orderIndex || 0),
+			error,
+		};
+	}
+
+	if (!shortDoc.fullVideoUrl && fullVideoUrl) {
+		shortDoc.fullVideoUrl = fullVideoUrl;
+	}
+
+	const resolvedFullUrl = shortDoc.fullVideoUrl || fullVideoUrl;
+	if (!shortDoc.description) {
+		shortDoc.description = buildShortsDescription({
+			line: shortDoc.line,
+			ctaLine: shortDoc.ctaLine,
+			fullVideoUrl: resolvedFullUrl,
+		});
+	} else if (resolvedFullUrl) {
+		const updatedDescription = ensureFullVideoLinkInDescription(
+			shortDoc.description,
+			resolvedFullUrl,
+		);
+		if (updatedDescription !== shortDoc.description) {
+			shortDoc.description = updatedDescription;
+		}
+	}
+
 	try {
+		const youtubeLink = await uploadShortClip({
+			video,
+			shortDoc,
+			clipIndex: Number.isFinite(Number(shortDoc.orderIndex))
+				? Number(shortDoc.orderIndex)
+				: 0,
+		});
+		const uploadedAt = new Date();
+		shortDoc.status = "uploaded";
+		shortDoc.youtubeLink = youtubeLink;
+		shortDoc.uploadedAt = uploadedAt;
+		shortDoc.lastError = "";
+		await shortDoc.save();
+		return {
+			attempted: true,
+			uploaded: true,
+			clipId: String(shortDoc.clipId || ""),
+			orderIndex: Number(shortDoc.orderIndex || 0),
+			youtubeLink,
+			uploadedAt,
+		};
+	} catch (e) {
+		const error = e.message || "upload_failed";
+		shortDoc.status = markFailed ? "failed" : "ready";
+		shortDoc.lastError = error;
+		await shortDoc.save();
+		return {
+			attempted: true,
+			uploaded: false,
+			clipId: String(shortDoc.clipId || ""),
+			orderIndex: Number(shortDoc.orderIndex || 0),
+			error,
+		};
+	}
+}
+
+exports.createShortsFromLong = async (req, res) => {
+	let source = null;
+	try {
+		const requestStartedAt = new Date();
 		const { videoId } = req.params;
 		const { maxClips = SHORTS_MAX_CLIPS, forceRegenerate = false } =
 			req.body || {};
@@ -777,7 +900,7 @@ exports.createShortsFromLong = async (req, res) => {
 			});
 		}
 
-		const source = await resolveSourceVideoPath(video, req);
+		source = await resolveSourceVideoPath(video, req);
 		const timeline = Array.isArray(video?.longVideoMeta?.timeline)
 			? video.longVideoMeta.timeline
 			: [];
@@ -813,6 +936,15 @@ exports.createShortsFromLong = async (req, res) => {
 		const existingShorts = await ShortVideo.find({
 			longVideo: video._id,
 		}).lean();
+		const alreadyUploadedCount = forceRegenerate
+			? 0
+			: (existingShorts || []).filter(
+					(s) => s.status === "uploaded" && s.youtubeLink,
+				).length;
+		const existingNextUploadAt =
+			forceRegenerate
+				? ""
+				: shortsDetails.nextUploadAt || video.shortsDetails?.nextUploadAt || "";
 		const existingById = new Map(
 			(existingShorts || []).map((s) => [String(s.clipId || ""), s]),
 		);
@@ -930,12 +1062,12 @@ exports.createShortsFromLong = async (req, res) => {
 			);
 		}
 
-		const nextUploadAt = new Date(
-			Date.now() + SHORTS_UPLOAD_DELAY_HOURS * 60 * 60 * 1000,
-		).toISOString();
 		const plannedCandidates = candidatesToProcess.map((c) =>
 			stripClipCandidateForPlan(c),
 		);
+		let nextUploadAt =
+			existingNextUploadAt ||
+			addHours(requestStartedAt, SHORTS_UPLOAD_DELAY_HOURS).toISOString();
 		video.shortsDetails = {
 			...shortsDetails,
 			clipCandidates: plannedCandidates,
@@ -945,6 +1077,44 @@ exports.createShortsFromLong = async (req, res) => {
 			updatedAt: nowIso(),
 		};
 		await video.save();
+
+		let instantUpload = {
+			enabled: SHORTS_UPLOAD_FIRST_IMMEDIATELY,
+			attempted: false,
+			uploaded: false,
+			reason: SHORTS_UPLOAD_FIRST_IMMEDIATELY
+				? alreadyUploadedCount > 0
+					? "already_has_uploaded_short"
+					: ""
+				: "disabled",
+		};
+		if (SHORTS_UPLOAD_FIRST_IMMEDIATELY && alreadyUploadedCount <= 0) {
+			instantUpload = {
+				enabled: true,
+				...(await uploadNextReadyShortForVideo({
+					video,
+					fullVideoUrl,
+					markFailed: false,
+				})),
+			};
+			nextUploadAt = addHours(
+				requestStartedAt,
+				SHORTS_UPLOAD_GAP_HOURS,
+			).toISOString();
+			const uploadedCount = await ShortVideo.countDocuments({
+				longVideo: video._id,
+				status: "uploaded",
+			});
+			video.shortsDetails = {
+				...video.shortsDetails,
+				status:
+					uploadedCount >= plannedCandidates.length ? "uploaded" : "ready",
+				nextUploadAt,
+				instantUpload,
+				updatedAt: nowIso(),
+			};
+			await video.save();
+		}
 
 		const shortsRecords = await ShortVideo.find({
 			longVideo: video._id,
@@ -961,6 +1131,7 @@ exports.createShortsFromLong = async (req, res) => {
 			success: true,
 			generatedCount,
 			source: source.source,
+			instantUpload,
 			shortsDetails: responseDetails,
 		});
 	} catch (err) {
@@ -968,6 +1139,8 @@ exports.createShortsFromLong = async (req, res) => {
 		return res.status(500).json({
 			error: err.message || "Failed to generate shorts.",
 		});
+	} finally {
+		cleanupDownloadedSource(source);
 	}
 };
 
@@ -1075,73 +1248,33 @@ exports.processPendingShortUploads = async ({ limit = 3 } = {}) => {
 			: isHttpUrl(video.outputUrl)
 				? video.outputUrl
 				: "";
-		const shortsToUpload = await ShortVideo.find({
-			longVideo: video._id,
-			status: "ready",
-		}).sort({ orderIndex: 1, createdAt: 1 });
+		const uploadResult = await uploadNextReadyShortForVideo({
+			video,
+			fullVideoUrl,
+			markFailed: true,
+		});
 
-		if (!shortsToUpload.length) continue;
+		if (!uploadResult.attempted) continue;
 
-		const shortDoc = shortsToUpload[0];
-		if (!shortDoc.localPath || !fs.existsSync(shortDoc.localPath)) continue;
-		if (!shortDoc.fullVideoUrl && fullVideoUrl) {
-			shortDoc.fullVideoUrl = fullVideoUrl;
-		}
-
-		const resolvedFullUrl = shortDoc.fullVideoUrl || fullVideoUrl;
-		if (!shortDoc.description) {
-			shortDoc.description = buildShortsDescription({
-				line: shortDoc.line,
-				ctaLine: shortDoc.ctaLine,
-				fullVideoUrl: resolvedFullUrl,
-			});
-		} else if (resolvedFullUrl) {
-			const updatedDescription = ensureFullVideoLinkInDescription(
-				shortDoc.description,
-				resolvedFullUrl,
-			);
-			if (updatedDescription !== shortDoc.description) {
-				shortDoc.description = updatedDescription;
-			}
-		}
-
-		let uploadedAt = null;
-		try {
-			const youtubeLink = await uploadShortClip({
-				video,
-				shortDoc,
-				clipIndex: Number.isFinite(Number(shortDoc.orderIndex))
-					? Number(shortDoc.orderIndex)
-					: 0,
-			});
-			uploadedAt = new Date();
-			shortDoc.status = "uploaded";
-			shortDoc.youtubeLink = youtubeLink;
-			shortDoc.uploadedAt = uploadedAt;
-			shortDoc.lastError = "";
+		if (uploadResult.uploaded) {
 			uploaded += 1;
-		} catch (e) {
-			shortDoc.status = "failed";
-			shortDoc.lastError = e.message || "upload_failed";
+		} else {
 			errors.push({
 				videoId: String(video._id),
-				clipId: String(shortDoc.clipId || ""),
-				error: shortDoc.lastError,
+				clipId: String(uploadResult.clipId || ""),
+				error: uploadResult.error || "upload_failed",
 			});
 		}
-
-		await shortDoc.save();
 		processed += 1;
 
-		if (uploadedAt) {
-			video.shortsDetails = {
-				...video.shortsDetails,
-				nextUploadAt: new Date(
-					uploadedAt.getTime() + SHORTS_UPLOAD_GAP_HOURS * 60 * 60 * 1000,
-				).toISOString(),
-				updatedAt: nowIso(),
-			};
-		}
+		video.shortsDetails = {
+			...video.shortsDetails,
+			nextUploadAt: addHours(
+				uploadResult.uploadedAt || new Date(),
+				SHORTS_UPLOAD_GAP_HOURS,
+			).toISOString(),
+			updatedAt: nowIso(),
+		};
 
 		const plannedCount = Array.isArray(details.clipCandidates)
 			? details.clipCandidates.length

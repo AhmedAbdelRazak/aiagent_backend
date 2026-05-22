@@ -365,7 +365,7 @@ const MAX_SCHEDULE_FAILURES = Math.max(
 const SHORTS_UPLOAD_BATCH_MIN = toInt(process.env.SHORTS_UPLOAD_BATCH_MIN, 3);
 const SHORTS_UPLOAD_BATCH_MAX = toInt(process.env.SHORTS_UPLOAD_BATCH_MAX, 6);
 const SHORTS_CRON_TZ = process.env.SHORTS_CRON_TZ || PST_TZ;
-const SHORTS_CRON_SCHEDULE = process.env.SHORTS_CRON_SCHEDULE || "0 */2 * * *";
+const SHORTS_CRON_SCHEDULE = process.env.SHORTS_CRON_SCHEDULE || "*/10 * * * *";
 const SCHEDULE_RUN_HISTORY_MAX = Math.max(
 	1,
 	toInt(process.env.SCHEDULE_RUN_HISTORY_MAX, 20),
