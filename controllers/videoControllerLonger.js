@@ -14693,6 +14693,12 @@ function isSensitiveTopicText(text = "") {
 	const t = String(text || "").toLowerCase();
 	if (!t) return false;
 	const has = (list) => list.some((tok) => t.includes(tok));
+	if (
+		/\b(death|dead|died|dies|passed\s+away|killed|fatal|cause\s+of\s+death|hospitali[sz]ed|severe\s+illness|mourning|tribute)\b/i.test(
+			t,
+		)
+	)
+		return true;
 	return (
 		has(SERIOUS_TONE_TOKENS) ||
 		has(EXPLICIT_SERIOUS_CUES) ||
@@ -19643,6 +19649,24 @@ function buildShortSegmentExtension({
 		);
 	}
 	if (categoryGuide?.isSports) {
+		if (
+			/\b(nascar|cup\s+series|motorsports?|stock\s*car|racing|pit\s+road|garage|restart|kyle\s+busch)\b/i.test(
+				`${topicLabel} ${text}`,
+			)
+		) {
+			return pick(
+				isQuestion
+					? [
+							"The answer depends on what NASCAR confirms next and how the garage responds.",
+							"The real test is whether the next confirmed detail adds clarity without fueling speculation.",
+						]
+					: [
+							"That keeps the focus on the garage reaction, the record, and what remains unconfirmed.",
+							"For NASCAR fans, the important line is legacy first, speculation last.",
+							"The honest trackside read is simple: respect the loss, name the record, and wait for confirmed details.",
+						],
+			);
+		}
 		return pick(
 			isQuestion
 				? [
