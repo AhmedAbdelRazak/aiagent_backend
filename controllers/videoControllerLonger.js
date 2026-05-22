@@ -904,15 +904,34 @@ const FORCE_OPENING_PRESENTER_COUNT = Math.floor(clampNumber(
 	4,
 ));
 const OPENING_PRESENTER_CLUSTER_COUNT = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_OPENING_PRESENTER_CLUSTER_COUNT ?? 3,
+	process.env.LONG_VIDEO_OPENING_PRESENTER_CLUSTER_COUNT ?? 2,
 	FORCE_OPENING_PRESENTER_COUNT,
 	5,
 ));
-const MAX_OPTIONAL_HEYGEN_CONTENT_SEGMENTS = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_MAX_OPTIONAL_HEYGEN_CONTENT_SEGMENTS ?? 1,
-	0,
-	4,
-));
+const OPTIONAL_HEYGEN_CONTENT_CALLS_OVERRIDE = String(
+	process.env.LONG_VIDEO_MAX_OPTIONAL_HEYGEN_CONTENT_SEGMENTS || "",
+).trim();
+const MIN_HEYGEN_PRESENTER_SEGMENT_SEC = clampNumber(
+	process.env.LONG_VIDEO_MIN_HEYGEN_PRESENTER_SEGMENT_SEC ?? 10,
+	8,
+	18,
+);
+const PRESENTER_BODY_MIN_SEC = clampNumber(
+	process.env.LONG_VIDEO_PRESENTER_BODY_MIN_SEC ??
+		MIN_HEYGEN_PRESENTER_SEGMENT_SEC,
+	8,
+	18,
+);
+const PRESENTER_BODY_TARGET_SEC = clampNumber(
+	process.env.LONG_VIDEO_PRESENTER_BODY_TARGET_SEC ?? PRESENTER_BODY_MIN_SEC,
+	PRESENTER_BODY_MIN_SEC,
+	24,
+);
+const PRESENTER_BODY_MAX_SEC = clampNumber(
+	process.env.LONG_VIDEO_PRESENTER_BODY_MAX_SEC ?? 20,
+	PRESENTER_BODY_TARGET_SEC,
+	30,
+);
 const OPENING_PRESENTER_USE_HERO_SYNC = envFlag(
 	"LONG_VIDEO_OPENING_PRESENTER_HERO_SYNC",
 	false,
@@ -928,17 +947,17 @@ const OPENING_PRESENTER_SYNC_RETRIES = Math.floor(clampNumber(
 	3,
 ));
 const OPENING_PRESENTER_MIN_SEC = clampNumber(
-	process.env.LONG_VIDEO_OPENING_PRESENTER_MIN_SEC ?? 9,
+	process.env.LONG_VIDEO_OPENING_PRESENTER_MIN_SEC ?? 10,
 	6,
 	30,
 );
 const OPENING_PRESENTER_MAX_SEC = clampNumber(
-	process.env.LONG_VIDEO_OPENING_PRESENTER_MAX_SEC ?? 18,
+	process.env.LONG_VIDEO_OPENING_PRESENTER_MAX_SEC ?? 20,
 	OPENING_PRESENTER_MIN_SEC,
 	35,
 );
 const OPENING_PRESENTER_TARGET_SEC = clampNumber(
-	process.env.LONG_VIDEO_OPENING_PRESENTER_TARGET_SEC ?? 13,
+	process.env.LONG_VIDEO_OPENING_PRESENTER_TARGET_SEC ?? 16,
 	OPENING_PRESENTER_MIN_SEC,
 	OPENING_PRESENTER_MAX_SEC,
 );
@@ -1205,6 +1224,16 @@ function getLongVideoRuntimeProfile() {
 		outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC.toFixed(1)),
 		openingPresenterTargetSec: Number(OPENING_PRESENTER_TARGET_SEC.toFixed(1)),
 		openingPresenterMaxSec: Number(OPENING_PRESENTER_MAX_SEC.toFixed(1)),
+		openingPresenterClusterCount: OPENING_PRESENTER_CLUSTER_COUNT,
+		minHeyGenPresenterSegmentSec: MIN_HEYGEN_PRESENTER_SEGMENT_SEC,
+		presenterBodyMinSec: PRESENTER_BODY_MIN_SEC,
+		presenterBodyTargetSec: PRESENTER_BODY_TARGET_SEC,
+		presenterBodyMaxSec: PRESENTER_BODY_MAX_SEC,
+		heygenCallRules: {
+			under3Min: 3,
+			threeToUnder4Min: 4,
+			fourMinOrMore: 5,
+		},
 		allowStaticPresenterFallback: ALLOW_STATIC_PRESENTER_FALLBACK,
 		feedVideoEnabled: FEED_VIDEO_ENABLED,
 		feedVideoMaxSegments: FEED_VIDEO_MAX_SEGMENTS,
@@ -8632,14 +8661,53 @@ function pickEvenlySpacedIndices(total, target) {
 	return Array.from(new Set(out)).sort((a, b) => a - b);
 }
 
-function computeContentVisualPlan(totalSegments) {
-	const count = Math.max(0, Math.floor(Number(totalSegments) || 0));
-	let presenterCount = Math.floor(count * CONTENT_PRESENTER_RATIO);
-	if (count >= 2) {
-		presenterCount = clampNumber(presenterCount, 1, count - 1);
-	} else {
-		presenterCount = count;
+function resolveTargetHeyGenCallCount(videoDurationSec = 0) {
+	const sec = Math.max(0, Number(videoDurationSec) || 0);
+	if (sec >= 240) return 5;
+	if (sec >= 180) return 4;
+	return 3;
+}
+
+function resolveOptionalHeyGenContentCalls(videoDurationSec = 0) {
+	if (OPTIONAL_HEYGEN_CONTENT_CALLS_OVERRIDE) {
+		return Math.floor(clampNumber(
+			Number(OPTIONAL_HEYGEN_CONTENT_CALLS_OVERRIDE),
+			0,
+			4,
+		));
 	}
+	return Math.max(0, resolveTargetHeyGenCallCount(videoDurationSec) - 2);
+}
+
+function computeContentVisualPlan(totalSegments, options = {}) {
+	const count = Math.max(0, Math.floor(Number(totalSegments) || 0));
+	const videoDurationSec = Math.max(0, Number(options.videoDurationSec) || 0);
+	const rawDurations = Array.isArray(options.segmentDurations)
+		? options.segmentDurations
+		: [];
+	const knownDurationTotal = rawDurations.reduce((sum, dur) => {
+		const n = Math.max(0, Number(dur) || 0);
+		return sum + n;
+	}, 0);
+	const fallbackSegmentSec =
+		count > 0
+			? Math.max(
+					3,
+					knownDurationTotal > 0
+						? knownDurationTotal / count
+						: videoDurationSec > 0
+							? videoDurationSec / count
+							: PRESENTER_BODY_TARGET_SEC,
+				)
+			: PRESENTER_BODY_TARGET_SEC;
+	const segmentDuration = (idx) => {
+		const n = Math.max(0, Number(rawDurations[idx]) || 0);
+		return n > 0 ? n : fallbackSegmentSec;
+	};
+	const targetHeyGenCalls = resolveTargetHeyGenCallCount(videoDurationSec);
+	const optionalHeyGenContentCalls = resolveOptionalHeyGenContentCalls(
+		videoDurationSec,
+	);
 	const forcedOpeningPresenterCount = Math.min(
 		FORCE_OPENING_PRESENTER_COUNT,
 		count,
@@ -8648,46 +8716,113 @@ function computeContentVisualPlan(totalSegments) {
 		count,
 		Math.max(forcedOpeningPresenterCount, OPENING_PRESENTER_CLUSTER_COUNT),
 	);
-	const maxPresenterCount = Math.min(
-		count,
-		openingPresenterCount + MAX_OPTIONAL_HEYGEN_CONTENT_SEGMENTS,
-	);
-	presenterCount = Math.min(
-		count,
-		Math.max(presenterCount, openingPresenterCount),
-	);
-	presenterCount = Math.min(maxPresenterCount, presenterCount);
 	const presenterPosSet = new Set();
+	const presenterClusterIdByPosition = new Map();
+	const optionalPresenterClusters = [];
+	const addPosition = (idx, clusterId = "") => {
+		if (idx < 0 || idx >= count || presenterPosSet.has(idx)) return false;
+		presenterPosSet.add(idx);
+		if (clusterId) presenterClusterIdByPosition.set(idx, clusterId);
+		return true;
+	};
 	for (
 		let idx = 0;
-		idx < openingPresenterCount && presenterPosSet.size < presenterCount;
+		idx < openingPresenterCount;
 		idx += 1
 	) {
-		presenterPosSet.add(idx);
+		addPosition(idx, "opening");
 	}
-	const optionalPresenterPositions = [];
-	const optionalNeeded = Math.max(0, presenterCount - presenterPosSet.size);
-	if (optionalNeeded > 0) {
-		const bodyStart = openingPresenterCount;
-		const bodyCount = Math.max(0, count - bodyStart);
-		for (let i = 0; i < optionalNeeded && bodyCount > 0; i += 1) {
-			const ratio = (i + 1) / (optionalNeeded + 1);
-			const idx = bodyStart + Math.round((bodyCount - 1) * ratio);
-			if (!presenterPosSet.has(idx)) optionalPresenterPositions.push(idx);
-		}
-		if (optionalPresenterPositions.length < optionalNeeded && bodyCount > 0) {
-			for (const idx of pickEvenlySpacedIndices(
-				bodyCount,
-				optionalNeeded * 2,
-			).map((pos) => bodyStart + pos)) {
-				if (!presenterPosSet.has(idx)) optionalPresenterPositions.push(idx);
-				if (optionalPresenterPositions.length >= optionalNeeded) break;
+	const bodyStart = openingPresenterCount;
+	const bodyCount = Math.max(0, count - bodyStart);
+	for (
+		let clusterIndex = 0;
+		clusterIndex < optionalHeyGenContentCalls && bodyCount > 0;
+		clusterIndex += 1
+	) {
+		const clusterId = `body_${clusterIndex + 1}`;
+		const windowStart =
+			bodyStart +
+			Math.floor((clusterIndex * bodyCount) / optionalHeyGenContentCalls);
+		const windowEnd =
+			clusterIndex === optionalHeyGenContentCalls - 1
+				? count
+				: bodyStart +
+					Math.floor(((clusterIndex + 1) * bodyCount) / optionalHeyGenContentCalls);
+		const windowSize = Math.max(1, windowEnd - windowStart);
+		let start = Math.min(
+			count - 1,
+			windowStart + Math.floor(windowSize * 0.35),
+		);
+		while (start < count && presenterPosSet.has(start)) start += 1;
+		if (start >= count) break;
+
+		const clusterPositions = [];
+		let clusterDurationSec = 0;
+		const addClusterIndex = (idx, toFront = false) => {
+			if (
+				idx < bodyStart ||
+				idx >= count ||
+				presenterPosSet.has(idx) ||
+				clusterPositions.includes(idx) ||
+				clusterPositions.length >= PRESENTER_RUN_MERGE_MAX_SEGMENTS
+			) {
+				return false;
 			}
+			if (toFront) clusterPositions.unshift(idx);
+			else clusterPositions.push(idx);
+			clusterDurationSec += segmentDuration(idx);
+			return true;
+		};
+
+		for (
+			let idx = start;
+			idx < count && clusterPositions.length < PRESENTER_RUN_MERGE_MAX_SEGMENTS;
+			idx += 1
+		) {
+			if (presenterPosSet.has(idx)) break;
+			const nextDur = segmentDuration(idx);
+			if (
+				clusterPositions.length &&
+				clusterDurationSec >= PRESENTER_BODY_MIN_SEC &&
+				clusterDurationSec + nextDur > PRESENTER_BODY_MAX_SEC
+			) {
+				break;
+			}
+			addClusterIndex(idx);
+			if (clusterDurationSec >= PRESENTER_BODY_TARGET_SEC) break;
 		}
-	}
-	for (const idx of optionalPresenterPositions) {
-		if (presenterPosSet.size >= presenterCount) break;
-		presenterPosSet.add(idx);
+
+		let right = (clusterPositions[clusterPositions.length - 1] ?? start) + 1;
+		while (
+			clusterDurationSec < PRESENTER_BODY_MIN_SEC &&
+			right < count &&
+			clusterPositions.length < PRESENTER_RUN_MERGE_MAX_SEGMENTS
+		) {
+			if (!addClusterIndex(right)) break;
+			right += 1;
+		}
+
+		let left = start - 1;
+		while (
+			clusterDurationSec < PRESENTER_BODY_MIN_SEC &&
+			left >= bodyStart &&
+			clusterPositions.length < PRESENTER_RUN_MERGE_MAX_SEGMENTS
+		) {
+			if (addClusterIndex(left, true)) {
+				left -= 1;
+				continue;
+			}
+			break;
+		}
+
+		if (clusterPositions.length) {
+			for (const idx of clusterPositions) addPosition(idx, clusterId);
+			optionalPresenterClusters.push({
+				id: clusterId,
+				positions: clusterPositions.slice().sort((a, b) => a - b),
+				durationSec: Number(clusterDurationSec.toFixed(3)),
+			});
+		}
 	}
 	const presenter = [];
 	const image = [];
@@ -8705,8 +8840,11 @@ function computeContentVisualPlan(totalSegments) {
 		imagePositions: image,
 		forcedPresenterPositions: forcedPresenter,
 		openingPresenterCount,
-		maxOptionalHeyGenContentSegments: MAX_OPTIONAL_HEYGEN_CONTENT_SEGMENTS,
+		targetHeyGenCalls,
+		maxOptionalHeyGenContentSegments: optionalHeyGenContentCalls,
+		optionalPresenterClusters,
 		presenterPositionSet: presenterPosSet,
+		presenterClusterIdByPosition,
 		forcedPresenterPositionSet: new Set(forcedPresenter),
 	};
 }
@@ -22777,6 +22915,7 @@ function buildHeyGenMotionPrompt({
 		"Preserve the exact face, glasses, beard, head shape, skin texture, neck, shoulders, studio, lighting, and outfit from the source image.",
 		"The presenter should look nice, simple, calm, credible, and human; never flashy, smug, exaggerated, theatrical, cartoonish, or overly expressive.",
 		`Delivery should be ${paceDirection}. Expression should be ${emotionalDirection}.`,
+		"Keep expression intensity low to medium-low: no wide eyes, no raised-eyebrow acting, no big grin, no sudden emotional jumps, and no exaggerated reaction faces.",
 		"Lip sync should look like normal human speech: restrained lips, smaller mouth openings, relaxed jaw, subtle cheek movement, and brief closed-mouth rests at commas and periods.",
 		"During natural audio pauses, keep tiny blinks, breathing, and eye focus alive; do not freeze, reset the face, stare blankly, or add a dramatic silent beat.",
 		"Avoid oversized A/O vowel shapes, constant open-mouth talking, rubbery jaw travel, extra teeth, theatrical reactions, cartoon acting, warped glasses, face reshaping, neck stretching, or shoulder distortion.",
@@ -24049,6 +24188,19 @@ function canMergePresenterRun(currentRun, seg) {
 	) {
 		return false;
 	}
+	if (currentRun.segments.length >= PRESENTER_RUN_MERGE_MAX_SEGMENTS) {
+		return false;
+	}
+	const currentDur = Number(currentRun.segDur || 0);
+	const nextDur = Math.max(
+		0.2,
+		Number(seg.endSec || 0) - Number(seg.startSec || 0),
+	);
+	const currentClusterId = String(currentRun.presenterClusterId || "").trim();
+	const nextClusterId = String(seg.presenterClusterId || "").trim();
+	if (currentClusterId && currentClusterId === nextClusterId) {
+		return currentDur + nextDur <= PRESENTER_RUN_MERGE_MAX_SEC;
+	}
 	if (Number(seg.topicIndex) !== Number(currentRun.topicIndex)) return false;
 	if (
 		String(seg.videoExpression || seg.expression || "neutral") !==
@@ -24062,14 +24214,6 @@ function canMergePresenterRun(currentRun, seg) {
 	) {
 		return false;
 	}
-	if (currentRun.segments.length >= PRESENTER_RUN_MERGE_MAX_SEGMENTS) {
-		return false;
-	}
-	const currentDur = Number(currentRun.segDur || 0);
-	const nextDur = Math.max(
-		0.2,
-		Number(seg.endSec || 0) - Number(seg.startSec || 0),
-	);
 	return currentDur + nextDur <= PRESENTER_RUN_MERGE_MAX_SEC;
 }
 
@@ -24156,6 +24300,7 @@ async function buildRenderableTimelineUnits({
 				videoExpression: seg.videoExpression || seg.expression || "neutral",
 				expression: seg.expression || "neutral",
 				cameraMotion: seg.cameraMotion || { mode: "steady" },
+				presenterClusterId: seg.presenterClusterId || "",
 				segDur,
 				mustUsePresenter: Boolean(seg.mustUsePresenter),
 				hasPremium: premiumPresenterSegmentSet.has(seg.index),
@@ -24180,6 +24325,7 @@ async function buildRenderableTimelineUnits({
 			videoExpression: seg.videoExpression || seg.expression || "neutral",
 			expression: seg.expression || "neutral",
 			cameraMotion: seg.cameraMotion || { mode: "steady" },
+			presenterClusterId: seg.presenterClusterId || "",
 			segDur,
 			mustUsePresenter: Boolean(seg.mustUsePresenter),
 			hasPremium: premiumPresenterSegmentSet.has(seg.index),
@@ -26641,6 +26787,12 @@ async function runLongVideoJob(
 
 		const preTtsVisualPlan = computeContentVisualPlan(
 			Array.isArray(script.segments) ? script.segments.length : 0,
+			{
+				videoDurationSec:
+					Number(narrationTargetSec || 0) +
+					Number(introDurationSec || 0) +
+					Number(outroDurationSec || 0),
+			},
 		);
 		const visualGrounding = await groundScriptInValidatedVisuals({
 			script,
@@ -26799,6 +26951,12 @@ async function runLongVideoJob(
 		if (orchestratorDryRun) {
 			const visualPlan = computeContentVisualPlan(
 				Array.isArray(script.segments) ? script.segments.length : 0,
+				{
+					videoDurationSec:
+						Number(narrationTargetSec || 0) +
+						Number(introDurationSec || 0) +
+						Number(outroDurationSec || 0),
+				},
 			);
 			const estimatedWords = (script.segments || []).reduce(
 				(sum, seg) => sum + countWords(seg.text || ""),
@@ -26829,8 +26987,10 @@ async function runLongVideoJob(
 					feedImageOrVideoSegments: visualPlan.imagePositions,
 					forcedPresenterSegments: visualPlan.forcedPresenterPositions,
 					openingPresenterCount: visualPlan.openingPresenterCount,
+					targetHeyGenCalls: visualPlan.targetHeyGenCalls,
 					maxOptionalHeyGenContentSegments:
 						visualPlan.maxOptionalHeyGenContentSegments,
+					optionalPresenterClusters: visualPlan.optionalPresenterClusters,
 				},
 				introOutroPlan: plannedIntroOutro,
 				scriptQa: {
@@ -26860,8 +27020,10 @@ async function runLongVideoJob(
 				presenterSegments: visualPlan.presenterPositions,
 				feedImageOrVideoSegments: visualPlan.imagePositions,
 				openingPresenterCount: visualPlan.openingPresenterCount,
+				targetHeyGenCalls: visualPlan.targetHeyGenCalls,
 				maxOptionalHeyGenContentSegments:
 					visualPlan.maxOptionalHeyGenContentSegments,
+				optionalPresenterClusters: visualPlan.optionalPresenterClusters,
 				thumbnailSkipped: true,
 				heygenSkipped: true,
 				ttsSkipped: true,
@@ -28124,7 +28286,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 		// 8.5) Visual plan: budget-aware presenter vs static feed images (content only)
 		const totalSegments = timeline.length;
-		const contentVisualPlan = computeContentVisualPlan(totalSegments);
+		const contentVisualPlan = computeContentVisualPlan(totalSegments, {
+			videoDurationSec: totalActualSec,
+			segmentDurations: timeline.map((seg) =>
+				Math.max(
+					0,
+					Number(seg.durationSec || 0) ||
+						Number(seg.endSec || 0) - Number(seg.startSec || 0),
+				),
+			),
+		});
 		const presenterPosSet = contentVisualPlan.presenterPositionSet;
 		const presenterSegments = [];
 		const imageSegments = [];
@@ -28133,6 +28304,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const visualType = presenterPosSet.has(idx) ? "presenter" : "image";
 			const mustUsePresenter =
 				contentVisualPlan.forcedPresenterPositionSet.has(idx);
+			const presenterClusterId =
+				contentVisualPlan.presenterClusterIdByPosition?.get(idx) || "";
 			if (visualType === "presenter") presenterSegments.push(seg.index);
 			else imageSegments.push(seg.index);
 			if (mustUsePresenter) forcedPresenterSegments.push(seg.index);
@@ -28141,14 +28314,18 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				plannedVisualType: visualType,
 				visualType,
 				mustUsePresenter,
+				presenterClusterId,
 			};
 		});
 		logJob(jobId, "segment visual plan", {
 			totalSegments,
 			targetPresenterRatio: CONTENT_PRESENTER_RATIO,
+			targetHeyGenCalls: contentVisualPlan.targetHeyGenCalls,
 			openingPresenterCount: contentVisualPlan.openingPresenterCount,
 			maxOptionalHeyGenContentSegments:
 				contentVisualPlan.maxOptionalHeyGenContentSegments,
+			optionalPresenterClusters:
+				contentVisualPlan.optionalPresenterClusters || [],
 			targetPresenterCount: presenterSegments.length,
 			targetImageCount: imageSegments.length,
 			forcedPresenterSegments,
@@ -28186,9 +28363,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		logJob(jobId, "segment visual plan final", {
 			totalSegments,
 			targetPresenterRatio: CONTENT_PRESENTER_RATIO,
+			targetHeyGenCalls: contentVisualPlan.targetHeyGenCalls,
 			openingPresenterCount: contentVisualPlan.openingPresenterCount,
 			maxOptionalHeyGenContentSegments:
 				contentVisualPlan.maxOptionalHeyGenContentSegments,
+			optionalPresenterClusters:
+				contentVisualPlan.optionalPresenterClusters || [],
 			presenterCount: finalPresenterSegments.length,
 			imageCount: finalImageSegments.length,
 			presenterSegments: finalPresenterSegments,
@@ -28332,8 +28512,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				timeline,
 				visualPlan: {
 					targetPresenterRatio: CONTENT_PRESENTER_RATIO,
+					targetHeyGenCalls: contentVisualPlan.targetHeyGenCalls,
 					presenterSegments: finalPresenterSegments,
 					imageSegments: finalImageSegments,
+					optionalPresenterClusters:
+						contentVisualPlan.optionalPresenterClusters || [],
 					feedVideoSegments: feedVideoPlanSummary.map((s) => s.segment),
 				},
 				imageQa: {
@@ -28348,9 +28531,16 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			resolution: HEYGEN_DEFAULT_RESOLUTION,
 			expressiveness: HEYGEN_DEFAULT_EXPRESSIVENESS,
 			fit: HEYGEN_DEFAULT_FIT,
+			targetHeyGenCalls: contentVisualPlan.targetHeyGenCalls,
 			openingPresenterCount: contentVisualPlan.openingPresenterCount,
 			maxOptionalHeyGenContentSegments:
 				contentVisualPlan.maxOptionalHeyGenContentSegments,
+			minHeyGenPresenterSegmentSec: MIN_HEYGEN_PRESENTER_SEGMENT_SEC,
+			bodyPresenterMinSec: PRESENTER_BODY_MIN_SEC,
+			bodyPresenterTargetSec: PRESENTER_BODY_TARGET_SEC,
+			bodyPresenterMaxSec: PRESENTER_BODY_MAX_SEC,
+			optionalPresenterClusters:
+				contentVisualPlan.optionalPresenterClusters || [],
 			premiumPresenterSegments,
 			requiredMotionMaxFreezeRatio: HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO,
 			optionalMotionMaxFreezeRatio: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO,
@@ -29013,16 +29203,21 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		});
 		let outroPath = "";
 		let outroActualVisualType = "presenter";
+		let outroSmileTailAppliedSec = OUTRO_SMILE_TAIL_SEC;
 		try {
 			let outroHeyGenAudioPath = outroAudioPath;
 			let outroHeyGenDurationSec = outroDurationSec;
-			if (OUTRO_SMILE_TAIL_SEC > 0.05) {
+			outroSmileTailAppliedSec = Math.max(
+				OUTRO_SMILE_TAIL_SEC,
+				MIN_HEYGEN_PRESENTER_SEGMENT_SEC - Number(outroDurationSec || 0),
+			);
+			if (outroSmileTailAppliedSec > 0.05) {
 				const outroTailSilence = path.join(
 					tmpDir,
 					`outro_silent_smile_${jobId}.wav`,
 				);
 				await createSilentWav({
-					durationSec: OUTRO_SMILE_TAIL_SEC,
+					durationSec: outroSmileTailAppliedSec,
 					outPath: outroTailSilence,
 				});
 				outroHeyGenAudioPath = path.join(
@@ -29033,10 +29228,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				safeUnlink(outroTailSilence);
 				outroHeyGenDurationSec =
 					(await probeDurationSeconds(outroHeyGenAudioPath)) ||
-					outroDurationSec + OUTRO_SMILE_TAIL_SEC;
+					outroDurationSec + outroSmileTailAppliedSec;
 				logJob(jobId, "outro silent smile tail prepared", {
 					spokenOutroSec: Number((outroDurationSec || 0).toFixed(3)),
-					silentSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC.toFixed(1)),
+					silentSmileTailSec: Number(outroSmileTailAppliedSec.toFixed(1)),
+					minHeyGenPresenterSegmentSec: MIN_HEYGEN_PRESENTER_SEGMENT_SEC,
 					heygenOutroSec: Number((outroHeyGenDurationSec || 0).toFixed(3)),
 				});
 			}
@@ -29059,14 +29255,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
 				}),
 				role: "outro",
-				silentSmileTailSec: OUTRO_SMILE_TAIL_SEC,
+				silentSmileTailSec: outroSmileTailAppliedSec,
 			});
 			outroDurationSec = outroHeyGenDurationSec;
 		} catch (e) {
 			logJob(jobId, "outro heygen presenter render failed; stopping final assembly", {
 				error: e.message,
 				requireOutroPresenter: REQUIRE_OUTRO_PRESENTER,
-				outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC.toFixed(1)),
+				outroSmileTailSec: Number(outroSmileTailAppliedSec.toFixed(1)),
 			});
 			throw new Error(`required_outro_presenter_failed:${e.message}`);
 		}
@@ -29084,7 +29280,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			actualVisualType: outroActualVisualType,
 			durationSec: outroDurationSec,
 			mustUsePresenter: true,
-			silentSmileTailSec: OUTRO_SMILE_TAIL_SEC,
+			silentSmileTailSec: outroSmileTailAppliedSec,
 		});
 
 		const presenterCoverage = summarizePresenterCoverage(segmentRenderSummary);
