@@ -2227,7 +2227,8 @@ function topicMatchInfo(tokens = [], fields = []) {
 
 function cleanTopicCandidate(title = "") {
 	let t = String(title || "")
-		.replace(/\s*[-|]\s*[^-|]{2,}$/g, "")
+		.replace(/\s+\|\s*[^|]{2,}$/g, "")
+		.replace(/\s+-\s+[^-]{2,}$/g, "")
 		.replace(/^breaking:\s*/i, "")
 		.trim();
 	t = t.replace(/\s+/g, " ").trim();
@@ -2420,7 +2421,7 @@ const PROMPT_CATEGORY_RULES = [
 	},
 	{
 		label: "Sports",
-		weight: 3,
+		weight: 5,
 		patterns: [
 			/\b(sports?|nascar|cup\s+series|race\s*car|stock\s*car|motorsports?|racing|driver|nba|nfl|mlb|nhl|soccer|football|basketball|baseball|hockey|ufc|boxing|tennis|golf|matchup|playoffs?|tournament|score|standings|draft|coach|player)\b/i,
 		],
