@@ -3157,7 +3157,7 @@ function computeFlexibleNarrationTargetSec({
 		effectiveMaxMultiplier = Math.min(
 			effectiveMaxMultiplier,
 			clampNumber(
-				process.env.LONG_VIDEO_SENSITIVE_PROMPT_MAX_MULTIPLIER ?? 1.25,
+				process.env.LONG_VIDEO_SENSITIVE_PROMPT_MAX_MULTIPLIER ?? 2,
 				1,
 				2,
 			),
