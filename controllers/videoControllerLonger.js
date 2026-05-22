@@ -3136,6 +3136,33 @@ function computeFlexibleNarrationTargetSec({
 			),
 		);
 	}
+	const sensitivePrompt =
+		promptDirected &&
+		(Array.isArray(topics) ? topics : []).some((topic) =>
+			isSensitiveTopicText(
+				[
+					topic?.displayTopic,
+					topic?.topic,
+					topic?.promptText,
+					topic?.promptBrief?.title,
+					...(Array.isArray(topic?.promptBrief?.briefLines)
+						? topic.promptBrief.briefLines
+						: []),
+				]
+					.filter(Boolean)
+					.join(" "),
+			),
+		);
+	if (sensitivePrompt && !bareDirectAnswerPrompt) {
+		effectiveMaxMultiplier = Math.min(
+			effectiveMaxMultiplier,
+			clampNumber(
+				process.env.LONG_VIDEO_SENSITIVE_PROMPT_MAX_MULTIPLIER ?? 1.25,
+				1,
+				2,
+			),
+		);
+	}
 	const minMultiplier = clampNumber(
 		process.env.LONG_VIDEO_FLEX_MIN_MULTIPLIER ?? 0.5,
 		0.25,
@@ -14146,6 +14173,12 @@ function buildOpeningContinuationFallback({
 	}
 	if (isSocialConnectionTopic({ topics, categoryLabel, text: hay })) {
 		return "The useful part is that connection usually changes through small repeatable moments, not one perfect social reset.";
+	}
+	if (
+		isSensitiveTopicText(hay) &&
+		/\b(nascar|cup\s+series|motorsports?|racing|driver|kyle\s+busch)\b/i.test(hay)
+	) {
+		return "Start with the part that matters most: what is confirmed, what is not, and why his legacy is bigger than one headline.";
 	}
 	if (mood === "serious" || isSensitiveTopicText(hay)) {
 		return "The important part is to separate what is confirmed from what the pattern might mean next.";
