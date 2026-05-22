@@ -5210,6 +5210,7 @@ async function selectTopics({
 					cleanTopicLabel(promptBrief.title || promptBrief.primaryTopic || "") ||
 					finalTopic;
 			}
+			finalTopic = cleanTopicLabel(finalTopic) || finalTopic;
 			const signature = topicSignature(finalTopic);
 			if (signature && seen.has(signature)) continue;
 			if (signature) seen.add(signature);
@@ -15235,7 +15236,7 @@ function summarizeCameraMotionPlan(timeline = []) {
 }
 
 function shortTitleFromText(text = "") {
-	const words = String(text || "")
+	const words = normalizeBareQuestionGrammar(String(text || ""))
 		.replace(/["'(){}\[\]]/g, "")
 		.replace(/[.,;:!?]+/g, " ")
 		.trim()
@@ -15295,6 +15296,7 @@ function buildThumbnailSignalsFromTopicPick(topicPick) {
 	const displayTopic = String(
 		t.displayTopic || t.topic || story.title || story.rawTitle || "",
 	).trim();
+	const normalizedDisplayTopic = cleanTopicLabel(displayTopic) || displayTopic;
 	const keywords = Array.isArray(t.keywords)
 		? t.keywords.map((s) => String(s || "").trim()).filter(Boolean)
 		: [];
@@ -15334,7 +15336,7 @@ function buildThumbnailSignalsFromTopicPick(topicPick) {
 			: [];
 
 	return {
-		displayTopic,
+		displayTopic: normalizedDisplayTopic,
 		keywords,
 		topList: t.topList || story.topList || null,
 		relatedQueries,
@@ -15822,11 +15824,13 @@ function buildThumbnailHookPlan({ title, topicPicks }) {
 }
 
 function cleanTopicLabel(text = "") {
-	return String(text || "")
-		.replace(/["'(){}\[\]]/g, "")
-		.replace(/\s+/g, " ")
-		.replace(/[.!?]+$/g, "")
-		.trim();
+	return normalizeBareQuestionGrammar(
+		String(text || "")
+			.replace(/["'(){}\[\]]/g, "")
+			.replace(/\s+/g, " ")
+			.replace(/[.!?]+$/g, "")
+			.trim(),
+	);
 }
 
 function stripAnchorNoise(label = "") {
@@ -15920,6 +15924,34 @@ function normalizeEngagementLabel(text = "") {
 	}
 	t = stripTrailingPreposition(t);
 	return t || normalizeTopicLabelForQuestion(text) || cleanTopicLabel(text);
+}
+
+function normalizeBareQuestionGrammar(text = "") {
+	let cleaned = String(text || "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!cleaned) return cleaned;
+
+	cleaned = cleaned.replace(
+		/\bdoes\s+([^?.,;:]{2,80}?)\s+ha(?:s|ve)\s+(?:a\s+)?mask(?:\s+on)?\b/gi,
+		(_match, subject) => `is ${String(subject || "").trim()} wearing a mask`,
+	);
+	cleaned = cleaned.replace(
+		/\bdoes\s+([^?.,;:]{2,80}?)\s+ha(?:s|ve)\s+(?:a\s+)?face\s+mask\b/gi,
+		(_match, subject) => `is ${String(subject || "").trim()} wearing a face mask`,
+	);
+	cleaned = cleaned.replace(
+		/\b(did|does|do)\s+([^?.,;:]{2,80}?)\s+has\b/gi,
+		(_match, aux, subject) => `${aux} ${String(subject || "").trim()} have`,
+	);
+	cleaned = cleaned.replace(
+		/\b(takes?|requires?|needs?)\s+(?:much|far)\s+more\s+than\./gi,
+		(_match, verb) => `${verb} much more evidence.`,
+	);
+	return cleaned
+		.replace(/\s+([,.!?;:])/g, "$1")
+		.replace(/\s{2,}/g, " ")
+		.trim();
 }
 
 function selectEngagementLabel({ topicLabel, shortTitle, maxWords = 4 }) {
@@ -16211,7 +16243,7 @@ function sanitizeIntroOutroLine(text = "") {
 		{ fillers: 0, emotes: 0 },
 		{ maxFillers: 0, maxEmotes: 0 },
 	);
-	return stripPromptLabelArtifacts(cleaned);
+	return normalizeBareQuestionGrammar(stripPromptLabelArtifacts(cleaned));
 }
 
 function stripAllFillers(text = "") {
@@ -16221,7 +16253,7 @@ function stripAllFillers(text = "") {
 		{ fillers: 0, emotes: 0 },
 		{ maxFillers: 0, maxEmotes: 0 },
 	);
-	return stripPromptLabelArtifacts(cleaned);
+	return normalizeBareQuestionGrammar(stripPromptLabelArtifacts(cleaned));
 }
 
 function sanitizeSegmentText(text = "") {
@@ -16563,7 +16595,7 @@ function toHeadlineCase(text = "") {
 }
 
 function formatHumanTitle(text = "", max = 95) {
-	let cleaned = normalizeTitleWhitespace(text)
+	let cleaned = normalizeBareQuestionGrammar(normalizeTitleWhitespace(text))
 		.replace(/^["'`]+|["'`]+$/g, "")
 		.replace(/([!?]){2,}/g, "$1")
 		.replace(/\.{2,}/g, "...")
@@ -17195,8 +17227,14 @@ function addNaturalIntroGreeting({
 	}`.trim();
 	const serious = isSensitiveTopicText(hay);
 	const greeting = serious ? "Hi everyone" : "Hi guys";
+	const greetingTopic = looksLikeQuestionTopic(greetingLabel)
+		? `${greetingLabel.replace(/[.?!]+$/g, "")}?`
+		: greetingLabel;
+	const lead = looksLikeQuestionTopic(greetingLabel)
+		? `${greeting}, today we are asking: ${greetingTopic}`
+		: `${greeting}, today we are talking about ${greetingLabel}.`;
 	return sanitizeIntroOutroLine(
-		`${greeting}, today we are talking about ${greetingLabel}. ${text}`,
+		`${lead} ${text}`,
 	);
 }
 
