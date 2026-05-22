@@ -643,6 +643,18 @@ const HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_SEC = clampNumber(
 	PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC,
 	3,
 );
+const HEYGEN_CONTENT_MOTION_MAX_FREEZE_RATIO = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_CONTENT_MOTION_MAX_FREEZE_RATIO ??
+		HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO,
+	HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO,
+	HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO,
+);
+const HEYGEN_CONTENT_MOTION_MAX_FREEZE_SEC = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_CONTENT_MOTION_MAX_FREEZE_SEC ??
+		HEYGEN_REQUIRED_MOTION_MAX_FREEZE_SEC,
+	HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_SEC,
+	HEYGEN_REQUIRED_MOTION_MAX_FREEZE_SEC,
+);
 const PRESENTER_VIDEO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
 const PRESENTER_VIDEO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 
@@ -1094,6 +1106,35 @@ const PRESENTER_RUN_MERGE_MAX_SEGMENTS = clampNumber(
 	2,
 	5,
 );
+const OPTIONAL_PRESENTER_CLUSTER_MIN_SEC = Math.min(
+	PRESENTER_BODY_MAX_SEC,
+	clampNumber(
+		process.env.LONG_VIDEO_OPTIONAL_PRESENTER_CLUSTER_MIN_SEC ??
+			Math.max(12, PREFERRED_HEYGEN_PRESENTER_SEGMENT_SEC),
+		6,
+		24,
+	),
+);
+const OPTIONAL_PRESENTER_CLUSTER_TARGET_SEC = Math.min(
+	PRESENTER_BODY_MAX_SEC,
+	Math.max(
+		OPTIONAL_PRESENTER_CLUSTER_MIN_SEC,
+		clampNumber(
+			process.env.LONG_VIDEO_OPTIONAL_PRESENTER_CLUSTER_TARGET_SEC ??
+				Math.max(15, OPTIONAL_PRESENTER_CLUSTER_MIN_SEC),
+			OPTIONAL_PRESENTER_CLUSTER_MIN_SEC,
+			28,
+		),
+	),
+);
+const OPTIONAL_PRESENTER_CLUSTER_MAX_SEGMENTS = Math.floor(
+	clampNumber(
+		process.env.LONG_VIDEO_OPTIONAL_PRESENTER_CLUSTER_MAX_SEGMENTS ??
+			Math.min(3, PRESENTER_RUN_MERGE_MAX_SEGMENTS),
+		1,
+		PRESENTER_RUN_MERGE_MAX_SEGMENTS,
+	),
+);
 const IMAGE_SEARCH_MAX_QUERY_VARIANTS = clampNumber(12, 4, 16);
 const IMAGE_SEARCH_CANDIDATE_MULTIPLIER = clampNumber(9, 2, 12);
 const IMAGE_SEARCH_MIN_RANKED_POOL_MULTIPLIER = clampNumber(
@@ -1224,6 +1265,8 @@ function getLongVideoRuntimeProfile() {
 		openingPresenterClusterCount: OPENING_PRESENTER_CLUSTER_COUNT,
 		preferredHeyGenPresenterSegmentSec:
 			PREFERRED_HEYGEN_PRESENTER_SEGMENT_SEC,
+		optionalPresenterClusterMinSec: OPTIONAL_PRESENTER_CLUSTER_MIN_SEC,
+		optionalPresenterClusterTargetSec: OPTIONAL_PRESENTER_CLUSTER_TARGET_SEC,
 		presenterBodyTargetSec: PRESENTER_BODY_TARGET_SEC,
 		presenterBodyMaxSec: PRESENTER_BODY_MAX_SEC,
 		qualityFirstPresenterPlanning: true,
@@ -8678,6 +8721,100 @@ function resolveOptionalHeyGenContentCalls(videoDurationSec = 0) {
 	return Math.max(0, resolveTargetHeyGenCallCount(videoDurationSec) - 2);
 }
 
+function buildOptionalPresenterClusterPositions({
+	bestIdx = -1,
+	windowStart = 0,
+	windowEnd = 0,
+	bodyStart = 0,
+	segmentDuration = () => 0,
+	presenterPosSet = new Set(),
+} = {}) {
+	if (bestIdx < 0) {
+		return { positions: [], durationSec: 0, expanded: false };
+	}
+	const maxSec = Math.max(
+		OPTIONAL_PRESENTER_CLUSTER_MIN_SEC,
+		Number(PRESENTER_BODY_MAX_SEC) || OPTIONAL_PRESENTER_CLUSTER_MIN_SEC,
+	);
+	const targetSec = clampNumber(
+		OPTIONAL_PRESENTER_CLUSTER_TARGET_SEC,
+		OPTIONAL_PRESENTER_CLUSTER_MIN_SEC,
+		maxSec,
+	);
+	const maxSegments = Math.max(1, OPTIONAL_PRESENTER_CLUSTER_MAX_SEGMENTS);
+	const positions = [bestIdx];
+	let durationSec = Math.max(0, Number(segmentDuration(bestIdx)) || 0);
+
+	const canUse = (idx) =>
+		idx >= bodyStart &&
+		idx >= windowStart &&
+		idx < windowEnd &&
+		!presenterPosSet.has(idx) &&
+		!positions.includes(idx);
+
+	const pickCandidate = () => {
+		const candidates = [
+			{ idx: positions[positions.length - 1] + 1, side: "right" },
+			{ idx: positions[0] - 1, side: "left" },
+		]
+			.filter((candidate) => canUse(candidate.idx))
+			.map((candidate) => {
+				const dur = Math.max(0, Number(segmentDuration(candidate.idx)) || 0);
+				const projected = durationSec + dur;
+				return {
+					...candidate,
+					dur,
+					projected,
+					overMax: projected > maxSec,
+					score:
+						Math.abs(targetSec - projected) +
+						(candidate.side === "left" ? 0.12 : 0) +
+						(dur < 2.5 ? 0.4 : 0),
+				};
+			})
+			.filter(
+				(candidate) =>
+					!candidate.overMax ||
+					(durationSec < OPTIONAL_PRESENTER_CLUSTER_MIN_SEC &&
+						candidate.projected <= PRESENTER_RUN_MERGE_MAX_SEC),
+			);
+		if (!candidates.length) return null;
+		candidates.sort((a, b) => {
+			if (a.overMax !== b.overMax) return a.overMax ? 1 : -1;
+			return a.score - b.score;
+		});
+		return candidates[0];
+	};
+
+	while (
+		positions.length < maxSegments &&
+		durationSec < targetSec &&
+		durationSec < maxSec
+	) {
+		const candidate = pickCandidate();
+		if (!candidate) break;
+		if (candidate.side === "left") positions.unshift(candidate.idx);
+		else positions.push(candidate.idx);
+		durationSec += candidate.dur;
+		if (durationSec >= OPTIONAL_PRESENTER_CLUSTER_MIN_SEC) {
+			const next = pickCandidate();
+			if (
+				!next ||
+				Math.abs(targetSec - durationSec) <=
+					Math.abs(targetSec - next.projected)
+			) {
+				break;
+			}
+		}
+	}
+
+	return {
+		positions: positions.slice().sort((a, b) => a - b),
+		durationSec,
+		expanded: positions.length > 1,
+	};
+}
+
 function computeContentVisualPlan(totalSegments, options = {}) {
 	const count = Math.max(0, Math.floor(Number(totalSegments) || 0));
 	const videoDurationSec = Math.max(0, Number(options.videoDurationSec) || 0);
@@ -8766,9 +8903,16 @@ function computeContentVisualPlan(totalSegments, options = {}) {
 			}
 		}
 
-		const clusterPositions = bestIdx >= 0 ? [bestIdx] : [];
-		const clusterDurationSec =
-			bestIdx >= 0 ? Math.min(PRESENTER_BODY_MAX_SEC, segmentDuration(bestIdx)) : 0;
+		const clusterPlan = buildOptionalPresenterClusterPositions({
+			bestIdx,
+			windowStart,
+			windowEnd,
+			bodyStart,
+			segmentDuration,
+			presenterPosSet,
+		});
+		const clusterPositions = clusterPlan.positions;
+		const clusterDurationSec = clusterPlan.durationSec;
 
 		if (clusterPositions.length) {
 			for (const idx of clusterPositions) addPosition(idx, clusterId);
@@ -8778,6 +8922,9 @@ function computeContentVisualPlan(totalSegments, options = {}) {
 				durationSec: Number(clusterDurationSec.toFixed(3)),
 				preferredDurationSec: preferredSec,
 				durationMeetsPreference: clusterDurationSec >= preferredSec,
+				heygenSafeMinSec: OPTIONAL_PRESENTER_CLUSTER_MIN_SEC,
+				heygenTargetSec: OPTIONAL_PRESENTER_CLUSTER_TARGET_SEC,
+				expandedForHeyGenMotion: Boolean(clusterPlan.expanded),
 				qualityFirst: true,
 			});
 		}
@@ -22971,12 +23118,20 @@ function buildHeyGenMotionPrompt({
 		roleLabel === "intro_first"
 			? "Opening direction: begin with a brief natural greeting if the narration has one, then move straight into the topic. Keep calm attention, no long silent stare, no greeting performance, no big smile, and no exaggerated first-sentence reaction. The first seconds should feel like a professional teaser with smooth eye contact and one restrained emotional color."
 			: "";
+	const middlePresenterRole =
+		roleLabel === "content_mid" || roleLabel === "content_required";
+	const middleDirection =
+		middlePresenterRole
+			? "Middle presenter direction: this is a paid mid-video presenter beat, so it must stay visibly alive while still calm. Add small natural speech emphasis at phrase transitions: soft blinks, slight eye refocus, tiny bounded chin dips, subtle cheek and jaw motion, and quiet shoulder breathing. Never hold the face like a photo."
+			: "";
 	const motionContinuity =
 		roleLabel === "intro_first" || dur >= 18
 			? "For a longer opening take, include two or three tiny naturally spaced chin dips, soft eye refocuses, or shoulder-breath posture settles so the clip never reads as a held photo."
 			: roleLabel === "outro"
 				? "For the outro, stay gentle but alive: small blinks, soft breathing, and a tiny relaxed posture settle before the final closed-mouth smile."
-				: "For this short presenter beat, include at least one tiny natural emphasis cue while keeping the overall delivery calm.";
+				: middlePresenterRole
+					? "For this mid-video take, avoid stillness between sentences: keep a natural low-energy rhythm of blinks, micro nods, tiny posture settling, and restrained lip-sync movement across the full clip."
+					: "For this short presenter beat, include at least one tiny natural emphasis cue while keeping the overall delivery calm.";
 
 	return [
 		`Photorealistic talking-head presenter delivery for a ${roleLabel} video segment.`,
@@ -22984,6 +23139,7 @@ function buildHeyGenMotionPrompt({
 		"The presenter should look nice, simple, calm, credible, and human; never flashy, smug, exaggerated, theatrical, cartoonish, or overly expressive.",
 		`Delivery should be ${paceDirection}. Expression should be ${emotionalDirection}.`,
 		"Calm does not mean motionless: keep continuous, barely visible human micro-motion across the whole clip. Every second should show a natural cue from blinks, tiny eye refocus, jaw/cheek speech movement, neck correction, or quiet shoulder breathing.",
+		middleDirection,
 		motionContinuity,
 		openingDirection,
 		outroTail,
@@ -23205,15 +23361,19 @@ async function renderHeyGenPresenterSegment({
 	});
 	const originalQaIssues = Array.isArray(qa.issues) ? [...qa.issues] : [];
 	let acceptedSubtleHeyGenMotion = false;
-	const requiredPresenterRole = ["intro_first", "outro"].includes(
-		String(role || "").toLowerCase(),
-	);
+	const roleKey = String(role || "").toLowerCase();
+	const requiredPresenterRole = ["intro_first", "outro"].includes(roleKey);
+	const contentPresenterRole = ["content_mid", "content_required"].includes(roleKey);
 	const maxAllowedFreezeSec = requiredPresenterRole
 		? HEYGEN_REQUIRED_MOTION_MAX_FREEZE_SEC
-		: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_SEC;
+		: contentPresenterRole
+			? HEYGEN_CONTENT_MOTION_MAX_FREEZE_SEC
+			: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_SEC;
 	const maxAllowedFreezeRatio = requiredPresenterRole
 		? HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO
-		: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO;
+		: contentPresenterRole
+			? HEYGEN_CONTENT_MOTION_MAX_FREEZE_RATIO
+			: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO;
 	if (
 		!qa.pass &&
 		originalQaIssues.length > 0 &&
@@ -23232,6 +23392,7 @@ async function renderHeyGenPresenterSegment({
 		issues: qa.issues,
 		acceptedSubtleHeyGenMotion,
 		requiredPresenterRole,
+		contentPresenterRole,
 		...(acceptedSubtleHeyGenMotion ? { originalIssues: originalQaIssues } : {}),
 		durationSec: Number((qa.durationSec || 0).toFixed(3)),
 		durationDeltaSec: Number((qa.durationDeltaSec || 0).toFixed(3)),
@@ -28609,6 +28770,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				contentVisualPlan.maxOptionalHeyGenContentSegments,
 			preferredHeyGenPresenterSegmentSec:
 				PREFERRED_HEYGEN_PRESENTER_SEGMENT_SEC,
+			optionalPresenterClusterMinSec: OPTIONAL_PRESENTER_CLUSTER_MIN_SEC,
+			optionalPresenterClusterTargetSec: OPTIONAL_PRESENTER_CLUSTER_TARGET_SEC,
+			optionalPresenterClusterMaxSegments: OPTIONAL_PRESENTER_CLUSTER_MAX_SEGMENTS,
 			bodyPresenterTargetSec: PRESENTER_BODY_TARGET_SEC,
 			bodyPresenterMaxSec: PRESENTER_BODY_MAX_SEC,
 			qualityFirstPresenterPlanning: true,
@@ -28616,6 +28780,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				contentVisualPlan.optionalPresenterClusters || [],
 			premiumPresenterSegments,
 			requiredMotionMaxFreezeRatio: HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO,
+			contentMotionMaxFreezeRatio: HEYGEN_CONTENT_MOTION_MAX_FREEZE_RATIO,
 			optionalMotionMaxFreezeRatio: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO,
 			fallbackPolicy: "no paid presenter fallbacks",
 		});
@@ -29192,7 +29357,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						expression: exprKey,
 						mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
 						pace: heygenPace,
-						role: plannedVisualType === "image" ? "presenter_rescue" : "content",
+						role:
+							plannedVisualType === "image"
+								? "presenter_rescue"
+								: mustUsePresenter
+									? "content_required"
+									: "content_mid",
 					});
 					actualVisualType = "presenter";
 				} catch (e) {
