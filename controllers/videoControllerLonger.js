@@ -19605,6 +19605,13 @@ function buildShortSegmentExtension({
 						"Keep the focus on what is confirmed, what remains unclear, and who is directly affected.",
 						"That restraint gives viewers a clearer line between fact, context, and speculation.",
 						"The strongest read here is careful: name the verified facts and leave the unknowns open.",
+						"The respectful version keeps the timeline separate from the tribute.",
+						"The story can stay compelling without pretending the missing facts are known.",
+						"The clearest frame is confirmed loss, unresolved details, and a legacy people are still debating.",
+						"That keeps the human stakes visible without turning uncertainty into entertainment.",
+						"The next useful beat is context, not guessing: the record, the reaction, and the unanswered pieces.",
+						"The responsible path is to explain why it matters while leaving unconfirmed details alone.",
+						"That gives viewers room to understand the impact without being pushed into rumor.",
 					],
 		);
 	}
@@ -19693,10 +19700,14 @@ function buildShortSegmentExtension({
 							"The answer depends on what NASCAR confirms next and how the garage responds.",
 							"The real test is whether the next confirmed detail adds clarity without fueling speculation.",
 						]
-					: [
+				: [
 							"That keeps the focus on the garage reaction, the record, and what remains unconfirmed.",
 							"For NASCAR fans, the important line is legacy first, speculation last.",
 							"The honest trackside read is simple: respect the loss, name the record, and wait for confirmed details.",
+							"The better motorsports frame is the record, the rivalries, the fan reaction, and the facts still missing.",
+							"That keeps the story on pit road, not in the rumor cycle.",
+							"The garage context matters because his impact was competitive, emotional, and impossible to ignore.",
+							"The clean NASCAR read is to hold the trophies and the tension in the same frame.",
 						],
 			);
 		}
