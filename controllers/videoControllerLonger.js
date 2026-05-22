@@ -2422,7 +2422,7 @@ const PROMPT_CATEGORY_RULES = [
 		label: "Sports",
 		weight: 3,
 		patterns: [
-			/\b(sports?|nba|nfl|mlb|nhl|soccer|football|basketball|baseball|hockey|ufc|boxing|tennis|golf|matchup|playoffs?|tournament|score|standings|draft|coach|player)\b/i,
+			/\b(sports?|nascar|cup\s+series|race\s*car|stock\s*car|motorsports?|racing|driver|nba|nfl|mlb|nhl|soccer|football|basketball|baseball|hockey|ufc|boxing|tennis|golf|matchup|playoffs?|tournament|score|standings|draft|coach|player)\b/i,
 		],
 	},
 	{
@@ -17971,11 +17971,11 @@ function buildCategoryScriptGuide(categoryLabel = "", topics = []) {
 			"- For sports topics, write like a sharp postgame or pregame breakdown, not a search-trends explainer.",
 			...(isSensitiveSportsStory
 				? [
-						"- If the sports story involves death, injury, discipline, or legal issues, split the human/community impact from the basketball or competitive implication, and keep both sourced.",
+						"- If the sports story involves death, injury, discipline, or legal issues, split the human/community impact from the competitive implication, and keep both sourced.",
 					]
 				: []),
 			"- Open on the matchup tension, turning point, or strategic edge. Do NOT open on what people are searching for.",
-			"- Use natural sports language: pace, shot quality, rebounding, turnovers, foul trouble, coverage change, rotation pressure, late-game execution, and momentum swing.",
+			"- Use natural sports language for the actual sport. For NASCAR or motorsports, prefer terms like Cup Series, garage, pit road, track position, car control, setup, restart, team, rival, and fan base.",
 			'- If a source is a preview, recap, or analyst hit, attribute the analyst and outlet. Say "Jon Rothstein on CBS Sports" rather than "According to YouTube".',
 			'- Translate keyword phrases into normal speech. Never say quoted fragments like "where to watch" or "score today" as standalone ideas in the body of the script.',
 			"- Mention odds or betting only if they clarify expectations, and state them plainly without sportsbook-promotional framing.",
@@ -20021,6 +20021,12 @@ function buildForcedFinalOpenLoopLine({
 	}
 	if (isSocialConnectionTopic({ topics, categoryLabel, text: hay })) {
 		return "The open question is which ordinary invitation could make connection feel possible again?";
+	}
+	if (isSensitiveTopicText(hay)) {
+		if (/\b(nascar|cup\s+series|racing|motorsports?|driver|kyle\s+busch)\b/i.test(hay)) {
+			return "The open question is what confirmed details come next, and how NASCAR chooses to remember the full, complicated legacy.";
+		}
+		return "The open question is what confirmed details come next, and how people separate grief from speculation.";
 	}
 	return "The open question is what you notice next, and whether it changes the next choice you make.";
 }
