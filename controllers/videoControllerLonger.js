@@ -22943,12 +22943,14 @@ function buildHeyGenMotionPrompt({
 	expression = "neutral",
 	mood = "neutral",
 	pace = "steady",
+	durationSec = 0,
 	silentSmileTailSec = 0,
 } = {}) {
 	const cleanText = sanitizeSegmentText(text).slice(0, 700);
 	const roleLabel = String(role || "content").toLowerCase();
 	const expressionLabel = normalizeExpression(expression || mood || "neutral", mood);
 	const paceLabel = String(pace || "steady").toLowerCase();
+	const dur = Math.max(0, Number(durationSec) || 0);
 	const emotionalDirection =
 		expressionLabel === "serious" || expressionLabel === "thoughtful"
 			? "more thoughtful than cheerful, with soft eyes and relaxed brows"
@@ -22969,19 +22971,27 @@ function buildHeyGenMotionPrompt({
 		roleLabel === "intro_first"
 			? "Opening direction: begin with a brief natural greeting if the narration has one, then move straight into the topic. Keep calm attention, no long silent stare, no greeting performance, no big smile, and no exaggerated first-sentence reaction. The first seconds should feel like a professional teaser with smooth eye contact and one restrained emotional color."
 			: "";
+	const motionContinuity =
+		roleLabel === "intro_first" || dur >= 18
+			? "For a longer opening take, include two or three tiny naturally spaced chin dips, soft eye refocuses, or shoulder-breath posture settles so the clip never reads as a held photo."
+			: roleLabel === "outro"
+				? "For the outro, stay gentle but alive: small blinks, soft breathing, and a tiny relaxed posture settle before the final closed-mouth smile."
+				: "For this short presenter beat, include at least one tiny natural emphasis cue while keeping the overall delivery calm.";
 
 	return [
 		`Photorealistic talking-head presenter delivery for a ${roleLabel} video segment.`,
 		"Preserve the exact face, glasses, beard, head shape, skin texture, neck, shoulders, studio, lighting, and outfit from the source image.",
 		"The presenter should look nice, simple, calm, credible, and human; never flashy, smug, exaggerated, theatrical, cartoonish, or overly expressive.",
 		`Delivery should be ${paceDirection}. Expression should be ${emotionalDirection}.`,
-		"Keep expression intensity low to medium-low: no wide eyes, no raised-eyebrow acting, no big grin, no sudden emotional jumps, and no exaggerated reaction faces.",
-		"Lip sync should look like normal human speech: restrained lips, smaller mouth openings, relaxed jaw, subtle cheek movement, and brief closed-mouth rests at commas and periods.",
-		"During natural audio pauses, keep tiny blinks, breathing, and eye focus alive; do not freeze, reset the face, stare blankly, or add a dramatic silent beat.",
-		"Avoid oversized A/O vowel shapes, constant open-mouth talking, rubbery jaw travel, extra teeth, theatrical reactions, cartoon acting, warped glasses, face reshaping, neck stretching, or shoulder distortion.",
-		"Use direct eye contact, soft blinks, relaxed shoulders, one or two tiny nods only when emphasis fits, and natural breathing. Keep hand and body movement minimal.",
+		"Calm does not mean motionless: keep continuous, barely visible human micro-motion across the whole clip. Every second should show a natural cue from blinks, tiny eye refocus, jaw/cheek speech movement, neck correction, or quiet shoulder breathing.",
+		motionContinuity,
 		openingDirection,
 		outroTail,
+		"Keep expression intensity low to medium-low: no wide eyes, raised-eyebrow acting, big grin, sudden emotional jumps, or exaggerated reaction faces.",
+		"Lip sync should look like normal human speech: restrained lips, smaller mouth openings, relaxed jaw, subtle chin and cheek movement on syllables, and brief closed-mouth rests at commas and periods.",
+		"During natural audio pauses, keep tiny blinks, breathing, and eye focus alive; do not freeze into a still image, reset the face, stare blankly, or add a dramatic silent beat.",
+		"Avoid oversized A/O vowel shapes, constant open-mouth talking, rubbery jaw travel, extra teeth, theatrical reactions, cartoon acting, warped glasses, face reshaping, neck stretching, or shoulder distortion.",
+		"Use direct eye contact, soft blinks, relaxed shoulders, tiny bounded nods only when emphasis fits, and natural breathing. Keep hands low or out of frame; body movement should be subtle but not frozen.",
 		cleanText ? `Narration context: ${cleanText}` : "",
 	]
 		.filter(Boolean)
@@ -23157,6 +23167,7 @@ async function renderHeyGenPresenterSegment({
 		expression,
 		mood,
 		pace,
+		durationSec: dur,
 		silentSmileTailSec,
 	});
 	const payload = buildHeyGenVideoPayload({
@@ -23171,6 +23182,7 @@ async function renderHeyGenPresenterSegment({
 		segDur: Number(dur.toFixed(3)),
 		resolution: payload.resolution,
 		expressiveness: payload.expressiveness,
+		motionPromptChars: String(motionPrompt || "").length,
 		audioPublicId: uploadedAudio.publicId,
 	});
 	const created = await createHeyGenVideo(payload, { jobId, label: safeLabel });
