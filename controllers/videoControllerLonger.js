@@ -528,7 +528,7 @@ const INTRO_ATEMPO_MIN = clampNumber(
 	1.05,
 );
 const INTRO_ATEMPO_MAX = clampNumber(
-	process.env.LONG_VIDEO_INTRO_ATEMPO_MAX ?? 1.18,
+	process.env.LONG_VIDEO_INTRO_ATEMPO_MAX ?? 1.14,
 	1.0,
 	1.25,
 );
@@ -536,7 +536,7 @@ const OUTRO_ATEMPO_MIN = clampNumber(0.9, 0.9, 1.05);
 const OUTRO_ATEMPO_MAX = clampNumber(1.06, 1.0, 1.15);
 const SEGMENT_PAD_SEC = clampNumber(0.08, 0, 0.3);
 const VOICE_SPEED_BOOST = clampNumber(
-	process.env.LONG_VIDEO_VOICE_SPEED_BOOST ?? 1.06,
+	process.env.LONG_VIDEO_VOICE_SPEED_BOOST ?? 1.02,
 	1,
 	1.12,
 );
@@ -623,15 +623,25 @@ const PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC = clampNumber(
 	PRESENTER_MOTION_MAX_FREEZE_SEC,
 	1.8,
 );
-const HEYGEN_RENDER_MOTION_MAX_FREEZE_RATIO = clampNumber(
-	process.env.LONG_VIDEO_HEYGEN_MOTION_MAX_FREEZE_RATIO ?? 0.82,
+const HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO ?? 0.7,
 	PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO,
-	0.98,
+	0.82,
 );
-const HEYGEN_RENDER_MOTION_MAX_FREEZE_SEC = clampNumber(
-	process.env.LONG_VIDEO_HEYGEN_MOTION_MAX_FREEZE_SEC ?? 2.5,
+const HEYGEN_REQUIRED_MOTION_MAX_FREEZE_SEC = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_REQUIRED_MOTION_MAX_FREEZE_SEC ?? 2.2,
 	PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC,
-	8,
+	4,
+);
+const HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO ?? 0.58,
+	PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO,
+	0.72,
+);
+const HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_SEC = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_SEC ?? 1.4,
+	PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC,
+	3,
 );
 const PRESENTER_VIDEO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
 const PRESENTER_VIDEO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
@@ -815,8 +825,9 @@ const OVERLAY_MARGIN_PX = clampNumber(28, 6, 120);
 const OVERLAY_DEFAULT_POSITION = "topRight";
 const MAX_AUTO_OVERLAYS = clampNumber(10, 3, 16);
 
-// Content visual mix (presenter vs static images). Required default is
-// 40% presenter / 60% scraped feed or topic images.
+// Content visual mix (presenter vs static images). The opening and outro stay
+// presenter-led, while the body leans on feed visuals unless one extra presenter
+// beat is worth the paid render.
 const CONTENT_PRESENTER_RATIO = clampNumber(
 	process.env.LONG_VIDEO_PRESENTER_RATIO ?? 0.4,
 	0.2,
@@ -889,6 +900,16 @@ const PRE_TTS_VISUAL_VIDEO_PROBE_SEGMENT_LIMIT = Math.floor(clampNumber(
 ));
 const FORCE_OPENING_PRESENTER_COUNT = Math.floor(clampNumber(
 	process.env.LONG_VIDEO_FORCE_OPENING_PRESENTER_COUNT ?? 2,
+	0,
+	4,
+));
+const OPENING_PRESENTER_CLUSTER_COUNT = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_OPENING_PRESENTER_CLUSTER_COUNT ?? 3,
+	FORCE_OPENING_PRESENTER_COUNT,
+	5,
+));
+const MAX_OPTIONAL_HEYGEN_CONTENT_SEGMENTS = Math.floor(clampNumber(
+	process.env.LONG_VIDEO_MAX_OPTIONAL_HEYGEN_CONTENT_SEGMENTS ?? 1,
 	0,
 	4,
 ));
@@ -8623,24 +8644,49 @@ function computeContentVisualPlan(totalSegments) {
 		FORCE_OPENING_PRESENTER_COUNT,
 		count,
 	);
+	const openingPresenterCount = Math.min(
+		count,
+		Math.max(forcedOpeningPresenterCount, OPENING_PRESENTER_CLUSTER_COUNT),
+	);
+	const maxPresenterCount = Math.min(
+		count,
+		openingPresenterCount + MAX_OPTIONAL_HEYGEN_CONTENT_SEGMENTS,
+	);
 	presenterCount = Math.min(
 		count,
-		Math.max(presenterCount, forcedOpeningPresenterCount),
+		Math.max(presenterCount, openingPresenterCount),
 	);
-	const presenterPositions = pickEvenlySpacedIndices(count, presenterCount);
+	presenterCount = Math.min(maxPresenterCount, presenterCount);
 	const presenterPosSet = new Set();
-	for (let idx = 0; idx < forcedOpeningPresenterCount; idx += 1) {
-		presenterPosSet.add(idx);
-	}
-	for (const idx of presenterPositions) {
-		if (presenterPosSet.size >= presenterCount) break;
-		presenterPosSet.add(idx);
-	}
 	for (
 		let idx = 0;
-		idx < count && presenterPosSet.size < presenterCount;
+		idx < openingPresenterCount && presenterPosSet.size < presenterCount;
 		idx += 1
 	) {
+		presenterPosSet.add(idx);
+	}
+	const optionalPresenterPositions = [];
+	const optionalNeeded = Math.max(0, presenterCount - presenterPosSet.size);
+	if (optionalNeeded > 0) {
+		const bodyStart = openingPresenterCount;
+		const bodyCount = Math.max(0, count - bodyStart);
+		for (let i = 0; i < optionalNeeded && bodyCount > 0; i += 1) {
+			const ratio = (i + 1) / (optionalNeeded + 1);
+			const idx = bodyStart + Math.round((bodyCount - 1) * ratio);
+			if (!presenterPosSet.has(idx)) optionalPresenterPositions.push(idx);
+		}
+		if (optionalPresenterPositions.length < optionalNeeded && bodyCount > 0) {
+			for (const idx of pickEvenlySpacedIndices(
+				bodyCount,
+				optionalNeeded * 2,
+			).map((pos) => bodyStart + pos)) {
+				if (!presenterPosSet.has(idx)) optionalPresenterPositions.push(idx);
+				if (optionalPresenterPositions.length >= optionalNeeded) break;
+			}
+		}
+	}
+	for (const idx of optionalPresenterPositions) {
+		if (presenterPosSet.size >= presenterCount) break;
 		presenterPosSet.add(idx);
 	}
 	const presenter = [];
@@ -8658,6 +8704,8 @@ function computeContentVisualPlan(totalSegments) {
 		presenterPositions: presenter,
 		imagePositions: image,
 		forcedPresenterPositions: forcedPresenter,
+		openingPresenterCount,
+		maxOptionalHeyGenContentSegments: MAX_OPTIONAL_HEYGEN_CONTENT_SEGMENTS,
 		presenterPositionSet: presenterPosSet,
 		forcedPresenterPositionSet: new Set(forcedPresenter),
 	};
@@ -22946,13 +22994,22 @@ async function renderHeyGenPresenterSegment({
 	});
 	const originalQaIssues = Array.isArray(qa.issues) ? [...qa.issues] : [];
 	let acceptedSubtleHeyGenMotion = false;
+	const requiredPresenterRole = ["intro_first", "outro"].includes(
+		String(role || "").toLowerCase(),
+	);
+	const maxAllowedFreezeSec = requiredPresenterRole
+		? HEYGEN_REQUIRED_MOTION_MAX_FREEZE_SEC
+		: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_SEC;
+	const maxAllowedFreezeRatio = requiredPresenterRole
+		? HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO
+		: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO;
 	if (
 		!qa.pass &&
 		originalQaIssues.length > 0 &&
 		originalQaIssues.every((issue) => issue === "presenter_video_frozen") &&
 		Number(qa.durationDeltaSec || 0) <= PRESENTER_VIDEO_MAX_SHORTFALL_SEC &&
-		Number(qa.maxFreezeSec || 0) <= HEYGEN_RENDER_MOTION_MAX_FREEZE_SEC &&
-		Number(qa.freezeRatio || 0) <= HEYGEN_RENDER_MOTION_MAX_FREEZE_RATIO
+		Number(qa.maxFreezeSec || 0) <= maxAllowedFreezeSec &&
+		Number(qa.freezeRatio || 0) <= maxAllowedFreezeRatio
 	) {
 		qa.pass = true;
 		qa.issues = [];
@@ -22963,11 +23020,14 @@ async function renderHeyGenPresenterSegment({
 		pass: qa.pass,
 		issues: qa.issues,
 		acceptedSubtleHeyGenMotion,
+		requiredPresenterRole,
 		...(acceptedSubtleHeyGenMotion ? { originalIssues: originalQaIssues } : {}),
 		durationSec: Number((qa.durationSec || 0).toFixed(3)),
 		durationDeltaSec: Number((qa.durationDeltaSec || 0).toFixed(3)),
 		maxFreezeSec: Number((qa.maxFreezeSec || 0).toFixed(3)),
 		freezeRatio: Number((qa.freezeRatio || 0).toFixed(3)),
+		maxAllowedFreezeSec: Number(maxAllowedFreezeSec.toFixed(3)),
+		maxAllowedFreezeRatio: Number(maxAllowedFreezeRatio.toFixed(3)),
 		heygenVideoId: created.video_id,
 	});
 	if (!qa.pass) {
@@ -26768,6 +26828,9 @@ async function runLongVideoJob(
 					presenterSegments: visualPlan.presenterPositions,
 					feedImageOrVideoSegments: visualPlan.imagePositions,
 					forcedPresenterSegments: visualPlan.forcedPresenterPositions,
+					openingPresenterCount: visualPlan.openingPresenterCount,
+					maxOptionalHeyGenContentSegments:
+						visualPlan.maxOptionalHeyGenContentSegments,
 				},
 				introOutroPlan: plannedIntroOutro,
 				scriptQa: {
@@ -26796,6 +26859,9 @@ async function runLongVideoJob(
 				segments: script.segments?.length || 0,
 				presenterSegments: visualPlan.presenterPositions,
 				feedImageOrVideoSegments: visualPlan.imagePositions,
+				openingPresenterCount: visualPlan.openingPresenterCount,
+				maxOptionalHeyGenContentSegments:
+					visualPlan.maxOptionalHeyGenContentSegments,
 				thumbnailSkipped: true,
 				heygenSkipped: true,
 				ttsSkipped: true,
@@ -28080,6 +28146,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		logJob(jobId, "segment visual plan", {
 			totalSegments,
 			targetPresenterRatio: CONTENT_PRESENTER_RATIO,
+			openingPresenterCount: contentVisualPlan.openingPresenterCount,
+			maxOptionalHeyGenContentSegments:
+				contentVisualPlan.maxOptionalHeyGenContentSegments,
 			targetPresenterCount: presenterSegments.length,
 			targetImageCount: imageSegments.length,
 			forcedPresenterSegments,
@@ -28117,6 +28186,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		logJob(jobId, "segment visual plan final", {
 			totalSegments,
 			targetPresenterRatio: CONTENT_PRESENTER_RATIO,
+			openingPresenterCount: contentVisualPlan.openingPresenterCount,
+			maxOptionalHeyGenContentSegments:
+				contentVisualPlan.maxOptionalHeyGenContentSegments,
 			presenterCount: finalPresenterSegments.length,
 			imageCount: finalImageSegments.length,
 			presenterSegments: finalPresenterSegments,
@@ -28276,7 +28348,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			resolution: HEYGEN_DEFAULT_RESOLUTION,
 			expressiveness: HEYGEN_DEFAULT_EXPRESSIVENESS,
 			fit: HEYGEN_DEFAULT_FIT,
+			openingPresenterCount: contentVisualPlan.openingPresenterCount,
+			maxOptionalHeyGenContentSegments:
+				contentVisualPlan.maxOptionalHeyGenContentSegments,
 			premiumPresenterSegments,
+			requiredMotionMaxFreezeRatio: HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO,
+			optionalMotionMaxFreezeRatio: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO,
 			fallbackPolicy: "no paid presenter fallbacks",
 		});
 		if (!imageDiversity.ok) {
