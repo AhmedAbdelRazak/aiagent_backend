@@ -8,20 +8,20 @@
  *    - Apply ONE global atempo factor for consistent brisk narration (no padding)
  *    - Avoid aresample async drift correction (removes "stutter" artifacts)
  *
- * 2) Presenter looks natural (less creepy):
- *    - Generate stable expression-aware Runway baseline clips (wide, calm)
- *    - Generate up to 5 calm baseline attempts to rotate 3 accepted variants
- *    - Cap gestures; avoid hands; stabilize prompt
+ * 2) Presenter looks natural:
+ *    - Generate HeyGen photo-presenter clips from the approved presenter image
+ *    - Merge presenter runs to keep paid renders cheaper and more coherent
+ *    - Keep prompts restrained: natural lips, subtle reactions, stable identity
  *
- * 3) Presenter wardrobe adjustment (classy outfit):
- *    - Optional Runway presenter edit after script + thumbnail
- *    - Keeps identity/studio consistent
+ * 3) Presenter wardrobe selection (classy outfit):
+ *    - Use the approved presenter outfit library after script planning
+ *    - Keeps identity/studio consistent and avoids image-generation cost
  *
  * 4) Camera is slightly farther away:
- *    - After lipsync, apply a subtle zoom-out with blurred background padding
+ *    - Normalize presenter clips into the final frame with subtle motion polish
  *
  * 5) Professional intro/outro structure:
- *    - Intro 8-12s with a quick story hook + compact voiced greeting
+ *    - Intro opens with one brief natural greeting + topic, then the hook
  *    - Outro CTA beat with topic question + silent light-smile tail
  *    - Final fade-out for a clean finish
  *
@@ -33,7 +33,7 @@
  *    - Silence removed; no apad; pacing handled via global atempo
  *
  * 10) Code cleaned:
- *    - Removed unused/fragile paths (perf-ref vision, per-segment Runway by default)
+ *    - Removed unused/fragile paths and keeps paid presenter video on HeyGen
  *
  * 11) Background music MUST work:
  *    - Validate chosen track has audio; try multiple Jamendo candidates
@@ -55,7 +55,7 @@ const dayjs = require("dayjs");
 const { google } = require("googleapis");
 const { OpenAI } = require("openai");
 const cloudinary = require("cloudinary").v2;
-const { generateThumbnailPackage } = require("../assets/thumbnailDesigner2");
+const { generateThumbnailPackage } = require("../assets/thumbnailDesigner");
 // Placeholder for the prior OpenAI wardrobe editor, kept for easy rollback:
 // const { generatePresenterAdjustedImage } = require("../assets/presenterAdjustments");
 const {
@@ -132,49 +132,52 @@ const ELEVEN_TTS_MODEL_FALLBACKS = String(
 const ELEVEN_TTS_STABILITY = clampNumber(0.62, 0.1, 1);
 const ELEVEN_TTS_SIMILARITY = clampNumber(0.88, 0.1, 1);
 const ELEVEN_TTS_STYLE = clampNumber(0.2, 0, 1);
+const ELEVEN_TTS_SPEED = clampNumber(
+	process.env.LONG_VIDEO_ELEVEN_TTS_SPEED ?? 1.0,
+	0.7,
+	1.2,
+);
 const ELEVEN_TTS_SPEAKER_BOOST = true;
 const UNIFORM_TTS_VOICE_SETTINGS = false;
 
-const RUNWAY_API_KEY = process.env.RUNWAYML_API_SECRET || "";
-
-const RUNWAY_VERSION = "2024-11-06";
-const RUNWAY_VIDEO_MODEL =
-	String(process.env.LONG_VIDEO_RUNWAY_MODEL || "gen4.5").trim() || "gen4.5";
-const RUNWAY_VIDEO_MODEL_FALLBACK = String(
-	process.env.LONG_VIDEO_RUNWAY_MODEL_FALLBACK || "",
-).trim();
-const RUNWAY_RECHARGE_RETRY_ATTEMPTS = Math.floor(
-	clampNumber(process.env.LONG_VIDEO_RUNWAY_RECHARGE_RETRIES ?? 0, 0, 8),
+const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY || "";
+const HEYGEN_API_BASE = "https://api.heygen.com";
+const HEYGEN_CREATE_VIDEO_PATH = "/v3/videos";
+const HEYGEN_DEFAULT_RESOLUTION =
+	String(process.env.LONG_VIDEO_HEYGEN_RESOLUTION || "1080p").trim() || "1080p";
+const HEYGEN_DEFAULT_ASPECT_RATIO =
+	String(process.env.LONG_VIDEO_HEYGEN_ASPECT_RATIO || "16:9").trim() || "16:9";
+const HEYGEN_DEFAULT_EXPRESSIVENESS =
+	String(process.env.LONG_VIDEO_HEYGEN_EXPRESSIVENESS || "medium").trim() ||
+	"medium";
+const HEYGEN_DEFAULT_FIT =
+	String(process.env.LONG_VIDEO_HEYGEN_FIT || "cover").trim() || "cover";
+const HEYGEN_POLL_INTERVAL_MS = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_POLL_INTERVAL_MS ?? 10000,
+	3000,
+	30000,
 );
-const RUNWAY_RECHARGE_WAIT_MS = clampNumber(
-	process.env.LONG_VIDEO_RUNWAY_RECHARGE_WAIT_MS ?? 25000,
-	5000,
-	120000,
+const HEYGEN_POLL_TIMEOUT_MS = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_POLL_TIMEOUT_MS ?? 15 * 60 * 1000,
+	2 * 60 * 1000,
+	40 * 60 * 1000,
 );
-const RUNWAY_RECHARGE_BACKOFF_MS = clampNumber(
-	process.env.LONG_VIDEO_RUNWAY_RECHARGE_BACKOFF_MS ?? 5000,
-	0,
-	60000,
-);
-
-const SYNC_SO_API_KEY = process.env.SYNC_SO_API_KEY || "";
-const SYNC_SO_BASE = "https://api.sync.so";
-// Cost-aware Sync model policy. By default, even hero beats use lipsync-2;
-// set SYNC_SO_MODEL_HERO=sync-3 in env only when you want the pricier tier.
-const SYNC_SO_MODEL_STANDARD =
-	String(process.env.SYNC_SO_MODEL_STANDARD || "lipsync-2").trim() ||
-	"lipsync-2";
-const SYNC_SO_MODEL_HERO =
-	String(process.env.SYNC_SO_MODEL_HERO || SYNC_SO_MODEL_STANDARD).trim() ||
-	SYNC_SO_MODEL_STANDARD;
-const SYNC_SO_MODEL_FALLBACK =
-	String(process.env.SYNC_SO_MODEL_FALLBACK || SYNC_SO_MODEL_STANDARD).trim() ||
-	SYNC_SO_MODEL_STANDARD;
-const SYNC_SO_GENERATE_PATH = "/v2/generate";
 
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
 
 const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY || null;
+function looksLikeGoogleOAuthClientId(value = "") {
+	return /\.apps\.googleusercontent\.com$/i.test(String(value || "").trim());
+}
+const GOOGLE_CSE_CONFIG_READY = Boolean(
+	GOOGLE_CSE_ID &&
+		GOOGLE_CSE_KEY &&
+		!looksLikeGoogleOAuthClientId(GOOGLE_CSE_ID),
+);
+const GOOGLE_CSE_CONFIG_ISSUE =
+	GOOGLE_CSE_ID && GOOGLE_CSE_KEY && !GOOGLE_CSE_CONFIG_READY
+		? "GOOGLE_CSE_ID looks like an OAuth client id, not a Custom Search cx"
+		: "";
 
 const CLOUDINARY_ENABLED = Boolean(
 	process.env.CLOUDINARY_CLOUD_NAME &&
@@ -291,7 +294,6 @@ const LONG_VIDEO_YT_CATEGORY = "Entertainment";
 const BRAND_TAG = "SereneJannat";
 const BRAND_CREDIT = "Powered by Serene Jannat";
 const CHANNEL_NAME = "Prime Time Brief";
-const INTRO_HOST_NAME = "Amad";
 const MERCH_INTRO =
 	"Support the channel & customize your own merch:\n" +
 	"https://serenejannat.com/our-products?category=candles/\n" +
@@ -416,17 +418,17 @@ const CSE_RELAXED_MIN_IMAGE_SHORT_EDGE = 480;
 
 // Intro (seconds). Keep the opening tight so the content rhythm starts quickly.
 const INTRO_MIN_SEC = clampNumber(
-	process.env.LONG_VIDEO_INTRO_MIN_SEC ?? 8,
-	6,
+	process.env.LONG_VIDEO_INTRO_MIN_SEC ?? 5.5,
+	4,
 	14,
 );
 const INTRO_MAX_SEC = clampNumber(
-	process.env.LONG_VIDEO_INTRO_MAX_SEC ?? 12,
+	process.env.LONG_VIDEO_INTRO_MAX_SEC ?? 8.5,
 	INTRO_MIN_SEC,
 	16,
 );
 const DEFAULT_INTRO_SEC = clampNumber(
-	process.env.LONG_VIDEO_DEFAULT_INTRO_SEC ?? 8.5,
+	process.env.LONG_VIDEO_DEFAULT_INTRO_SEC ?? 6.5,
 	INTRO_MIN_SEC,
 	INTRO_MAX_SEC,
 );
@@ -447,10 +449,11 @@ const DEFAULT_OUTRO_SEC = clampNumber(
 	OUTRO_MAX_SEC,
 );
 const OUTRO_SMILE_TAIL_SEC = clampNumber(
-	process.env.LONG_VIDEO_OUTRO_SMILE_TAIL_SEC ?? 0,
-	0,
+	process.env.LONG_VIDEO_OUTRO_SMILE_TAIL_SEC ?? 2,
+	1.8,
 	2.4,
 );
+const REQUIRE_OUTRO_PRESENTER = true;
 const INTRO_VIDEO_BLUR_SIGMA = clampNumber(2.6, 0, 8);
 const INTRO_TEXT_FADE_IN_START = clampNumber(0.5, 0, 1.5);
 const INTRO_TEXT_FADE_IN_DUR = clampNumber(0.55, 0.15, 1.2);
@@ -477,6 +480,7 @@ const REWRITE_ADJUST_MIN = clampNumber(6, 2, 12);
 const REWRITE_ADJUST_MAX = clampNumber(22, 10, 35);
 const MAX_FILLER_WORDS_PER_VIDEO = clampNumber(0, 0, 2);
 const MAX_FILLER_WORDS_PER_SEGMENT = clampNumber(0, 0, 2);
+const OPENING_NO_FILLER_SEGMENT_INDICES = Object.freeze([0, 1, 2]);
 const MAX_MICRO_EMOTES_PER_VIDEO = clampNumber(0, 0, 1);
 const ENABLE_MICRO_EMOTES = true;
 const ENABLE_MICRO_BREATHS = true;
@@ -550,10 +554,10 @@ const SUBTLE_VISUAL_EDGE_BUFFER = clampNumber(1, 0, 3);
 // Audio QA (quality-first voiceover)
 const AUDIO_QA_ENABLED = true;
 const AUDIO_QA_MAX_ATTEMPTS = clampNumber(4, 1, 4);
-const AUDIO_QA_INTERNAL_SILENCE_SEC = clampNumber(0.7, 0.35, 2.5);
+const AUDIO_QA_INTERNAL_SILENCE_SEC = clampNumber(0.58, 0.35, 2.5);
 const AUDIO_QA_INTERNAL_SILENCE_DB = clampNumber(-40, -60, -25);
 const AUDIO_QA_EDGE_BUFFER_SEC = clampNumber(0.08, 0, 0.2);
-const AUDIO_QA_REPAIR_MAX_SILENCE_SEC = clampNumber(0.22, 0.12, 0.5);
+const AUDIO_QA_REPAIR_MAX_SILENCE_SEC = clampNumber(0.2, 0.12, 0.5);
 const AUDIO_QA_TRANSCRIBE = true;
 const AUDIO_QA_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
 const AUDIO_QA_TRANSCRIBE_COOLDOWN_MS = clampNumber(
@@ -566,35 +570,17 @@ const AUDIO_QA_SIMILARITY_THRESHOLD = clampNumber(0.82, 0.7, 0.95);
 const AUDIO_QA_STRICT_STABILITY_BOOST = clampNumber(0.08, 0, 0.2);
 const AUDIO_QA_STRICT_STYLE_MAX = clampNumber(0.06, 0, 0.2);
 
-// Sync input prep
-const SYNC_SO_INPUT_FPS = 30;
-const SYNC_SO_INPUT_CRF = 18;
-const SYNC_SO_MAX_BYTES = 19_900_000;
-const SYNC_SO_PRE_MAX_EDGE = clampNumber(1280, 640, 1280);
-const SYNC_SO_PRESCALE_ALWAYS = false;
-const SYNC_SO_PRESCALE_SIZE_PCT = clampNumber(0.85, 0.5, 0.98);
-const SYNC_SO_PRESCALE_MIN_SEC = clampNumber(9, 4, 15);
-const SYNC_SO_FALLBACK_MAX_EDGE = clampNumber(1280, 640, 1280);
-const SYNC_SO_SEGMENT_MAX_RETRIES = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_SYNC_SEGMENT_MAX_RETRIES ?? 0,
-	0,
-	3,
-));
-const SYNC_SO_GENERATE_HTTP_RETRIES = Math.floor(clampNumber(
-	process.env.LONG_VIDEO_SYNC_GENERATE_HTTP_RETRIES ?? 0,
-	0,
-	2,
-));
-const SYNC_SO_RETRY_DELAY_MS = clampNumber(1500, 250, 5000);
-const SYNC_SO_REQUEST_GAP_MS = clampNumber(350, 0, 2000);
-const REQUIRE_LIPSYNC = true;
+// Presenter video QA/render prep
+const PRESENTER_VIDEO_INPUT_FPS = 30;
+const PRESENTER_VIDEO_INPUT_CRF = 18;
+const REQUIRE_HEYGEN_PRESENTER_VIDEO = true;
 // Short presenter beats are still visible enough that a static lip-sync output
 // should retry instead of passing duration-only QA.
-const SYNC_SO_FREEZE_CHECK_MIN_SEC = clampNumber(0.6, 0.3, 12);
-const SYNC_SO_FREEZE_NOISE = clampNumber(0.0018, 0.0001, 0.01);
-const SYNC_SO_FREEZE_MIN_SEC = clampNumber(0.38, 0.15, 4);
-const SYNC_SO_MAX_FREEZE_RATIO = clampNumber(0.16, 0.05, 0.6);
-const SYNC_SO_MAX_FREEZE_SEC = clampNumber(0.75, 0.2, 4);
+const PRESENTER_VIDEO_FREEZE_CHECK_MIN_SEC = clampNumber(0.6, 0.3, 12);
+const PRESENTER_VIDEO_FREEZE_NOISE = clampNumber(0.0018, 0.0001, 0.01);
+const PRESENTER_VIDEO_FREEZE_MIN_SEC = clampNumber(0.38, 0.15, 4);
+const PRESENTER_VIDEO_MAX_FREEZE_RATIO = clampNumber(0.16, 0.05, 0.6);
+const PRESENTER_VIDEO_MAX_FREEZE_SEC = clampNumber(0.75, 0.2, 4);
 const PRESENTER_MOTION_QA_ENABLED = true;
 const REQUIRE_REAL_PRESENTER_VIDEO = envFlag(
 	"LONG_VIDEO_REQUIRE_REAL_PRESENTER_VIDEO",
@@ -637,19 +623,29 @@ const PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC = clampNumber(
 	PRESENTER_MOTION_MAX_FREEZE_SEC,
 	1.8,
 );
-const SYNC_SO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
-const SYNC_SO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
+const HEYGEN_RENDER_MOTION_MAX_FREEZE_RATIO = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_MOTION_MAX_FREEZE_RATIO ?? 0.82,
+	PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO,
+	0.98,
+);
+const HEYGEN_RENDER_MOTION_MAX_FREEZE_SEC = clampNumber(
+	process.env.LONG_VIDEO_HEYGEN_MOTION_MAX_FREEZE_SEC ?? 2.5,
+	PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC,
+	8,
+);
+const PRESENTER_VIDEO_MAX_SHORTFALL_SEC = clampNumber(0.18, 0.05, 1.5);
+const PRESENTER_VIDEO_MIN_DURATION_RATIO = clampNumber(0.93, 0.5, 1);
 
 // Presenter stability
 const ENABLE_WARDROBE_EDIT = true;
-const ENABLE_RUNWAY_BASELINE = true;
-const USE_MOTION_REF_BASELINE = true;
+const ENABLE_HEYGEN_PRESENTER_VIDEO = true;
+const USE_MOTION_REF_BASELINE = false;
 const BASELINE_DUR_SEC = clampNumber(
 	process.env.LONG_VIDEO_BASELINE_DUR_SEC ?? 8,
 	6,
 	10,
 );
-// Generate a few extra attempts only if earlier Runway takes fail QA. We still
+// Generate a few extra attempts only if earlier local presenter takes fail QA. We still
 // keep at most three accepted clips so presenter rotation stays coherent.
 const BASELINE_VARIANTS = Math.floor(
 	clampNumber(process.env.LONG_VIDEO_BASELINE_VARIANTS ?? 5, 1, 6),
@@ -910,6 +906,21 @@ const OPENING_PRESENTER_SYNC_RETRIES = Math.floor(clampNumber(
 	0,
 	3,
 ));
+const OPENING_PRESENTER_MIN_SEC = clampNumber(
+	process.env.LONG_VIDEO_OPENING_PRESENTER_MIN_SEC ?? 9,
+	6,
+	30,
+);
+const OPENING_PRESENTER_MAX_SEC = clampNumber(
+	process.env.LONG_VIDEO_OPENING_PRESENTER_MAX_SEC ?? 18,
+	OPENING_PRESENTER_MIN_SEC,
+	35,
+);
+const OPENING_PRESENTER_TARGET_SEC = clampNumber(
+	process.env.LONG_VIDEO_OPENING_PRESENTER_TARGET_SEC ?? 13,
+	OPENING_PRESENTER_MIN_SEC,
+	OPENING_PRESENTER_MAX_SEC,
+);
 const MIN_ACTUAL_PRESENTER_SEGMENTS = Math.floor(clampNumber(
 	process.env.LONG_VIDEO_MIN_ACTUAL_PRESENTER_SEGMENTS ??
 		Math.max(2, FORCE_OPENING_PRESENTER_COUNT),
@@ -1162,27 +1173,24 @@ const LONG_VIDEO_CONTROLLER_FINGERPRINT = (() => {
 function getLongVideoRuntimeProfile() {
 	return {
 		fingerprint: LONG_VIDEO_CONTROLLER_FINGERPRINT,
-		baselineDurSec: BASELINE_DUR_SEC,
-		baselineVariants: BASELINE_VARIANTS,
-		baselineAcceptedTarget: BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION,
-		baselineNearPassEnabled: PRESENTER_BASELINE_MOTION_NEAR_PASS_ENABLED,
-		baselineMaxFreezeRatio: PRESENTER_BASELINE_MOTION_MAX_FREEZE_RATIO,
-		baselineMaxFreezeSec: PRESENTER_BASELINE_MOTION_MAX_FREEZE_SEC,
-		baselineIdentityQaEnabled: BASELINE_IDENTITY_QA_ENABLED,
-		baselineIdentityQaMinScore: BASELINE_IDENTITY_QA_MIN_SCORE,
-		baselineIdentityQaMaxDistortionScore:
-			BASELINE_IDENTITY_QA_MAX_DISTORTION_SCORE,
-		requireLipsync: REQUIRE_LIPSYNC,
+		presenterVideoEngine: "heygen",
+		heygenResolution: HEYGEN_DEFAULT_RESOLUTION,
+		heygenExpressiveness: HEYGEN_DEFAULT_EXPRESSIVENESS,
+		heygenAspectRatio: HEYGEN_DEFAULT_ASPECT_RATIO,
+		heygenFit: HEYGEN_DEFAULT_FIT,
+		requirePresenterVideo: REQUIRE_HEYGEN_PRESENTER_VIDEO,
 		requireRealPresenterVideo: REQUIRE_REAL_PRESENTER_VIDEO,
+		requireOutroPresenter: REQUIRE_OUTRO_PRESENTER,
+		outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC.toFixed(1)),
+		openingPresenterTargetSec: Number(OPENING_PRESENTER_TARGET_SEC.toFixed(1)),
+		openingPresenterMaxSec: Number(OPENING_PRESENTER_MAX_SEC.toFixed(1)),
 		allowStaticPresenterFallback: ALLOW_STATIC_PRESENTER_FALLBACK,
-		enableRunwayBaseline: ENABLE_RUNWAY_BASELINE,
-		runwayRechargeRetries: RUNWAY_RECHARGE_RETRY_ATTEMPTS,
-		runwayRechargeWaitSec: Number((RUNWAY_RECHARGE_WAIT_MS / 1000).toFixed(1)),
-		useMotionRefBaseline: USE_MOTION_REF_BASELINE,
 		feedVideoEnabled: FEED_VIDEO_ENABLED,
 		feedVideoMaxSegments: FEED_VIDEO_MAX_SEGMENTS,
 		feedVideoMaxAttempts: FEED_VIDEO_MAX_SEGMENT_ATTEMPTS,
-		runwayPollMaxSec: 120 * 2,
+		heygenPollMaxSec: Number((HEYGEN_POLL_TIMEOUT_MS / 1000).toFixed(1)),
+		googleCseReady: GOOGLE_CSE_CONFIG_READY,
+		googleCseIssue: GOOGLE_CSE_CONFIG_ISSUE || "",
 	};
 }
 
@@ -2058,7 +2066,8 @@ function validateCreateBody(body = {}, controllerConfig = {}) {
 			body.skipWardrobeEdit ||
 			body.disableWardrobeEdit,
 	);
-	const enableRunwayPresenterMotion = cfg.enableRunwayPresenterMotion;
+	const enableHeyGenPresenterMotion =
+		cfg.enableHeyGenPresenterMotion ?? true;
 	const enableWardrobeEdit = cfg.enableWardrobeEdit && !skipPresenterAdjustments;
 	const stopAfterThumbnail = Boolean(
 		body.stopAfterThumbnail ||
@@ -2084,8 +2093,14 @@ function validateCreateBody(body = {}, controllerConfig = {}) {
 			musicUrl: "",
 			disableMusic,
 			dryRun: Boolean(body.dryRun),
+			orchestratorDryRun: Boolean(
+				body.orchestratorDryRun ||
+					body.dryRunOrchestrator ||
+					body.planOnly ||
+					body.scriptOnly,
+			),
 			stopAfterThumbnail,
-			enableRunwayPresenterMotion,
+			enableHeyGenPresenterMotion,
 			enableWardrobeEdit,
 			skipPresenterAdjustments,
 			youtubeAccessToken: String(body.youtubeAccessToken || "").trim(),
@@ -2317,7 +2332,16 @@ function inferEntertainmentCategory(tokens = []) {
 	)
 		return "film";
 	if (
-		["tv", "series", "season", "episode", "streaming"].some((t) => set.has(t))
+		[
+			"tv",
+			"series",
+			"season",
+			"episode",
+			"streaming",
+			"reality",
+			"survivor",
+			"finale",
+		].some((t) => set.has(t))
 	)
 		return "tv";
 	if (
@@ -2476,7 +2500,7 @@ const PROMPT_CATEGORY_RULES = [
 		label: "Entertainment",
 		weight: 2,
 		patterns: [
-			/\b(movie|film|tv|series|streaming|celebrity|actor|actress|music|album|song|concert|trailer|box\s+office|netflix|disney|hollywood)\b/i,
+			/\b(movie|film|tv|series|streaming|celebrity|actor|actress|music|album|song|concert|trailer|box\s+office|netflix|disney|hollywood|reality\s+show|survivor|finale|episode|season\s+\d+)\b/i,
 		],
 	},
 ];
@@ -2864,9 +2888,17 @@ async function fetchTrendsStories({
 
 async function fetchCseItems(
 	queries,
-	{ num = 4, searchType = null, imgSize = null, start = 1, maxPages = 1 } = {},
+	{
+		num = 4,
+		searchType = null,
+		imgSize = null,
+		start = 1,
+		maxPages = 1,
+		jobId = null,
+		label = "cse",
+	} = {},
 ) {
-	if (!GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
+	if (!GOOGLE_CSE_CONFIG_READY) return [];
 	const list = Array.isArray(queries) ? queries.filter(Boolean) : [];
 	if (!list.length) return [];
 
@@ -2885,29 +2917,60 @@ async function fetchCseItems(
 			if (remaining <= 0) break;
 			const pageNum = Math.min(pageSize, remaining);
 			try {
-				const { data } = await axios.get(GOOGLE_CSE_ENDPOINT, {
-					params: {
-						key: GOOGLE_CSE_KEY,
-						cx: GOOGLE_CSE_ID,
-						q,
-						num: pageNum,
-						start: pageStart,
-						safe: "active",
-						gl: "us",
-						hl: "en",
-						...(searchType ? { searchType } : {}),
-						...(searchType === "image"
-							? {
-									imgType: "photo",
-									imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
-								}
-							: {}),
-					},
-					timeout: 12000,
-					validateStatus: (s) => s < 500,
+				const buildParams = ({ omitImageFilters = false } = {}) => ({
+					key: GOOGLE_CSE_KEY,
+					cx: GOOGLE_CSE_ID,
+					q,
+					num: pageNum,
+					start: pageStart,
+					safe: "active",
+					gl: "us",
+					hl: "en",
+					...(searchType ? { searchType } : {}),
+					...(searchType === "image" && !omitImageFilters
+						? {
+								imgType: "photo",
+								imgSize: imgSize || CSE_PREFERRED_IMG_SIZE,
+							}
+						: {}),
 				});
+				const requestCse = (omitImageFilters = false) =>
+					axios.get(GOOGLE_CSE_ENDPOINT, {
+						params: buildParams({ omitImageFilters }),
+						timeout: 12000,
+						validateStatus: (s) => s < 500,
+					});
+				let { data } = await requestCse(false);
+				const invalidImageFilter =
+					searchType === "image" &&
+					data?.error &&
+					Number(data.error.code) === 400 &&
+					/invalid argument/i.test(String(data.error.message || ""));
+				if (invalidImageFilter) {
+					if (jobId) {
+						logJob(jobId, "cse image filter retry", {
+							label,
+							query: q,
+							imgSize,
+							message: data?.error?.message || "invalid image filter",
+						});
+					}
+					({ data } = await requestCse(true));
+				}
 
-				if (!data || data.error) break;
+				if (!data || data.error) {
+					if (jobId) {
+						logJob(jobId, "cse fetch failed", {
+							label,
+							query: q,
+							status: data?.error?.code || null,
+							message: data?.error?.message || "empty response",
+							searchType,
+							imgSize,
+						});
+					}
+					break;
+				}
 
 				const items = Array.isArray(data?.items) ? data.items : [];
 				for (const it of items) {
@@ -2930,7 +2993,18 @@ async function fetchCseItems(
 						image: it.image || null,
 					});
 				}
-			} catch {
+			} catch (e) {
+				if (jobId) {
+					logJob(jobId, "cse fetch error", {
+						label,
+						query: q,
+						error: e.message,
+						status: e.response?.status || null,
+						message: e.response?.data?.error?.message || null,
+						searchType,
+						imgSize,
+					});
+				}
 				break;
 			}
 
@@ -3033,26 +3107,49 @@ function computeFlexibleNarrationTargetSec({
 	const promptDirected = (Array.isArray(topics) ? topics : []).some((t) =>
 		isUserPromptTopicPick(t),
 	);
+	const bareDirectAnswerPrompt = (Array.isArray(topics) ? topics : []).some((t) =>
+		isBareDirectAnswerTopic(t),
+	);
 	const maxMultiplier = clampNumber(
 		process.env.LONG_VIDEO_FLEX_MAX_MULTIPLIER ?? 2,
 		1,
 		2.5,
 	);
-	const effectiveMaxMultiplier = promptDirected
+	let effectiveMaxMultiplier = promptDirected
 		? Math.min(
 				maxMultiplier,
 				clampNumber(
-					process.env.LONG_VIDEO_PROMPT_MAX_MULTIPLIER ?? 1.15,
+					process.env.LONG_VIDEO_PROMPT_MAX_MULTIPLIER ?? 2,
 					1,
-					1.5,
+					2,
 				),
 			)
 		: maxMultiplier;
+	if (bareDirectAnswerPrompt) {
+		effectiveMaxMultiplier = Math.min(
+			effectiveMaxMultiplier,
+			clampNumber(
+				process.env.LONG_VIDEO_DIRECT_ANSWER_MAX_MULTIPLIER ?? 0.65,
+				0.25,
+				1,
+			),
+		);
+	}
 	const minMultiplier = clampNumber(
 		process.env.LONG_VIDEO_FLEX_MIN_MULTIPLIER ?? 0.5,
 		0.25,
 		maxMultiplier,
 	);
+	let effectiveMinMultiplier = promptDirected
+		? clampNumber(
+				process.env.LONG_VIDEO_PROMPT_MIN_MULTIPLIER ?? 0.25,
+				0.25,
+				effectiveMaxMultiplier,
+			)
+		: minMultiplier;
+	if (bareDirectAnswerPrompt) {
+		effectiveMinMultiplier = Math.min(effectiveMinMultiplier, 0.25);
+	}
 	const fullSignal = clampNumber(
 		process.env.LONG_VIDEO_FLEX_FULL_SIGNAL ?? 16,
 		4,
@@ -3064,12 +3161,12 @@ function computeFlexibleNarrationTargetSec({
 		0.9,
 	);
 
-	const minSec = promptDirected
-		? Math.max(18, Math.round(requested * 0.95))
-		: Math.max(18, Math.round(requested * 0.5));
+	const minSec = Math.max(18, Math.round(requested * effectiveMinMultiplier));
 	const maxSec = Math.max(minSec, Math.round(requested * effectiveMaxMultiplier));
 
 	let totalSignal = 0;
+	let promptQualitySignal = 0;
+	const promptSignals = [];
 	for (let i = 0; i < topicCount; i++) {
 		const t = topics[i] || {};
 		const ctx = Array.isArray(topicContexts?.[i]?.context)
@@ -3082,11 +3179,56 @@ function computeFlexibleNarrationTargetSec({
 			: [];
 		const entities = Array.isArray(story.entityNames) ? story.entityNames : [];
 
-		const signal =
+		let signal =
 			ctx.length * 1.0 +
 			articles.length * 1.4 +
 			phrases.length * 0.4 +
 			entities.length * 0.3;
+		if (promptDirected && isUserPromptTopicPick(t)) {
+			const brief =
+				t.promptBrief || parseStructuredPromptBrief(t.promptText || t.topic || "");
+			const promptText = String(
+				t.promptText || brief?.raw || t.displayTopic || t.topic || "",
+			);
+			const wordCount = countWords(promptText);
+			const sectionCount = [
+				brief?.title,
+				brief?.openingLine,
+				brief?.tone,
+				brief?.audience,
+				brief?.thumbnailText,
+				brief?.outroLine,
+				...(Array.isArray(brief?.mustInclude) ? brief.mustInclude : []),
+				...(Array.isArray(brief?.avoid) ? brief.avoid : []),
+				...(Array.isArray(brief?.visuals) ? brief.visuals : []),
+				...(Array.isArray(brief?.structure) ? brief.structure : []),
+			].filter(Boolean).length;
+			const controversyHits = (
+				promptText.match(
+					/\b(secret|secretly|fail|failure|controvers|psycholog|money|lonel|fear|mistake|judg|shame|viral|why|truth|hidden|avoid|must include|memorable|structure)\b/gi,
+				) || []
+			).length;
+			const visualHits = (
+				promptText.match(
+					/\b(visuals?|feed|image|video|graph|chart|data|park|screen|phone|laptop|office|public|comments?|journal|coffee|sunlight)\b/gi,
+				) || []
+			).length;
+			const promptSignal =
+				clampNumber(wordCount / 28, 0, 8) +
+				clampNumber(sectionCount * 0.85, 0, 8) +
+				clampNumber(controversyHits * 0.55, 0, 7) +
+				clampNumber(visualHits * 0.35, 0, 5);
+			promptQualitySignal += promptSignal;
+			signal += promptSignal;
+			promptSignals.push({
+				topic: cleanTopicLabel(t.displayTopic || t.topic || "").slice(0, 80),
+				words: wordCount,
+				sections: sectionCount,
+				controversyHits,
+				visualHits,
+				signal: Number(promptSignal.toFixed(2)),
+			});
+		}
 		totalSignal += signal;
 	}
 
@@ -3094,23 +3236,11 @@ function computeFlexibleNarrationTargetSec({
 	const normalized = clampNumber(avgSignal / fullSignal, 0, 1);
 
 	let multiplier = 1;
-	if (promptDirected) {
-		multiplier = normalized > neutralSignal
-			? 1 +
-				(effectiveMaxMultiplier - 1) *
-					Math.pow(
-						clampNumber(
-							(normalized - neutralSignal) /
-								Math.max(0.01, 1 - neutralSignal),
-							0,
-							1,
-						),
-						1.35,
-					)
-			: 1;
-	} else if (normalized <= neutralSignal) {
+	if (normalized <= neutralSignal) {
 		const t = clampNumber(normalized / neutralSignal, 0, 1);
-		multiplier = minMultiplier + (1 - minMultiplier) * Math.pow(t, 0.85);
+		multiplier =
+			effectiveMinMultiplier +
+			(1 - effectiveMinMultiplier) * Math.pow(t, 0.85);
 	} else {
 		const t = clampNumber(
 			(normalized - neutralSignal) / Math.max(0.01, 1 - neutralSignal),
@@ -3136,10 +3266,13 @@ function computeFlexibleNarrationTargetSec({
 			multiplier: Number(multiplier.toFixed(3)),
 			fullSignal: Number(fullSignal.toFixed(2)),
 			neutralSignal: Number(neutralSignal.toFixed(2)),
-			minMultiplier: Number(minMultiplier.toFixed(2)),
+			minMultiplier: Number(effectiveMinMultiplier.toFixed(2)),
 			maxMultiplier: Number(maxMultiplier.toFixed(2)),
 			effectiveMaxMultiplier: Number(effectiveMaxMultiplier.toFixed(2)),
 			promptDirected,
+			bareDirectAnswerPrompt,
+			promptQualitySignal: Number(promptQualitySignal.toFixed(2)),
+			promptSignals,
 		},
 	};
 }
@@ -3729,18 +3862,21 @@ function compactPriorVideoPlanForMeta(priorVideoPlan = null) {
 function applyLongVideoScriptGuards({
 	script,
 	topics = [],
+	topicContexts = [],
 	wordCaps = [],
 	priorVideoPlan = null,
 	categoryLabel = "",
 	mood = "neutral",
 	includeOutro = true,
 	outroText = "",
+	injectOpeningLine = true,
 } = {}) {
 	let guarded = sanitizeScriptVisualCueLeaks(script, topics);
 	guarded = applyPromptBriefToScript({
 		script: guarded,
 		topics,
 		wordCaps,
+		injectOpeningLine,
 	});
 	guarded = applyPriorVideoReferenceToScript({
 		script: guarded,
@@ -3757,6 +3893,12 @@ function applyLongVideoScriptGuards({
 			outroText,
 		});
 	}
+	guarded = repairDirectAnswerOpening({
+		script: guarded,
+		topics,
+		topicContexts,
+		wordCaps,
+	}).script;
 	return guarded;
 }
 
@@ -3765,7 +3907,7 @@ const DEFAULT_LONG_VIDEO_CONTROLLER_CONFIG = Object.freeze({
 	statusPathBase: "/api/long-video",
 	presenterAssetUrl: DEFAULT_PRESENTER_ASSET_URL,
 	allowPresenterAssetOverride: false,
-	enableRunwayPresenterMotion: true,
+	enableHeyGenPresenterMotion: true,
 	enableWardrobeEdit: ENABLE_WARDROBE_EDIT,
 	disableYouTubeUpload: false,
 });
@@ -4015,8 +4157,11 @@ function looksLikePromptStructureLabelOnly(text = "") {
 }
 
 function stripOuterQuotes(text = "") {
-	return String(text || "")
-		.trim()
+	let raw = String(text || "").trim();
+	if (/^\?[\s\S]*\?$/.test(raw) && raw.length > 2) {
+		raw = raw.slice(1, -1).trim();
+	}
+	return raw
 		.replace(/^["'\u201c\u201d\u2018\u2019]+|["'\u201c\u201d\u2018\u2019]+$/g, "")
 		.trim();
 }
@@ -4449,6 +4594,198 @@ function detectPromptAngle(text = "") {
 	return uniqueStrings(angles, { limit: 4 }).join("; ");
 }
 
+const DIRECT_ANSWER_QUERY_PATTERNS = [
+	{
+		type: "winner",
+		answerLabel: "winner or result",
+		pattern:
+			/\b(?:who\s+(?:won|wins|is\s+the\s+winner|was\s+the\s+winner)|winner\s+of|who\s+took\s+home|who\s+came\s+first)\b/i,
+	},
+	{
+		type: "elimination",
+		answerLabel: "elimination or voted-off result",
+		pattern:
+			/\b(?:who\s+(?:was\s+)?(?:eliminated|voted\s+off|sent\s+home)|eliminated\s+from|voted\s+off)\b/i,
+	},
+	{
+		type: "score",
+		answerLabel: "score or final result",
+		pattern:
+			/\b(?:what\s+(?:was|is)\s+the\s+score|final\s+score|who\s+beat\s+who|who\s+defeated\s+who)\b/i,
+	},
+	{
+		type: "status",
+		answerLabel: "current status",
+		pattern:
+			/\b(?:is|are|was|were)\s+[^?]{2,80}\b(?:cancelled|canceled|renewed|dead|alive|available|confirmed|real)\b/i,
+	},
+	{
+		type: "date",
+		answerLabel: "date or timing",
+		pattern:
+			/\b(?:when\s+(?:is|was|does|did|will)|release\s+date|premiere\s+date|launch\s+date)\b/i,
+	},
+	{
+		type: "price",
+		answerLabel: "price or cost",
+		pattern:
+			/\b(?:how\s+much\s+(?:is|are|does|do|will)|price\s+of|cost\s+of|what\s+does\s+.+\s+cost)\b/i,
+	},
+	{
+		type: "identity",
+		answerLabel: "identity",
+		pattern:
+			/\b(?:who\s+(?:is|are|was|were)|what\s+(?:is|are|was|were)\s+the\s+name)\b/i,
+	},
+];
+
+function extractDirectAnswerSubject(raw = "", type = "general_fact") {
+	let text = normalizeWhitespace(raw)
+		.replace(/[?]+$/g, "")
+		.replace(/\b(?:please|can\s+you|tell\s+me|explain)\b/gi, " ")
+		.trim();
+	const replacements = [
+		/^\s*who\s+(?:won|wins|is\s+the\s+winner\s+of|was\s+the\s+winner\s+of)\s+/i,
+		/^\s*winner\s+of\s+/i,
+		/^\s*who\s+took\s+home\s+/i,
+		/^\s*who\s+came\s+first\s+(?:in|at|on)?\s*/i,
+		/^\s*who\s+(?:was\s+)?(?:eliminated|voted\s+off|sent\s+home)\s+(?:from|on|in)?\s*/i,
+		/^\s*what\s+(?:was|is)\s+the\s+score\s+(?:of|for|in)?\s*/i,
+		/^\s*final\s+score\s+(?:of|for|in)?\s*/i,
+		/^\s*when\s+(?:is|was|does|did|will)\s+/i,
+		/^\s*how\s+much\s+(?:is|are|does|do|will)\s+/i,
+		/^\s*price\s+of\s+/i,
+		/^\s*cost\s+of\s+/i,
+		/^\s*who\s+(?:is|are|was|were)\s+/i,
+		/^\s*what\s+(?:is|are|was|were)\s+/i,
+	];
+	for (const rx of replacements) {
+		text = text.replace(rx, " ").trim();
+	}
+	text = text
+		.replace(/\b(?:right\s+now|today|latest|currently|now)\b/gi, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	const cleaned = cleanTopicLabel(text);
+	if (cleaned && countWords(cleaned) >= 1 && countWords(cleaned) <= 12)
+		return cleaned;
+	if (type === "winner") {
+		const winnerMatch = raw.match(
+			/\b(?:who\s+(?:won|wins)|winner\s+of)\s+(.{2,120})$/i,
+		);
+		if (winnerMatch) return cleanTopicLabel(winnerMatch[1]);
+	}
+	return cleanTopicLabel(raw).slice(0, 120);
+}
+
+function directAnswerSearchHints({ raw = "", subject = "", type = "" } = {}) {
+	const base = cleanTopicLabel(subject || raw);
+	const original = cleanTopicLabel(raw);
+	const hints = [];
+	const push = (value) => {
+		const q = sanitizeOverlayQuery(value);
+		if (q) hints.push(q);
+	};
+	push(original);
+	push(base);
+	if (type === "winner") {
+		push(`${base} who won`);
+		push(`${base} winner`);
+		push(`${base} winner name`);
+		push(`${base} champion name`);
+		push(`${base} finale winner`);
+		push(`${base} results`);
+		push(`${base} winner confirmed`);
+	} else if (type === "elimination") {
+		push(`${base} eliminated`);
+		push(`${base} voted off`);
+		push(`${base} results`);
+	} else if (type === "score") {
+		push(`${base} final score`);
+		push(`${base} result`);
+	} else if (type === "date") {
+		push(`${base} date`);
+		push(`${base} release date`);
+		push(`${base} latest update`);
+	} else if (type === "price") {
+		push(`${base} price`);
+		push(`${base} cost`);
+		push(`${base} latest price`);
+	} else if (type === "status") {
+		push(`${base} status`);
+		push(`${base} confirmed`);
+		push(`${base} latest update`);
+	} else {
+		push(`${base} answer`);
+		push(`${base} latest`);
+	}
+	return uniqueStrings(hints, { limit: 10 });
+}
+
+function detectDirectAnswerQuery(promptText = "") {
+	const raw = normalizeWhitespace(stripUrlsFromText(promptText || ""));
+	if (!raw) return null;
+	const lines = raw
+		.split(/\r?\n/)
+		.map((line) => normalizeWhitespace(line))
+		.filter(Boolean);
+	const firstMeaningful =
+		lines.find((line) => !PROMPT_BRIEF_LABEL_RE.test(line)) || raw;
+	const candidate = firstMeaningful.length <= 180 ? firstMeaningful : raw;
+	const questionish =
+		/[?]$/.test(candidate) ||
+		/^(?:who|what|when|where|is|are|was|were|did|does|will|how\s+much)\b/i.test(
+			candidate,
+		);
+	let matched = null;
+	for (const rule of DIRECT_ANSWER_QUERY_PATTERNS) {
+		if (rule.pattern.test(candidate) || rule.pattern.test(raw)) {
+			matched = rule;
+			break;
+		}
+	}
+	if (!matched || !questionish) return null;
+	if (
+		matched.type === "identity" &&
+		/\b(?:why|how\s+to|should|can\s+i|could\s+i|ways?|tips?|advice)\b/i.test(
+			raw,
+		)
+	) {
+		return null;
+	}
+	const subject = extractDirectAnswerSubject(candidate, matched.type);
+	const bare = countWords(raw) <= 12 && lines.length <= 2;
+	return {
+		isDirectAnswer: true,
+		type: matched.type,
+		answerLabel: matched.answerLabel,
+		answerFirst: true,
+		bare,
+		question: cleanTopicLabel(candidate).slice(0, 180),
+		subject: subject || cleanTopicLabel(candidate).slice(0, 120),
+		searchHints: directAnswerSearchHints({
+			raw: candidate,
+			subject: subject || candidate,
+			type: matched.type,
+		}),
+	};
+}
+
+function getTopicDirectAnswerQuery(topic = {}) {
+	const direct =
+		topic?.directAnswerQuery || topic?.promptBrief?.directAnswerQuery || null;
+	return direct?.isDirectAnswer ? direct : null;
+}
+
+function isDirectAnswerTopic(topic = {}) {
+	return Boolean(getTopicDirectAnswerQuery(topic));
+}
+
+function isBareDirectAnswerTopic(topic = {}) {
+	const direct = getTopicDirectAnswerQuery(topic);
+	return Boolean(direct?.bare);
+}
+
 function detectTopListRequest(text = "") {
 	const raw = cleanTopicLabel(text);
 	if (!raw) return null;
@@ -4480,6 +4817,7 @@ function normalizeTopListTopic(topic = "", topList = null) {
 
 function buildPromptFactSearchQueries(promptText = "", topic = "") {
 	const brief = parseStructuredPromptBrief(promptText);
+	const directAnswer = detectDirectAnswerQuery(promptText || topic);
 	const raw = String(promptText || "");
 	const lines = raw
 		.split(/\r?\n/)
@@ -4490,6 +4828,7 @@ function buildPromptFactSearchQueries(promptText = "", topic = "") {
 	);
 	return uniqueStrings(
 		[
+			...(directAnswer?.searchHints || []),
 			...brief.searchHints,
 			...statLines,
 			topic && /\bscam|fraud\b/i.test(`${topic} ${raw}`)
@@ -4520,12 +4859,14 @@ function buildPromptSearchHints(topic = "", promptText = "", topList = null) {
 	const original = cleanTopicLabel(promptText);
 	const base = cleanTopic || original;
 	const brief = parseStructuredPromptBrief(promptText);
+	const directAnswer = detectDirectAnswerQuery(promptText || base);
 	const hints = [];
 	const push = (value) => {
 		const q = sanitizeOverlayQuery(value);
 		if (q) hints.push(q);
 	};
 	push(base);
+	for (const q of directAnswer?.searchHints || []) push(q);
 	for (const q of buildPromptFactSearchQueries(promptText, base)) push(q);
 	push(`${base} latest updates`);
 	push(`${base} latest news`);
@@ -4550,12 +4891,18 @@ function buildPromptSearchHints(topic = "", promptText = "", topList = null) {
 function buildPromptImageSearchHints(topic = "", promptText = "", topList = null) {
 	const base = cleanTopicLabel(topic || promptText);
 	const brief = parseStructuredPromptBrief(promptText);
+	const directAnswer = detectDirectAnswerQuery(promptText || base);
 	const hints = [];
 	const push = (value) => {
 		const q = sanitizeOverlayQuery(value);
 		if (q) hints.push(q);
 	};
 	push(`${base} photo`);
+	if (directAnswer?.type === "winner") {
+		push(`${base} finale photo`);
+		push(`${base} winner photo`);
+		push(`${base} cast photo`);
+	}
 	push(`${base} news photo`);
 	push(`${base} editorial photo`);
 	push(`${base} landmark photo`);
@@ -4697,6 +5044,7 @@ function resolvePreferredTopicHint(raw = "") {
 	const cleanedPrompt = stripUrlsFromText(original);
 	const promptText = String(cleanedPrompt || "").trim();
 	const brief = parseStructuredPromptBrief(promptText);
+	const directAnswerQuery = detectDirectAnswerQuery(promptText);
 	if (!promptText) {
 		return {
 			mode: "none",
@@ -4705,6 +5053,7 @@ function resolvePreferredTopicHint(raw = "") {
 			imageUrls,
 			videoUrls,
 			brief,
+			directAnswerQuery,
 		};
 	}
 	const subjectTokens = extractPromptSubjectTokens(promptText);
@@ -4728,6 +5077,7 @@ function resolvePreferredTopicHint(raw = "") {
 		videoUrls,
 		brief,
 		singleBrief,
+		directAnswerQuery,
 	};
 }
 
@@ -4747,6 +5097,7 @@ async function selectTopics({
 		const hint = String(preferredTopicHint || "").trim();
 		const topic = hint || "Dry run topic (provide preferredTopicHint)";
 		const displayTopic = cleanTopicLabel(topic) || topic;
+		const directAnswerQuery = detectDirectAnswerQuery(topic);
 		return [
 			{
 				topic: topic.slice(0, 120),
@@ -4754,6 +5105,7 @@ async function selectTopics({
 				reason: dryRun ? "Dry run" : "preferredTopicHint",
 				angle: "",
 				keywords: topicTokensFromTitle(topic).slice(0, 8),
+				directAnswerQuery,
 			},
 		];
 	}
@@ -4786,6 +5138,9 @@ async function selectTopics({
 			if (signature && seen.has(signature)) continue;
 			if (signature) seen.add(signature);
 			const displayTopic = cleanTopicLabel(finalTopic) || finalTopic;
+			const directAnswerQuery =
+				detectDirectAnswerQuery(promptInfo.promptText) ||
+				detectDirectAnswerQuery(finalTopic);
 			const promptSearchHints = buildPromptSearchHints(
 				finalTopic,
 				promptInfo.promptText,
@@ -4808,6 +5163,10 @@ async function selectTopics({
 				keywords: uniqueStrings(
 					[
 						...topicTokensFromTitle(finalTopic),
+						...(directAnswerQuery?.type ? [directAnswerQuery.type] : []),
+						...(directAnswerQuery?.answerLabel
+							? topicTokensFromTitle(directAnswerQuery.answerLabel)
+							: []),
 						...promptSearchHints.flatMap((q) => topicTokensFromTitle(q)),
 					],
 					{ limit: 14 },
@@ -4818,8 +5177,10 @@ async function selectTopics({
 				promptText: promptInfo.promptText,
 				promptBrief: {
 					...promptBrief,
+					directAnswerQuery,
 					searchHints: uniqueStrings(
 						[
+							...(directAnswerQuery?.searchHints || []),
 							...(promptBrief.searchHints || []),
 							...exactPromptSearchHints,
 						],
@@ -4833,12 +5194,17 @@ async function selectTopics({
 						{ limit: 14 },
 					),
 				},
+				directAnswerQuery,
 				topList,
 				searchHints: promptSearchHints,
 				imageSearchHints: promptImageHints,
 				trendStory: {
 					searchPhrases: uniqueStrings(
-						[...promptSearchHints, ...exactPromptSearchHints],
+						[
+							...(directAnswerQuery?.searchHints || []),
+							...promptSearchHints,
+							...exactPromptSearchHints,
+						],
 						{ limit: 16 },
 					),
 					imageSearchQueries: promptImageHints,
@@ -4863,6 +5229,14 @@ async function selectTopics({
 				singleBrief: Boolean(promptInfo.singleBrief),
 				requestedTitle: promptBrief.title || "",
 				openingLine: promptBrief.openingLine || "",
+				directAnswer: topics
+					.map((t) => getTopicDirectAnswerQuery(t))
+					.filter(Boolean)
+					.map((dq) => ({
+						type: dq.type,
+						subject: dq.subject,
+						bare: Boolean(dq.bare),
+					})),
 			});
 			if (!promptInfo.singleBrief && promptInfo.topicCandidates.length > topics.length) {
 				logJob(null, "preferred topic hint truncated to fit duration", {
@@ -5149,6 +5523,42 @@ async function fetchGoogleImagesFromService(
 				});
 		}
 	}
+	if (GOOGLE_CSE_CONFIG_READY) {
+		const cseUrls = await fetchCseImagesForQuery(
+			q,
+			[],
+			Math.max(6, Math.min(Number(limit) || 12, CSE_MAX_IMAGE_RESULTS)),
+			jobId,
+			{
+				maxPages: Math.min(2, CSE_MAX_PAGES),
+				looseTopicRelevance: true,
+				allowLooseResults: true,
+				relaxedMinEdge: CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
+			},
+		);
+		if (cseUrls.length) {
+			if (jobId) {
+				logJob(jobId, "free image search CSE fallback hit", {
+					query: q,
+					count: cseUrls.length,
+				});
+			}
+			return cseUrls;
+		}
+	}
+	const commonsUrls = await fetchWikimediaImageUrls(
+		q,
+		Math.max(3, Math.min(Number(limit) || 6, 8)),
+	);
+	if (commonsUrls.length) {
+		if (jobId) {
+			logJob(jobId, "free image search Wikimedia fallback hit", {
+				query: q,
+				count: commonsUrls.length,
+			});
+		}
+		return commonsUrls;
+	}
 	return [];
 }
 
@@ -5172,6 +5582,46 @@ function normalizeFreeImageMetadataItem(raw, query = "") {
 		provider: String(raw.provider || "").trim(),
 		query,
 	};
+}
+
+async function fetchCseImageMetadataForQuery(
+	query,
+	{ limit = PRE_SCRIPT_VISUAL_RESEARCH_RESULTS_PER_QUERY, jobId } = {},
+) {
+	const q = sanitizeOverlayQuery(query);
+	if (!q || !GOOGLE_CSE_ID || !GOOGLE_CSE_KEY) return [];
+	const items = await fetchCseItems([q], {
+		num: Math.max(6, Number(limit) || 12),
+		maxPages: Math.min(2, CSE_MAX_PAGES),
+		searchType: "image",
+		imgSize: CSE_PREFERRED_IMG_SIZE,
+		jobId,
+		label: "pre_script_visual_metadata",
+	});
+	const seen = new Set();
+	const out = [];
+	for (const item of items || []) {
+		const url = String(item?.link || "").trim();
+		if (!isHttpUrl(url) || isLikelyThumbnailUrl(url)) continue;
+		const key = normalizeImageUrlKey(url);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		out.push({
+			url,
+			title: cleanTopicLabel(item?.title || ""),
+			sourcePage: String(item?.image?.contextLink || item?.link || "").trim(),
+			provider: getUrlHost(item?.displayLink || item?.link || "") || "cse",
+			query: q,
+		});
+		if (out.length >= Math.max(12, Number(limit) || 12)) break;
+	}
+	if (jobId && out.length) {
+		logJob(jobId, "pre-script visual CSE fallback hit", {
+			query: q,
+			count: out.length,
+		});
+	}
+	return out;
 }
 
 async function fetchGoogleImageMetadataFromService(
@@ -5230,6 +5680,27 @@ async function fetchGoogleImageMetadataFromService(
 				});
 		}
 	}
+	const cseItems = await fetchCseImageMetadataForQuery(q, { limit, jobId });
+	if (cseItems.length) return cseItems;
+	const commonsUrls = await fetchWikimediaImageUrls(
+		q,
+		Math.min(Math.max(3, Number(limit) || 8), 8),
+	);
+	if (commonsUrls.length) {
+		if (jobId) {
+			logJob(jobId, "pre-script visual Wikimedia fallback hit", {
+				query: q,
+				count: commonsUrls.length,
+			});
+		}
+		return commonsUrls.map((url) => ({
+			url,
+			title: "",
+			sourcePage: "",
+			provider: "wikimedia",
+			query: q,
+		}));
+	}
 	return [];
 }
 
@@ -5254,6 +5725,32 @@ function buildPreScriptVisualQueries(topic = {}, category = "") {
 				articleTitles,
 				category,
 			}),
+			...(isConceptualOrMetaphoricalVisualTopic({
+				category,
+				topicLabel: label,
+				text: [
+					...(Array.isArray(promptBrief?.visuals) ? promptBrief.visuals : []),
+					...(Array.isArray(promptBrief?.avoid) ? promptBrief.avoid : []),
+					...(Array.isArray(promptBrief?.mustInclude)
+						? promptBrief.mustInclude
+						: []),
+				].join(" "),
+			})
+				? buildConceptualVisualQueries({
+						topicLabel: label,
+						segmentText: [
+							...(Array.isArray(promptBrief?.visuals)
+								? promptBrief.visuals
+								: []),
+							...(Array.isArray(promptBrief?.avoid) ? promptBrief.avoid : []),
+							...(Array.isArray(promptBrief?.mustInclude)
+								? promptBrief.mustInclude
+								: []),
+						].join(" "),
+						category,
+						limit: 8,
+					})
+				: []),
 		]
 			.filter(Boolean)
 			.map((q) => sanitizeOverlayQuery(q))
@@ -5958,11 +6455,12 @@ async function fetchPromptTopicNewsContext({
 	promptText = "",
 	limit = PROMPT_TOPIC_NEWS_CONTEXT_LIMIT,
 	jobId,
+	forceAllQueries = false,
 } = {}) {
 	if (!PROMPT_TOPIC_NEWS_CONTEXT_ENABLED) return [];
 	const topicLabel = cleanTopicLabel(topic || promptText);
 	if (!topicLabel) return [];
-	const target = clampNumber(Number(limit) || PROMPT_TOPIC_NEWS_CONTEXT_LIMIT, 1, 8);
+	const target = clampNumber(Number(limit) || PROMPT_TOPIC_NEWS_CONTEXT_LIMIT, 1, 12);
 	const queries = uniqueStrings(
 		[
 			topicLabel,
@@ -5998,7 +6496,7 @@ async function fetchPromptTopicNewsContext({
 		for (const result of settled) {
 			if (result.status === "fulfilled") out.push(...(result.value || []));
 		}
-		if (countContextSourceLinks(out) >= target) break;
+		if (!forceAllQueries && countContextSourceLinks(out) >= target) break;
 	}
 	return uniqueContextItems(out, { limit: target });
 }
@@ -6083,18 +6581,27 @@ async function fetchCseContext(topic, extraTokens = [], opts = {}) {
 	if (category === "film" || category === "tv" || category === "celebrity") {
 		queries.push(`${topic} rumor`, `${topic} leak`);
 	}
+	const queryPool = uniqueStrings(
+		[
+			...(Array.isArray(opts?.queries) ? opts.queries : []),
+			...queries,
+		],
+		{ limit: queries.length + 12 },
+	);
 
 	const maxQueries = clampNumber(
-		opts?.maxQueries ?? queries.length,
+		opts?.maxQueries ?? queryPool.length,
 		1,
-		queries.length,
+		queryPool.length,
 	);
 	const num = clampNumber(opts?.num ?? 5, 1, 10);
 	const maxPages = clampNumber(opts?.maxPages ?? 2, 1, 5);
 	const limit = clampNumber(opts?.limit ?? 6, 1, 12);
-	const items = await fetchCseItems(uniqueStrings(queries, { limit: maxQueries }), {
+	const items = await fetchCseItems(queryPool.slice(0, maxQueries), {
 		num,
 		maxPages,
+		jobId: opts?.jobId || null,
+		label: "cse_context",
 	});
 	const matchTokens = expandTopicTokens(filterSpecificTopicTokens(baseTokens));
 	const minMatches = minTopicTokenMatches(matchTokens);
@@ -6184,6 +6691,8 @@ async function fetchCseImages(
 		maxPages,
 		searchType: "image",
 		imgSize: CSE_ULTRA_IMG_SIZE,
+		jobId,
+		label: "cse_images_primary_ultra",
 	});
 	attemptStats.push({
 		label: "primary_ultra",
@@ -6197,6 +6706,8 @@ async function fetchCseImages(
 			maxPages,
 			searchType: "image",
 			imgSize: CSE_PREFERRED_IMG_SIZE,
+			jobId,
+			label: "cse_images_primary_preferred",
 		});
 		attemptStats.push({
 			label: "primary_preferred",
@@ -6211,6 +6722,8 @@ async function fetchCseImages(
 			maxPages,
 			searchType: "image",
 			imgSize: CSE_PREFERRED_IMG_SIZE,
+			jobId,
+			label: "cse_images_fallback_preferred",
 		});
 		attemptStats.push({
 			label: "fallback_preferred",
@@ -6225,6 +6738,8 @@ async function fetchCseImages(
 			maxPages,
 			searchType: "image",
 			imgSize: CSE_FALLBACK_IMG_SIZE,
+			jobId,
+			label: "cse_images_fallback_large",
 		});
 		attemptStats.push({
 			label: "fallback_large",
@@ -6437,7 +6952,7 @@ function isProbablyDirectVideoUrl(url = "") {
 
 function isUnsupportedFeedVideoHost(url = "") {
 	const host = getUrlHost(url);
-	return /\b(youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|threads\.net|snapchat\.com)\b/i.test(
+	return /\b(youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|threads\.net|snapchat\.com|etsy\.com|amazon\.com|ebay\.com|pinterest\.com|shopify\.com|redbubble\.com|zazzle\.com)\b/i.test(
 		host,
 	);
 }
@@ -7023,9 +7538,9 @@ function buildOverlayQueryFallback(text = "", topic = "") {
 function cleanImageQueryHint(hint = "", topicLabel = "") {
 	const topicTokens = new Set(tokenizeLabel(topicLabel || ""));
 	const cleaned = String(hint || "")
-		.replace(/[â€™â€˜]/g, "'")
-		.replace(/[â€œâ€]/g, '"')
-		.replace(/[â—â€¢].*$/g, " ")
+		.replace(/[’‘]/g, "'")
+		.replace(/[“”]/g, '"')
+		.replace(/[●•].*$/g, " ")
 		.replace(/\b\d+\s*(?:minute|minutes|hour|hours|day|days|week|weeks)\s+ago\b.*$/i, " ")
 		.replace(/^live\s+updates?\s*:\s*/i, " ")
 		.replace(/\s+/g, " ")
@@ -7057,6 +7572,88 @@ function isEvergreenNonNewsVisualTopic({
 		isSocialConnectionTopic({ categoryLabel: category, text: hay }) ||
 		isPersonalFinanceCostOfLivingTopic({ categoryLabel: category, text: hay })
 	);
+}
+
+function isConceptualOrMetaphoricalVisualTopic({
+	category = "",
+	topicLabel = "",
+	text = "",
+} = {}) {
+	const hay = `${category || ""} ${topicLabel || ""} ${text || ""}`.toLowerCase();
+	if (!hay.trim()) return false;
+	if (isEvergreenNonNewsVisualTopic({ category, topicLabel, text })) return true;
+	return /\b(psychology|psychological|secretly|happiness|happier|loneliness|lonely|connection|attention|habit|habits|mindset|self\s*improvement|stress|anxiety|money|spending|failure|fail|failing|mistake|mistakes|judgment|judgement|humility|cruelty|shame|empathy|motivation|advice|life)\b/i.test(
+		hay,
+	);
+}
+
+function buildConceptualVisualQueries({
+	topicLabel = "",
+	segmentText = "",
+	baseQuery = "",
+	category = "",
+	limit = 10,
+} = {}) {
+	const hay = `${category || ""} ${topicLabel || ""} ${segmentText || ""} ${baseQuery || ""}`.toLowerCase();
+	const queries = [];
+	const push = (raw) => {
+		const q = sanitizeOverlayQuery(raw);
+		if (q) queries.push(q);
+	};
+
+	if (/\b(failure|fail|failing|mistake|mistakes|shame|cruel|judg|humiliat)\b/i.test(hay)) {
+		if (/\b(comment|online|internet|phone|screen|social)\b/i.test(hay)) {
+			push("online comments phone screen photo");
+			push("person reading comments laptop photo");
+		}
+		if (/\b(business|startup|brand|launch|pitch|executive|customer|office)\b/i.test(hay)) {
+			push("business closed sign photo");
+			push("office presentation mistake photo");
+			push("startup meeting stress photo");
+		}
+		if (/\b(relief|not me|watch|viewer|attention|reaction)\b/i.test(hay)) {
+			push("person watching laptop concerned photo");
+			push("viewer laptop reflection photo");
+		}
+		push("person looking at laptop concerned photo");
+		push("business closed sign photo");
+		push("messy paperwork office photo");
+		push("online comments phone screen photo");
+		push("empty office desk stress photo");
+		push("person thinking laptop photo");
+	}
+
+	if (/\b(happiness|happier|free|spending|money|gratitude|walk|walking|park|sunlight|coffee|journal)\b/i.test(hay)) {
+		push("person walking park sunlight photo");
+		push("gratitude journal desk photo");
+		push("quiet coffee table sunlight photo");
+		push("friend phone call coffee photo");
+		push("public park bench sunlight photo");
+		push("helping neighbor groceries photo");
+	}
+
+	if (/\b(lonely|loneliness|friendship|connection|call|message|relationship)\b/i.test(hay)) {
+		push("person looking at phone alone photo");
+		push("missed calls phone screen photo");
+		push("friends talking coffee photo");
+		push("empty chair cafe photo");
+		push("video call laptop home photo");
+	}
+
+	if (/\b(stress|anxiety|mindset|attention|habit|self\s*improvement|advice|life)\b/i.test(hay)) {
+		push("person journaling desk photo");
+		push("person thinking window photo");
+		push("notebook coffee desk photo");
+		push("calm morning desk photo");
+		push("person walking city sidewalk photo");
+	}
+
+	push("person thinking laptop photo");
+	push("notebook reflection desk photo");
+	push("phone comments screen photo");
+	push("business meeting discussion photo");
+
+	return uniqueStrings(queries, { limit: Math.max(1, Number(limit) || 10) });
 }
 
 function buildCategoryImageQueryModifiers(category = "", topicLabel = "") {
@@ -7155,6 +7752,20 @@ function buildTopicNearImageQueries(
 
 	if (base) {
 		push(base);
+		if (
+			isConceptualOrMetaphoricalVisualTopic({
+				category,
+				topicLabel,
+				text: rawContextTexts.join(" "),
+			})
+		) {
+			buildConceptualVisualQueries({
+				topicLabel,
+				segmentText: rawContextTexts.join(" "),
+				category,
+				limit: 8,
+			}).forEach(push);
+		}
 		for (const modifier of uniqueStrings(
 			[
 				...(evergreenNonNews ? [] : GENERIC_NEAR_IMAGE_MODIFIERS),
@@ -7290,12 +7901,15 @@ function buildSegmentVideoQueryVariants({
 		articleTitles,
 		category,
 	});
+	const imageVideoQueries = imageLike
+		.map((q) => sanitizeOverlayQuery(String(q || "").replace(/\bphotos?\b/gi, " ")))
+		.filter(Boolean);
 	const raw = uniqueStrings(
 		[
 			baseQuery ? `${baseQuery} video` : "",
 			baseQuery ? `${baseQuery} footage` : "",
 			...videoNear,
-			...imageLike.map((q) =>
+			...imageVideoQueries.map((q) =>
 				/\b(video|footage|clip)\b/i.test(q) ? q : `${q} video`,
 			),
 		].filter(Boolean),
@@ -7451,10 +8065,12 @@ async function collectFeedVideoCandidateEntriesForSegment({
 
 	if (FEED_VIDEO_SEARCH_ENABLED && videoQueries.length) {
 		for (const videoQuery of videoQueries) {
-			if (GOOGLE_CSE_ID && GOOGLE_CSE_KEY) {
+			if (GOOGLE_CSE_CONFIG_READY) {
 				const items = await fetchCseItems([videoQuery], {
 					num: FEED_VIDEO_CANDIDATE_LIMIT,
 					maxPages: 1,
+					jobId,
+					label: "feed_video_cse",
 				});
 				for (const item of items) {
 					const pageUrl = String(item.link || "").trim();
@@ -7697,12 +8313,20 @@ async function fetchCseImagesForQuery(
 		CSE_MAX_IMAGE_RESULTS,
 		Math.max(12, target * IMAGE_SEARCH_CANDIDATE_MULTIPLIER),
 	);
-	const strictTopicTokens = filterSpecificTopicTokens(topicTokens);
+	const looseTopicRelevance = Boolean(opts.looseTopicRelevance);
+	const allowLooseResults = Boolean(opts.allowLooseResults);
+	const strictTopicTokens = looseTopicRelevance
+		? []
+		: filterSpecificTopicTokens(topicTokens);
 	const tokens = expandTopicTokens(
 		filterSpecificTopicTokens([...tokenizeLabel(q), ...strictTopicTokens]),
 	);
-	const minMatches = minTopicTokenMatches(tokens);
-	const relaxedMinMatches = Math.max(1, minMatches - 1);
+	const minMatches = looseTopicRelevance
+		? Math.min(2, minTopicTokenMatches(tokens))
+		: minTopicTokenMatches(tokens);
+	const relaxedMinMatches = looseTopicRelevance
+		? 1
+		: Math.max(1, minMatches - 1);
 	const requiredTopicMatches = minImageTopicTokenMatches(strictTopicTokens);
 	const relaxedRequiredMatches = requiredTopicMatches ? 1 : 0;
 	const attemptStats = [];
@@ -7711,6 +8335,8 @@ async function fetchCseImagesForQuery(
 		maxPages,
 		searchType: "image",
 		imgSize: CSE_ULTRA_IMG_SIZE,
+		jobId,
+		label: "cse_image_query_ultra",
 	});
 	attemptStats.push({
 		label: "query_ultra",
@@ -7724,6 +8350,8 @@ async function fetchCseImagesForQuery(
 			maxPages,
 			searchType: "image",
 			imgSize: CSE_PREFERRED_IMG_SIZE,
+			jobId,
+			label: "cse_image_query_preferred",
 		});
 		attemptStats.push({
 			label: "query_preferred",
@@ -7772,6 +8400,18 @@ async function fetchCseImagesForQuery(
 	const candidates = strictCandidates.length
 		? [...strictCandidates, ...relaxedCandidates]
 		: relaxedCandidates;
+	if (!candidates.length && allowLooseResults) {
+		for (const it of items) {
+			const url = it.link || "";
+			if (!url || !/^https:\/\//i.test(url)) continue;
+			const w = Number(it.image?.width || 0);
+			const h = Number(it.image?.height || 0);
+			const shortEdge = w && h ? Math.min(w, h) : 0;
+			if (shortEdge && shortEdge < relaxedMinEdge) continue;
+			candidates.push({ url, score: 0, urlMatches: 0, w, h });
+			if (candidates.length >= maxCandidates) break;
+		}
+	}
 	candidates.sort((a, b) => {
 		if (b.score !== a.score) return b.score - a.score;
 		if (b.w !== a.w) return b.w - a.w;
@@ -7850,6 +8490,7 @@ async function buildOverlayAssetsFromSegments({
 			topicIndex,
 			topicLabel,
 			query,
+			text: seg.text || "",
 			position,
 			startPct: Number(cueRaw?.startPct),
 			endPct: Number(cueRaw?.endPct),
@@ -7870,15 +8511,27 @@ async function buildOverlayAssetsFromSegments({
 		const t = byIndex.get(Number(cue.segmentIndex));
 		if (!t) continue;
 		const segDur = Math.max(0.6, Number(t.endSec) - Number(t.startSec));
+		const holdSingleVisual = isHoldSingleVisualSegment({
+			text: cue.text || "",
+			overlayCues: [{ query: cue.query }],
+		});
 		const startPct = clampNumber(
-			Number.isFinite(cue.startPct) ? cue.startPct : 0.25,
-			0.2,
-			0.75,
+			Number.isFinite(cue.startPct)
+				? cue.startPct
+				: holdSingleVisual
+					? 0.05
+					: 0.25,
+			holdSingleVisual ? 0.02 : 0.2,
+			holdSingleVisual ? 0.3 : 0.75,
 		);
 		const endPct = clampNumber(
-			Number.isFinite(cue.endPct) ? cue.endPct : 0.75,
-			startPct + 0.2,
-			0.9,
+			Number.isFinite(cue.endPct)
+				? cue.endPct
+				: holdSingleVisual
+					? 0.95
+					: 0.75,
+			startPct + (holdSingleVisual ? 0.45 : 0.2),
+			holdSingleVisual ? 0.98 : 0.9,
 		);
 		let startSec = Number(t.startSec) + segDur * startPct;
 		let endSec = Number(t.startSec) + segDur * endPct;
@@ -8043,6 +8696,21 @@ function buildSegmentImageQueryVariants({
 	};
 
 	push(baseQuery);
+	if (
+		isConceptualOrMetaphoricalVisualTopic({
+			category,
+			topicLabel,
+			text: `${segmentText || ""} ${baseQuery || ""}`,
+		})
+	) {
+		buildConceptualVisualQueries({
+			topicLabel,
+			segmentText,
+			baseQuery,
+			category,
+			limit: Math.max(6, Number(maxVariants) || 6),
+		}).forEach(push);
+	}
 	if (segmentText || topicLabel) {
 		const fallback = buildOverlayQueryFallback(
 			segmentText || "",
@@ -8375,12 +9043,20 @@ async function groundScriptInValidatedVisuals({
 		if (bestQuery && bestQuery !== sanitizeOverlayQuery(currentQuery)) {
 			revisedQueries += 1;
 		}
-		const cueStartPct = clampNumber(currentCue.startPct ?? 0.25, 0.2, 0.65);
-		const cueEndPct = clampNumber(
-			currentCue.endPct ?? 0.75,
-			Math.min(0.85, cueStartPct + 0.2),
-			0.85,
-		);
+		const holdSingleVisual = isHoldSingleVisualSegment({
+			...segmentUpdate,
+			overlayCues: [{ ...currentCue, query: bestQuery || currentQuery }],
+		});
+		const cueStartPct = holdSingleVisual
+			? clampNumber(currentCue.startPct ?? 0.05, 0.02, 0.2)
+			: clampNumber(currentCue.startPct ?? 0.25, 0.2, 0.65);
+		const cueEndPct = holdSingleVisual
+			? clampNumber(currentCue.endPct ?? 0.95, Math.max(0.75, cueStartPct + 0.45), 0.98)
+			: clampNumber(
+					currentCue.endPct ?? 0.75,
+					Math.min(0.85, cueStartPct + 0.2),
+					0.85,
+				);
 		segmentUpdate.overlayCues = [
 			{
 				...currentCue,
@@ -8396,7 +9072,7 @@ async function groundScriptInValidatedVisuals({
 			0.2
 		) {
 			segmentUpdate.overlayCues[0].endPct = Math.min(
-				0.85,
+				holdSingleVisual ? 0.98 : 0.85,
 				Number(segmentUpdate.overlayCues[0].startPct) + 0.25,
 			);
 		}
@@ -9297,7 +9973,7 @@ async function collectThumbnailSearchCandidateEntries({
 		}
 	}
 
-	if (allowCse && GOOGLE_CSE_ID && GOOGLE_CSE_KEY) {
+	if (allowCse && GOOGLE_CSE_CONFIG_READY) {
 		for (const query of queries.slice(0, 3)) {
 			if (entries.length >= targetCount) break;
 			const urls = await fetchCseImagesForQuery(
@@ -9658,7 +10334,7 @@ async function ensureThumbnailSeedImages({
 		output && typeof output === "object"
 			? output
 			: parseRatio(output || DEFAULT_OUTPUT_RATIO);
-	const cseAvailable = Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
+	const cseAvailable = GOOGLE_CSE_CONFIG_READY;
 	for (let i = 0; i < topics.length; i++) {
 		const t = topics[i];
 		if (!t) continue;
@@ -10032,6 +10708,25 @@ async function fetchFallbackImageUrlsForSegment({
 		urls.push(...commons);
 	}
 
+	if (urls.length < target) {
+		for (const relatedQuery of relatedQueries) {
+			if (urls.length >= target) break;
+			const commons = await fetchWikimediaImageUrls(
+				relatedQuery,
+				target - urls.length,
+			);
+			urls.push(...commons);
+		}
+		if (jobId) {
+			logJob(jobId, "segment fallback Wikimedia context used", {
+				query,
+				topicLabel,
+				queries: relatedQueries,
+				total: urls.length,
+			});
+		}
+	}
+
 	return uniqueStrings(urls, { limit: target });
 }
 
@@ -10261,7 +10956,7 @@ async function prepareImageSegments({
 		};
 	}
 
-	const cseAvailable = Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY);
+	const cseAvailable = GOOGLE_CSE_CONFIG_READY;
 	if (!cseAvailable) {
 		logJob(jobId, "image segments CSE disabled; using seed images only");
 	}
@@ -11138,6 +11833,91 @@ async function prepareImageSegments({
 			});
 		}
 
+		if (
+			!localPaths.length &&
+			cseAvailable &&
+			isConceptualOrMetaphoricalVisualTopic({
+				category,
+				topicLabel: effectiveTopicLabel,
+				text: `${query || ""} ${seg.text || ""}`,
+			})
+		) {
+			const conceptualQueries = buildConceptualVisualQueries({
+				topicLabel: effectiveTopicLabel,
+				segmentText: seg.text || "",
+				baseQuery: query,
+				category,
+				limit: Math.max(6, GOOGLE_IMAGES_VARIANT_LIMIT),
+			});
+			const conceptualUrls = [];
+			for (const conceptQuery of conceptualQueries) {
+				const cacheKey = `concept::${conceptQuery}`;
+				let urls = queryCache.get(cacheKey);
+				if (!urls) {
+					urls = await fetchCseImagesForQuery(
+						conceptQuery,
+						[],
+						Math.max(
+							renderTargetCount,
+							renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+						),
+						jobId,
+						{
+							maxPages: CSE_MAX_PAGES,
+							looseTopicRelevance: true,
+							allowLooseResults: true,
+							relaxedMinEdge: CSE_RELAXED_MIN_IMAGE_SHORT_EDGE,
+						},
+					);
+					queryCache.set(cacheKey, urls);
+				} else {
+					segmentCseCacheHits += 1;
+				}
+				conceptualUrls.push(...(urls || []));
+				if (dedupeUrlsPreserveOrder(conceptualUrls).length >= renderTargetCount)
+					break;
+			}
+			const conceptualPicks = pickSegmentImageUrls(
+				conceptualUrls,
+				renderTargetCount,
+				usedUrlKeys,
+				usedHosts,
+				{
+					maxPicks: Math.max(
+						renderTargetCount,
+						renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
+					),
+					enforceRelevance: false,
+					usedUrlsGlobal,
+				},
+			);
+			download = await downloadSegmentImages(
+				conceptualPicks,
+				tmpDir,
+				jobId,
+				seg.index,
+				renderTargetCount,
+			);
+			localPaths = localPaths.concat(download.localPaths || []);
+			pickedUrls = pickedUrls.concat(download.usedUrls || []);
+			if (download.usedUrls?.length) {
+				for (const url of download.usedUrls) {
+					usedUrlKeys.add(normalizeImageUrlKey(url));
+					usedUrlsGlobal.add(normalizeImageUrlKey(url));
+					const host = getUrlHost(url);
+					if (host) usedHosts.add(host);
+				}
+			}
+			logJob(jobId, "segment conceptual feed images", {
+				segment: seg.index,
+				topicLabel: effectiveTopicLabel,
+				queries: conceptualQueries,
+				candidates: conceptualUrls.length,
+				picked: conceptualPicks.length,
+				downloaded: localPaths.length,
+			});
+		}
+
 		if (!STRICT_TOPIC_RELEVANT_FEED_IMAGES && localPaths.length < renderTargetCount) {
 			const missing = Math.max(1, renderTargetCount - localPaths.length);
 			const alreadyPickedKeys = new Set(
@@ -11331,12 +12111,39 @@ async function prepareImageSegments({
 
 		const hasFeedVideo = Boolean(feedVideoDownload.localPaths?.length);
 		if (!localPaths.length && !hasFeedVideo) {
-			logJob(jobId, "segment images missing; fallback to presenter", {
+			if (!ALLOW_PAID_IMAGE_SEGMENT_FALLBACK) {
+				logJob(jobId, "segment images missing; using local visual fallback", {
+					segment: seg.index,
+					query,
+					topicLabel: effectiveTopicLabel,
+				});
+				imagePlanSummary.push({
+					segment: seg.index,
+					imageCount: 0,
+					feedVideoCount: 0,
+					detailCard: false,
+					cloudinaryCount: 0,
+					desiredCount,
+					fallback: "local_visual",
+				});
+				updated.push({
+					...seg,
+					visualType: "image",
+					imageUnavailable: true,
+					imageFallbackReason: "no_image_assets",
+				});
+				continue;
+			}
+			logJob(jobId, "segment images missing; paid fallback to presenter", {
 				segment: seg.index,
 				query,
 				topicLabel: effectiveTopicLabel,
 			});
-			updated.push({ ...seg, visualType: "presenter" });
+			updated.push({
+				...seg,
+				visualType: "presenter",
+				imageFallbackReason: "paid_presenter_fallback_enabled",
+			});
 			continue;
 		}
 
@@ -11382,7 +12189,7 @@ async function evaluateImageSegmentDiversity({
 	jobId,
 }) {
 	const imageSegments = (timeline || []).filter(
-		(seg) => seg.visualType === "image",
+		(seg) => seg.visualType === "image" && !seg.imageUnavailable,
 	);
 	const segmentCount = imageSegments.length;
 	if (!segmentCount) {
@@ -11665,112 +12472,7 @@ function buildPresenterReferenceMotionHint({ intro = false } = {}) {
 	].join(" ");
 }
 
-function runwayHeadersJson() {
-	return {
-		Authorization: `Bearer ${RUNWAY_API_KEY}`,
-		"X-Runway-Version": RUNWAY_VERSION,
-		"Content-Type": "application/json",
-	};
-}
-
-async function runwayCreateEphemeralUpload({ filePath, filename }) {
-	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
-	if (!fs.existsSync(filePath))
-		throw new Error("file missing for runway upload");
-
-	const baseName = filename || path.basename(filePath || "asset.bin");
-
-	const init = await axios.post(
-		"https://api.dev.runwayml.com/v1/uploads",
-		{ filename: baseName, type: "ephemeral" },
-		{
-			headers: runwayHeadersJson(),
-			timeout: 20000,
-			validateStatus: (s) => s < 500,
-		},
-	);
-
-	if (init.status >= 300) {
-		const msg =
-			typeof init.data === "string"
-				? init.data
-				: JSON.stringify(init.data || {});
-		throw new Error(
-			`Runway upload init failed (${init.status}): ${msg.slice(0, 500)}`,
-		);
-	}
-
-	const { uploadUrl, fields, runwayUri } = init.data || {};
-	if (!uploadUrl || !fields || !runwayUri)
-		throw new Error("Runway upload init returned incomplete response");
-
-	// Upload to presigned URL
-	if (FormDataNode) {
-		const form = new FormDataNode();
-		Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
-		form.append("file", fs.createReadStream(filePath));
-		const r = await axios.post(uploadUrl, form, {
-			headers: { ...form.getHeaders() },
-			maxBodyLength: Infinity,
-			timeout: 60000,
-			validateStatus: () => true,
-		});
-		if (r.status >= 300) throw new Error(`Runway upload failed (${r.status})`);
-		return runwayUri;
-	}
-
-	// Node 18+ fallback
-	if (typeof fetch !== "function" || typeof FormData !== "function") {
-		throw new Error(
-			"Runway upload requires Node 18+ (fetch/FormData) or install 'form-data'",
-		);
-	}
-	const form = new FormData();
-	Object.entries(fields || {}).forEach(([k, v]) => form.append(k, v));
-	form.append("file", new Blob([fs.readFileSync(filePath)]), baseName);
-	const resp = await fetch(uploadUrl, { method: "POST", body: form });
-	if (!resp.ok) throw new Error(`Runway upload failed (${resp.status})`);
-	return runwayUri;
-}
-
-async function pollRunwayTask(taskId, label) {
-	const url = `https://api.dev.runwayml.com/v1/tasks/${taskId}`;
-	for (let i = 0; i < 120; i++) {
-		await sleep(2000);
-		const res = await axios.get(url, {
-			headers: {
-				Authorization: `Bearer ${RUNWAY_API_KEY}`,
-				"X-Runway-Version": RUNWAY_VERSION,
-			},
-			timeout: 20000,
-			validateStatus: (s) => s < 500,
-		});
-		if (res.status >= 300) {
-			const msg =
-				typeof res.data === "string"
-					? res.data
-					: JSON.stringify(res.data || {});
-			throw new Error(
-				`${label} polling failed (${res.status}): ${msg.slice(0, 500)}`,
-			);
-		}
-		const data = res.data || {};
-		const status = String(data.status || "").toUpperCase();
-		if (status === "SUCCEEDED") {
-			if (Array.isArray(data.output) && data.output[0]) return data.output[0];
-			if (typeof data.output === "string") return data.output;
-			throw new Error(`${label} succeeded but returned no output`);
-		}
-		if (status === "FAILED") {
-			throw new Error(
-				`${label} failed: ${data.failureCode || data.error || "FAILED"}`,
-			);
-		}
-	}
-	throw new Error(`${label} timed out`);
-}
-
-function runwayErrorText(err) {
+function httpErrorText(err) {
 	if (!err) return "";
 	if (typeof err === "string") return err;
 	const parts = [];
@@ -11786,63 +12488,13 @@ function runwayErrorText(err) {
 	return parts.filter(Boolean).join(" ");
 }
 
-function isRunwayRechargeOrLimitError(err) {
-	const text = runwayErrorText(err).toLowerCase();
-	if (!text) return false;
-	return /\b(402|429|credit|credits|balance|quota|rate\s*limit|too many requests|billing|payment|insufficient|recharg|points?|resource exhausted|temporarily unavailable|capacity)\b/i.test(
-		text,
-	);
-}
-
 function isOpenAiQuotaOrRateLimitError(err) {
 	const status = Number(err?.status || err?.response?.status || 0);
 	if (status === 429) return true;
-	const text = runwayErrorText(err).toLowerCase();
+	const text = httpErrorText(err).toLowerCase();
 	return /\b(429|quota|billing|rate\s*limit|too many requests|insufficient_quota|exceeded your current quota)\b/i.test(
 		text,
 	);
-}
-
-async function waitForRunwayRecharge({
-	jobId,
-	label = "runway",
-	model = "",
-	attempt = 0,
-	error = "",
-}) {
-	const waitMs = Math.round(
-		RUNWAY_RECHARGE_WAIT_MS +
-			Math.max(0, Number(attempt) || 0) * RUNWAY_RECHARGE_BACKOFF_MS,
-	);
-	if (jobId) {
-		logJob(jobId, "runway recharge wait", {
-			label,
-			model,
-			attempt: Number(attempt) + 1,
-			waitSec: Number((waitMs / 1000).toFixed(1)),
-			error: String(error || "").slice(0, 500),
-		});
-	}
-	await sleep(waitMs);
-}
-
-function runwayRatio(ratio) {
-	// Runway accepts explicit resolutions; keep safe set
-	const allowed = new Set([
-		"1280:720",
-		"720:1280",
-		"1104:832",
-		"832:1104",
-		"960:960",
-		"1584:672",
-		"1280:768",
-		"768:1280",
-	]);
-	const r = String(ratio || "").trim();
-	if (allowed.has(r)) return r;
-	if (r === "16:9") return "1280:720";
-	if (r === "9:16") return "720:1280";
-	return "1280:720";
 }
 
 function seedFromJobId(jobId) {
@@ -11854,232 +12506,6 @@ function seedFromJobId(jobId) {
 function pickIntroExpression(jobId) {
 	void jobId;
 	return "calm, neutral expression with settled brows and relaxed eyes";
-}
-
-async function runwayImageToVideo({
-	runwayImageUri,
-	promptText,
-	durationSec,
-	ratio,
-	modelOrder,
-	jobId = "",
-	label = "runway_image_to_video",
-}) {
-	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
-	const models = [];
-	const requested = Array.isArray(modelOrder)
-		? modelOrder.map((m) => String(m || "").trim()).filter(Boolean)
-		: [];
-	if (requested.length) {
-		for (const m of requested) {
-			if (!models.includes(m)) models.push(m);
-		}
-	} else {
-		if (RUNWAY_VIDEO_MODEL) models.push(RUNWAY_VIDEO_MODEL);
-		if (
-			RUNWAY_VIDEO_MODEL_FALLBACK &&
-			RUNWAY_VIDEO_MODEL_FALLBACK !== RUNWAY_VIDEO_MODEL
-		)
-			models.push(RUNWAY_VIDEO_MODEL_FALLBACK);
-	}
-	if (!models.length) throw new Error("Runway image_to_video model missing");
-
-	let lastErr = null;
-	for (const model of models) {
-		const payload = {
-			model,
-			promptImage: [{ uri: runwayImageUri, position: "first" }],
-			promptText: String(promptText || "").slice(0, 900),
-			ratio: runwayRatio(ratio),
-			duration: clampNumber(Math.round(Number(durationSec) || 5), 2, 10),
-		};
-
-		for (
-			let rechargeAttempt = 0;
-			rechargeAttempt <= RUNWAY_RECHARGE_RETRY_ATTEMPTS;
-			rechargeAttempt++
-		) {
-			try {
-				const res = await axios.post(
-					"https://api.dev.runwayml.com/v1/image_to_video",
-					payload,
-					{
-						headers: runwayHeadersJson(),
-						timeout: 30000,
-						validateStatus: (s) => s < 500,
-					},
-				);
-				if (res.status < 300 && res.data?.id) {
-					try {
-						return await pollRunwayTask(res.data.id, label);
-					} catch (e) {
-						lastErr = e;
-						if (
-							isRunwayRechargeOrLimitError(e) &&
-							rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
-						) {
-							await waitForRunwayRecharge({
-								jobId,
-								label,
-								model,
-								attempt: rechargeAttempt,
-								error: runwayErrorText(e),
-							});
-							continue;
-						}
-						break;
-					}
-				}
-
-				const msg =
-					typeof res.data === "string"
-						? res.data
-						: JSON.stringify(res.data || {});
-				lastErr = new Error(
-					`Runway image_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
-				);
-				if (
-					isRunwayRechargeOrLimitError(lastErr) &&
-					rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
-				) {
-					await waitForRunwayRecharge({
-						jobId,
-						label,
-						model,
-						attempt: rechargeAttempt,
-						error: runwayErrorText(lastErr),
-					});
-					continue;
-				}
-				break;
-			} catch (e) {
-				lastErr = e;
-				if (
-					isRunwayRechargeOrLimitError(e) &&
-					rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
-				) {
-					await waitForRunwayRecharge({
-						jobId,
-						label,
-						model,
-						attempt: rechargeAttempt,
-						error: runwayErrorText(e),
-					});
-					continue;
-				}
-				break;
-			}
-		}
-
-		if (model !== models[models.length - 1]) {
-			console.warn(
-				`[Runway] image_to_video failed for model ${model}; trying fallback ${
-					models[models.length - 1]
-				}`,
-			);
-		}
-	}
-	throw lastErr || new Error("Runway image_to_video failed");
-}
-
-async function runwayVideoToVideo({
-	runwayVideoUri,
-	promptText,
-	ratio,
-	seed,
-	references,
-	jobId = "",
-	label = "runway_video_to_video",
-}) {
-	if (!RUNWAY_API_KEY) throw new Error("RUNWAY_API_KEY missing");
-
-	// Per Runway docs, video_to_video expects model gen4_aleph and videoUri field.
-	const payload = {
-		model: "gen4_aleph",
-		videoUri: runwayVideoUri,
-		promptText: String(promptText || "").slice(0, 900),
-		ratio: runwayRatio(ratio),
-		seed: Number.isFinite(seed) ? seed : undefined,
-		...(Array.isArray(references) && references.length ? { references } : {}),
-	};
-
-	let lastErr = null;
-	for (
-		let rechargeAttempt = 0;
-		rechargeAttempt <= RUNWAY_RECHARGE_RETRY_ATTEMPTS;
-		rechargeAttempt++
-	) {
-		try {
-			const res = await axios.post(
-				"https://api.dev.runwayml.com/v1/video_to_video",
-				payload,
-				{
-					headers: runwayHeadersJson(),
-					timeout: 30000,
-					validateStatus: (s) => s < 500,
-				},
-			);
-
-			if (res.status < 300 && res.data?.id) {
-				try {
-					return await pollRunwayTask(res.data.id, label);
-				} catch (e) {
-					lastErr = e;
-					if (
-						isRunwayRechargeOrLimitError(e) &&
-						rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
-					) {
-						await waitForRunwayRecharge({
-							jobId,
-							label,
-							model: "gen4_aleph",
-							attempt: rechargeAttempt,
-							error: runwayErrorText(e),
-						});
-						continue;
-					}
-					break;
-				}
-			}
-
-			const msg =
-				typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
-			lastErr = new Error(
-				`Runway video_to_video failed (${res.status}): ${msg.slice(0, 700)}`,
-			);
-			if (
-				isRunwayRechargeOrLimitError(lastErr) &&
-				rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
-			) {
-				await waitForRunwayRecharge({
-					jobId,
-					label,
-					model: "gen4_aleph",
-					attempt: rechargeAttempt,
-					error: runwayErrorText(lastErr),
-				});
-				continue;
-			}
-			break;
-		} catch (e) {
-			lastErr = e;
-			if (
-				isRunwayRechargeOrLimitError(e) &&
-				rechargeAttempt < RUNWAY_RECHARGE_RETRY_ATTEMPTS
-			) {
-				await waitForRunwayRecharge({
-					jobId,
-					label,
-					model: "gen4_aleph",
-					attempt: rechargeAttempt,
-					error: runwayErrorText(e),
-				});
-				continue;
-			}
-			break;
-		}
-	}
-	throw lastErr || new Error("Runway video_to_video failed");
 }
 
 function buildBaselinePrompt(
@@ -12785,11 +13211,11 @@ const TITLE_PROMISE_RULES = Object.freeze([
 		key: "availability",
 		label: "availability or where to get it",
 		request:
-			/\b(availability|available|where to buy|how to buy|stores?|shop|online|limited|one per|per person|drop details|release details)\b/i,
+			/\b(availability|available|where to buy|how to buy|where to shop|stores?|shop\s+(?:now|online|for)|limited|one per|per person|drop details|release details|waitlist|queue|sell\s*out)\b/i,
 		evidence:
-			/\b(?:selected|select|worldwide|stores?|online|available|availability|limited|one\s+(?:watch|piece|item)?\s*per\s+person|per\s+store|per\s+day|waitlist|queue|sell\s*out|shortage)\b/i,
+			/\b(?:selected|select|worldwide|stores?|available(?:\s+online)?|availability|limited|one\s+(?:watch|piece|item)?\s*per\s+person|per\s+store|per\s+day|waitlist|queue|sell\s*out|shortage)\b/i,
 		coverage:
-			/\b(?:selected|select|worldwide|stores?|online|available|availability|limited|one\s+(?:watch|piece|item)?\s*per\s+person|per\s+store|per\s+day|waitlist|queue|sell\s*out|not confirmed|not disclosed)\b/i,
+			/\b(?:selected|select|worldwide|stores?|available(?:\s+online)?|availability|limited|one\s+(?:watch|piece|item)?\s*per\s+person|per\s+store|per\s+day|waitlist|queue|sell\s*out|not confirmed|not disclosed)\b/i,
 	},
 	{
 		key: "expect",
@@ -13099,6 +13525,440 @@ function repairTitlePromiseCoverage({
 	return { script: repairedScript, repairs, coverage };
 }
 
+function directAnswerContextItems(topic = {}, topicContext = null) {
+	const items = [];
+	if (Array.isArray(topicContext?.context)) items.push(...topicContext.context);
+	const story = topic?.trendStory || {};
+	if (Array.isArray(story.articles)) {
+		for (const article of story.articles) {
+			items.push({
+				title: article?.title || "",
+				snippet: article?.snippet || article?.description || "",
+				link: article?.url || article?.link || "",
+				source: "article",
+			});
+		}
+	}
+	return uniqueContextItems(items, { limit: 16 });
+}
+
+function contextItemDirectAnswerText(item = {}) {
+	if (typeof item === "string") return normalizeWhitespace(item);
+	const title = normalizeWhitespace(item?.title || "");
+	const snippet = normalizeWhitespace(item?.snippet || item?.description || "");
+	const host = getUrlHost(item?.link || item?.url || "");
+	return normalizeWhitespace([title, snippet, host].filter(Boolean).join(" | "));
+}
+
+function normalizeDirectAnswerCandidate(candidate = "", subject = "") {
+	const clean = normalizeWhitespace(candidate)
+		.replace(/^the\s+/i, "")
+		.replace(
+			/\s+(?:Reacts|Talks|Speaks|Opens|Explains|Reflects|Responds|Breaks)\b.*$/g,
+			"",
+		)
+		.replace(/[,:;.!?]+$/g, "")
+		.trim();
+	if (!clean) return "";
+	const words = clean.split(/\s+/).filter(Boolean);
+	if (!words.length || words.length > 5) return "";
+	if (
+		/^(who|what|when|where|why|how|which|survivor|winner|finale|season)$/i.test(
+			clean,
+		)
+	) {
+		return "";
+	}
+	if (
+		/^(who|what|when|where|why|how|which)\b/i.test(clean) ||
+		/\b(won|wins|winner|winners|revealed|results?|finale|season|episode|spoiler|spoiled|source|sources?|reported|reports?|coverage|article|story|recap|exclusive)\b/i.test(
+			clean,
+		)
+	) {
+		return "";
+	}
+	if (
+		/\b(survivor|winner|winners|season|episode|finale|recap|live|updates?|results?|spoilers?|finalists?|jury|vote|votes|cbs|news|tvline|insider|deadline|people|magazine|hollywood|reporter|usa\s+today|variety|yahoo|thewrap|seacoastonline)\b/i.test(
+			clean,
+		)
+	) {
+		return "";
+	}
+	const subjectTokens = new Set(topicTokensFromTitle(subject || ""));
+	const candidateTokens = topicTokensFromTitle(clean);
+	if (
+		candidateTokens.length &&
+		candidateTokens.every((token) => subjectTokens.has(token))
+	) {
+		return "";
+	}
+	if (!/[A-Z]/.test(clean[0] || "")) return "";
+	return words
+		.map((word) =>
+			/[A-Z]/.test(word[0] || "")
+				? word
+				: word.charAt(0).toUpperCase() + word.slice(1),
+		)
+		.join(" ");
+}
+
+function expandDirectAnswerName(candidate = "", text = "") {
+	const clean = normalizeWhitespace(candidate);
+	if (!clean || countWords(clean) >= 2) return clean;
+	const first = escapeRegExp(clean);
+	const match = String(text || "").match(
+		new RegExp(`\\b${first}\\s+([A-Z][A-Za-z'.-]{2,})\\b`),
+	);
+	if (!match) return clean;
+	const next = match[1];
+	if (
+		/\b(wins?|won|winner|season|episode|finale|recap|news|live)\b/i.test(
+			next,
+		)
+	) {
+		return clean;
+	}
+	return `${clean} ${next}`.trim();
+}
+
+function directAnswerCandidatePatterns(type = "") {
+	const name = "([A-Z][A-Za-z'.-]{1,}(?:\\s+[A-Z][A-Za-z'.-]{1,}){0,4})";
+	if (type === "winner") {
+		return [
+			{ rx: new RegExp(`\\b${name}\\s+(?:wins|won)\\b`, "g"), weight: 5 },
+			{
+				rx: new RegExp(
+					`\\b${name}\\s+(?:is|was)\\s+(?:the\\s+)?(?:winner|champion)\\b`,
+					"g",
+				),
+				weight: 5,
+			},
+			{
+				rx: new RegExp(
+					`\\b${name}\\s+(?:was\\s+)?named\\s+(?:as\\s+)?(?:the\\s+)?(?:winner|champion)\\b`,
+					"g",
+				),
+				weight: 5,
+			},
+			{
+				rx: new RegExp(
+					`\\b${name}\\s+(?:has\\s+been\\s+|was\\s+)?crowned\\b`,
+					"g",
+				),
+				weight: 5,
+			},
+			{
+				rx: new RegExp(
+					`\\b(?:winner|champion)\\s+(?:is|was|revealed|named|announced)?\\s*[:\\-]?\\s*${name}\\b`,
+					"gi",
+				),
+				weight: 4,
+			},
+			{
+				rx: new RegExp(
+					`\\b(?:winner|champ|champion)\\s+${name}\\b`,
+					"gi",
+				),
+				weight: 6,
+			},
+		];
+	}
+	if (type === "elimination") {
+		return [
+			{
+				rx: new RegExp(
+					`\\b${name}\\s+(?:was\\s+)?(?:eliminated|voted\\s+off|sent\\s+home)\\b`,
+					"g",
+				),
+				weight: 5,
+			},
+			{
+				rx: new RegExp(
+					`\\b(?:eliminated|voted\\s+off|sent\\s+home)\\s*[:\\-]?\\s*${name}\\b`,
+					"gi",
+				),
+				weight: 4,
+			},
+		];
+	}
+	if (type === "identity") {
+		return [
+			{
+				rx: new RegExp(`\\b(?:is|was)\\s+${name}\\b`, "g"),
+				weight: 2,
+			},
+		];
+	}
+	return [];
+}
+
+function extractDirectAnswerFromContext(topic = {}, topicContext = null) {
+	const direct = getTopicDirectAnswerQuery(topic);
+	if (!direct) return null;
+	if (direct.answer) {
+		return {
+			answer: direct.answer,
+			sourceHost: direct.sourceHost || "",
+			sourceUrl: direct.sourceUrl || "",
+			sourceTitle: direct.sourceTitle || "",
+			confidence: direct.confidence || "stored",
+		};
+	}
+	const patterns = directAnswerCandidatePatterns(direct.type);
+	if (!patterns.length) return null;
+	const subject = direct.subject || topic.displayTopic || topic.topic || "";
+	const items = directAnswerContextItems(topic, topicContext);
+	const candidates = new Map();
+	for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+		const item = items[itemIndex];
+		const text = contextItemDirectAnswerText(item);
+		if (!text) continue;
+		for (const { rx, weight } of patterns) {
+			rx.lastIndex = 0;
+			let match;
+			while ((match = rx.exec(text))) {
+				const rawCandidate = expandDirectAnswerName(match[1] || "", text);
+				const candidate = normalizeDirectAnswerCandidate(rawCandidate, subject);
+				if (!candidate) continue;
+				const key = candidate.toLowerCase();
+				const sourceUrl =
+					typeof item === "string" ? "" : String(item?.link || item?.url || "");
+				const sourceHost = sourceUrl ? getUrlHost(sourceUrl) : "";
+				const sourceTitle =
+					typeof item === "string" ? "" : normalizeWhitespace(item?.title || "");
+				const existing = candidates.get(key) || {
+					answer: candidate,
+					score: 0,
+					sourceHost,
+					sourceUrl,
+					sourceTitle,
+				};
+				existing.score +=
+					weight +
+					(itemIndex === 0 ? 1.2 : 0) +
+					(sourceHost ? 0.8 : 0) +
+					(countWords(candidate) >= 2 ? 0.4 : 0);
+				if (!existing.sourceUrl && sourceUrl) existing.sourceUrl = sourceUrl;
+				if (!existing.sourceHost && sourceHost) existing.sourceHost = sourceHost;
+				if (!existing.sourceTitle && sourceTitle)
+					existing.sourceTitle = sourceTitle;
+				candidates.set(key, existing);
+			}
+		}
+	}
+	const sorted = Array.from(candidates.values()).sort(
+		(a, b) => b.score - a.score || countWords(b.answer) - countWords(a.answer),
+	);
+	const top = sorted[0];
+	if (!top) return null;
+	return {
+		answer: top.answer,
+		sourceHost: top.sourceHost || "",
+		sourceUrl: top.sourceUrl || "",
+		sourceTitle: top.sourceTitle || "",
+		confidence: top.score >= 6 ? "high" : "medium",
+	};
+}
+
+function enrichDirectAnswerTopicsFromContext(topics = [], topicContexts = [], jobId) {
+	for (let i = 0; i < (Array.isArray(topics) ? topics.length : 0); i++) {
+		const topic = topics[i];
+		const direct = getTopicDirectAnswerQuery(topic);
+		if (!direct) continue;
+		const info = extractDirectAnswerFromContext(topic, topicContexts?.[i]);
+		if (info?.answer) {
+			topic.directAnswerQuery = {
+				...direct,
+				answer: info.answer,
+				sourceHost: info.sourceHost || "",
+				sourceUrl: info.sourceUrl || "",
+				sourceTitle: info.sourceTitle || "",
+				confidence: info.confidence || "medium",
+			};
+			if (topic.promptBrief) {
+				topic.promptBrief = {
+					...topic.promptBrief,
+					directAnswerQuery: topic.directAnswerQuery,
+				};
+			}
+		}
+		if (jobId) {
+			logJob(jobId, "direct-answer research", {
+				topic: topic.displayTopic || topic.topic,
+				type: direct.type,
+				subject: direct.subject || "",
+				answer: topic.directAnswerQuery?.answer || "",
+				sourceHost: topic.directAnswerQuery?.sourceHost || "",
+				sourceLinks: countContextSourceLinks(topicContexts?.[i]?.context || []),
+			});
+		}
+	}
+	return topics;
+}
+
+function directAnswerOpeningSentence(topic = {}, topicContext = null) {
+	const direct = getTopicDirectAnswerQuery(topic);
+	if (!direct) return "";
+	const info = extractDirectAnswerFromContext(topic, topicContext);
+	const subject = cleanTopicLabel(
+		direct.subject || topic.displayTopic || topic.topic || "the question",
+	);
+	if (info?.answer) {
+		let claim = "";
+		if (direct.type === "winner") {
+			claim = `${info.answer} won ${subject}.`;
+		} else if (direct.type === "elimination") {
+			claim = `${info.answer} was the reported elimination from ${subject}.`;
+		} else if (direct.type === "identity") {
+			claim = `The answer is ${info.answer}.`;
+		} else {
+			claim = `${info.answer} is the clearest answer in the available sources.`;
+		}
+		if (info.sourceHost) {
+			return sanitizeSegmentText(`According to ${info.sourceHost}, ${claim}`);
+		}
+		return sanitizeSegmentText(claim);
+	}
+	if (!topicContext) return "";
+	const sourceLinks = countContextSourceLinks(
+		directAnswerContextItems(topic, topicContext),
+	);
+	if (sourceLinks > 0 && ["winner", "elimination", "identity"].includes(direct.type)) {
+		const noun =
+			direct.type === "winner"
+				? "the winner"
+				: direct.type === "elimination"
+					? "who was eliminated"
+					: "the exact answer";
+		return sanitizeSegmentText(
+			`The available source snippets do not clearly name ${noun}, so I would not call an exact answer confirmed yet.`,
+		);
+	}
+	if (sourceLinks > 0) return "";
+	return sanitizeSegmentText(
+		`I could not verify the answer from the available sources yet, so the honest answer is that ${subject} is not confirmed here.`,
+	);
+}
+
+function segmentAlreadyHasDirectAnswer(text = "", sentence = "") {
+	const hay = normalizeQaText(text);
+	const answerText = normalizeQaText(sentence);
+	if (!hay || !answerText) return false;
+	const sourceStripped = answerText.replace(/^according to [a-z0-9.-]+\s+/i, "");
+	if (sourceStripped && hay.includes(sourceStripped)) return true;
+	const answerTokens = tokenizeQaText(sourceStripped)
+		.filter((token) => token.length > 2)
+		.filter(
+			(token) =>
+				![
+					"according",
+					"won",
+					"winner",
+					"reported",
+					"answer",
+					"available",
+					"sources",
+					"confirmed",
+					"honest",
+					"question",
+				].includes(token),
+		);
+	if (!answerTokens.length) return false;
+	const haySet = new Set(tokenizeQaText(hay));
+	const hits = answerTokens.filter((token) => haySet.has(token)).length;
+	return hits >= Math.min(answerTokens.length, 2);
+}
+
+function repairDirectAnswerOpening({
+	script = {},
+	topics = [],
+	topicContexts = [],
+	wordCaps = [],
+} = {}) {
+	if (script?.directAnswerHandledByIntro) return { script, changed: false };
+	if (!script || !Array.isArray(script.segments) || !script.segments.length) {
+		return { script, changed: false };
+	}
+	const segments = script.segments.map((s) => ({ ...s }));
+	let changed = false;
+	for (let topicIndex = 0; topicIndex < topics.length; topicIndex++) {
+		const topic = topics[topicIndex] || {};
+		if (!isDirectAnswerTopic(topic)) continue;
+		const targetIdx = segments.findIndex(
+			(s) => Number(s.topicIndex || 0) === topicIndex,
+		);
+		if (targetIdx < 0) continue;
+		const sentence = directAnswerOpeningSentence(
+			topic,
+			topicContexts?.[topicIndex],
+		);
+		if (!sentence) continue;
+		const current = sanitizeSegmentText(segments[targetIdx].text || "");
+		if (segmentAlreadyHasDirectAnswer(current, sentence)) continue;
+		const uncertaintyAnswer = /\bdo not clearly name\b|\bnot confirmed\b/i.test(
+			sentence,
+		);
+		const cap = Math.max(
+			Number(wordCaps[segments[targetIdx].index] || wordCaps[targetIdx] || 0) ||
+				0,
+			uncertaintyAnswer
+				? countWords(sentence) + 12
+				: countWords(current) + countWords(sentence) + 4,
+			countWords(sentence) + 16,
+		);
+		segments[targetIdx].text = sanitizeSegmentText(
+			trimSegmentToCap(
+				uncertaintyAnswer
+					? `${sentence} The useful part is what the confirmed coverage does and does not show.`
+					: `${sentence} ${current}`.trim(),
+				cap + 4,
+			),
+		);
+		segments[targetIdx].expression = normalizeExpression(
+			segments[targetIdx].expression || "neutral",
+			"neutral",
+		);
+		changed = true;
+	}
+	return changed ? { script: { ...script, segments }, changed } : { script, changed };
+}
+
+function introCarriesDirectAnswer({ introText = "", topics = [] } = {}) {
+	const intro = sanitizeIntroOutroLine(introText);
+	if (!intro) return false;
+	for (const topic of Array.isArray(topics) ? topics : []) {
+		if (!isDirectAnswerTopic(topic)) continue;
+		const sentence = directAnswerOpeningSentence(topic);
+		if (sentence && segmentAlreadyHasDirectAnswer(intro, sentence)) return true;
+	}
+	return false;
+}
+
+function buildDirectAnswerPromptBlock(topics = [], topicContexts = []) {
+	const directTopics = (Array.isArray(topics) ? topics : [])
+		.map((topic, idx) => ({ topic, idx, direct: getTopicDirectAnswerQuery(topic) }))
+		.filter((item) => item.direct);
+	if (!directTopics.length) return "Direct-answer prompt mode:\n- None.";
+	const lines = directTopics.map(({ topic, idx, direct }) => {
+		const contextItems = directAnswerContextItems(topic, topicContexts?.[idx]);
+		const sources = uniqueStrings(
+			contextItems
+				.map((item) =>
+					typeof item === "string" ? "" : getUrlHost(item?.link || item?.url || ""),
+				)
+				.filter(Boolean),
+			{ limit: 4 },
+		);
+		const knownAnswer = direct.answer
+			? ` Confirmed answer candidate from source context: ${direct.answer}${
+					direct.sourceHost ? ` (${direct.sourceHost})` : ""
+				}.`
+			: " No exact answer candidate was extracted from the source snippets yet; do not invent one.";
+		return `- Topic ${idx + 1} (${topic.displayTopic || topic.topic}): user asked a direct ${direct.answerLabel || "factual"} question: "${direct.question || topic.topic}". Answer it in the first spoken content sentence for this topic using source context.${knownAnswer} Do not tease, stall, or delay the answer for retention. For "who won" questions, include the winner's exact name; do not use vague substitutes like "the contestant" or "the player". If the sources here do not clearly confirm the answer, say that plainly instead of guessing. After the answer, make the video worth watching with context, why it matters, audience reaction, and what remains interesting. Sources seen: ${sources.length ? sources.join(", ") : "(none)"}.`;
+	});
+	return `Direct-answer prompt mode (MUST follow):\n${lines.join("\n")}`;
+}
+
 function primaryPromptBrief(topics = []) {
 	const list = Array.isArray(topics) ? topics : [];
 	return (
@@ -13174,6 +14034,183 @@ function primaryPromptOutroText(topics = []) {
 	return "";
 }
 
+function primaryPromptOpeningText(topics = []) {
+	for (const topic of Array.isArray(topics) ? topics : []) {
+		const brief = topic?.promptBrief || parseStructuredPromptBrief(topic?.promptText);
+		const openingLine = sanitizeIntroOutroLine(
+			stripOuterQuotes(brief?.openingLine || ""),
+		);
+		if (openingLine) return openingLine;
+	}
+	return "";
+}
+
+function isPsychologyFailureTopicText(text = "") {
+	const hay = String(text || "");
+	const hasFailureCore =
+		/\b(fail(?:ed|ing|s|ure)?|mistakes?|business failures?|celebrity mistakes?|schadenfreude)\b/i.test(
+			hay,
+		) || /\bwatch(?:ing)?\s+people\s+(?:fail|fall)\b/i.test(hay);
+	if (hasFailureCore) return true;
+	const hasPsychologyFrame = /\b(psycholog|internet culture|drama|relief)\b/i.test(
+		hay,
+	);
+	const hasJudgmentCluster =
+		/\b(judg(?:e|ement|ment|ing)?|cruel(?:ty)?|mock(?:ing)?|humiliat(?:e|ing|ion)|suffering|humility)\b/i.test(
+			hay,
+		);
+	return hasPsychologyFrame && hasJudgmentCluster;
+}
+
+function resolveOpeningPresenterExpression({
+	topics = [],
+	categoryLabel = "",
+	title = "",
+	mood = "neutral",
+} = {}) {
+	const hay = [
+		categoryLabel || "",
+		title || "",
+		...(Array.isArray(topics)
+			? topics.map((topic) =>
+					[
+						topic?.displayTopic,
+						topic?.topic,
+						topic?.promptText,
+						topic?.promptBrief?.tone,
+						...(Array.isArray(topic?.promptBrief?.briefLines)
+							? topic.promptBrief.briefLines
+							: []),
+					]
+						.filter(Boolean)
+						.join(" "),
+				)
+			: []),
+	].join(" ");
+	if (
+		isSensitiveTopicText(hay) ||
+		/\b(politics|health|public\s+safety|tragedy|war|court|legal)\b/i.test(
+			categoryLabel || "",
+		)
+	) {
+		return "neutral";
+	}
+	if (isPsychologyFailureTopicText(hay)) return "thoughtful";
+	if (
+		isPersonalFinanceCostOfLivingTopic({ topics, categoryLabel, text: hay }) ||
+		isSocialConnectionTopic({ topics, categoryLabel, text: hay }) ||
+		isDigitalWellbeingTopic({ topics, categoryLabel, text: hay }) ||
+		/\b(happy|happier|happiness|hopeful|gentle|free|gratitude|kind|calm|better day)\b/i.test(
+			hay,
+		)
+	) {
+		return "warm";
+	}
+	if (mood === "excited") return "warm";
+	if (mood === "serious") return "neutral";
+	return "neutral";
+}
+
+function buildOpeningContinuationFallback({
+	topics = [],
+	categoryLabel = "",
+	title = "",
+	mood = "neutral",
+} = {}) {
+	const hay = [
+		title || "",
+		categoryLabel || "",
+		...(Array.isArray(topics)
+			? topics.map((topic) =>
+					[
+						topic?.displayTopic,
+						topic?.topic,
+						topic?.promptText,
+					]
+						.filter(Boolean)
+						.join(" "),
+				)
+			: []),
+	].join(" ");
+	if (isPsychologyFailureTopicText(hay)) {
+		return "The uncomfortable question is whether watching failure makes us wiser, or just makes judgment feel harmless.";
+	}
+	if (isImpulseShoppingTopic({ topics, categoryLabel, text: hay })) {
+		return "The interesting part is how a bored scroll turns into a purchase before you ever decide to go shopping.";
+	}
+	if (
+		/\b(happy|happier|happiness|money|spending|gratitude|free)\b/i.test(hay)
+	) {
+		return "The useful part is not pretending money does not matter. It is noticing which ordinary moments still give something back.";
+	}
+	if (isSocialConnectionTopic({ topics, categoryLabel, text: hay })) {
+		return "The useful part is that connection usually changes through small repeatable moments, not one perfect social reset.";
+	}
+	if (mood === "serious" || isSensitiveTopicText(hay)) {
+		return "The important part is to separate what is confirmed from what the pattern might mean next.";
+	}
+	return "The interesting part is what the obvious answer hides, and why that changes how the whole topic feels.";
+}
+
+function removeIntroLineFromOpeningSegment({
+	script = {},
+	introText = "",
+	topics = [],
+	wordCaps = [],
+	categoryLabel = "",
+	mood = "neutral",
+} = {}) {
+	if (!script || !Array.isArray(script.segments) || !script.segments.length) {
+		return { script, changed: false };
+	}
+	const introKey = normalizeOpeningForCompare(introText);
+	if (!introKey) return { script, changed: false };
+	const segments = script.segments.map((s) => ({ ...s }));
+	const targetIdx = segments.findIndex((s) => Number(s.topicIndex || 0) === 0);
+	const idx = targetIdx >= 0 ? targetIdx : 0;
+	const current = sanitizeSegmentText(segments[idx]?.text || "");
+	const sentences = splitSentences(current).filter(Boolean);
+	if (!sentences.length) return { script, changed: false };
+	const firstKey = normalizeOpeningForCompare(sentences[0]);
+	const overlap =
+		firstKey && introKey
+			? overlapRatio(tokenizeQaText(firstKey), tokenizeQaText(introKey))
+			: 0;
+	const duplicatesIntro =
+		firstKey === introKey ||
+		firstKey.startsWith(introKey) ||
+		introKey.startsWith(firstKey) ||
+		overlap >= 0.82;
+	if (!duplicatesIntro) return { script, changed: false };
+
+	let nextText = sanitizeSegmentText(sentences.slice(1).join(" "));
+	const nextKey = normalizeOpeningForCompare(nextText);
+	const nextIntroOverlap =
+		nextKey && introKey
+			? overlapRatio(tokenizeQaText(nextKey), tokenizeQaText(introKey))
+			: 0;
+	if (countWords(nextText) < QA_MIN_SEGMENT_WORDS || nextIntroOverlap >= 0.58) {
+		nextText = buildOpeningContinuationFallback({
+			topics,
+			categoryLabel,
+			title: script.title || script.shortTitle || "",
+			mood,
+		});
+	}
+	const cap =
+		Number(wordCaps?.[segments[idx].index] || wordCaps?.[idx] || 0) ||
+		Math.max(countWords(nextText) + 4, QA_MIN_SEGMENT_WORDS + 8);
+	segments[idx].text = sanitizeSegmentText(
+		trimSegmentToCap(nextText, Math.max(cap + 4, QA_MIN_SEGMENT_WORDS + 8)),
+	);
+	return {
+		script: { ...script, segments },
+		changed: true,
+		removed: sentences[0],
+		replacement: segments[idx].text,
+	};
+}
+
 function buildPromptBriefInstructionBlock(topics = []) {
 	const promptTopics = (Array.isArray(topics) ? topics : []).filter((t) =>
 		isUserPromptTopicPick(t),
@@ -13184,7 +14221,20 @@ function buildPromptBriefInstructionBlock(topics = []) {
 		const topic = promptTopics[i] || {};
 		const brief = topic.promptBrief || parseStructuredPromptBrief(topic.promptText);
 		const label = topic.displayTopic || topic.topic || `Topic ${i + 1}`;
+		const direct = getTopicDirectAnswerQuery(topic) || brief?.directAnswerQuery;
 		lines.push(`- Topic ${i + 1}: ${label}`);
+		if (direct?.isDirectAnswer) {
+			lines.push(
+				`  Direct factual question: answer-first mode (${direct.type || "fact"}). Question: "${direct.question || label}".`,
+			);
+			if (direct.answer) {
+				lines.push(
+					`  Sourced answer candidate: "${direct.answer}"${
+						direct.sourceHost ? ` from ${direct.sourceHost}` : ""
+					}.`,
+				);
+			}
+		}
 		if (shouldLockPromptBriefTitle(brief))
 			lines.push(`  Requested title: ${brief.title}`);
 		if (brief?.wantsSeoTitle)
@@ -13194,7 +14244,7 @@ function buildPromptBriefInstructionBlock(topics = []) {
 		if (brief?.thumbnailText)
 			lines.push(`  Thumbnail badge/text must include: ${brief.thumbnailText}`);
 		if (brief?.openingLine)
-			lines.push(`  Requested opening line: "${brief.openingLine}"`);
+			lines.push(`  Requested opening line for the video opening: "${brief.openingLine}"`);
 		if (Array.isArray(brief?.mustIncludeLines) && brief.mustIncludeLines.length) {
 			for (const mustLine of brief.mustIncludeLines.slice(0, 4)) {
 				lines.push(`  Must include this line or a very close spoken version: "${mustLine}"`);
@@ -13350,6 +14400,23 @@ function promptTopicHaystack(topics = [], extra = "") {
 	return normalizeWhitespace(`${topicText} ${extra || ""}`).toLowerCase();
 }
 
+function isImpulseShoppingTopic({
+	topics = [],
+	categoryLabel = "",
+	text = "",
+} = {}) {
+	const hay = promptTopicHaystack(topics, `${categoryLabel || ""} ${text || ""}`);
+	const hasShoppingContext =
+		/\b(tiktok\s+shop|social shopping|shopping app|online shopping|online shoppers?|shop\b|shopping\b|buy(?:ing)?|purchase|checkout|cart\b|creator ads?|reviews?|discounts?|coupons?|deals?|unboxing|packages?|deliveries?)\b/i.test(
+			hay,
+		);
+	const hasImpulsePressure =
+		/\b(impulse|addictive|addiction|bored|boredom|urge|scrolling|endless scroll|save money|spending|dont need|don't need|never needed|one purchase|buy trap)\b/i.test(
+			hay,
+		);
+	return hasShoppingContext && hasImpulsePressure;
+}
+
 function isPersonalFinanceCostOfLivingTopic({
 	topics = [],
 	categoryLabel = "",
@@ -13470,7 +14537,12 @@ function strengthenPromptOpeningRetention({
 	return { ...script, segments };
 }
 
-function applyPromptBriefToScript({ script = {}, topics = [], wordCaps = [] } = {}) {
+function applyPromptBriefToScript({
+	script = {},
+	topics = [],
+	wordCaps = [],
+	injectOpeningLine = true,
+} = {}) {
 	if (!script || !Array.isArray(script.segments)) return script;
 	const brief = primaryPromptBrief(topics);
 	if (!brief) return script;
@@ -13482,7 +14554,7 @@ function applyPromptBriefToScript({ script = {}, topics = [], wordCaps = [] } = 
 		next.title = formatHumanTitle(brief.title, 120) || next.title;
 		next.shortTitle = shortTitleFromText(brief.title).slice(0, 60);
 	}
-	if (brief.openingLine && next.segments.length) {
+	if (injectOpeningLine && brief.openingLine && next.segments.length) {
 		const firstIdx = next.segments.findIndex((s) => Number(s.topicIndex || 0) === 0);
 		const idx = firstIdx >= 0 ? firstIdx : 0;
 		const cap = Math.max(
@@ -14727,6 +15799,7 @@ const MICRO_EMOTE_REGEX = /\b(?:heh|whew)\b/gi;
 
 function cleanupSpeechText(text = "") {
 	let t = String(text || "");
+	t = t.replace(/([.!?])(?=[A-Z])/g, "$1 ");
 	t = t.replace(/\s+([,.;:!?])/g, "$1");
 	t = t.replace(/([,;:!?]){2,}/g, "$1");
 	t = t.replace(/,\s*,/g, ", ");
@@ -14920,8 +15993,32 @@ function limitFillerAndEmotesAcrossSegments(segments = [], opts = {}) {
 			maxEmotes: remainingEmotes,
 		});
 
-		return { ...seg, text: globalPass.text };
+	return { ...seg, text: globalPass.text };
 	});
+}
+
+function stripPromptLabelArtifacts(text = "") {
+	let t = String(text || "");
+	if (!t) return t;
+	t = t.replace(/([.!?])(?=[A-Z])/g, "$1 ");
+	t = t.replace(
+		/\b(?:memorable\s+line|must\s+include(?:\s+(?:this\s+)?(?:line|sentence))?|include\s+(?:this\s+)?(?:line|sentence))\s*[:?.-]?\s*/gi,
+		"",
+	);
+	t = cleanupSpeechText(t);
+	const sentences = splitSentences(t).filter(Boolean);
+	if (sentences.length > 1) {
+		const seen = new Set();
+		const kept = [];
+		for (const sentence of sentences) {
+			const key = normalizeQaText(sentence);
+			if (key && seen.has(key)) continue;
+			if (key) seen.add(key);
+			kept.push(sentence);
+		}
+		t = cleanupSpeechText(kept.join(" "));
+	}
+	return t;
 }
 
 function sanitizeIntroOutroLine(text = "") {
@@ -14931,7 +16028,7 @@ function sanitizeIntroOutroLine(text = "") {
 		{ fillers: 0, emotes: 0 },
 		{ maxFillers: 0, maxEmotes: 0 },
 	);
-	return cleaned;
+	return stripPromptLabelArtifacts(cleaned);
 }
 
 function stripAllFillers(text = "") {
@@ -14941,7 +16038,7 @@ function stripAllFillers(text = "") {
 		{ fillers: 0, emotes: 0 },
 		{ maxFillers: 0, maxEmotes: 0 },
 	);
-	return cleaned;
+	return stripPromptLabelArtifacts(cleaned);
 }
 
 function sanitizeSegmentText(text = "") {
@@ -15072,13 +16169,20 @@ const SHORTS_ENDING_BLOCKLIST = [
 ];
 
 const SHORTS_FORWARD_LOOKING_HINTS = [
+	/\bthat question\b/i,
+	/\bthe question\b/i,
 	/\bwhat happens next\b/i,
+	/\bwhat comes next\b/i,
 	/\bwatch for\b/i,
 	/\bnext update\b/i,
 	/\bnext piece\b/i,
+	/\bnext decision\b/i,
 	/\bstill unresolved\b/i,
 	/\bmissing detail\b/i,
 	/\bopen question\b/i,
+	/\bthe real test\b/i,
+	/\bwhether you\b/i,
+	/\bleave smarter\b/i,
 ];
 
 function textHasAnyRegex(text = "", list = []) {
@@ -15827,20 +16931,20 @@ function inferIntroAgendaProfile({ topics = [], shortTitle = "" } = {}) {
 function pickIntroLead({ sensitive = false, topicCount = 1, jobId }) {
 	const seed = jobId ? seedFromJobId(jobId) : 0;
 	const casualSingle = [
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're getting into`,
-		`Hi guys, it's ${INTRO_HOST_NAME}, and we have a really interesting one today around`,
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're breaking down`,
+		"Start with this:",
+		"Here is the part that matters:",
+		"The interesting question is this:",
 	];
 	const calmSingle = [
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're taking a closer look at`,
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're unpacking`,
+		"Look closely at this:",
+		"The quiet part is this:",
 	];
 	const casualMulti = [
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're checking on`,
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we have a strong lineup around`,
+		"Start with these patterns:",
+		"Here is what connects the story:",
 	];
 	const calmMulti = [
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're taking a closer look at`,
+		"Look closely at these patterns:",
 	];
 	const pool =
 		topicCount <= 1
@@ -15852,7 +16956,7 @@ function pickIntroLead({ sensitive = false, topicCount = 1, jobId }) {
 				: casualMulti;
 	return (
 		pool[seed % pool.length] ||
-		`Hi guys, it's ${INTRO_HOST_NAME}, and today we're getting into`
+		"Start with this:"
 	);
 }
 
@@ -15865,17 +16969,95 @@ function buildIntroCardTitle({ title = "", shortTitle = "" } = {}) {
 	return formatHumanTitle(shortTitle || title || "Quick Update", 64);
 }
 
+function resolveIntroGreetingLabel({ topics = [], shortTitle = "" } = {}) {
+	const topicLabels = buildIntroTopicLabels(topics, 7);
+	const rawLabel =
+		cleanTopicLabel(topicLabels[0] || "") ||
+		cleanTopicLabel(shortTitle || "") ||
+		"today's topic";
+	const deathLike = /\b(dies?|dead|death|passed\s+away|sudden\s+passing|killed|fatal|illness)\b/i.test(
+		`${rawLabel} ${shortTitle || ""}`,
+	);
+	const personLead =
+		deathLike && rawLabel.includes(",")
+			? cleanTopicLabel(rawLabel.split(",")[0])
+			: "";
+	const label = personLead || rawLabel;
+	return formatHumanTitle(shortTopicLabel(label, 8), 90) || "today's topic";
+}
+
+function addNaturalIntroGreeting({
+	line = "",
+	topics = [],
+	shortTitle = "",
+	mood = "neutral",
+} = {}) {
+	let text = sanitizeIntroOutroLine(line) || String(line || "").trim();
+	if (!text) return "";
+	if (/^\s*(hi|hey|hello)\b/i.test(text)) return text;
+	const greetingLabel = resolveIntroGreetingLabel({ topics, shortTitle });
+	const hay = `${greetingLabel} ${shortTitle || ""} ${mood || ""} ${
+		(Array.isArray(topics) ? topics : [])
+			.map((topic) =>
+				[
+					topic?.displayTopic,
+					topic?.topic,
+					topic?.promptText,
+					topic?.promptBrief?.tone,
+				]
+					.filter(Boolean)
+					.join(" "),
+			)
+			.join(" ")
+	}`.trim();
+	const serious = isSensitiveTopicText(hay);
+	const greeting = serious ? "Hi everyone" : "Hi guys";
+	return sanitizeIntroOutroLine(
+		`${greeting}, today we are talking about ${greetingLabel}. ${text}`,
+	);
+}
+
 function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 	void jobId;
+	const requestedOpening = primaryPromptOpeningText(topics);
+	if (requestedOpening)
+		return addNaturalIntroGreeting({
+			line: requestedOpening,
+			topics,
+			shortTitle,
+			mood,
+		});
+	const directTopic = (Array.isArray(topics) ? topics : []).find((topic) =>
+		isDirectAnswerTopic(topic),
+	);
+	if (directTopic) {
+		const answerLead = directAnswerOpeningSentence(directTopic);
+		if (answerLead)
+			return addNaturalIntroGreeting({
+				line: answerLead,
+				topics,
+				shortTitle,
+				mood,
+			});
+		return addNaturalIntroGreeting({
+			line: "Here is the answer first, then the part that makes it worth understanding.",
+			topics,
+			shortTitle,
+			mood,
+		});
+	}
 	if (
 		isDigitalWellbeingTopic({
 			topics,
 			text: `${shortTitle || ""} ${mood || ""}`,
 		})
 	) {
-		return sanitizeIntroOutroLine(
-			`Hi guys, it's ${INTRO_HOST_NAME}. If your phone feels like a break but leaves you more drained, let's unpack where the peace disappears and what helps bring it back.`,
-		);
+		return addNaturalIntroGreeting({
+			line: "Phone peace sounds simple, until the break starts draining you. The real question is where your attention is leaking.",
+			topics,
+			shortTitle,
+			mood,
+		});
 	}
 	if (
 		isSocialConnectionTopic({
@@ -15883,9 +17065,12 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 			text: `${shortTitle || ""} ${mood || ""}`,
 		})
 	) {
-		return sanitizeIntroOutroLine(
-			`Hi guys, it's ${INTRO_HOST_NAME}. More contact, less closeness. Let's unpack why friendship feels harder now, and what actually helps.`,
-		);
+		return addNaturalIntroGreeting({
+			line: "Friendship feels louder than ever, but somehow less close. That gap is the part worth paying attention to.",
+			topics,
+			shortTitle,
+			mood,
+		});
 	}
 	if (
 		isPersonalFinanceCostOfLivingTopic({
@@ -15893,9 +17078,12 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 			text: `${shortTitle || ""} ${mood || ""}`,
 		})
 	) {
-		return sanitizeIntroOutroLine(
-			`Hi guys, it's ${INTRO_HOST_NAME}. If payday hits and relief disappears, this is the hidden math behind that squeeze, and the first move that helps.`,
-		);
+		return addNaturalIntroGreeting({
+			line: "Payday should feel like relief, but sometimes it disappears immediately. The hidden math behind that squeeze changes the whole story.",
+			topics,
+			shortTitle,
+			mood,
+		});
 	}
 	const fallbackLabel = shortTopicLabel(shortTitle || "today's topic", 6);
 	const topicLabels = buildIntroTopicLabels(topics, 6);
@@ -15907,18 +17095,49 @@ function buildIntroLine({ topics = [], shortTitle, mood = "neutral", jobId }) {
 		`${shortTitle || ""} ${safeLabels.join(" ")} ${mood || ""}`,
 	);
 	const profile = inferIntroAgendaProfile({ topics, shortTitle });
-	const agenda = formatAgendaList((profile.beats || []).slice(0, 3));
-	const opening = `Hi guys, it's ${INTRO_HOST_NAME}.`;
-	const topicPhrase =
-		safeLabels.length <= 1
-			? `${sensitive ? "A focused update" : "Quick breakdown"} on ${
-					safeLabels[0] || topicList
-				}`
-			: `${sensitive ? "A focused rundown" : "Quick rundown"} on ${topicList}`;
-	const line = `${opening} ${topicPhrase}: ${
-		agenda || "what changed and what comes next"
-	}.`;
-	return sanitizeIntroOutroLine(line);
+	const agenda = formatAgendaList((profile.beats || []).slice(0, 2));
+	const primaryLabel = safeLabels[0] || topicList || fallbackLabel;
+	const hay = `${primaryLabel} ${topicList}`.toLowerCase();
+	if (/\b(fail|failure|mistake|secretly watch)\b/i.test(hay)) {
+		return addNaturalIntroGreeting({
+			line: "Failure videos get attention for a reason most of us would rather not admit. Sometimes we watch to learn; sometimes we watch to feel safe.",
+			topics,
+			shortTitle,
+			mood,
+		});
+	}
+	if (/\b(happy|happier|happiness|money|spending)\b/i.test(hay)) {
+		return addNaturalIntroGreeting({
+			line: "Happiness gets sold like something to buy. But some of the most useful parts of a better day still cost nothing.",
+			topics,
+			shortTitle,
+			mood,
+		});
+	}
+	if (/\b(lonely|loneliness|friendship|connection)\b/i.test(hay)) {
+		return addNaturalIntroGreeting({
+			line: "Connection looks easier than ever, but feeling close is a different problem. The quiet gap is what matters.",
+			topics,
+			shortTitle,
+			mood,
+		});
+	}
+	let teaser = sensitive
+		? "the facts matter, but the pattern behind them matters too"
+		: "the obvious answer is only the first layer";
+	if (/\b(fail|failure|mistake|secretly watch)\b/i.test(hay)) {
+		teaser =
+			"failure videos pull us in for reasons most people do not want to admit";
+	} else if (/\b(happy|happier|happiness|money|spending)\b/i.test(hay)) {
+		teaser =
+			"happiness gets sold like a product, but the useful part starts before you buy anything";
+	} else if (/\b(lonely|loneliness|friendship|connection)\b/i.test(hay)) {
+		teaser =
+			"connection looks easier than ever, but feeling close is a different problem";
+	}
+	const payoff = agenda ? `Watch for ${agenda}.` : "The pattern changes how it looks.";
+	const line = `${primaryLabel}: ${teaser}. ${payoff}`;
+	return addNaturalIntroGreeting({ line, topics, shortTitle, mood });
 }
 
 function isSportsLikeTopicLabel(text = "") {
@@ -16796,7 +18015,7 @@ const SCRIPT_BETTING_PROMO_PATTERNS = [
 const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
 	/\bvs\.?\b/i,
 	/\b\d{1,3}\s*[\u2013-]\s*\d{1,3}\b/,
-	/^\s*[A-Z][A-Za-z'â€™.-]+(?:\s+[A-Z][A-Za-z'â€™.-]+){1,7}\s*:/,
+	/^\s*[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+){1,7}\s*:/,
 	/\b(?:minute|part|section|beat)\s*\d{1,2}\s*:?\s*(?:[A-Z][A-Za-z&-]*\s*){1,5}:\s*/i,
 	/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s+(?:That|This|The|It)\b/i,
 	/^\s*(?:Mr|Mrs|Ms|Dr)\.?\s*$/i,
@@ -16805,8 +18024,12 @@ const SCRIPT_SPEECH_AWKWARD_PATTERNS = [
 ];
 
 const SCRIPT_STOCK_PHRASE_PATTERNS = [
+	/^\s*quick\s+update[.!]?\s*/i,
+	/^\s*memorable\s+line\s*\??\s*/i,
+	/^\s*must\s+include\s*(?:this\s+)?(?:line|sentence)?\s*:?\s*/i,
 	/\bthat\s+is\s+the\s+turn\b/i,
 	/\bthat'?s\s+the\s+takeaway\b/i,
+	/\bthat\s+is\s+the\s+part\s+worth\s+watching\s+next\b/i,
 	/\bnext\s+detail\s+changes\s+how\b/i,
 	/\bthe\s+next\s+detail\s+changes\s+how\b/i,
 	/\bthe\s+confirmed\s+picture\s+is\s+still\s+narrow\b/i,
@@ -17618,6 +18841,13 @@ async function generateScript({
 		topicContexts,
 	});
 	const promptBriefGuide = buildPromptBriefInstructionBlock(safeTopics);
+	const directAnswerGuide = buildDirectAnswerPromptBlock(safeTopics, topicContexts);
+	const hasDirectAnswerTopic = safeTopics.some((topic) =>
+		isDirectAnswerTopic(topic),
+	);
+	const answerLeadRule = hasDirectAnswerTopic
+		? "For direct-answer prompts, answer the user's question in the first spoken content sentence for that topic; do not delay the answer, then build retention with context and stakes."
+		: "Lead with the tension or contrast, then add context; delay the clear answer by at least one sentence.";
 	const priorVideoGuide = buildPriorVideoScriptGuide(priorVideoPlan);
 
 	const prompt = `
@@ -17641,7 +18871,7 @@ ${topListGuide}
 
 ${deepDiveGuide}
 
-Target narration duration (NOT counting intro/outro): ~${narrationTargetSec.toFixed(
+Quality-led narration budget (NOT counting intro/outro): ~${narrationTargetSec.toFixed(
 		1,
 	)}s
 Segments: EXACTLY ${segmentCount}
@@ -17668,6 +18898,8 @@ Validated visual-first beat plan:
 ${visualBeatPlanLines}
 
 ${promptBriefGuide}
+
+${directAnswerGuide}
 
 ${priorVideoGuide}
 
@@ -17699,7 +18931,7 @@ Style rules (IMPORTANT):
 - Keep punctuation light and flowing; prefer smooth, natural sentences.
 - Avoid exclamation points; use calm, steady punctuation.
 - Structure each topic as a mini-arc: HOOK -> TENSION -> CONTEXT -> PAYOFF -> OPEN LOOP.
-- Lead with the tension or contrast, then add context; delay the clear answer by at least one sentence.
+- ${answerLeadRule}
 - If the story is controversial, explicitly surface what people are arguing about, what the evidence supports, and where the uncertainty still is.
 - Build short curiosity gaps that carry into the next segment; pay them off within 1-2 segments.
 - Make at least one segment per topic clip-ready for Shorts: a standalone line that ends with an open loop, not a full resolution.
@@ -17711,12 +18943,19 @@ Style rules (IMPORTANT):
 - Stay on one story. Do not jump into a different life-advice topic, generic friendship advice, unrelated politics, unrelated culture, or a second topic unless the user explicitly requested multiple topics.
 - Use specific nouns (people, places, titles) over vague phrases like "big news" or "fans are excited".
 - Keep the opening controlled, but make segment 0 feel like a real hook instead of a bland recap.
-- If the frontend prompt includes an Opening line, use that exact line as the first spoken sentence of segment 0 unless it would be unsafe or factually false.
+- If the frontend prompt includes an Opening line, treat it as the first spoken line of the overall opening unit unless it would be unsafe or factually false. Do not repeat it later; segment 0 should continue the thought.
 - If the frontend prompt includes a Title, use it as the script title unless source verification clearly requires a more precise version.
+- If the frontend prompt labels a sentence as "memorable line", "must include", or similar, include the sentence naturally. Do not say the label out loud.
 - Prioritize genuinely interesting facts (history, timeline, behind-the-scenes, credible rumors, estimates) without overstating.
 - If you mention a rumor or estimate from listed source context, label it clearly as unconfirmed and attribute it. Without source links, do not introduce rumors or estimates.
 - Use source attribution only for topics marked with source links in the Source policy. Do not invent named outlets, journals, studies, researchers, or "reporting" for topics with no source links.
-- Target duration is secondary to quality and pace; stay reasonably close, but do not pad, slow down, or soften the script just to fill time.
+- Treat the frontend duration as a user preference signal, not a leash. The actual narration budget was chosen for retention and quality; never pad, stretch, slow down, or soften the script just to hit a number.
+- If the topic has unusually strong hooks, controversy, history, practical stakes, or visual evidence, earn the extra time with sharper reveals. If the topic has thin material, stay short, punchy, and complete.
+- YouTube retention is the priority: every segment must give the viewer a reason to keep watching, through curiosity, useful payoff, fresh context, fair tension, or a memorable line.
+- Director rule: the first 8-12 seconds should use one brief natural greeting plus the topic, then immediately become a clean teaser. No host-name introduction, no slow welcome, no filler.
+- Emotion should live in the words and pacing, not in stage directions. For happy topics, sound warmly human; for serious topics, sound steady and respectful; never overperform either direction.
+- Avoid artificial dramatic pause writing in segments 0-2: no ellipses, no repeated dashes, no isolated one-word fragments, and no line that depends on a long silence to work.
+- ElevenLabs delivery should be smooth on the first pass: use natural punctuation, short complete sentences, and only commas where a real presenter would take a tiny breath.
 - Avoid repeating the topic question or using vague filler phrasing; be specific and helpful.
 - Avoid repeating the headline or the same fact across segments; each segment must add a new detail or angle.
 - No redundancy: do not restate the same fact or idea in different words.
@@ -17729,10 +18968,17 @@ Style rules (IMPORTANT):
 - Avoid specific dates, rankings, or stats unless they appear in the provided context above.
 - Do NOT invent season/episode/part/chapter numbers. Only mention numbered installments if they appear in the topic label or provided context; otherwise say "the episode" or "the season" without numbers.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
+- Opening unit discipline: the generated intro plus segments 0-2 must be clean, explicit, curiosity-driven, and entertaining without hesitation sounds, stall words, fake pauses, or annoying verbal padding.
+- Do NOT introduce the presenter or host by name. A single brief greeting like "Hi guys, today we are talking about..." is allowed only in the generated intro, then open with the topic tension immediately. Segment 0 should not repeat the greeting.
+- The opening should feel calm but magnetic: simple eye contact, clean sentences, one smooth emotional color that fits the topic, and no theatrical phrasing.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - Segment 0 must be a strong hook that makes people stay.
-- Segment 0 should open with a tension, disagreement, contradiction, or "what people assume vs what the evidence or pattern suggests" line in the first sentence.
+- ${
+		hasDirectAnswerTopic
+			? 'For direct-answer prompts, segment 0 should continue after the answer with why the result matters, what changed, or what viewers are debating.'
+			: 'Segment 0 should open with a tension, disagreement, contradiction, or "what people assume vs what the evidence or pattern suggests" line in the first sentence.'
+	}
 - Do NOT start segment 0 with "Quick update on..." or restate the intro line; the intro handles that.
 - Segment 0 should read like the very next sentence after the intro, continuing the same thought without reintroducing the topic.
 - Do NOT start segment 0 with transition phrases like "And now", "Now", "Next up", or "Let's talk about".
@@ -17776,16 +19022,20 @@ ${categoryGuide.lines.join("\n")}
 - For Top N countdowns, set countdownRank on every segment to the rank being discussed and countdownLabel to the ranked item name. The first segment for each rank must start with "#rank- Item Name".
 - overlayCues.query must be 2-6 words, describe a real visual to search for (photo or video), include the topic name or a key subject from that segment, no punctuation or hashtags.
 - overlayCues.query must name a concrete visual detail from the segment (person, work, location, event). Avoid generic words like "news", "update", "story".
+- For metaphorical or psychological topics, translate the idea into concrete scenes. Example: "watching people fail" means public mistakes, business problems, online comments, reflection, judgment, relief, and learning; it does NOT mean a person literally falling down unless physical falling is the actual topic.
+- For abstract topics, use searchable visual nouns like "business closed sign", "online comments phone screen", "person watching laptop", "person thinking laptop", "office presentation mistake", "gratitude journal desk", or "public park sunlight".
+- Never put vague helper words like "why", "secretly", "part", "worth", "watch", or "thing" into overlayCues.query unless they are part of a named title. The query should read like something a search engine can actually find.
 - Treat overlayCues.query as the downstream feed-search contract for images and possible B-roll video. It must stay within the topic and name a visible subject, place, action, object, institution, or scene from the segment/source context.
 - Shape the story around the strongest available feed visuals above where possible. The image/video research comes before the script: use the validated visual-first beat plan to choose concrete beats, examples, and overlayCues.query values, but do not say "image title", "search result", "visual beat", or "visual research" in the spoken script.
 - For visual-heavy segments, prefer overlayCues.query values from the validated visual-first beat plan exactly when they fit the segment. If you need a new query, keep it just as concrete and directly tied to the topic.
 - Do not let visuals make the script generic. The writing still needs a strong, coherent editorial arc: clear hook, escalating tension, credible context, useful payoff, and strict topic focus.
 - Never choose or imply an unrelated feed visual just because it is dramatic. If the available visual does not clearly belong to the topic, broaden to a directly adjacent topic visual or use a neutral explanatory visual; do not use unrelated people, unrelated events, or generic scenery.
 - If a beat depends on a chart, graph, official data table, report, debt paperwork, application screen, map, timeline, or infographic, write that segment so one visual can stay on screen long enough to be understood. Explain what the viewer is looking at instead of rotating away too fast.
+- For chart, graph, table, map, timeline, report, data, paperwork, or infographic segments, set overlayCues.startPct near 0.05 and endPct near 0.95 so the feed visual can stay up while the presenter finishes the explanation.
 - Prefer official, public-facing, source-related visual subjects for overlayCues.query, such as official portraits, team photos, press conferences, venues, event stills, or source article subjects. Avoid stock-agency wording.
 - Do NOT include overlayCues.query, image-search hints, visual cue labels, or anchor-image language in the spoken segment text. Those are metadata only.
 - If exact photos are scarce, broaden only to adjacent visible context directly implied by the topic or source context; never use unrelated people, places, brands, or generic scenery.
-- overlayCues.startPct and endPct must be between 0.2 and 0.85, with endPct at least 0.2 greater than startPct.
+- overlayCues.startPct and endPct usually sit between 0.2 and 0.85, with endPct at least 0.2 greater than startPct. For chart/graph/data/report/table/map/timeline/paperwork/infographic explanation segments, use approximately 0.05 to 0.95.
 - overlayCues.position must be "topRight" only.
 - Also return shortsDetails with clip candidates and packaging ideas.
 - shortsDetails.clipCandidates must be 3-6 items with type, segmentIndex, line, openLoop, ctaLine, targetSeconds.
@@ -17942,7 +19192,7 @@ Return JSON ONLY:
 		maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
 		maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
 		maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
-		noFillerSegmentIndices: [0, 1, 2],
+		noFillerSegmentIndices: OPENING_NO_FILLER_SEGMENT_INDICES,
 	});
 	segments = segments.map((s) => ({
 		...s,
@@ -17988,6 +19238,15 @@ Return JSON ONLY:
 	});
 	segments = Array.isArray(priorAlignedScript.segments)
 		? priorAlignedScript.segments
+		: segments;
+	const directAnswerAlignedScript = repairDirectAnswerOpening({
+		script: { title: finalTitle, shortTitle: finalShortTitle, segments },
+		topics: safeTopics,
+		topicContexts,
+		wordCaps,
+	});
+	segments = Array.isArray(directAnswerAlignedScript.script?.segments)
+		? directAnswerAlignedScript.script.segments
 		: segments;
 	const rawShortsDetails =
 		parsed.shortsDetails || parsed.shorts_details || parsed.shorts || null;
@@ -18480,6 +19739,10 @@ function stripBlockingScriptArtifacts(text = "") {
 	let cleaned = kept.length ? kept.join(" ") : "";
 	cleaned = cleaned
 		.replace(
+			/^\s*[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,7}\s*:\s*/g,
+			"",
+		)
+		.replace(
 			/\b(?:minute|part|section|beat)\s*\d{1,2}\s*:?\s*(?:[A-Z][A-Za-z&-]*\s*){1,5}:\s*/gi,
 			" ",
 		)
@@ -18671,6 +19934,8 @@ function repairEarlyCuriosityGap({
 	const sensitive = isSensitiveTopicText(`${topicLabel} ${baseText}`);
 	const bridge = sensitive
 		? `The important line is what has been confirmed about ${topicLabel}, and what still needs careful attribution.`
+		: isImpulseShoppingTopic({ topics, categoryLabel, text: `${topicLabel} ${baseText}` })
+			? "The interesting part is how a bored scroll turns into a purchase before you ever decide to go shopping."
 		: categoryGuide?.isHealth
 			? `The unresolved question is whether ${topicLabel} stays contained or the evidence points somewhere else.`
 			: categoryGuide?.isSports
@@ -18688,6 +19953,157 @@ function repairEarlyCuriosityGap({
 		idx === 0 ? { ...segment, text: sanitizeSegmentText(finalText) } : segment,
 	);
 	return { script: { ...script, segments: repairedSegments }, changed: true };
+}
+
+function repairEndingOpenLoop({
+	script,
+	shortsGuardrails = null,
+	topics = [],
+	wordCaps = [],
+} = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return { script, changed: false };
+	const guardrails = shortsGuardrails || analyzeShortsGuardrails(script);
+	if (!guardrails?.issues?.includes("ending_open_loop_missing")) {
+		return { script, changed: false };
+	}
+	const lastIdx = segments.length - 1;
+	const last = segments[lastIdx] || {};
+	const topic = topics?.[Number(last?.topicIndex) || 0] || {};
+	const topicLabel = String(
+		last?.topicLabel || topic?.displayTopic || topic?.topic || "this",
+	).trim();
+	const baseText = sanitizeSegmentText(last.text || "");
+	const bridgeHay = `${topicLabel} ${baseText}`;
+	const bridge = isPsychologyFailureTopicText(bridgeHay)
+		? "But the open question is whether you leave with humility, or just another reason to feel above someone."
+		: isImpulseShoppingTopic({ topics, text: bridgeHay })
+			? "But the useful test is simple: A deal is not a deal if you never needed it."
+			: "But the open question is what you notice next, and what you do with it.";
+	let updatedText = sanitizeSegmentText(`${baseText} ${bridge}`);
+	const cap = Number(wordCaps?.[last.index] || wordCaps?.[lastIdx] || 0);
+	if (cap) {
+		updatedText = trimSegmentToCap(
+			updatedText,
+			Math.max(cap + 12, countWords(baseText), QA_MIN_SEGMENT_WORDS + 8),
+		);
+	}
+	const repairedSegments = segments.map((segment, idx) =>
+		idx === lastIdx ? { ...segment, text: sanitizeSegmentText(updatedText) } : segment,
+	);
+	return { script: { ...script, segments: repairedSegments }, changed: true };
+}
+
+function buildForcedFinalOpenLoopLine({
+	topics = [],
+	categoryLabel = "",
+	title = "",
+} = {}) {
+	const hay = [
+		title || "",
+		categoryLabel || "",
+		...(Array.isArray(topics)
+			? topics.map((topic) =>
+					[topic?.displayTopic, topic?.topic, topic?.promptText]
+						.filter(Boolean)
+						.join(" "),
+				)
+			: []),
+	].join(" ");
+	if (isPsychologyFailureTopicText(hay)) {
+		return "The open question is what you do after the clip ends: notice the lesson, or let the joke make you less human?";
+	}
+	if (isImpulseShoppingTopic({ topics, categoryLabel, text: hay })) {
+		return "That is the test after the scroll slows down: A deal is not a deal if you never needed it.";
+	}
+	if (isPersonalFinanceCostOfLivingTopic({ topics, categoryLabel, text: hay })) {
+		return "The open question is which small decision becomes easier once the pressure is visible?";
+	}
+	if (isSocialConnectionTopic({ topics, categoryLabel, text: hay })) {
+		return "The open question is which ordinary invitation could make connection feel possible again?";
+	}
+	return "The open question is what you notice next, and whether it changes the next choice you make.";
+}
+
+function forceFinalOpenLoopSegment({
+	script = {},
+	topics = [],
+	categoryLabel = "",
+	wordCaps = [],
+} = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return { script, changed: false };
+	const lastIdx = segments.length - 1;
+	const line = buildForcedFinalOpenLoopLine({
+		topics,
+		categoryLabel,
+		title: script.title || script.shortTitle || "",
+	});
+	const cap = Number(wordCaps?.[segments[lastIdx]?.index] || wordCaps?.[lastIdx] || 0);
+	const text = sanitizeSegmentText(
+		cap
+			? trimSegmentToCap(line, Math.max(cap + 8, countWords(line) + 2))
+			: line,
+	);
+	const repairedSegments = segments.map((segment, idx) =>
+		idx === lastIdx ? { ...segment, text, expression: "thoughtful" } : segment,
+	);
+	return { script: { ...script, segments: repairedSegments }, changed: true };
+}
+
+function polishImpulseShoppingScript({
+	script,
+	topics = [],
+	categoryLabel = "",
+} = {}) {
+	const segments = Array.isArray(script?.segments) ? script.segments : [];
+	if (!segments.length) return { script, changed: [] };
+	const hay = [
+		categoryLabel,
+		script?.title,
+		script?.shortTitle,
+		...topics.map((topic) =>
+			[topic?.displayTopic, topic?.topic, topic?.promptText]
+				.filter(Boolean)
+				.join(" "),
+		),
+	].join(" ");
+	if (!isImpulseShoppingTopic({ topics, categoryLabel, text: hay })) {
+		return { script, changed: [] };
+	}
+
+	const changed = [];
+	const lastIdx = segments.length - 1;
+	const repaired = segments.map((segment, idx) => {
+		const original = sanitizeSegmentText(segment?.text || "");
+		let text = original;
+		if (/\byou\s+are\s+not\s+buying\s+an\s+item\s+first\.?$/i.test(text)) {
+			text =
+				"That is the practical trap: you are buying a mood, a shortcut, or a tiny promise before you are buying an item.";
+		} else if (/\bthat\s+is\s+where\s+the\s+pattern\s+becomes\s+useful\b/i.test(text)) {
+			text =
+				"That is why endless scrolling matters. Every swipe gives the product another chance to feel normal before your budget gets a vote.";
+		}
+		if (idx === lastIdx) {
+			text =
+				"That is the test after the scroll slows down: A deal is not a deal if you never needed it.";
+		}
+		text = sanitizeSegmentText(text);
+		if (text && text !== original) {
+			changed.push({
+				index: Number.isFinite(Number(segment?.index)) ? Number(segment.index) : idx,
+				from: original,
+				to: text,
+			});
+			return {
+				...segment,
+				text,
+				expression: idx === lastIdx ? "thoughtful" : segment.expression,
+			};
+		}
+		return segment;
+	});
+	return { script: { ...script, segments: repaired }, changed };
 }
 
 function repairResidualScriptQuality({
@@ -18745,6 +20161,26 @@ function repairResidualScriptQuality({
 	});
 	current = earlyRepair.script;
 	if (earlyRepair.changed) repairs.push({ type: "early_curiosity_gap" });
+	const endingRepair = repairEndingOpenLoop({
+		script: current,
+		shortsGuardrails,
+		topics,
+		wordCaps,
+	});
+	current = endingRepair.script;
+	if (endingRepair.changed) repairs.push({ type: "ending_open_loop" });
+	const impulseRepair = polishImpulseShoppingScript({
+		script: current,
+		topics,
+		categoryLabel,
+	});
+	current = impulseRepair.script;
+	if (impulseRepair.changed.length) {
+		repairs.push({
+			type: "impulse_shopping_polish",
+			changed: impulseRepair.changed,
+		});
+	}
 	return { script: current, repairs };
 }
 
@@ -19077,6 +20513,7 @@ async function rewriteSegmentsForPriorNovelty({
 	const categoryGuide = buildCategoryScriptGuide(categoryLabel, topics);
 	const priorGuide = buildPriorVideoScriptGuide(priorVideoPlan);
 	const promptBriefGuide = buildPromptBriefInstructionBlock(topics);
+	const directAnswerGuide = buildDirectAnswerPromptBlock(topics, topicContexts);
 	const contextLines =
 		Array.isArray(topicContexts) && topicContexts.length
 			? topicContexts
@@ -19109,6 +20546,8 @@ ${priorGuide}
 Frontend prompt requirements:
 ${promptBriefGuide}
 
+${directAnswerGuide}
+
 Fresh context:
 ${contextLines}
 
@@ -19121,13 +20560,15 @@ Per-segment word caps: ${capsLine}
 Rules:
 - Keep EXACTLY ${segments.length} segments and the same indexes.
 - Keep topicIndex/topicLabel assignments.
-- Preserve any frontend-requested opening line as the first spoken sentence of segment 0.
-- Preserve any mandatory "must include" lines, but change surrounding content so the video is not a duplicate.
+- Preserve any frontend-requested opening line as the first spoken line of the overall opening unit, and do not repeat it inside segment 0 when the intro already uses it.
+- For direct-answer prompts, preserve the answer in the first spoken content sentence for that topic; do not turn it into a tease.
+- Preserve any mandatory "must include" lines, but change surrounding content so the video is not a duplicate. Do not say labels like "memorable line" or "must include" in the spoken script.
 - Make roughly ${priorVideoPlan.requiredNewnessPct || 65}% of the content feel new: examples, ordering, explanations, visuals implied by overlayCues, practical advice, and payoff.
 - If a prior-video reference line is specified, include it exactly once and naturally.
 - Avoid repeating the same sentence, same stock bridge, or same step order from earlier videos.
 - Use different concrete examples where possible.
 - Keep the tone empathetic, useful, creator-like, and brisk; avoid slow reassurance or over-explaining obvious ideas.
+- Keep the first beat direct and retention-led: one brief natural greeting is allowed in the generated intro, then no filler, no artificial pause writing, and no theatrical emotional cue.
 - Use fair factual tension where supported: name the tradeoff, disagreement, incentive, or cost without inventing claims.
 - Use source attribution only for topics marked with source links in the Source policy; otherwise do not invent named outlets, journals, studies, researchers, or reporting.
 - ${ctaRule}
@@ -19182,8 +20623,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			topics,
 			wordCaps,
 		});
-		return applyPriorVideoReferenceToScript({
+		const directAligned = repairDirectAnswerOpening({
 			script: promptAligned,
+			topics,
+			topicContexts,
+			wordCaps,
+		}).script;
+		return applyPriorVideoReferenceToScript({
+			script: directAligned,
 			priorVideoPlan,
 			wordCaps,
 		});
@@ -19263,6 +20710,11 @@ async function rewriteSegmentsForQuality({
 		topicContexts,
 	});
 	const promptBriefGuide = buildPromptBriefInstructionBlock(topics);
+	const directAnswerGuide = buildDirectAnswerPromptBlock(topics, topicContexts);
+	const hasDirectAnswerTopic = topics.some((topic) => isDirectAnswerTopic(topic));
+	const answerRewriteRule = hasDirectAnswerTopic
+		? "For direct-answer topics, keep the answer in the first spoken content sentence for that topic. Do not rewrite it into a tease."
+		: "Preserve curiosity gaps: open with tension and delay the payoff by at least one sentence or segment.";
 	const priorVideoGuide = buildPriorVideoScriptGuide(priorVideoPlan);
 	const sourcePolicy = buildTopicSourcePolicyPromptBlock(topics, topicContexts);
 	const rewriteCtaRule = includeOutro
@@ -19271,7 +20723,7 @@ async function rewriteSegmentsForQuality({
 
 	const rewritePrompt = `
 Improve this script for clarity, concrete detail, and spoken flow.
-Target narration duration: ~${Number(narrationTargetSec || 0).toFixed(1)}s
+Quality-led narration budget: ~${Number(narrationTargetSec || 0).toFixed(1)}s
 Mood: ${mood}
 Category: ${categoryLabel || "General"}
 Topic summaries:
@@ -19285,6 +20737,8 @@ ${trendSignalLines}
 ${titlePromiseGuide}
 
 ${promptBriefGuide}
+
+${directAnswerGuide}
 
 ${priorVideoGuide}
 
@@ -19302,15 +20756,18 @@ Rules:
 - Add one fresh, concrete detail or implication per segment when possible.
 - Structure each topic around one clear angle; keep facts in service of that angle.
 - Keep the rewrite brisk and adult. Compress obvious reassurance, remove slow schoolteacher phrasing, and make the strongest supported tension arrive earlier.
+- Treat duration as a quality-led budget, not a hard target. Do not add padding; keep only material that improves retention, clarity, curiosity, usefulness, or payoff.
+- Let the quality-first expansion room help only when it improves the content. If the topic can earn a longer runtime, use extra time for sharper reveals, clearer stakes, better examples, or stronger payoff; never use it for filler or slow setup.
 - Add controlled controversy where it is fair: name the tradeoff, incentive, disagreement, or cost, then clearly separate confirmed facts from analysis or uncertainty.
 - Remove stock bridge phrases like "that is the turn", "the next detail changes how...", or repeated "the answer depends..." phrasing. Replace them with topic-specific, human transitions.
 - Do not reuse any sentence verbatim across segments.
-- Preserve curiosity gaps: open with tension and delay the payoff by at least one sentence or segment.
+- ${answerRewriteRule}
 - Keep at least one clip-ready line per topic that ends with an open loop.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening controlled, but make segment 0 genuinely hooky and curiosity-driven instead of flat.
-- Preserve any frontend-requested opening line as the first spoken sentence of segment 0.
+- Preserve any frontend-requested opening line as the first spoken line of the overall opening unit, and do not repeat it inside segment 0 when the intro already uses it.
 - Preserve any frontend-requested title unless a factual correction is necessary.
+- Include mandatory or memorable lines naturally. Do not say labels like "memorable line" or "must include" in the spoken script.
 - Keep the overall delivery controlled and professional; avoid excited phrasing and exclamation points, but let the writing feel sharp and engaging.
 - If the story is controversial and source links exist, surface what people are arguing about, what the reporting supports, and what still is not fully settled. Without source links, frame the debate as a high-level tension, not sourced reporting.
 - For death, injury, legal, health, or public-safety stories, keep the rewrite sober: confirmed facts first, uncertainty clearly labeled, no emotional overacting, and one human/community implication when sourced.
@@ -19328,6 +20785,10 @@ Rules:
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - If a topic is real-world, do NOT use in-universe/fictional framing or words like "in-universe", "fictional", "plotline", "storyline", "canon", "lore".
 - Keep it conversational and clear; no filler words.
+- Opening unit discipline: the generated intro plus segments 0-2 must stay clean, explicit, curiosity-driven, and entertaining without hesitation sounds, stall words, fake pauses, or annoying verbal padding.
+- Do NOT introduce the presenter or host by name. A single brief greeting like "Hi guys, today we are talking about..." is allowed only in the generated intro, then open with the topic tension immediately. Segment 0 should not repeat the greeting.
+- Avoid artificial dramatic pause writing in segments 0-2: no ellipses, repeated dashes, isolated one-word fragments, or sentences that need a long silence to land.
+- Keep the first beat simple and human: calm if serious, lightly warm if hopeful, always restrained and professional.
 - For entertainment topics, allow brief grounded opinionated framing when it helps explain why people are divided, but keep it fair and separate from sourced facts.
 ${rewriteCtaRule}
 - Category-specific guidance:
@@ -19389,7 +20850,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
 		maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
 		maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
-		noFillerSegmentIndices: [0, 1, 2],
+		noFillerSegmentIndices: OPENING_NO_FILLER_SEGMENT_INDICES,
 	});
 	updated = updated.map((s) => ({
 		...s,
@@ -19401,8 +20862,14 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		topics,
 		wordCaps,
 	});
-	return applyPriorVideoReferenceToScript({
+	const directAligned = repairDirectAnswerOpening({
 		script: promptAligned,
+		topics,
+		topicContexts,
+		wordCaps,
+	}).script;
+	return applyPriorVideoReferenceToScript({
+		script: directAligned,
 		priorVideoPlan,
 		wordCaps,
 	});
@@ -19458,6 +20925,7 @@ function buildVoiceSettingsForExpression(
 		stability: clampNumber(stability, 0.1, 1),
 		similarity_boost: clampNumber(ELEVEN_TTS_SIMILARITY, 0.1, 1),
 		style: clampNumber(style, 0, 0.35),
+		speed: ELEVEN_TTS_SPEED,
 		use_speaker_boost: ELEVEN_TTS_SPEAKER_BOOST,
 	};
 }
@@ -20674,137 +22142,15 @@ async function analyzeAudioQuality({ wavPath, expectedText, jobId, label }) {
 }
 
 /* ---------------------------------------------------------------
- * Sync.so lipsync (multipart) - supports WAV per Sync docs
+ * Presenter video QA and HeyGen render helpers
  * ------------------------------------------------------------- */
-
-function buildSyncSoHeaders() {
-	return {
-		"x-api-key": SYNC_SO_API_KEY,
-		Authorization: `Bearer ${SYNC_SO_API_KEY}`,
-	};
-}
-
-function extractSyncSoId(data) {
-	return (
-		data?.id ||
-		data?.jobId ||
-		data?.data?.id ||
-		data?.data?.jobId ||
-		data?.data?.job_id ||
-		null
-	);
-}
-
-function extractSyncSoStatus(data) {
-	return (
-		data?.status || data?.data?.status || data?.state || data?.data?.state || ""
-	);
-}
-
-function extractSyncSoOutputUrl(data) {
-	return (
-		data?.outputUrl ||
-		data?.output_url ||
-		data?.data?.outputUrl ||
-		data?.data?.output_url ||
-		data?.output?.url ||
-		data?.data?.output?.url ||
-		(Array.isArray(data?.output)
-			? data.output[0]?.url || data.output[0]
-			: null) ||
-		(Array.isArray(data?.data?.output)
-			? data.data.output[0]?.url || data.data.output[0]
-			: null) ||
-		null
-	);
-}
-
-function extractSyncSoError(data, text = "") {
-	return (
-		data?.message ||
-		data?.error ||
-		data?.data?.message ||
-		data?.data?.error ||
-		(text ? String(text).trim().slice(0, 220) : null) ||
-		null
-	);
-}
-
-async function fetchJson(url, options = {}, timeoutMs = 25000) {
-	if (typeof fetch === "function") {
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), timeoutMs);
-		try {
-			const res = await fetch(url, { ...options, signal: controller.signal });
-			const txt = await res.text().catch(() => "");
-			let data = null;
-			try {
-				data = txt ? JSON.parse(stripCodeFence(txt)) : null;
-			} catch {
-				data = null;
-			}
-			return { status: res.status, ok: res.ok, data, text: txt };
-		} finally {
-			clearTimeout(timer);
-		}
-	}
-
-	const res = await axios.request({
-		url,
-		method: options.method || "GET",
-		headers: options.headers || {},
-		data: options.body,
-		timeout: timeoutMs,
-		validateStatus: () => true,
-	});
-
-	const txt =
-		typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
-	return {
-		status: res.status,
-		ok: res.status >= 200 && res.status < 300,
-		data: typeof res.data === "object" ? res.data : parseJsonFlexible(txt),
-		text: txt,
-	};
-}
-
-function resolveSyncModelPlan(syncTier = "standard") {
-	const tier = String(syncTier || "standard")
-		.trim()
-		.toLowerCase();
-	if (tier === "hero") {
-		return {
-			tier: "hero",
-			primary: SYNC_SO_MODEL_HERO,
-			secondary: SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_FALLBACK,
-		};
-	}
-	return {
-		tier: "standard",
-		primary: SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_HERO,
-		secondary:
-			SYNC_SO_MODEL_FALLBACK || SYNC_SO_MODEL_STANDARD || SYNC_SO_MODEL_HERO,
-	};
-}
-
-function resolveSyncAttemptPlan(attempt = 0, syncTier = "standard") {
-	const modelPlan = resolveSyncModelPlan(syncTier);
-	const primary = modelPlan.primary;
-	const secondary = modelPlan.secondary || primary;
-	if (attempt <= 0)
-		return { modelId: primary, inputVariant: 0, tier: modelPlan.tier };
-	if (attempt === 1)
-		return { modelId: primary, inputVariant: 1, tier: modelPlan.tier };
-	return {
-		modelId: secondary,
-		inputVariant: attempt,
-		tier: modelPlan.tier,
-	};
-}
 
 async function detectFrozenVideo(
 	videoPath,
-	{ noise = SYNC_SO_FREEZE_NOISE, minFreezeSec = SYNC_SO_FREEZE_MIN_SEC } = {},
+	{
+		noise = PRESENTER_VIDEO_FREEZE_NOISE,
+		minFreezeSec = PRESENTER_VIDEO_FREEZE_MIN_SEC,
+	} = {},
 ) {
 	const durationSec = await probeDurationSeconds(videoPath);
 	if (!durationSec || !Number.isFinite(durationSec)) {
@@ -20911,29 +22257,29 @@ async function analyzeLipsyncOutput({
 		result.durationDeltaSec = delta;
 		if (
 			Number(expectedDurSec) - Number(durationSec) >
-				SYNC_SO_MAX_SHORTFALL_SEC ||
-			ratio < SYNC_SO_MIN_DURATION_RATIO
+				PRESENTER_VIDEO_MAX_SHORTFALL_SEC ||
+			ratio < PRESENTER_VIDEO_MIN_DURATION_RATIO
 		) {
-			result.issues.push("sync_output_too_short");
+			result.issues.push("presenter_video_too_short");
 		}
 	}
 
 	const motionRequired = Boolean(requireMotion && PRESENTER_MOTION_QA_ENABLED);
 	const freezeCheckMinSec = motionRequired
 		? PRESENTER_MOTION_FREEZE_CHECK_MIN_SEC
-		: SYNC_SO_FREEZE_CHECK_MIN_SEC;
+		: PRESENTER_VIDEO_FREEZE_CHECK_MIN_SEC;
 	const freezeNoise = motionRequired
 		? PRESENTER_MOTION_FREEZE_NOISE
-		: SYNC_SO_FREEZE_NOISE;
+		: PRESENTER_VIDEO_FREEZE_NOISE;
 	const freezeMinSec = motionRequired
 		? PRESENTER_MOTION_FREEZE_MIN_SEC
-		: SYNC_SO_FREEZE_MIN_SEC;
+		: PRESENTER_VIDEO_FREEZE_MIN_SEC;
 	const maxFreezeSec = motionRequired
 		? PRESENTER_MOTION_MAX_FREEZE_SEC
-		: SYNC_SO_MAX_FREEZE_SEC;
+		: PRESENTER_VIDEO_MAX_FREEZE_SEC;
 	const maxFreezeRatio = motionRequired
 		? PRESENTER_MOTION_MAX_FREEZE_RATIO
-		: SYNC_SO_MAX_FREEZE_RATIO;
+		: PRESENTER_VIDEO_MAX_FREEZE_RATIO;
 
 	if (durationSec >= freezeCheckMinSec) {
 		try {
@@ -20947,12 +22293,12 @@ async function analyzeLipsyncOutput({
 				result.maxFreezeSec >= maxFreezeSec ||
 				result.freezeRatio >= maxFreezeRatio
 			) {
-				result.issues.push("sync_output_frozen");
+				result.issues.push("presenter_video_frozen");
 			}
 		} catch (e) {
-			if (motionRequired) result.issues.push("sync_motion_check_failed");
+			if (motionRequired) result.issues.push("presenter_motion_check_failed");
 			if (jobId) {
-				logJob(jobId, "lipsync freeze check failed", {
+				logJob(jobId, "presenter video freeze check failed", {
 					label,
 					requireMotion: motionRequired,
 					error: e?.message || String(e),
@@ -20969,7 +22315,7 @@ function isPresenterFreezeNearPass(qa, mode = "rendered") {
 	const issues = Array.isArray(qa?.issues) ? qa.issues : [];
 	const freezeOnly =
 		issues.length > 0 &&
-		issues.every((issue) => issue === "sync_output_frozen");
+		issues.every((issue) => issue === "presenter_video_frozen");
 	if (!freezeOnly || Number(qa?.durationSec || 0) < 2) return false;
 
 	const qaMode = String(mode || "rendered").toLowerCase();
@@ -21262,129 +22608,313 @@ async function assertPresenterVideoHasMotion({
 	});
 }
 
-async function requestSyncSoJob({ videoPath, audioPath, jobId, modelId }) {
-	const endpoint = `${SYNC_SO_BASE}${SYNC_SO_GENERATE_PATH}`;
-	if (!fs.existsSync(videoPath)) throw new Error("Sync input video missing");
-	if (!fs.existsSync(audioPath)) throw new Error("Sync input audio missing");
-	const effectiveModelId =
-		String(modelId || SYNC_SO_MODEL_STANDARD).trim() || SYNC_SO_MODEL_STANDARD;
-
-	if (
-		!FormDataNode &&
-		(typeof FormData !== "function" || typeof fetch !== "function")
-	) {
-		throw new Error(
-			"Sync multipart requires Node 18+ (fetch/FormData) or install 'form-data'",
-		);
-	}
-
-	logJob(jobId, "sync multipart request", {
-		endpoint,
-		modelId: effectiveModelId,
-	});
-
-	if (FormDataNode) {
-		const doReq = async () => {
-			const form = new FormDataNode();
-			form.append("model", effectiveModelId);
-			form.append("video", fs.createReadStream(videoPath), {
-				filename: "presenter.mp4",
-				contentType: "video/mp4",
-			});
-			form.append("audio", fs.createReadStream(audioPath), {
-				filename: "segment.wav",
-				contentType: "audio/wav",
-			});
-			const res = await axios.post(endpoint, form, {
-				headers: { ...buildSyncSoHeaders(), ...form.getHeaders() },
-				timeout: 90000,
-				validateStatus: () => true,
-			});
-			const data = res.data;
-			const id = extractSyncSoId(data);
-			if (res.status >= 300 || !id) {
-				const err = new Error(
-					`Sync.so generate failed (${res.status}): ${
-						extractSyncSoError(data, "") || "unknown error"
-					}`,
-				);
-				err.response = { status: res.status, data };
-				throw err;
-			}
-			return { id };
-		};
-
-		return await withRetries(doReq, {
-			retries: SYNC_SO_GENERATE_HTTP_RETRIES,
-			baseDelayMs: 900,
-			label: "sync_generate",
-		});
-	}
-
-	// Native FormData
-	const form = new FormData();
-	form.append("model", effectiveModelId);
-	form.append(
-		"video",
-		new Blob([fs.readFileSync(videoPath)], { type: "video/mp4" }),
-		"presenter.mp4",
-	);
-	form.append(
-		"audio",
-		new Blob([fs.readFileSync(audioPath)], { type: "audio/wav" }),
-		"segment.wav",
-	);
-
-	const { status, ok, data, text } = await fetchJson(
-		endpoint,
-		{ method: "POST", headers: buildSyncSoHeaders(), body: form },
-		90000,
-	);
-
-	const id = extractSyncSoId(data);
-	if (!ok || !id) {
-		throw new Error(
-			`Sync.so generate failed (${status}): ${
-				extractSyncSoError(data, text) || "unknown error"
-			}`,
-		);
-	}
-	return { id };
+function heygenHeaders(extra = {}) {
+	return {
+		"x-api-key": HEYGEN_API_KEY,
+		"Content-Type": "application/json",
+		...extra,
+	};
 }
 
-async function pollSyncSoJob({ id, label, jobId }) {
-	const statusUrl = `${SYNC_SO_BASE}${SYNC_SO_GENERATE_PATH}/${id}`;
+function buildHeyGenMotionPrompt({
+	role = "content",
+	text = "",
+	expression = "neutral",
+	mood = "neutral",
+	pace = "steady",
+	silentSmileTailSec = 0,
+} = {}) {
+	const cleanText = sanitizeSegmentText(text).slice(0, 700);
+	const roleLabel = String(role || "content").toLowerCase();
+	const expressionLabel = normalizeExpression(expression || mood || "neutral", mood);
+	const paceLabel = String(pace || "steady").toLowerCase();
+	const emotionalDirection =
+		expressionLabel === "serious" || expressionLabel === "thoughtful"
+			? "more thoughtful than cheerful, with soft eyes and relaxed brows"
+			: expressionLabel === "warm"
+				? "warm and encouraging, with one tiny closed-mouth smile only when it feels natural"
+				: "calm, attentive, and professional";
+	const paceDirection =
+		paceLabel === "slow" || paceLabel === "gentle"
+			? "slightly slower, with clear phrase endings and comfortable pauses"
+			: paceLabel === "urgent"
+				? "clear and engaged, but never rushed or theatrical"
+				: "clear, natural, and conversational";
+	const outroTail =
+		Number(silentSmileTailSec || 0) > 0.05
+			? `In the final ${Number(silentSmileTailSec).toFixed(1)} seconds, stop speaking completely. Keep lips closed and relaxed, hold a light warm closed-mouth smile, show no teeth, do not mouth silent words, do not grin, and keep only tiny natural breathing and blinks.`
+			: "";
+	const openingDirection =
+		roleLabel === "intro_first"
+			? "Opening direction: begin with a brief natural greeting if the narration has one, then move straight into the topic. Keep calm attention, no long silent stare, no greeting performance, no big smile, and no exaggerated first-sentence reaction. The first seconds should feel like a professional teaser with smooth eye contact and one restrained emotional color."
+			: "";
 
-	for (let i = 0; i < 160; i++) {
-		await sleep(2000);
+	return [
+		`Photorealistic talking-head presenter delivery for a ${roleLabel} video segment.`,
+		"Preserve the exact face, glasses, beard, head shape, skin texture, neck, shoulders, studio, lighting, and outfit from the source image.",
+		"The presenter should look nice, simple, calm, credible, and human; never flashy, smug, exaggerated, theatrical, cartoonish, or overly expressive.",
+		`Delivery should be ${paceDirection}. Expression should be ${emotionalDirection}.`,
+		"Lip sync should look like normal human speech: restrained lips, smaller mouth openings, relaxed jaw, subtle cheek movement, and brief closed-mouth rests at commas and periods.",
+		"During natural audio pauses, keep tiny blinks, breathing, and eye focus alive; do not freeze, reset the face, stare blankly, or add a dramatic silent beat.",
+		"Avoid oversized A/O vowel shapes, constant open-mouth talking, rubbery jaw travel, extra teeth, theatrical reactions, cartoon acting, warped glasses, face reshaping, neck stretching, or shoulder distortion.",
+		"Use direct eye contact, soft blinks, relaxed shoulders, one or two tiny nods only when emphasis fits, and natural breathing. Keep hand and body movement minimal.",
+		openingDirection,
+		outroTail,
+		cleanText ? `Narration context: ${cleanText}` : "",
+	]
+		.filter(Boolean)
+		.join(" ");
+}
 
-		const { status, ok, data, text } = await fetchJson(
-			statusUrl,
-			{ headers: buildSyncSoHeaders() },
-			25000,
-		);
-		if (!ok) {
-			throw new Error(
-				`${label} status check failed (${status}): ${
-					extractSyncSoError(data, text) || "unknown error"
-				}`,
-			);
-		}
-
-		const st = String(extractSyncSoStatus(data) || "").toLowerCase();
-		const out = extractSyncSoOutputUrl(data);
-
-		if ((st === "completed" || st === "succeeded") && out) return out;
-		if (st === "failed" || st === "error" || st === "rejected") {
-			throw new Error(
-				`${label} failed: ${extractSyncSoError(data, text) || "unknown error"}`,
-			);
-		}
-
-		if (jobId && i % 10 === 0)
-			logJob(jobId, "sync polling", { label, status: st || "pending" });
+function resolveHeyGenPace({ text = "", expression = "neutral", mood = "neutral" } = {}) {
+	const haystack = `${text} ${expression} ${mood}`.toLowerCase();
+	if (/\b(sad|grief|lonely|loneliness|struggl|worried|anxious|hard|hurt|advice|children|kids)\b/.test(haystack)) {
+		return "gentle";
 	}
-	throw new Error(`${label} timed out`);
+	if (/\b(urgent|breaking|warning|danger|critical)\b/.test(haystack)) {
+		return "urgent";
+	}
+	return "steady";
+}
+
+function buildHeyGenVideoPayload({
+	title,
+	imageUrl,
+	audioUrl,
+	resolution = HEYGEN_DEFAULT_RESOLUTION,
+	aspectRatio = HEYGEN_DEFAULT_ASPECT_RATIO,
+	expressiveness = HEYGEN_DEFAULT_EXPRESSIVENESS,
+	fit = HEYGEN_DEFAULT_FIT,
+	motionPrompt,
+}) {
+	if (!/^https:\/\//i.test(String(imageUrl || ""))) {
+		throw new Error("HeyGen presenter image URL must be public HTTPS");
+	}
+	if (!/^https:\/\//i.test(String(audioUrl || ""))) {
+		throw new Error("HeyGen audio URL must be public HTTPS");
+	}
+	return {
+		type: "image",
+		title: sanitizeSegmentText(title || "AgentAI presenter segment").slice(0, 120),
+		resolution,
+		aspect_ratio: aspectRatio,
+		fit,
+		output_format: "mp4",
+		image: {
+			type: "url",
+			url: imageUrl,
+		},
+		audio_url: audioUrl,
+		motion_prompt: String(motionPrompt || "").slice(0, 1800),
+		expressiveness,
+	};
+}
+
+async function uploadAudioToCloudinaryForHeyGen(audioPath, { jobId, label } = {}) {
+	if (!CLOUDINARY_ENABLED) throw new Error("Cloudinary missing for HeyGen audio");
+	if (!audioPath || !fs.existsSync(audioPath)) throw new Error("HeyGen audio missing");
+	const safeLabel = String(label || "segment").replace(/[^a-z0-9_-]/gi, "_");
+	const result = await cloudinary.uploader.upload(audioPath, {
+		resource_type: "video",
+		folder: "aivideomatic/long_presenter_audio",
+		public_id: `heygen_${jobId || "job"}_${safeLabel}_${Date.now()}`,
+		overwrite: true,
+	});
+	return {
+		url: result.secure_url,
+		publicId: result.public_id,
+		bytes: result.bytes || fs.statSync(audioPath).size,
+	};
+}
+
+async function createHeyGenVideo(payload, { jobId, label } = {}) {
+	if (!HEYGEN_API_KEY) throw new Error("HEYGEN_API_KEY missing");
+	const safeLabel = String(label || "segment").replace(/[^a-z0-9_-]/gi, "_");
+	const res = await axios.post(
+		`${HEYGEN_API_BASE}${HEYGEN_CREATE_VIDEO_PATH}`,
+		payload,
+		{
+			headers: heygenHeaders({
+				"Idempotency-Key": `agentai-long-${jobId || "job"}-${safeLabel}`,
+			}),
+			timeout: 60000,
+			validateStatus: (status) => status < 500,
+		},
+	);
+	if (res.status >= 300) {
+		throw new Error(
+			`HeyGen create failed (${res.status}): ${JSON.stringify(
+				res.data || {},
+			).slice(0, 1200)}`,
+		);
+	}
+	const data = res.data?.data || {};
+	if (!data.video_id) {
+		throw new Error(`HeyGen create missing video_id: ${JSON.stringify(data)}`);
+	}
+	return data;
+}
+
+async function getHeyGenVideo(videoId) {
+	if (!HEYGEN_API_KEY) throw new Error("HEYGEN_API_KEY missing");
+	const res = await axios.get(
+		`${HEYGEN_API_BASE}${HEYGEN_CREATE_VIDEO_PATH}/${encodeURIComponent(
+			videoId,
+		)}`,
+		{
+			headers: heygenHeaders(),
+			timeout: 30000,
+			validateStatus: (status) => status < 500,
+		},
+	);
+	if (res.status >= 300) {
+		throw new Error(
+			`HeyGen poll failed (${res.status}): ${JSON.stringify(
+				res.data || {},
+			).slice(0, 1200)}`,
+		);
+	}
+	return res.data?.data || {};
+}
+
+async function pollHeyGenVideo({ videoId, jobId, label }) {
+	const startedAt = Date.now();
+	let lastStatus = "";
+	while (Date.now() - startedAt < HEYGEN_POLL_TIMEOUT_MS) {
+		const data = await getHeyGenVideo(videoId);
+		const status = String(data.status || "").toLowerCase();
+		if (status !== lastStatus) {
+			lastStatus = status;
+			logJob(jobId, "heygen polling", {
+				label,
+				status: status || "unknown",
+			});
+		}
+		if (status === "completed") return data;
+		if (status === "failed") {
+			throw new Error(
+				`HeyGen video failed: ${data.failure_code || ""} ${
+					data.failure_message || ""
+				}`.trim(),
+			);
+		}
+		await sleep(HEYGEN_POLL_INTERVAL_MS);
+	}
+	throw new Error(`HeyGen video polling timed out: ${label || videoId}`);
+}
+
+async function renderHeyGenPresenterSegment({
+	jobId,
+	tmpDir,
+	output,
+	presenterImageUrl,
+	segDur,
+	audioPath,
+	label,
+	addFades = false,
+	cameraMotion = null,
+	text = "",
+	expression = "neutral",
+	mood = "neutral",
+	pace = "steady",
+	role = "content",
+	silentSmileTailSec = 0,
+}) {
+	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "_");
+	if (!presenterImageUrl) throw new Error(`heygen_presenter_url_missing:${safeLabel}`);
+	if (!audioPath || !fs.existsSync(audioPath))
+		throw new Error(`heygen_audio_missing:${safeLabel}`);
+	const dur = Math.max(0.2, Number(segDur) || (await probeDurationSeconds(audioPath)) || 0.2);
+	const uploadedAudio = await uploadAudioToCloudinaryForHeyGen(audioPath, {
+		jobId,
+		label: safeLabel,
+	});
+	const motionPrompt = buildHeyGenMotionPrompt({
+		role,
+		text,
+		expression,
+		mood,
+		pace,
+		silentSmileTailSec,
+	});
+	const payload = buildHeyGenVideoPayload({
+		title: `AgentAI ${role} ${safeLabel}`,
+		imageUrl: presenterImageUrl,
+		audioUrl: uploadedAudio.url,
+		motionPrompt,
+	});
+	logJob(jobId, "heygen presenter request", {
+		label: safeLabel,
+		role,
+		segDur: Number(dur.toFixed(3)),
+		resolution: payload.resolution,
+		expressiveness: payload.expressiveness,
+		audioPublicId: uploadedAudio.publicId,
+	});
+	const created = await createHeyGenVideo(payload, { jobId, label: safeLabel });
+	const completed = await pollHeyGenVideo({
+		videoId: created.video_id,
+		jobId,
+		label: safeLabel,
+	});
+	if (!completed.video_url) {
+		throw new Error(`HeyGen completed without video_url:${safeLabel}`);
+	}
+	const raw = path.join(tmpDir, `heygen_raw_${jobId}_${safeLabel}.mp4`);
+	await downloadToFile(completed.video_url, raw, 10 * 60 * 1000, 2);
+	const qa = await analyzeLipsyncOutput({
+		videoPath: raw,
+		expectedDurSec: dur,
+		jobId,
+		label: safeLabel,
+		requireMotion: true,
+	});
+	const originalQaIssues = Array.isArray(qa.issues) ? [...qa.issues] : [];
+	let acceptedSubtleHeyGenMotion = false;
+	if (
+		!qa.pass &&
+		originalQaIssues.length > 0 &&
+		originalQaIssues.every((issue) => issue === "presenter_video_frozen") &&
+		Number(qa.durationDeltaSec || 0) <= PRESENTER_VIDEO_MAX_SHORTFALL_SEC &&
+		Number(qa.maxFreezeSec || 0) <= HEYGEN_RENDER_MOTION_MAX_FREEZE_SEC &&
+		Number(qa.freezeRatio || 0) <= HEYGEN_RENDER_MOTION_MAX_FREEZE_RATIO
+	) {
+		qa.pass = true;
+		qa.issues = [];
+		acceptedSubtleHeyGenMotion = true;
+	}
+	logJob(jobId, "heygen presenter qa", {
+		label: safeLabel,
+		pass: qa.pass,
+		issues: qa.issues,
+		acceptedSubtleHeyGenMotion,
+		...(acceptedSubtleHeyGenMotion ? { originalIssues: originalQaIssues } : {}),
+		durationSec: Number((qa.durationSec || 0).toFixed(3)),
+		durationDeltaSec: Number((qa.durationDeltaSec || 0).toFixed(3)),
+		maxFreezeSec: Number((qa.maxFreezeSec || 0).toFixed(3)),
+		freezeRatio: Number((qa.freezeRatio || 0).toFixed(3)),
+		heygenVideoId: created.video_id,
+	});
+	if (!qa.pass) {
+		throw new Error(`heygen_presenter_qa_failed:${safeLabel}:${qa.issues.join(",")}`);
+	}
+
+	const fit = path.join(tmpDir, `heygen_fit_${jobId}_${safeLabel}.mp4`);
+	await fitVideoToDuration(raw, dur, fit, SEGMENT_PAD_SEC);
+	safeUnlink(raw);
+	const withAudio = path.join(tmpDir, `heygen_audio_${jobId}_${safeLabel}.mp4`);
+	await mergeVideoWithAudio(fit, audioPath, withAudio);
+	safeUnlink(fit);
+	const norm = path.join(tmpDir, `heygen_norm_${jobId}_${safeLabel}.mp4`);
+	await normalizeClip(withAudio, norm, output, {
+		zoomOut: CAMERA_ZOOM_OUT,
+		addFades,
+		cameraMotion: cameraMotion
+			? { ...cameraMotion, visualType: "presenter" }
+			: null,
+	});
+	safeUnlink(withAudio);
+	return norm;
 }
 
 /* ---------------------------------------------------------------
@@ -21634,341 +23164,6 @@ async function normalizeClip(
 		);
 		await runNormalize(vf.replace(`,${deshakeFilter}`, ""));
 	}
-}
-
-async function createSyncFallbackInput(
-	videoPath,
-	tmpDir,
-	jobId,
-	label,
-	variant = 1,
-) {
-	const out = path.join(
-		tmpDir,
-		`${label}_${crypto.randomUUID()}_sync_fallback_${variant}.mp4`,
-	);
-	let vf = `fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`;
-	let crf = Math.max(26, SYNC_SO_INPUT_CRF + 4);
-	let tag = "sync_fallback_reencode";
-
-	if (variant >= 2) {
-		const scaleExpr = `scale='if(gt(iw,ih),${SYNC_SO_FALLBACK_MAX_EDGE},-2)':'if(gt(ih,iw),${SYNC_SO_FALLBACK_MAX_EDGE},-2)'`;
-		vf = `${scaleExpr},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`;
-		crf = Math.max(28, SYNC_SO_INPUT_CRF + 6);
-		tag = "sync_fallback_scale";
-	}
-
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-i",
-			videoPath,
-			"-an",
-			"-vf",
-			vf,
-			"-c:v",
-			"libx264",
-			"-preset",
-			"veryfast",
-			"-crf",
-			String(crf),
-			"-pix_fmt",
-			"yuv420p",
-			"-movflags",
-			"+faststart",
-			"-y",
-			out,
-		],
-		tag,
-		{ timeoutMs: 180000 },
-	);
-
-	return await ensureUnderBytes(out, SYNC_SO_MAX_BYTES, tmpDir, jobId, label);
-}
-
-async function renderLipsyncedSegment({
-	jobId,
-	tmpDir,
-	output,
-	baselineSource,
-	segDur,
-	audioPath,
-	label,
-	offsetSeed = 0,
-	addFades = false,
-	syncTier = "standard",
-	cameraMotion = null,
-	maxRetries = SYNC_SO_SEGMENT_MAX_RETRIES,
-}) {
-	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
-	const dur = Math.max(0.2, Number(segDur) || 0.2);
-	if (!baselineSource || !fs.existsSync(baselineSource)) {
-		throw new Error(
-			`presenter_baseline_missing:${safeLabel || "segment"}: moving presenter source is required`,
-		);
-	}
-	const baselineDur = Math.max(
-		2,
-		(await probeDurationSecondsCached(baselineSource)) || BASELINE_DUR_SEC,
-	);
-	const offset = (Number(offsetSeed) * 1.37) % Math.max(2, baselineDur - 0.5);
-	const baseSeg = path.join(tmpDir, `base_${safeLabel}_${jobId}.mp4`);
-	await spawnBin(
-		ffmpegPath,
-		[
-			"-stream_loop",
-			"-1",
-			"-i",
-			baselineSource,
-			"-ss",
-			offset.toFixed(3),
-			"-t",
-			dur.toFixed(3),
-			"-an",
-			"-vf",
-			`fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-			"-c:v",
-			"libx264",
-			"-preset",
-			"veryfast",
-			"-crf",
-			String(SYNC_SO_INPUT_CRF),
-			"-pix_fmt",
-			"yuv420p",
-			"-movflags",
-			"+faststart",
-			"-y",
-			baseSeg,
-		],
-		"base_segment",
-		{ timeoutMs: 240000 },
-	);
-
-	let syncBase = baseSeg;
-	let prescaled = null;
-	let baseSizeBytes = null;
-	if (SYNC_SO_PRE_MAX_EDGE && SYNC_SO_PRE_MAX_EDGE > 0) {
-		try {
-			baseSizeBytes = fs.statSync(baseSeg).size;
-		} catch {}
-
-		const sizeThreshold = Math.floor(
-			SYNC_SO_MAX_BYTES * SYNC_SO_PRESCALE_SIZE_PCT,
-		);
-		const shouldPrescale =
-			SYNC_SO_PRESCALE_ALWAYS ||
-			(Number.isFinite(baseSizeBytes) && baseSizeBytes > sizeThreshold) ||
-			dur >= SYNC_SO_PRESCALE_MIN_SEC;
-
-		if (shouldPrescale) {
-			prescaled = path.join(tmpDir, `base_${safeLabel}_${jobId}_prescale.mp4`);
-			const scaleExpr = `scale='if(gt(iw,ih),${SYNC_SO_PRE_MAX_EDGE},-2)':'if(gt(ih,iw),${SYNC_SO_PRE_MAX_EDGE},-2)'`;
-			await spawnBin(
-				ffmpegPath,
-				[
-					"-i",
-					baseSeg,
-					"-an",
-					"-vf",
-					`${scaleExpr},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-					"-c:v",
-					"libx264",
-					"-preset",
-					"veryfast",
-					"-crf",
-					String(SYNC_SO_INPUT_CRF),
-					"-pix_fmt",
-					"yuv420p",
-					"-movflags",
-					"+faststart",
-					"-y",
-					prescaled,
-				],
-				"sync_prescale",
-				{ timeoutMs: 180000 },
-			);
-			syncBase = prescaled;
-			logJob(jobId, "sync prescale applied", {
-				label: safeLabel,
-				segDur: Number(dur.toFixed(3)),
-				baseBytes: baseSizeBytes || null,
-				thresholdBytes: sizeThreshold,
-			});
-		}
-	}
-
-	const baseSized = await ensureUnderBytes(
-		syncBase,
-		SYNC_SO_MAX_BYTES,
-		tmpDir,
-		jobId,
-		`base_${safeLabel}`,
-	);
-	if (!LONG_VIDEO_KEEP_TMP) {
-		if (baseSeg && baseSeg !== baseSized) safeUnlink(baseSeg);
-		if (prescaled && prescaled !== baseSized) safeUnlink(prescaled);
-	}
-
-	const syncAttemptLimit = Math.floor(clampNumber(maxRetries, 0, 3));
-	let finalNorm = null;
-	let lastErr = null;
-	for (let attempt = 0; attempt <= syncAttemptLimit; attempt++) {
-		try {
-			if (SYNC_SO_REQUEST_GAP_MS) await sleep(SYNC_SO_REQUEST_GAP_MS);
-			const attemptPlan = resolveSyncAttemptPlan(attempt, syncTier);
-			const syncInput =
-				attemptPlan.inputVariant === 0
-					? baseSized
-					: await createSyncFallbackInput(
-							baseSized,
-							tmpDir,
-							jobId,
-							`sync_${safeLabel}`,
-							attemptPlan.inputVariant,
-						);
-
-			const fit = path.join(
-				tmpDir,
-				`base_fit_${jobId}_${safeLabel}_${attempt}.mp4`,
-			);
-			await fitVideoToDuration(syncInput, dur, fit);
-			logJob(jobId, "lipsync attempt start", {
-				label: safeLabel,
-				attempt,
-				syncTier: attemptPlan.tier,
-				modelId: attemptPlan.modelId,
-				inputVariant: attemptPlan.inputVariant,
-			});
-
-			const syncJob = await requestSyncSoJob({
-				videoPath: fit,
-				audioPath,
-				jobId,
-				modelId: attemptPlan.modelId,
-			});
-			const outUrl = await pollSyncSoJob({
-				id: syncJob.id,
-				label: `lipsync_${safeLabel}`,
-				jobId,
-			});
-
-			const raw = path.join(tmpDir, `lip_${jobId}_${safeLabel}_${attempt}.mp4`);
-			await downloadToFile(outUrl, raw, 120000, 2);
-			const syncQa = await analyzeLipsyncOutput({
-				videoPath: raw,
-				expectedDurSec: dur,
-				jobId,
-				label: safeLabel,
-				requireMotion: true,
-			});
-			logJob(jobId, "lipsync qa", {
-				label: safeLabel,
-				attempt,
-				syncTier: attemptPlan.tier,
-				modelId: attemptPlan.modelId,
-				pass: syncQa.pass,
-				issues: syncQa.issues,
-				motionRequired: true,
-				durationSec: Number((syncQa.durationSec || 0).toFixed(3)),
-				durationDeltaSec: Number((syncQa.durationDeltaSec || 0).toFixed(3)),
-				maxFreezeSec: Number((syncQa.maxFreezeSec || 0).toFixed(3)),
-				freezeRatio: Number((syncQa.freezeRatio || 0).toFixed(3)),
-			});
-			if (
-				!syncQa.pass &&
-				PRESENTER_RENDER_MOTION_NEAR_PASS_ENABLED &&
-				isPresenterFreezeNearPass(syncQa, "rendered")
-			) {
-				logJob(jobId, "lipsync qa near-pass accepted", {
-					label: safeLabel,
-					attempt,
-					issues: syncQa.issues,
-					maxFreezeSec: Number((syncQa.maxFreezeSec || 0).toFixed(3)),
-					freezeRatio: Number((syncQa.freezeRatio || 0).toFixed(3)),
-				});
-				syncQa.pass = true;
-				syncQa.issues = [];
-			}
-			if (!syncQa.pass) {
-				safeUnlink(raw);
-				throw new Error(`Lipsync QA failed: ${syncQa.issues.join(", ")}`);
-			}
-
-			const fit2 = path.join(
-				tmpDir,
-				`lip_fit_${jobId}_${safeLabel}_${attempt}.mp4`,
-			);
-			await fitVideoToDuration(raw, dur, fit2, SEGMENT_PAD_SEC);
-			safeUnlink(raw);
-
-			const withAudio = path.join(
-				tmpDir,
-				`seg_${jobId}_${safeLabel}_${attempt}_audio.mp4`,
-			);
-			await mergeVideoWithAudio(fit2, audioPath, withAudio);
-			safeUnlink(fit2);
-
-			const norm = path.join(
-				tmpDir,
-				`seg_${jobId}_${safeLabel}_${attempt}_norm.mp4`,
-			);
-			await normalizeClip(withAudio, norm, output, {
-				zoomOut: CAMERA_ZOOM_OUT,
-				addFades,
-				cameraMotion: cameraMotion
-					? { ...cameraMotion, visualType: "presenter" }
-					: null,
-			});
-			safeUnlink(withAudio);
-			await assertPresenterVideoHasMotion({
-				videoPath: norm,
-				jobId,
-				label: `rendered_presenter_${safeLabel}_a${attempt}`,
-				mode: "rendered",
-			});
-
-			finalNorm = norm;
-			lastErr = null;
-			break;
-		} catch (e) {
-			lastErr = e;
-			logJob(jobId, "lipsync attempt failed", {
-				label: safeLabel,
-				attempt,
-				error: e.message,
-			});
-			if (attempt < syncAttemptLimit) {
-				const delay = SYNC_SO_RETRY_DELAY_MS * (attempt + 1);
-				await sleep(delay);
-			}
-		}
-	}
-
-	if (!finalNorm) {
-		if (REQUIRE_LIPSYNC || PRESENTER_MOTION_QA_ENABLED) {
-			throw lastErr || new Error("Lipsync failed");
-		}
-		logJob(jobId, "lipsync failed; using base video", {
-			label: safeLabel,
-			error: lastErr?.message || "unknown error",
-		});
-		const fit = path.join(tmpDir, `base_fit_${jobId}_${safeLabel}.mp4`);
-		await fitVideoToDuration(baseSized, dur, fit, SEGMENT_PAD_SEC);
-		const withAudio = path.join(tmpDir, `seg_${jobId}_${safeLabel}_audio.mp4`);
-		await mergeVideoWithAudio(fit, audioPath, withAudio);
-		const norm = path.join(tmpDir, `seg_${jobId}_${safeLabel}_norm.mp4`);
-		await normalizeClip(withAudio, norm, output, {
-			zoomOut: CAMERA_ZOOM_OUT,
-			addFades,
-			cameraMotion: cameraMotion
-				? { ...cameraMotion, visualType: "presenter" }
-				: null,
-		});
-		safeUnlink(withAudio);
-		finalNorm = norm;
-	}
-
-	return finalNorm;
 }
 
 function buildSubtleStillMotionFilter({
@@ -22861,91 +24056,6 @@ async function buildRenderableTimelineUnits({
 	return units;
 }
 
-async function ensureUnderBytes(
-	videoPath,
-	maxBytes,
-	tmpDir,
-	jobId,
-	label = "sync_input",
-) {
-	try {
-		const st = fs.statSync(videoPath);
-		if (st.size <= maxBytes) return videoPath;
-
-		const out = path.join(tmpDir, `${label}_${crypto.randomUUID()}_small.mp4`);
-		await spawnBin(
-			ffmpegPath,
-			[
-				"-i",
-				videoPath,
-				"-an",
-				"-vf",
-				`fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-				"-c:v",
-				"libx264",
-				"-preset",
-				"veryfast",
-				"-crf",
-				String(Math.max(28, SYNC_SO_INPUT_CRF + 4)),
-				"-pix_fmt",
-				"yuv420p",
-				"-movflags",
-				"+faststart",
-				"-y",
-				out,
-			],
-			"shrink_sync_input",
-			{ timeoutMs: 180000 },
-		);
-
-		const st2 = fs.statSync(out);
-		logJob(jobId, "sync input shrunk", {
-			label,
-			beforeBytes: st.size,
-			afterBytes: st2.size,
-		});
-		if (st2.size <= maxBytes) return out;
-
-		const out2 = path.join(tmpDir, `${label}_${crypto.randomUUID()}_down.mp4`);
-		const scaleExpr = `scale='if(gt(iw,ih),${SYNC_SO_FALLBACK_MAX_EDGE},-2)':'if(gt(ih,iw),${SYNC_SO_FALLBACK_MAX_EDGE},-2)'`;
-		await spawnBin(
-			ffmpegPath,
-			[
-				"-i",
-				out,
-				"-an",
-				"-vf",
-				`${scaleExpr},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-				"-c:v",
-				"libx264",
-				"-preset",
-				"veryfast",
-				"-crf",
-				String(Math.max(26, SYNC_SO_INPUT_CRF + 4)),
-				"-pix_fmt",
-				"yuv420p",
-				"-movflags",
-				"+faststart",
-				"-y",
-				out2,
-			],
-			"shrink_sync_input_scale",
-			{ timeoutMs: 180000 },
-		);
-		const st3 = fs.statSync(out2);
-		logJob(jobId, "sync input scaled down", {
-			label,
-			afterBytes: st3.size,
-		});
-		return out2;
-	} catch (e) {
-		logJob(jobId, "sync input size check failed (ignored)", {
-			error: e.message,
-		});
-		return videoPath;
-	}
-}
-
 async function concatClips(clips, outPath, outCfg) {
 	if (!Array.isArray(clips) || !clips.length)
 		throw new Error("No clips to concat");
@@ -23152,170 +24262,6 @@ async function concatClips(clips, outPath, outCfg) {
 		);
 		return await runPlainConcat();
 	}
-}
-
-/* ---------------------------------------------------------------
- * Intro motion (optional, compact 8-12s by default)
- * ------------------------------------------------------------- */
-
-async function createPresenterIntroMotion({
-	jobId,
-	presenterImagePath,
-	outputRatio,
-	durationSec,
-	motionRefVideo,
-}) {
-	if (!RUNWAY_API_KEY)
-		throw new Error("RUNWAY_API_KEY missing (required for intro motion)");
-
-	const runwayUri = await runwayCreateEphemeralUpload({
-		filePath: presenterImagePath,
-		filename: "presenter_intro.png",
-	});
-
-	const dur = clampNumber(
-		Number(durationSec) || DEFAULT_INTRO_SEC,
-		INTRO_MIN_SEC,
-		INTRO_MAX_SEC,
-	);
-
-	const motionHint = motionRefVideo
-		? buildPresenterReferenceMotionHint({ intro: true })
-		: "Calm broadcast intro motion: head mostly steady with tiny neck-driven corrections, soft chin dips, a natural blink cadence, subtle breathing, and one restrained emphasis gesture at most; do not let the presenter feel frozen.";
-	const introFace = pickIntroExpression(jobId);
-	const titleTarget = `${Math.round(
-		INTRO_TEXT_X_PCT * 100,
-	)}% from the left edge and ${Math.round(INTRO_TEXT_Y_PCT * 100)}% down`;
-
-	const prompt = `
-Photorealistic talking-head video of the SAME person as the reference image.
-Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
-Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
-This must be a real moving presenter video, not a still photo, freeze-frame, or camera-only zoom; show continuous subtle human face, eye, jaw, shoulder, and breathing motion.
-Action: calm intro delivery with hands resting on the desk; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
-Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
-Expression: ${introFace}. Calm and neutral, composed and professional with at most a very subtle, mostly closed-mouth light smile (barely noticeable, not constant, no toothy grin).
-Mouth and jaw: natural speech-ready jaw and lip behavior with readable but restrained openings and soft lip compression between phrases; avoid robotic, stiff, under-animated, or puppet-like mouth shapes.
-Facial consistency: keep the emotional read restrained and stable; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
-Eyes: comfortable, natural, relaxed with realistic blink cadence; keep direct camera contact; no glassy or robotic eyes, no frequent side glances, and no exaggerated widening.
-Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
-Wardrobe: keep clothing edges clean and believable with symmetrical shoulders, collar, lapels, and sleeves; no straps, scarves, shoulder drapes, floating fabric, or wardrobe glitches.
-${motionHint}
-Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except those already present in the reference.
-`.trim();
-
-	const fallbackPrompt = `
-Photorealistic talking-head video of the SAME person as the reference image.
-Same studio background and lighting. Keep identity consistent. ${STUDIO_EMPTY_PROMPT}
-Framing: medium shot (not too close, not too far), upper torso to mid torso, moderate headroom; desk visible; camera at a comfortable distance.
-This must be a real moving presenter video, not a still photo, freeze-frame, or camera-only zoom; show continuous subtle human face, eye, jaw, shoulder, and breathing motion.
-Action: small, natural intro posture with hands resting; minimal finger movement; avoid pronounced gestures. Keep an OPEN, EMPTY area on the viewer-left side for later title text. Do NOT add any screens, cards, posters, charts, or graphic panels.
-Props: keep all existing props exactly as in the reference, except remove any candles; do not add new objects. No candles, no candle holders, no flames.
-Expression: ${introFace}. Calm and neutral; very subtle, mostly closed-mouth light smile only (barely noticeable), not constant, no toothy grin.
-Mouth and jaw: natural, economical speech preparation with measured openings and soft lip compression between phrases; avoid robotic, stiff, or puppet-like mouth shapes.
-Facial consistency: keep the emotional read restrained and stable; no surprise, skepticism, smirks, cheek tension, lip curling, or dramatic brow lifts.
-Eyes: comfortable, natural, relaxed with realistic blink cadence; keep direct camera contact; no glassy or robotic eyes, no frequent side glances, and no exaggerated widening.
-Forehead: natural skin texture and subtle movement; avoid waxy smoothing.
-Wardrobe: keep clothing edges clean and believable with symmetrical shoulders, collar, lapels, and sleeves; no straps, scarves, shoulder drapes, floating fabric, or wardrobe glitches.
-${motionHint}
-Keep movements small and realistic. Natural sleeve and fabric movement. No exaggerated gestures. No extra people. No text overlays. No screens or charts. No logos except those already present in the reference.
-`.trim();
-
-	const introModelOrder = [];
-	if (RUNWAY_VIDEO_MODEL) introModelOrder.push(RUNWAY_VIDEO_MODEL);
-	if (
-		RUNWAY_VIDEO_MODEL_FALLBACK &&
-		!introModelOrder.includes(RUNWAY_VIDEO_MODEL_FALLBACK)
-	)
-		introModelOrder.push(RUNWAY_VIDEO_MODEL_FALLBACK);
-
-	const runIntroPrompt = async (promptText, label) => {
-		logJob(jobId, "intro motion prompt", {
-			label,
-			duration: dur,
-			ratio: outputRatio,
-		});
-		return await runwayImageToVideo({
-			runwayImageUri: runwayUri,
-			promptText,
-			durationSec: dur,
-			ratio: outputRatio,
-			modelOrder: introModelOrder.length ? introModelOrder : undefined,
-			jobId,
-			label: `intro_motion_${label}`,
-		});
-	};
-
-	let outUrl;
-	try {
-		outUrl = await runIntroPrompt(prompt, "primary");
-	} catch (e) {
-		logJob(jobId, "intro motion failed (primary)", { error: e.message });
-		try {
-			outUrl = await runIntroPrompt(fallbackPrompt, "fallback");
-		} catch (e2) {
-			logJob(jobId, "intro motion failed (fallback)", { error: e2.message });
-			if (REQUIRE_REAL_PRESENTER_VIDEO) {
-				throw new Error(
-					"intro_motion_required: Runway intro motion failed and static intro fallback is disabled.",
-				);
-			}
-
-			const outCfg = parseRatio(outputRatio);
-			const outMp4Fallback = path.join(
-				path.dirname(presenterImagePath),
-				`intro_motion_fallback_${jobId}.mp4`,
-			);
-			await spawnBin(
-				ffmpegPath,
-				[
-					"-loop",
-					"1",
-					"-i",
-					presenterImagePath,
-					"-t",
-					dur.toFixed(3),
-					"-an",
-					"-vf",
-					`scale=${makeEven(outCfg.w)}:${makeEven(
-						outCfg.h,
-					)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-						outCfg.w,
-					)}:${makeEven(outCfg.h)},fps=${DEFAULT_OUTPUT_FPS},format=yuv420p`,
-					"-c:v",
-					"libx264",
-					"-preset",
-					INTERMEDIATE_PRESET,
-					"-crf",
-					String(INTERMEDIATE_VIDEO_CRF),
-					"-pix_fmt",
-					"yuv420p",
-					"-movflags",
-					"+faststart",
-					"-y",
-					outMp4Fallback,
-				],
-				"intro_fallback",
-				{ timeoutMs: 180000 },
-			);
-			logJob(jobId, "intro motion fallback created", {
-				path: path.basename(outMp4Fallback),
-			});
-			return outMp4Fallback;
-		}
-	}
-
-	const outMp4 = path.join(
-		path.dirname(presenterImagePath),
-		`intro_motion_${jobId}.mp4`,
-	);
-	await downloadToFile(outUrl, outMp4, 120000, 2);
-	await assertPresenterVideoHasMotion({
-		videoPath: outMp4,
-		jobId,
-		label: "intro_motion",
-	});
-	return outMp4;
 }
 
 function resolveFontFile() {
@@ -24439,6 +25385,7 @@ async function runLongVideoJob(
 			musicUrl,
 			disableMusic,
 			dryRun,
+			orchestratorDryRun,
 			stopAfterThumbnail,
 			skipPresenterAdjustments,
 			overlayAssets,
@@ -24449,9 +25396,10 @@ async function runLongVideoJob(
 		} = payload;
 		const hasProvidedVoiceoverUrl = Boolean(voiceoverUrl);
 		const voiceoverUrlLocked = String(voiceoverUrl || "").trim();
-		const enableRunwayPresenterMotion = Boolean(
-			payload.enableRunwayPresenterMotion ??
-			controllerOptions.enableRunwayPresenterMotion,
+		const enableHeyGenPresenterMotion = Boolean(
+			payload.enableHeyGenPresenterMotion ??
+				controllerOptions.enableHeyGenPresenterMotion ??
+				true,
 		);
 		const enableWardrobeEdit = Boolean(
 			payload.enableWardrobeEdit ?? controllerOptions.enableWardrobeEdit,
@@ -24493,6 +25441,7 @@ async function runLongVideoJob(
 			controller: controllerOptions.controllerLabel,
 			controllerRuntime: getLongVideoRuntimeProfile(),
 			dryRun,
+			orchestratorDryRun,
 			requestedTargetSec: Number(targetDurationSec || 0),
 			contentTargetSec,
 			category: categoryLabel,
@@ -24504,9 +25453,10 @@ async function runLongVideoJob(
 			hasVoiceoverUrl: Boolean(voiceoverUrlLocked),
 			voiceoverLocked: Boolean(voiceoverUrlLocked),
 			hasMusicUrl: Boolean(musicUrl),
-			hasCseKeys: Boolean(GOOGLE_CSE_ID && GOOGLE_CSE_KEY),
-			hasRunway: Boolean(RUNWAY_API_KEY),
-			enableRunwayPresenterMotion: Boolean(enableRunwayPresenterMotion),
+			hasCseKeys: GOOGLE_CSE_CONFIG_READY,
+			cseConfigIssue: GOOGLE_CSE_CONFIG_ISSUE || "",
+			hasHeyGen: Boolean(HEYGEN_API_KEY),
+			enableHeyGenPresenterMotion: Boolean(enableHeyGenPresenterMotion),
 			enableWardrobeEdit: Boolean(enableWardrobeEdit),
 			skipPresenterAdjustments: Boolean(skipPresenterAdjustments),
 			disableYouTubeUpload: Boolean(controllerOptions.disableYouTubeUpload),
@@ -24545,20 +25495,18 @@ async function runLongVideoJob(
 			return;
 		}
 
-		if (!ffmpegPath)
+		if (!ffmpegPath && !orchestratorDryRun)
 			throw new Error("FFmpeg not found. Install ffmpeg or set FFMPEG_PATH.");
-		if (!SYNC_SO_API_KEY) throw new Error("SYNC_SO_API_KEY missing.");
-		if (!RUNWAY_API_KEY)
-			throw new Error(
-				"RUNWAY_API_KEY missing (required for presenter pipeline).",
-			);
+		if (!HEYGEN_API_KEY && !orchestratorDryRun)
+			throw new Error("HEYGEN_API_KEY missing (required for presenter pipeline).");
 		if (!process.env.CHATGPT_API_TOKEN)
 			throw new Error("CHATGPT_API_TOKEN missing.");
-		if (!ELEVEN_API_KEY)
+		if (!ELEVEN_API_KEY && !orchestratorDryRun)
 			throw new Error(
 				"ELEVENLABS_API_KEY missing (required for intro/outro voice).",
 			);
-		if (!effectiveVoiceId) throw new Error("ELEVENLABS voiceId missing.");
+		if (!effectiveVoiceId && !orchestratorDryRun)
+			throw new Error("ELEVENLABS voiceId missing.");
 
 		updateJob(jobId, { progressPct: 4 });
 
@@ -24675,6 +25623,13 @@ async function runLongVideoJob(
 				angle: t.angle || "",
 				topList: t.topList || null,
 				source: t.source || "",
+				directAnswerQuery: getTopicDirectAnswerQuery(t)
+					? {
+							type: getTopicDirectAnswerQuery(t).type,
+							subject: getTopicDirectAnswerQuery(t).subject || "",
+							bare: Boolean(getTopicDirectAnswerQuery(t).bare),
+						}
+					: null,
 			};
 		});
 		logJob(jobId, "topics chosen (detail)", { topics: topicChoiceDetails });
@@ -24688,6 +25643,13 @@ async function runLongVideoJob(
 					reason: t.reason || "",
 					angle: t.angle || "",
 					topList: t.topList || null,
+					directAnswerQuery: getTopicDirectAnswerQuery(t)
+						? {
+								type: getTopicDirectAnswerQuery(t).type,
+								subject: getTopicDirectAnswerQuery(t).subject || "",
+								bare: Boolean(getTopicDirectAnswerQuery(t).bare),
+							}
+						: null,
 				})),
 				category: categoryLabel,
 				topicReason: topicPicks[0]?.reason || "",
@@ -24695,7 +25657,7 @@ async function runLongVideoJob(
 			},
 		});
 
-		// 2) Presenter (forced default image + motion reference)
+		// 2) Presenter (forced default image, later animated by HeyGen)
 		let presenterLocal = await ensureLocalPresenterAsset(
 			presenterAssetUrl,
 			tmpDir,
@@ -24708,7 +25670,8 @@ async function runLongVideoJob(
 		let presenterThumbnailLocal = presenterLocal;
 		let presenterOutfit = "";
 		let presenterOutfitStyle = "";
-		const motionRefVideo = await ensureLocalMotionReferenceVideo(tmpDir, jobId);
+		let presenterHeyGenImageUrl = "";
+		const motionRefVideo = null;
 		const detected = detectFileType(presenterLocal);
 		let presenterIsVideo = detected?.kind === "video";
 		let presenterIsImage = detected?.kind === "image";
@@ -24719,7 +25682,7 @@ async function runLongVideoJob(
 		logJob(jobId, "presenter asset ready", {
 			path: path.basename(presenterLocal),
 			detected: detected?.kind || "unknown",
-			hasMotionRef: Boolean(motionRefVideo),
+			presenterVideoEngine: "heygen",
 			thumbnailSource: presenterThumbnailLocal
 				? path.basename(presenterThumbnailLocal)
 				: null,
@@ -24776,12 +25739,16 @@ async function runLongVideoJob(
 							{ limit: 16 },
 						),
 						promptText: t.promptText,
-						limit: PROMPT_TOPIC_NEWS_CONTEXT_LIMIT,
+						limit: getTopicDirectAnswerQuery(t)
+							? Math.max(PROMPT_TOPIC_NEWS_CONTEXT_LIMIT, 12)
+							: PROMPT_TOPIC_NEWS_CONTEXT_LIMIT,
 						jobId,
+						forceAllQueries: Boolean(getTopicDirectAnswerQuery(t)),
 					})
 				: [];
 			const needsLimitedCse =
 				!isPromptTopic ||
+				Boolean(getTopicDirectAnswerQuery(t)) ||
 				Boolean(t.topList?.count) ||
 				countContextSourceLinks(promptNewsContext) <
 					PROMPT_TOPIC_SOURCE_MIN_LINKS;
@@ -24791,10 +25758,23 @@ async function runLongVideoJob(
 						extraTokens,
 						isPromptTopic
 							? {
-									maxQueries: PROMPT_TOPIC_CSE_QUERY_LIMIT,
+									queries: uniqueStrings(
+										[
+											...(Array.isArray(promptBrief?.searchHints)
+												? promptBrief.searchHints
+												: []),
+											...(Array.isArray(t.searchHints)
+												? t.searchHints
+												: []),
+										],
+										{ limit: 14 },
+									),
+									maxQueries: getTopicDirectAnswerQuery(t)
+										? Math.max(PROMPT_TOPIC_CSE_QUERY_LIMIT, 8)
+										: PROMPT_TOPIC_CSE_QUERY_LIMIT,
 									num: PROMPT_TOPIC_CSE_RESULTS_PER_QUERY,
 									maxPages: 1,
-									limit: 6,
+									limit: getTopicDirectAnswerQuery(t) ? 10 : 6,
 								}
 							: {},
 					)
@@ -24805,7 +25785,14 @@ async function runLongVideoJob(
 					...promptNewsContext,
 					...(Array.isArray(ctx) ? ctx : []),
 				],
-				{ limit: isPromptTopic ? 12 : 8 },
+				{
+					limit:
+						isPromptTopic && getTopicDirectAnswerQuery(t)
+							? 16
+							: isPromptTopic
+								? 12
+								: 8,
+				},
 			);
 			const trendContext = uniqueStrings(
 				[
@@ -24830,7 +25817,7 @@ async function runLongVideoJob(
 			);
 			const mergedContext = uniqueContextItems(
 				sourceContext.concat(trendContext),
-				{ limit: 14 },
+				{ limit: getTopicDirectAnswerQuery(t) ? 18 : 14 },
 			);
 			topicContexts.push({ topic: t.topic, context: mergedContext });
 			liveContext = liveContext.concat(mergedContext || []);
@@ -24855,6 +25842,7 @@ async function runLongVideoJob(
 			})),
 		});
 		logJob(jobId, "cse images", { count: cseImages.length });
+		enrichDirectAnswerTopicsFromContext(topicPicks, topicContexts, jobId);
 		topicSourceSummary = topicContexts.map((tc, idx) => {
 			const contextItems = Array.isArray(tc.context) ? tc.context : [];
 			const cseLinks = uniqueStrings(
@@ -25435,6 +26423,87 @@ async function runLongVideoJob(
 		shortsGuardrails = analyzeShortsGuardrails(script);
 		if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
 
+		const plannedIntroOutroMood = voiceTonePlan?.mood || "neutral";
+		const plannedIntroText =
+			sanitizeIntroOutroLine(
+				buildIntroLine({
+					topics: topicPicks,
+					shortTitle: script.shortTitle || script.title,
+					mood: plannedIntroOutroMood,
+					jobId,
+				}),
+			) || "";
+		const plannedOutroText =
+			sanitizeIntroOutroLine(
+				buildOutroLine({
+					topics: topicPicks,
+					shortTitle: script.shortTitle || script.title,
+					mood: plannedIntroOutroMood,
+				}),
+			) || "";
+		const plannedIntroExpression = resolveOpeningPresenterExpression({
+			topics: topicPicks,
+			categoryLabel,
+			title: script.title,
+			mood: plannedIntroOutroMood,
+		});
+		const plannedOutroExpression = "warm";
+		const plannedIntroCarriesDirectAnswer = introCarriesDirectAnswer({
+			introText: plannedIntroText,
+			topics: topicPicks,
+		});
+		if (plannedIntroCarriesDirectAnswer) {
+			script = { ...script, directAnswerHandledByIntro: true };
+		}
+		const introDedupe = removeIntroLineFromOpeningSegment({
+			script,
+			introText: plannedIntroText,
+			topics: topicPicks,
+			wordCaps,
+			categoryLabel,
+			mood: plannedIntroOutroMood,
+		});
+		if (introDedupe.changed) {
+			script = applyLongVideoScriptGuards({
+				script: introDedupe.script,
+				topics: topicPicks,
+				wordCaps,
+				priorVideoPlan,
+				categoryLabel,
+				mood: voiceTonePlan?.mood,
+				injectOpeningLine: false,
+			});
+			qaResult = analyzeScriptQuality({
+				script,
+				topics: topicPicks,
+				topicContexts,
+				wordCaps,
+				categoryLabel,
+			});
+			shortsGuardrails = analyzeShortsGuardrails(script);
+			if (shortsGuardrails.needsRewrite) qaResult.needsRewrite = true;
+			logJob(jobId, "opening line moved to intro", {
+				removedFromSegment: introDedupe.removed,
+				segment0Now: script.segments?.[0]?.text || "",
+				introText: plannedIntroText,
+				introExpression: plannedIntroExpression,
+			});
+		}
+		const plannedIntroOutro = {
+			mood: plannedIntroOutroMood,
+			intro: {
+				text: plannedIntroText,
+				targetSec: introDurationSec,
+				expression: plannedIntroExpression,
+			},
+			outro: {
+				text: plannedOutroText,
+				targetSec: outroDurationSec,
+				expression: plannedOutroExpression,
+				silentSmileTailSec: OUTRO_SMILE_TAIL_SEC,
+			},
+		};
+
 		const preTtsVisualPlan = computeContentVisualPlan(
 			Array.isArray(script.segments) ? script.segments.length : 0,
 		);
@@ -25455,6 +26524,7 @@ async function runLongVideoJob(
 				priorVideoPlan,
 				categoryLabel,
 				mood: voiceTonePlan?.mood,
+				injectOpeningLine: false,
 			});
 		}
 		if (visualGrounding?.summary) {
@@ -25464,6 +26534,79 @@ async function runLongVideoJob(
 					scriptVisualGrounding: visualGrounding.summary,
 				},
 			});
+		}
+
+		shortsGuardrails = analyzeShortsGuardrails(script);
+		if (shortsGuardrails.needsRewrite) {
+			const postVisualRepair = repairResidualScriptQuality({
+				script,
+				topics: topicPicks,
+				topicContexts,
+				wordCaps,
+				categoryLabel,
+				shortsGuardrails,
+			});
+			if (postVisualRepair.repairs.length) {
+				script = applyLongVideoScriptGuards({
+					script: postVisualRepair.script,
+					topics: topicPicks,
+					wordCaps,
+					priorVideoPlan,
+					categoryLabel,
+					mood: voiceTonePlan?.mood,
+					injectOpeningLine: false,
+				});
+				qaResult = analyzeScriptQuality({
+					script,
+					topics: topicPicks,
+					topicContexts,
+					wordCaps,
+					categoryLabel,
+				});
+				shortsGuardrails = analyzeShortsGuardrails(script);
+				logJob(jobId, "script post-visual guardrail repaired", {
+					repairs: postVisualRepair.repairs,
+					qa: {
+						pass: qaResult.pass,
+						needsRewrite: qaResult.needsRewrite,
+						issues: qaResult.issues,
+						warnings: qaResult.warnings,
+						stats: qaResult.stats,
+					},
+					shortsGuardrails,
+				});
+			}
+		}
+		shortsGuardrails = analyzeShortsGuardrails(script);
+		if (shortsGuardrails?.issues?.includes("ending_open_loop_missing")) {
+			const forcedEndingRepair = forceFinalOpenLoopSegment({
+				script,
+				topics: topicPicks,
+				categoryLabel,
+				wordCaps,
+			});
+			if (forcedEndingRepair.changed) {
+				script = forcedEndingRepair.script;
+				qaResult = analyzeScriptQuality({
+					script,
+					topics: topicPicks,
+					topicContexts,
+					wordCaps,
+					categoryLabel,
+				});
+				shortsGuardrails = analyzeShortsGuardrails(script);
+				logJob(jobId, "script final open-loop forced", {
+					qa: {
+						pass: qaResult.pass,
+						needsRewrite: qaResult.needsRewrite,
+						issues: qaResult.issues,
+						warnings: qaResult.warnings,
+						stats: qaResult.stats,
+					},
+					shortsGuardrails,
+					finalSegment: script.segments?.[script.segments.length - 1]?.text || "",
+				});
+			}
 		}
 
 		const shortsDetailsRaw = await ensureShortsDetails({
@@ -25513,9 +26656,77 @@ async function runLongVideoJob(
 				},
 				shortsGuardrails,
 				shortsDetails,
+				introOutroPlan: plannedIntroOutro,
 				script: { title: script.title, segments: script.segments },
 			},
 		});
+
+		if (orchestratorDryRun) {
+			const visualPlan = computeContentVisualPlan(
+				Array.isArray(script.segments) ? script.segments.length : 0,
+			);
+			const estimatedWords = (script.segments || []).reduce(
+				(sum, seg) => sum + countWords(seg.text || ""),
+				0,
+			);
+			const dryRunMeta = {
+				...JOBS.get(jobId)?.meta,
+				orchestratorDryRun: true,
+				title: script.title,
+				shortTitle: script.shortTitle,
+				requestedTargetSec: Number(contentTargetSec || 0),
+				chosenNarrationSec: Number(narrationTargetSec || 0),
+				estimatedWords,
+				estimatedSpokenSec: Number(
+					(estimatedWords / Math.max(0.1, SCRIPT_VOICE_WPS)).toFixed(1),
+				),
+				narrationPlan: {
+					requestedSec: Number(contentTargetSec || 0),
+					targetSec: Number(narrationTargetSec || 0),
+					minSec: narrationPlan?.minSec,
+					maxSec: narrationPlan?.maxSec,
+					mode: narrationPlan?.mode,
+					signal: narrationPlan?.signal,
+				},
+				visualPlan: {
+					totalSegments: visualPlan.totalSegments,
+					presenterSegments: visualPlan.presenterPositions,
+					feedImageOrVideoSegments: visualPlan.imagePositions,
+					forcedPresenterSegments: visualPlan.forcedPresenterPositions,
+				},
+				introOutroPlan: plannedIntroOutro,
+				scriptQa: {
+					pass: qaResult.pass,
+					issues: qaResult.issues,
+					warnings: qaResult.warnings,
+					stats: qaResult.stats,
+				},
+				shortsGuardrails,
+				shortsDetails,
+				script: { title: script.title, segments: script.segments },
+				scriptEngagement,
+				thumbnailSkipped: true,
+				heygenSkipped: true,
+				ttsSkipped: true,
+			};
+			updateJob(jobId, {
+				status: "completed",
+				progressPct: 100,
+				finalVideoUrl: null,
+				meta: dryRunMeta,
+			});
+			logJob(jobId, "orchestrator dry run completed before paid/render steps", {
+				requestedSec: Number(contentTargetSec || 0),
+				chosenNarrationSec: Number(narrationTargetSec || 0),
+				segments: script.segments?.length || 0,
+				presenterSegments: visualPlan.presenterPositions,
+				feedImageOrVideoSegments: visualPlan.imagePositions,
+				thumbnailSkipped: true,
+				heygenSkipped: true,
+				ttsSkipped: true,
+			});
+			return;
+		}
 
 		// 5.5) Presenter wardrobe adjustment (post-script)
 		if (enableWardrobeEdit && presenterIsImage) {
@@ -25548,9 +26759,10 @@ async function runLongVideoJob(
 						presenterOutfitStyle = String(
 							presenterResult.presenterOutfitStyle || "",
 						).trim();
+						presenterHeyGenImageUrl = String(presenterResult.url || "").trim();
 						logJob(jobId, "presenter adjustments ready", {
 							path: path.basename(presenterLocal),
-							method: presenterResult.method || "runway",
+							method: presenterResult.method || "approved_presenter_outfit_library",
 							cloudinary: Boolean(presenterResult.url),
 							style: presenterOutfitStyle || "",
 						});
@@ -25732,18 +26944,23 @@ async function runLongVideoJob(
 		});
 
 		// 6) Orchestrator plan (intro/outro) + voice prep
-		const introOutroMood = voiceTonePlan?.mood || "neutral";
-		const introLine = buildIntroLine({
-			topics: topicPicks,
-			shortTitle: script.shortTitle || script.title,
-			mood: introOutroMood,
-			jobId,
-		});
-		const outroLine = buildOutroLine({
-			topics: topicPicks,
-			shortTitle: script.shortTitle || script.title,
-			mood: introOutroMood,
-		});
+		const introOutroMood =
+			plannedIntroOutro?.mood || voiceTonePlan?.mood || "neutral";
+		const introLine =
+			plannedIntroOutro?.intro?.text ||
+			buildIntroLine({
+				topics: topicPicks,
+				shortTitle: script.shortTitle || script.title,
+				mood: introOutroMood,
+				jobId,
+			});
+		const outroLine =
+			plannedIntroOutro?.outro?.text ||
+			buildOutroLine({
+				topics: topicPicks,
+				shortTitle: script.shortTitle || script.title,
+				mood: introOutroMood,
+			});
 		const introText =
 			sanitizeIntroOutroLine(introLine) || String(introLine || "").trim();
 		const outroText =
@@ -25768,14 +26985,15 @@ async function runLongVideoJob(
 				lastSegment: script.segments?.[script.segments.length - 1]?.text || "",
 			});
 		}
-		const introExpression = isPersonalFinanceCostOfLivingTopic({
-			topics: topicPicks,
-			categoryLabel,
-			text: script.title,
-		})
-			? "warm"
-			: "neutral";
-		const outroExpression = "warm";
+		const introExpression =
+			plannedIntroOutro?.intro?.expression ||
+			resolveOpeningPresenterExpression({
+				topics: topicPicks,
+				categoryLabel,
+				title: script.title,
+				mood: introOutroMood,
+			});
+		const outroExpression = plannedIntroOutro?.outro?.expression || "warm";
 
 		logJob(jobId, "orchestrator plan", {
 			mood: introOutroMood,
@@ -26376,6 +27594,15 @@ async function runLongVideoJob(
 				topicContexts,
 			});
 			const timingPromptBriefGuide = buildPromptBriefInstructionBlock(topicPicks);
+			const timingDirectAnswerGuide = buildDirectAnswerPromptBlock(
+				topicPicks,
+				topicContexts,
+			);
+			const timingAnswerRule = topicPicks.some((topic) =>
+				isDirectAnswerTopic(topic),
+			)
+				? "- For direct-answer topics, keep the verified answer in the first spoken content sentence for that topic; do not rewrite it into a tease."
+				: "- Preserve curiosity gaps: open with tension and delay the payoff by at least one sentence or segment.";
 			const timingSourcePolicy = buildTopicSourcePolicyPromptBlock(
 				topicPicks,
 				topicContexts,
@@ -26395,19 +27622,22 @@ ${timingPromiseGuide}
 
 ${timingPromptBriefGuide}
 
+${timingDirectAnswerGuide}
+
 ${timingSourcePolicy.text}
 
 Rules:
 ${timingToneRule}
 ${timingCasualRule}
 - Keep the timing rewrite brisk and adult; do not add padding, slow explanatory loops, or childlike reassurance just to fill seconds.
+- If the chosen narration budget expands beyond the frontend duration, spend it on retention: stronger examples, cleaner stakes, sharper transitions, and a better payoff. Do not add filler, repeated greetings, or slow recap.
 - Preserve factual tension: supported tradeoffs, incentives, disagreement, and uncertainty should stay clear and specific.
 - For entertainment topics (film, TV, music, awards), add ONE or TWO short grounded reactionary opinions per topic (brief clauses only). Keep them fair, specific, and clearly separate from sourced facts.
 - Keep EXACTLY ${segments.length} segments.
 - Preserve smooth transitions.
 - Keep coherence tight: each segment should connect to the previous with a brief bridge or cause-effect line.
 - Structure each topic around one clear angle; keep facts in service of that angle.
-- Preserve curiosity gaps: open with tension and delay the payoff by at least one sentence or segment.
+- ${timingAnswerRule}
 - Keep at least one clip-ready line per topic that ends with an open loop.
 - Make topic handoffs feel smooth and coherent; use a brief bridge phrase to set up the next topic.
 - For Topic 2+ only, if a segment is the first for a new topic, start it with an explicit transition line naming the topic. Do NOT use that transition for Topic 1.
@@ -26419,8 +27649,9 @@ ${timingCasualRule}
 - Add one fresh, concrete detail or implication per segment when possible.
 - Prefer specific nouns over vague hype phrases.
 - Keep the opening controlled, but make segment 0 feel hooky and curiosity-driven instead of bland.
-- Preserve any frontend-requested opening line as the first spoken sentence of segment 0.
+- Preserve any frontend-requested opening line as the first spoken line of the overall opening unit, and do not repeat it inside segment 0 when the intro already uses it.
 - Preserve any frontend-requested title unless a factual correction is necessary.
+- Include mandatory or memorable lines naturally. Do not say labels like "memorable line" or "must include" in the spoken script.
 - Keep the overall delivery calm and professional; avoid excited phrasing and exclamation points, but let the writing feel sharp and engaging. For entertainment topics only, allow brief grounded reactionary asides.
 - Stay close to the per-segment word caps (aim ~90-100% of each cap); do not be significantly shorter.
 - Preserve source attributions only when that topic is marked with source links in the Source policy. Remove invented named outlets, journals, studies, researchers, or "reporting" from topics with no source links.
@@ -26430,6 +27661,10 @@ ${timingCasualRule}
 - If the request, script title, or final title promises price, release details, availability, or what to expect, preserve those concrete details while adjusting length. If context does not confirm the detail, preserve the clear "not confirmed" wording.
 - If you mention rumors or estimates, label them clearly as unconfirmed.
 - Avoid filler words ("um", "uh", "umm", "uhm", "ah", "like"). Use zero filler words in the entire script, especially in segments 0-2.
+- Opening unit discipline: the generated intro plus segments 0-2 must be clean, explicit, curiosity-driven, and entertaining without hesitation sounds, stall words, fake pauses, or annoying verbal padding.
+- Do NOT introduce the presenter or host by name. A single brief greeting like "Hi guys, today we are talking about..." is allowed only in the generated intro, then open with the topic tension immediately. Segment 0 should not repeat the greeting.
+- Avoid artificial dramatic pause writing in segments 0-2: no ellipses, repeated dashes, isolated one-word fragments, or sentences that need a long silence to land.
+- Keep the first beat smooth and human: one restrained emotional color that fits the topic, with no exaggerated phrasing.
 - Do NOT add micro vocalizations ("heh", "whew", "hmm").
 - Do NOT mention "intro", "outro", "segment", "next segment", or say "in this video/clip".
 - Do NOT start segment 0 with transition phrases like "And now", "Now", "Next up", or "Let's talk about".
@@ -26483,7 +27718,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				maxFillersPerSegment: MAX_FILLER_WORDS_PER_SEGMENT,
 				maxEmotes: MAX_MICRO_EMOTES_PER_VIDEO,
 				maxEmotesPerSegment: MAX_MICRO_EMOTES_PER_VIDEO,
-				noFillerSegmentIndices: [0, 1, 2],
+				noFillerSegmentIndices: OPENING_NO_FILLER_SEGMENT_INDICES,
 			});
 			const timingPromiseRepair = repairTitlePromiseCoverage({
 				script: { ...script, segments: fillerLimited },
@@ -26502,7 +27737,17 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				categoryLabel,
 				mood: voiceTonePlan?.mood,
 			});
-			segments.splice(0, segments.length, ...(timingNoCta.segments || timingReadySegments));
+			const timingDirectAnswerRepair = repairDirectAnswerOpening({
+				script: timingNoCta,
+				topics: topicPicks,
+				topicContexts,
+				wordCaps: adjustedCaps,
+			}).script;
+			segments.splice(
+				0,
+				segments.length,
+				...(timingDirectAnswerRepair.segments || timingReadySegments),
+			);
 			segments = segments.map((s) => ({
 				...s,
 				text: sanitizeSegmentText(s.text),
@@ -26803,15 +28048,56 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			imageSegments: finalImageSegments,
 			imageFallbackToPresenterSegments,
 		});
+		if (!presenterHeyGenImageUrl) {
+			const presenterUpload = await uploadLocalImageToCloudinary(presenterLocal, {
+				publicIdBase: `long_presenter_heygen_${jobId}`,
+				output,
+				jobId,
+				segIndex: "presenter",
+			});
+			presenterHeyGenImageUrl = String(presenterUpload?.url || "").trim();
+		}
+		if (!presenterHeyGenImageUrl) {
+			throw new Error("HeyGen presenter image upload failed");
+		}
+		logJob(jobId, "heygen presenter image ready", {
+			url: presenterHeyGenImageUrl,
+			outfitStyle: presenterOutfitStyle || "",
+		});
+		updateJob(jobId, {
+			meta: {
+				...JOBS.get(jobId)?.meta,
+				presenterVideoEngine: "heygen",
+				heygenPresenter: {
+					imageUrl: presenterHeyGenImageUrl,
+					resolution: HEYGEN_DEFAULT_RESOLUTION,
+					expressiveness: HEYGEN_DEFAULT_EXPRESSIVENESS,
+					fit: HEYGEN_DEFAULT_FIT,
+				},
+			},
+		});
 		const presenterContentSec = timeline.reduce(
 			(sum, seg) =>
 				sum +
-				(seg.visualType === "presenter" ? Number(seg.durationSec || 0) : 0),
+				(seg.visualType === "presenter"
+					? Math.max(
+							0,
+							Number(seg.durationSec || 0) ||
+								Number(seg.endSec || 0) - Number(seg.startSec || 0),
+						)
+					: 0),
 			0,
 		);
 		const imageContentSec = timeline.reduce(
 			(sum, seg) =>
-				sum + (seg.visualType === "image" ? Number(seg.durationSec || 0) : 0),
+				sum +
+				(seg.visualType === "image"
+					? Math.max(
+							0,
+							Number(seg.durationSec || 0) ||
+								Number(seg.endSec || 0) - Number(seg.startSec || 0),
+						)
+					: 0),
 			0,
 		);
 		const presenterExpressionCount = new Set(
@@ -26824,30 +28110,24 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					),
 				),
 		).size;
-		const estimatedSyncBillableSec =
+		const estimatedHeyGenPresenterSec =
 			Number(introDurationSec || 0) +
 			Number(outroDurationSec || 0) +
 			presenterContentSec;
-		const estimatedRunwayBaselineSec =
-			ENABLE_RUNWAY_BASELINE && RUNWAY_API_KEY
-				? Math.min(presenterExpressionCount, BASELINE_MAX_EXPRESSIONS) *
-					BASELINE_VARIANTS *
-					BASELINE_DUR_SEC
-				: 0;
 		logJob(jobId, "cost-sensitive render budget", {
 			presenterRatio: CONTENT_PRESENTER_RATIO,
 			presenterContentSec: Number(presenterContentSec.toFixed(3)),
 			imageContentSec: Number(imageContentSec.toFixed(3)),
-			estimatedSyncBillableSec: Number(estimatedSyncBillableSec.toFixed(3)),
-			estimatedSyncBillableMin: Number((estimatedSyncBillableSec / 60).toFixed(3)),
-			estimatedRunwayBaselineSec: Number(
-				estimatedRunwayBaselineSec.toFixed(3),
+			estimatedHeyGenPresenterSec: Number(
+				estimatedHeyGenPresenterSec.toFixed(3),
+			),
+			estimatedHeyGenPresenterMin: Number(
+				(estimatedHeyGenPresenterSec / 60).toFixed(3),
 			),
 			baselineExpressions: presenterExpressionCount,
-			baselineExpressionBudget: BASELINE_MAX_EXPRESSIONS,
-			baselineVariants: BASELINE_VARIANTS,
-			baselineAcceptedTarget: BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION,
-			baselineIdentityQa: BASELINE_IDENTITY_QA_ENABLED,
+			presenterEngine: "heygen",
+			heygenResolution: HEYGEN_DEFAULT_RESOLUTION,
+			heygenExpressiveness: HEYGEN_DEFAULT_EXPRESSIVENESS,
 		});
 		const premiumPresenterSegments = [];
 		for (const seg of timeline) {
@@ -26917,13 +28197,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				imageDiversity,
 			},
 		});
-		logJob(jobId, "sync model strategy", {
-			introPrimary: SYNC_SO_MODEL_STANDARD,
-			standardPrimary: SYNC_SO_MODEL_STANDARD,
-			premiumPrimary: SYNC_SO_MODEL_HERO,
-			fallbackPrimary: SYNC_SO_MODEL_FALLBACK,
+		logJob(jobId, "heygen presenter strategy", {
+			resolution: HEYGEN_DEFAULT_RESOLUTION,
+			expressiveness: HEYGEN_DEFAULT_EXPRESSIVENESS,
+			fit: HEYGEN_DEFAULT_FIT,
 			premiumPresenterSegments,
-			outroPrimary: SYNC_SO_MODEL_HERO,
+			fallbackPolicy: "no paid presenter fallbacks",
 		});
 		if (!imageDiversity.ok) {
 			const failingTopics = (imageDiversity.perTopic || []).filter(
@@ -26992,6 +28271,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			addFades = false,
 			cameraMotion = null,
 			preferredImagePaths = [],
+			fallbackText = "",
 			reason = "presenter_motion_unavailable",
 		}) => {
 			const imagePaths = [];
@@ -27011,6 +28291,34 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				exclude: imagePaths,
 				limit: 10,
 			}).forEach(addImagePath);
+			if (!imagePaths.length) {
+				try {
+					const fallbackCard = await createTopicDetailCardImage({
+						tmpDir,
+						jobId,
+						topicIndex: `fallback_${String(label || "segment").replace(/[^a-z0-9_-]/gi, "")}`,
+						title:
+							script.shortTitle ||
+							script.title ||
+							topicSummary ||
+							"Key Idea",
+						bullets: [
+							formatHumanTitle(
+								stripMetaNarration(fallbackText || script.title || topicSummary),
+								92,
+							) || "A clean visual fallback for this beat",
+						],
+						output,
+					});
+					addImagePath(fallbackCard);
+				} catch (e) {
+					logJob(jobId, "non-presenter fallback card failed", {
+						label,
+						reason,
+						error: e?.message || String(e),
+					});
+				}
+			}
 			if (imagePaths.length) {
 				const fallbackImages = rotateFallbackPathsForLabel(imagePaths, label);
 				try {
@@ -27145,570 +28453,127 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			});
 		}
 
-		// 9) Create baseline presenter videos (expression-aware)
-		const baselinePresenterVideos = new Map();
-		const normalizeBaselineItem = (item) =>
-			typeof item === "string" ? { path: item } : item || {};
-		const rankBaselineItems = (items = []) =>
-			items
-				.map((item) => normalizeBaselineItem(item))
-				.filter((item) => item.path)
-				.sort((a, b) => {
-					const aNear = a.acceptedNearPass ? 1 : 0;
-					const bNear = b.acceptedNearPass ? 1 : 0;
-					if (aNear !== bNear) return aNear - bNear;
-					const aIdentity = Number.isFinite(Number(a.identityScore))
-						? Number(a.identityScore)
-						: 1;
-					const bIdentity = Number.isFinite(Number(b.identityScore))
-						? Number(b.identityScore)
-						: 1;
-					if (aIdentity !== bIdentity) return bIdentity - aIdentity;
-					const aDistortion = Number.isFinite(Number(a.distortionScore))
-						? Number(a.distortionScore)
-						: 0;
-					const bDistortion = Number.isFinite(Number(b.distortionScore))
-						? Number(b.distortionScore)
-						: 0;
-					if (aDistortion !== bDistortion) return aDistortion - bDistortion;
-					const aRatio = Number.isFinite(Number(a.freezeRatio))
-						? Number(a.freezeRatio)
-						: 1;
-					const bRatio = Number.isFinite(Number(b.freezeRatio))
-						? Number(b.freezeRatio)
-						: 1;
-					if (aRatio !== bRatio) return aRatio - bRatio;
-					const aFreeze = Number.isFinite(Number(a.maxFreezeSec))
-						? Number(a.maxFreezeSec)
-						: 999;
-					const bFreeze = Number.isFinite(Number(b.maxFreezeSec))
-						? Number(b.maxFreezeSec)
-						: 999;
-					if (aFreeze !== bFreeze) return aFreeze - bFreeze;
-					return (Number(a.variant) || 0) - (Number(b.variant) || 0);
-				});
-		const pushBaselineVariant = (
-			expr,
-			clipPath,
-			motionQa = null,
-			variant = 0,
-			identityQa = null,
-		) => {
-			if (!clipPath) return;
-			const list = baselinePresenterVideos.get(expr) || [];
-			list.push({
-				path: clipPath,
-				expression: expr,
-				variant: Number(variant) || list.length + 1,
-				acceptedNearPass: Boolean(motionQa?.acceptedNearPass),
-				freezeRatio: Number.isFinite(Number(motionQa?.freezeRatio))
-					? Number(motionQa.freezeRatio)
-					: 0,
-				maxFreezeSec: Number.isFinite(Number(motionQa?.maxFreezeSec))
-					? Number(motionQa.maxFreezeSec)
-					: 0,
-				identityScore: Number.isFinite(Number(identityQa?.identityScore))
-					? Number(identityQa.identityScore)
-					: 1,
-				distortionScore: Number.isFinite(Number(identityQa?.distortionScore))
-					? Number(identityQa.distortionScore)
-					: 0,
-			});
-			baselinePresenterVideos.set(expr, list);
-		};
-		const pickBaselineVariant = (expr, seed = 0) => {
-			let rawList =
-				baselinePresenterVideos.get(expr) ||
-				baselinePresenterVideos.get("neutral") ||
-				[];
-			if (!rawList.length) {
-				const first = baselinePresenterVideos.values().next().value;
-				rawList = Array.isArray(first) ? first : first ? [first] : [];
-			}
-			const list = rawList
-				.map((item) => normalizeBaselineItem(item))
-				.filter((item) => item.path)
-				.sort((a, b) => (Number(a.variant) || 0) - (Number(b.variant) || 0));
-			if (!list.length) return null;
-			const jobShift = Math.abs(seedFromJobId(jobId)) % list.length;
-			const idx =
-				(Math.abs(Math.floor(Number(seed) || 0)) + jobShift) % list.length;
-			return normalizeBaselineItem(list[idx]).path || null;
-		};
-		const pickBaselineDefault = () => {
-			const neutralList = baselinePresenterVideos.get("neutral") || [];
-			if (neutralList.length) return normalizeBaselineItem(neutralList[0]).path;
-			const first = baselinePresenterVideos.values().next().value;
-			return Array.isArray(first)
-				? normalizeBaselineItem(first[0]).path || null
-				: normalizeBaselineItem(first).path || null;
-		};
-		const pickBestBaselineVariant = (expr) => {
-			const ranked = rankBaselineItems(baselinePresenterVideos.get(expr) || []);
-			if (ranked.length) return ranked[0].path;
-			const neutralRanked = rankBaselineItems(
-				baselinePresenterVideos.get("neutral") || [],
-			);
-			return neutralRanked[0]?.path || null;
-		};
-		const pickBaselineCandidates = (expr, seed = 0, limit = 4) => {
-			const seen = new Set();
-			const out = [];
-			const addPath = (clipPath) => {
-				if (!clipPath || seen.has(clipPath)) return;
-				seen.add(clipPath);
-				out.push(clipPath);
-			};
-			const addRanked = (key) => {
-				for (const item of rankBaselineItems(baselinePresenterVideos.get(key) || [])) {
-					addPath(item.path);
-				}
-			};
-			addPath(pickBaselineVariant(expr, seed));
-			addRanked(expr);
-			if (expr !== "warm") addRanked("warm");
-			if (expr !== "thoughtful") addRanked("thoughtful");
-			if (expr !== "neutral") addRanked("neutral");
-			addPath(pickBestBaselineVariant(expr));
-			addPath(pickBaselineDefault());
-			return out.slice(0, Math.max(1, Number(limit) || 1));
-		};
-		const expressionsNeeded = Array.from(
-			new Set(
-				[
-					...segments
-						.filter((s) => presenterSegSet.has(s.index))
-						.map((s) => s.videoExpression || s.expression),
-					introExpression,
-					outroExpression,
-				].filter(Boolean),
-			),
-		);
-		if (LOCK_PRESENTER_VIDEO_EXPRESSION && lockedPresenterExpression) {
-			const withoutLocked = expressionsNeeded.filter(
-				(expr) => expr !== lockedPresenterExpression,
-			);
-			expressionsNeeded.splice(
-				0,
-				expressionsNeeded.length,
-				lockedPresenterExpression,
-				...withoutLocked,
-			);
-		}
-		if (!expressionsNeeded.includes("neutral")) expressionsNeeded.push("neutral");
-
-		let lastPresenterMotionError = "";
-		if (presenterIsVideo) {
-			try {
-				await assertPresenterVideoHasMotion({
-					videoPath: presenterLocal,
-					jobId,
-					label: "provided_presenter_video",
-				});
-				pushBaselineVariant(
-					"neutral",
-					presenterLocal,
-					{ acceptedNearPass: false, freezeRatio: 0, maxFreezeSec: 0 },
-					0,
-				);
-				logJob(jobId, "presenter is video; baseline uses provided video");
-			} catch (e) {
-				lastPresenterMotionError = e?.message || String(e);
-				logJob(jobId, "provided presenter video failed motion qa", {
-					error: lastPresenterMotionError,
-					strictNoStaticPresenter: true,
-				});
-			}
-		} else if (
-			enableRunwayPresenterMotion &&
-			ENABLE_RUNWAY_BASELINE &&
-			RUNWAY_API_KEY
-		) {
-			let successfulBaselineExpressions = 0;
-			for (const expr of expressionsNeeded) {
-				if (successfulBaselineExpressions >= BASELINE_MAX_EXPRESSIONS) {
-					logJob(jobId, "baseline expression budget reached", {
-						budget: BASELINE_MAX_EXPRESSIONS,
-						skippedExpression: expr,
-					});
-					break;
-				}
-				let acceptedBaselineCount = 0;
-				for (let v = 0; v < BASELINE_VARIANTS; v++) {
-					try {
-						const runwayUri = await runwayCreateEphemeralUpload({
-							filePath: presenterLocal,
-							filename: `presenter_${expr}.png`,
-						});
-						const prompt = buildBaselinePrompt(expr, motionRefVideo, v + 1);
-
-						logJob(jobId, "runway baseline prompt", {
-							expression: expr,
-							variant: v + 1,
-							duration: BASELINE_DUR_SEC,
-							ratio: output.ratio,
-						});
-
-						const outUrl = await runwayImageToVideo({
-							runwayImageUri: runwayUri,
-							promptText: prompt,
-							durationSec: BASELINE_DUR_SEC,
-							ratio: output.ratio,
-							jobId,
-							label: `baseline_${expr}_v${v + 1}`,
-						});
-
-						const outMp4 = path.join(
-							tmpDir,
-							`baseline_${jobId}_${expr}_v${v + 1}.mp4`,
-						);
-						await downloadToFile(outUrl, outMp4, 120000, 2);
-
-						// Prep baseline for sync input
-						const prep = path.join(
-							tmpDir,
-							`baseline_sync_${jobId}_${expr}_v${v + 1}.mp4`,
-						);
-						await spawnBin(
-							ffmpegPath,
-							[
-								"-i",
-								outMp4,
-								"-t",
-								BASELINE_DUR_SEC.toFixed(3),
-								"-an",
-								"-vf",
-								`scale=${makeEven(output.w)}:${makeEven(
-									output.h,
-								)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-									output.w,
-								)}:${makeEven(
-									output.h,
-								)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p,setpts=PTS-STARTPTS`,
-								"-c:v",
-								"libx264",
-								"-preset",
-								"veryfast",
-								"-crf",
-								String(SYNC_SO_INPUT_CRF),
-								"-pix_fmt",
-								"yuv420p",
-								"-movflags",
-								"+faststart",
-								"-y",
-								prep,
-							],
-							"prepare_baseline",
-							{ timeoutMs: 240000 },
-						);
-
-						const syncReady = await ensureUnderBytes(
-							prep,
-							SYNC_SO_MAX_BYTES,
-							tmpDir,
-							jobId,
-							`baseline_sync_${expr}_v${v + 1}`,
-						);
-						const motionQa = await evaluatePresenterVideoMotion({
-							videoPath: syncReady,
-							jobId,
-							label: `baseline_${expr}_v${v + 1}`,
-							mode: "baseline",
-						});
-						const identityQa = await evaluatePresenterIdentityQa({
-							referenceImagePath: presenterLocal,
-							videoPath: syncReady,
-							tmpDir,
-							jobId,
-							label: `baseline_${expr}_v${v + 1}`,
-							expression: expr,
-							variant: v + 1,
-						});
-						pushBaselineVariant(expr, syncReady, motionQa, v + 1, identityQa);
-						logJob(jobId, "baseline presenter ready", {
-							expression: expr,
-							variant: v + 1,
-							path: path.basename(syncReady),
-							acceptedNearPass: Boolean(motionQa.acceptedNearPass),
-							motionQa: {
-								maxFreezeSec: Number((motionQa.maxFreezeSec || 0).toFixed(3)),
-								freezeRatio: Number((motionQa.freezeRatio || 0).toFixed(3)),
-							},
-							identityQa: {
-								skipped: Boolean(identityQa.skipped),
-								identityScore: Number(
-									(identityQa.identityScore || 0).toFixed(3),
-								),
-								distortionScore: Number(
-									(identityQa.distortionScore || 0).toFixed(3),
-								),
-							},
-						});
-						acceptedBaselineCount += 1;
-						if (
-							acceptedBaselineCount >=
-								BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION ||
-							(BASELINE_STOP_AFTER_CLEAN_PASS && !motionQa.acceptedNearPass)
-						) {
-							logJob(jobId, "baseline expression satisfied", {
-								expression: expr,
-								variant: v + 1,
-								acceptedBaselineCount,
-								acceptedNearPass: Boolean(motionQa.acceptedNearPass),
-								maxAcceptedVariants:
-									BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION,
-							});
-							break;
-						}
-					} catch (e) {
-						lastPresenterMotionError = e?.message || String(e);
-						logJob(jobId, "runway baseline failed (expression)", {
-							expression: expr,
-							variant: v + 1,
-							error: e.message,
-						});
-					}
-				}
-				if (
-					acceptedBaselineCount > 0 &&
-					acceptedBaselineCount < BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION
-				) {
-					logJob(jobId, "baseline expression underfilled", {
-						expression: expr,
-						acceptedBaselineCount,
-						targetAcceptedVariants:
-							BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION,
-						attempts: BASELINE_VARIANTS,
-						reason: "accepted fewer identity-and-motion-safe variants than target",
-					});
-				}
-				if (acceptedBaselineCount > 0) successfulBaselineExpressions += 1;
-			}
-		}
-		if (!baselinePresenterVideos.size) {
-			if (REQUIRE_REAL_PRESENTER_VIDEO || !ALLOW_STATIC_PRESENTER_FALLBACK) {
-				const disabledPresenterSegments = timeline
-					.filter((seg) => seg.visualType === "presenter")
-					.map((seg) => seg.index);
-				if (disabledPresenterSegments.length && !ALLOW_ZERO_PRESENTER_OUTPUT) {
-					logJob(jobId, "presenter motion unavailable; stopping before upload", {
-						reason: lastPresenterMotionError || "no_valid_presenter_motion",
-						disabledPresenterSegments,
-						strictNoStaticPresenter: true,
-						imageFallbacksAvailable: feedImageFallbackPaths.length,
-					});
-					throw new Error(
-						`presenter_motion_unavailable:no_usable_runway_baseline:${lastPresenterMotionError || "unknown"}`,
-					);
-				}
-				timeline = timeline.map((seg) =>
-					seg.visualType === "presenter"
-						? {
-								...seg,
-								visualType: "image",
-								presenterMotionDisabled: true,
-								presenterFallbackReason: "presenter_motion_unavailable",
-							}
-						: seg,
-				);
-				logJob(jobId, "presenter motion unavailable; continuing without presenter", {
-					reason: lastPresenterMotionError || "no_valid_presenter_motion",
-					disabledPresenterSegments,
-					strictNoStaticPresenter: true,
-					imageFallbacksAvailable: feedImageFallbackPaths.length,
-				});
-				updateJob(jobId, {
-					meta: {
-						...JOBS.get(jobId)?.meta,
-						timeline,
-						visualPlan: {
-							targetPresenterRatio: CONTENT_PRESENTER_RATIO,
-							presenterSegments: [],
-							imageSegments: timeline.map((seg) => seg.index),
-							feedVideoSegments: feedVideoPlanSummary.map((s) => s.segment),
-							presenterMotionUnavailable: true,
-							disabledPresenterSegments,
-						},
-					},
-				});
-			} else {
-				// Fallback: convert image to a simple still video
-				const still = path.join(tmpDir, `baseline_still_${jobId}.mp4`);
-				await spawnBin(
-					ffmpegPath,
-					[
-						"-loop",
-						"1",
-						"-i",
-						presenterLocal,
-						"-t",
-						BASELINE_DUR_SEC.toFixed(3),
-						"-an",
-						"-vf",
-						`scale=${makeEven(output.w)}:${makeEven(
-							output.h,
-						)}:force_original_aspect_ratio=increase:flags=lanczos,crop=${makeEven(
-							output.w,
-						)}:${makeEven(output.h)},fps=${SYNC_SO_INPUT_FPS},format=yuv420p`,
-						"-c:v",
-						"libx264",
-						"-preset",
-						"veryfast",
-						"-crf",
-						String(SYNC_SO_INPUT_CRF),
-						"-pix_fmt",
-						"yuv420p",
-						"-movflags",
-						"+faststart",
-						"-y",
-						still,
-					],
-					"baseline_still",
-					{ timeoutMs: 180000 },
-				);
-				pushBaselineVariant(
-					"neutral",
-					still,
-					{
-						acceptedNearPass: true,
-						freezeRatio: 1,
-						maxFreezeSec: BASELINE_DUR_SEC,
-					},
-					0,
-				);
-			}
-		}
-
-		const baselineDefault = pickBaselineDefault();
-		const presenterBaselineCandidateLimit = Math.min(
-			3,
-			Math.max(1, BASELINE_MAX_ACCEPTED_VARIANTS_PER_EXPRESSION),
-		);
+		// 9) HeyGen uses the approved presenter image directly; no paid pre-baselines.
+		logJob(jobId, "heygen presenter baselines skipped", {
+			engine: "heygen",
+			imageUrl: presenterHeyGenImageUrl,
+		});
 
 		updateJob(jobId, { progressPct: 50 });
 
-		// 10) Intro (lipsync + title overlay)
-		const introOffsetSeed = seedFromJobId(jobId) % 29;
-		const introBaselineCandidates = pickBaselineCandidates(
-			introExpression,
-			0,
-			Math.max(OPENING_PRESENTER_BASELINE_TRIES, presenterBaselineCandidateLimit),
-		);
-		const introCameraMotion = inferCameraMotionPlan({
-			text: introTextFinal,
-			topicLabel: topicSummary,
-			expression: introExpression,
-			mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
-			visualType: "presenter",
-			durationSec: introDurationSec,
-			index: -1,
-			categoryLabel,
-		});
-		let introBase = "";
-		let introPresenterError = null;
-		let introActualVisualType = "presenter";
-		let introFallbackReason = "";
-		for (
-			let i = 0;
-			i < introBaselineCandidates.length && !introBase;
-			i += 1
-		) {
-			try {
-				introBase = await renderLipsyncedSegment({
-					jobId,
-					tmpDir,
-					output,
-					baselineSource: introBaselineCandidates[i],
-					segDur: introDurationSec,
-					audioPath: introAudioPath,
-					label: i ? `intro_b${i}` : "intro",
-					offsetSeed: introOffsetSeed + i,
-					addFades: true,
-					syncTier: OPENING_PRESENTER_USE_HERO_SYNC ? "hero" : "standard",
-					cameraMotion: introCameraMotion,
-					maxRetries: OPENING_PRESENTER_SYNC_RETRIES,
-				});
-			} catch (e) {
-				introPresenterError = e;
-				logJob(jobId, "intro presenter render attempt failed", {
-					attempt: i,
-					error: e.message,
-				});
-			}
-		}
-		if (!introBase) {
-			introActualVisualType = "image_rescue";
-			introFallbackReason = introBaselineCandidates.length
-				? "intro_presenter_render_failed"
-				: "intro_presenter_motion_unavailable";
-			if (introPresenterError) {
-				logJob(jobId, "strict intro presenter unavailable; using images", {
-					error: introPresenterError.message,
-					attempts: introBaselineCandidates.length,
-				});
-			}
-			introBase = await renderNonPresenterFallbackSegment({
-				segDur: introDurationSec,
-				audioPath: introAudioPath,
-				label: "intro_no_presenter_motion",
-				addFades: true,
-				cameraMotion: { ...introCameraMotion, visualType: "image" },
-				preferredImagePaths: feedImageFallbackPaths,
-				reason: introFallbackReason,
-			});
-		}
-		const introPath = path.join(tmpDir, `intro_${jobId}.mp4`);
-		const introTitle = buildIntroCardTitle({
-			title: seoMeta?.seoTitle || script.title,
-			shortTitle: script.shortTitle || "",
-		});
-		const introSubtitle = buildIntroCardSubtitle({
-			topics: topicPicks,
-			shortTitle: script.shortTitle || script.title,
-		});
-		await createIntroClip({
-			title: introTitle,
-			subtitle: introSubtitle,
-			bgImagePath: introBase,
-			durationSec: introDurationSec,
-			outCfg: output,
-			outPath: introPath,
-			disableVideoBlur: true,
-		});
-		safeUnlink(introBase);
-
-		// 11) Content segment pipeline
-		const segmentVideos = [introPath];
-		const segmentRenderSummary = [
-			{
-				label: "intro",
-				plannedVisualType: "presenter",
-				actualVisualType: introActualVisualType,
-				durationSec: introDurationSec,
-				mustUsePresenter: false,
-				...(introFallbackReason ? { fallbackReason: introFallbackReason } : {}),
-			},
-		];
+		// 10) Intro + first content beats as one coherent HeyGen presenter segment.
+		const segmentVideos = [];
+		const segmentRenderSummary = [];
 		const requiredPresenterSegmentSet = new Set(
 			timeline
 				.filter((seg) => seg.mustUsePresenter)
 				.map((seg) => seg.index),
 		);
-		const renderUnits = await buildRenderableTimelineUnits({
+		let renderUnits = await buildRenderableTimelineUnits({
 			timeline,
 			tmpDir,
 			jobId,
 			premiumPresenterSegmentSet,
 		});
+		const openingMinSec = OPENING_PRESENTER_MIN_SEC;
+		const openingMaxSec = OPENING_PRESENTER_MAX_SEC;
+		const openingTargetSec = OPENING_PRESENTER_TARGET_SEC;
+		const openingUnits = [];
+		let openingContentSec = 0;
+		while (renderUnits.length) {
+			const next = renderUnits[0];
+			const nextDur = Math.max(0.2, Number(next.segDur || 0));
+			const projected = introDurationSec + openingContentSec + nextDur;
+			if (
+				openingUnits.length &&
+				projected > openingMaxSec &&
+				introDurationSec + openingContentSec >= openingMinSec
+			) {
+				break;
+			}
+			if (
+				openingUnits.length &&
+				introDurationSec + openingContentSec >= openingTargetSec
+			) {
+				break;
+			}
+			openingUnits.push(renderUnits.shift());
+			openingContentSec += nextDur;
+			if (introDurationSec + openingContentSec >= openingMaxSec) break;
+		}
+		const openingAudioPath = path.join(tmpDir, `intro_first_audio_${jobId}.wav`);
+		await concatAudioClips(
+			[introAudioPath, ...openingUnits.map((unit) => unit.audioPath)].filter(
+				Boolean,
+			),
+			openingAudioPath,
+		);
+		const openingDurationSec =
+			(await probeDurationSeconds(openingAudioPath)) ||
+			introDurationSec + openingContentSec;
+		const openingText = [
+			introTextFinal,
+			...openingUnits.map((unit) => unit.text || ""),
+		]
+			.filter(Boolean)
+			.join(" ");
+		const openingCameraMotion = inferCameraMotionPlan({
+			text: openingText,
+			topicLabel: topicSummary,
+			expression: introExpression,
+			mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+			visualType: "presenter",
+			durationSec: openingDurationSec,
+			index: -1,
+			categoryLabel,
+		});
+		const introPath = await renderHeyGenPresenterSegment({
+			jobId,
+			tmpDir,
+			output,
+			presenterImageUrl: presenterHeyGenImageUrl,
+			segDur: openingDurationSec,
+			audioPath: openingAudioPath,
+			label: "intro_first",
+			addFades: true,
+			cameraMotion: openingCameraMotion,
+			text: openingText,
+			expression: introExpression,
+			mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+			pace: resolveHeyGenPace({
+				text: openingText,
+				expression: introExpression,
+				mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+			}),
+			role: "intro_first",
+		});
+		segmentVideos.push(introPath);
+		segmentRenderSummary.push({
+			label: "intro_first",
+			renderSegments: openingUnits.flatMap(
+				(unit) => unit.renderSegmentIndices || [unit.index],
+			),
+			plannedVisualType: "presenter",
+			actualVisualType: "presenter",
+			durationSec: openingDurationSec,
+			mustUsePresenter: true,
+			combinedIntro: true,
+		});
 		logJob(jobId, "presenter render units", {
 			totalUnits: renderUnits.length,
+			openingCombined: {
+				durationSec: Number((openingDurationSec || 0).toFixed(3)),
+				segments: openingUnits.flatMap(
+					(unit) => unit.renderSegmentIndices || [unit.index],
+				),
+			},
 			mergedUnits: renderUnits
 				.filter((unit) => unit.mergedPresenterRun)
 				.map((unit) => ({
 					label: unit.renderLabel,
 					segments: unit.renderSegmentIndices,
 					segDur: Number((unit.segDur || 0).toFixed(3)),
-					syncTier: unit.syncTier,
+					engine: "heygen",
 				})),
 		});
 		let lastGoodFeedImagePaths = feedImageFallbackPaths.slice(0, 5);
@@ -27727,24 +28592,17 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				requiredPresenterSegmentSet.has(idx),
 			);
 			const exprKey = seg.videoExpression || seg.expression || "neutral";
-			const baselineCandidates = pickBaselineCandidates(
-				exprKey,
-				seg.index,
-				mustUsePresenter
-					? Math.max(
-							OPENING_PRESENTER_BASELINE_TRIES,
-							presenterBaselineCandidateLimit,
-						)
-					: presenterBaselineCandidateLimit,
-			);
-			const baselineSource = baselineCandidates[0] || baselineDefault;
+			const heygenPace = resolveHeyGenPace({
+				text: seg.text || "",
+				expression: exprKey,
+				mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+			});
 			if ((seg.visualType || "presenter") === "presenter") {
-				logJob(jobId, "presenter baseline selected", {
+				logJob(jobId, "heygen presenter segment planned", {
 					segment: seg.index,
 					renderLabel: seg.renderLabel || String(seg.index),
 					expression: exprKey,
-					baseline: baselineSource ? path.basename(baselineSource) : null,
-					candidateCount: baselineCandidates.length,
+					pace: heygenPace,
 				});
 			}
 			let norm = null;
@@ -27862,23 +28720,23 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 
 				if (!norm) {
 					try {
-						logJob(jobId, "image segment feed images exhausted; using local no-sync fallback", {
+						logJob(jobId, "image segment feed images exhausted; using local visual fallback", {
 							segment: seg.index,
 						});
-						norm = await renderNoSyncVisualFallbackSegment({
-							jobId,
-							tmpDir,
-							output,
+						norm = await renderNonPresenterFallbackSegment({
 							segDur,
 							audioPath: seg.audioPath,
-							label: `${seg.index}_nosync`,
+							label: `${seg.index}_local_visual`,
 							addFades: ENABLE_SEGMENT_FADES,
 							cameraMotion: seg.cameraMotion,
+							preferredImagePaths: feedImageFallbackPaths,
+							fallbackText: seg.text || "",
+							reason: fallbackReason || "image_assets_missing",
 						});
 						actualVisualType = "local_visual_fallback";
 						fallbackReason = fallbackReason
-							? `${fallbackReason}_used_no_sync_visual`
-							: "image_used_no_sync_visual";
+							? `${fallbackReason}_used_local_visual`
+							: "image_used_local_visual";
 					} catch (e) {
 						logJob(jobId, "image segment local no-sync fallback failed; fallback to presenter", {
 							segment: seg.index,
@@ -27888,24 +28746,6 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						fallbackReason = fallbackReason || "image_render_unavailable";
 					}
 				}
-			}
-
-			if (!norm && !baselineSource) {
-				norm = await renderNonPresenterFallbackSegment({
-					segDur,
-					audioPath: seg.audioPath,
-					label: `${seg.renderLabel || seg.index}_no_presenter_motion`,
-					addFades: ENABLE_SEGMENT_FADES,
-					cameraMotion: seg.cameraMotion
-						? { ...seg.cameraMotion, visualType: "image" }
-						: null,
-					preferredImagePaths: feedImageFallbackPaths,
-					reason: "presenter_motion_unavailable",
-				});
-				actualVisualType = "image_rescue";
-				fallbackReason = fallbackReason
-					? `${fallbackReason}_presenter_motion_unavailable`
-					: "presenter_motion_unavailable";
 			}
 
 			if (!norm) {
@@ -27922,50 +28762,32 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					fallbackReason = "image_render_unavailable";
 				}
 				let presenterRenderError = null;
-				const presenterCandidates = baselineCandidates.length
-					? baselineCandidates
-					: baselineSource
-						? [baselineSource]
-						: [];
-				for (
-					let i = 0;
-					i < presenterCandidates.length && !norm;
-					i += 1
-				) {
-					try {
-						norm = await renderLipsyncedSegment({
-							jobId,
-							tmpDir,
-							output,
-							baselineSource: presenterCandidates[i],
-							segDur,
-							audioPath: seg.audioPath,
-							label: i
-								? `${seg.renderLabel || seg.index}_b${i}`
-								: seg.renderLabel || String(seg.index),
-							offsetSeed: seg.index + i,
-							addFades: ENABLE_SEGMENT_FADES,
-							syncTier:
-								mustUsePresenter
-									? OPENING_PRESENTER_USE_HERO_SYNC
-										? "hero"
-										: "standard"
-									: seg.syncTier || "standard",
-							cameraMotion: seg.cameraMotion,
-							maxRetries: mustUsePresenter
-								? OPENING_PRESENTER_SYNC_RETRIES
-								: SYNC_SO_SEGMENT_MAX_RETRIES,
-						});
-					} catch (e) {
-						presenterRenderError = e;
-						logJob(jobId, "presenter segment render attempt failed", {
-							segment: seg.index,
-							renderLabel: seg.renderLabel || String(seg.index),
-							attempt: i,
-							mustUsePresenter,
-							error: e.message,
-						});
-					}
+				try {
+					norm = await renderHeyGenPresenterSegment({
+						jobId,
+						tmpDir,
+						output,
+						presenterImageUrl: presenterHeyGenImageUrl,
+						segDur,
+						audioPath: seg.audioPath,
+						label: seg.renderLabel || String(seg.index),
+						addFades: ENABLE_SEGMENT_FADES,
+						cameraMotion: seg.cameraMotion,
+						text: seg.text || "",
+						expression: exprKey,
+						mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+						pace: heygenPace,
+						role: plannedVisualType === "image" ? "presenter_rescue" : "content",
+					});
+					actualVisualType = "presenter";
+				} catch (e) {
+					presenterRenderError = e;
+					logJob(jobId, "heygen presenter segment render failed", {
+						segment: seg.index,
+						renderLabel: seg.renderLabel || String(seg.index),
+						mustUsePresenter,
+						error: e.message,
+					});
 				}
 				if (!norm) {
 					if (mustUsePresenter && REQUIRE_FORCED_OPENING_PRESENTERS) {
@@ -27995,6 +28817,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							? { ...seg.cameraMotion, visualType: "image" }
 							: null,
 						preferredImagePaths: feedImageFallbackPaths,
+						fallbackText: seg.text || "",
 						reason: "presenter_render_failed",
 					});
 					actualVisualType = "image_rescue";
@@ -28025,10 +28848,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			});
 		}
 
-		// 12) Outro (lipsync + silent smile tail)
-		const outroOffsetSeed = introOffsetSeed + 7;
-		const outroBaseline =
-			pickBaselineVariant(outroExpression, 1) || baselineDefault;
+		// 12) Outro as one HeyGen segment with a silent closed-mouth smile tail.
 		const outroCameraMotion = inferCameraMotionPlan({
 			text: outroTextFinal,
 			topicLabel: topicSummary,
@@ -28041,116 +28861,69 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		});
 		let outroPath = "";
 		let outroActualVisualType = "presenter";
-		let outroFallbackReason = "";
-		if (outroBaseline) {
-			try {
-				const outroTalk = await renderLipsyncedSegment({
-					jobId,
+		try {
+			let outroHeyGenAudioPath = outroAudioPath;
+			let outroHeyGenDurationSec = outroDurationSec;
+			if (OUTRO_SMILE_TAIL_SEC > 0.05) {
+				const outroTailSilence = path.join(
 					tmpDir,
-					output,
-					baselineSource: outroBaseline,
-					segDur: outroDurationSec,
-					audioPath: outroAudioPath,
-					label: "outro",
-					offsetSeed: outroOffsetSeed,
-					addFades: false,
-					syncTier: "hero",
-					cameraMotion: outroCameraMotion,
+					`outro_silent_smile_${jobId}.wav`,
+				);
+				await createSilentWav({
+					durationSec: OUTRO_SMILE_TAIL_SEC,
+					outPath: outroTailSilence,
 				});
-
-				// Calm tail after the outro line (silent + fade-out).
-				if (OUTRO_SMILE_TAIL_SEC > 0.05) {
-					const tailBaseline =
-						outroBaseline ||
-						pickBaselineVariant("warm", 2) ||
-						pickBaselineVariant("neutral", 2) ||
-						baselineDefault;
-					const tailBaselineDur = await probeDurationSeconds(tailBaseline);
-					const tailStart = Math.max(0, tailBaselineDur - OUTRO_SMILE_TAIL_SEC);
-					const tailRaw = path.join(tmpDir, `outro_tail_raw_${jobId}.mp4`);
-					await spawnBin(
-						ffmpegPath,
-						[
-							"-ss",
-							tailStart.toFixed(3),
-							"-i",
-							tailBaseline,
-							"-t",
-							OUTRO_SMILE_TAIL_SEC.toFixed(3),
-							"-an",
-							"-vf",
-							"setpts=PTS-STARTPTS",
-							"-c:v",
-							"libx264",
-							"-preset",
-							INTERMEDIATE_PRESET,
-							"-crf",
-							String(INTERMEDIATE_VIDEO_CRF),
-							"-pix_fmt",
-							"yuv420p",
-							"-movflags",
-							"+faststart",
-							"-y",
-							tailRaw,
-						],
-						"outro_tail_cut",
-						{ timeoutMs: 120000 },
-					);
-					const tailFit = path.join(tmpDir, `outro_tail_fit_${jobId}.mp4`);
-					await fitVideoToDuration(tailRaw, OUTRO_SMILE_TAIL_SEC, tailFit);
-					safeUnlink(tailRaw);
-
-					const tailSilence = path.join(tmpDir, `outro_tail_silence_${jobId}.wav`);
-					await createSilentWav({
-						durationSec: OUTRO_SMILE_TAIL_SEC,
-						outPath: tailSilence,
-					});
-					const tailWithAudio = path.join(
-						tmpDir,
-						`outro_tail_audio_${jobId}.mp4`,
-					);
-					await mergeVideoWithAudio(tailFit, tailSilence, tailWithAudio);
-					safeUnlink(tailSilence);
-					safeUnlink(tailFit);
-
-					const outroTail = path.join(tmpDir, `outro_tail_${jobId}.mp4`);
-					await normalizeClip(tailWithAudio, outroTail, output, {
-						zoomOut: CAMERA_ZOOM_OUT,
-						fadeOutOnly: true,
-					});
-					safeUnlink(tailWithAudio);
-
-					outroPath = path.join(tmpDir, `outro_${jobId}.mp4`);
-					await concatClips([outroTalk, outroTail], outroPath, {
-						...output,
-						softTransitions: false,
-					});
-				} else {
-					outroPath = outroTalk;
-				}
-			} catch (e) {
-				outroPath = "";
-				outroActualVisualType = "image_rescue";
-				outroFallbackReason = "outro_presenter_render_failed";
-				logJob(jobId, "outro presenter render failed; using non-presenter visual", {
-					error: e.message,
+				outroHeyGenAudioPath = path.join(
+					tmpDir,
+					`outro_with_smile_tail_${jobId}.wav`,
+				);
+				await concatAudioClips([outroAudioPath, outroTailSilence], outroHeyGenAudioPath);
+				safeUnlink(outroTailSilence);
+				outroHeyGenDurationSec =
+					(await probeDurationSeconds(outroHeyGenAudioPath)) ||
+					outroDurationSec + OUTRO_SMILE_TAIL_SEC;
+				logJob(jobId, "outro silent smile tail prepared", {
+					spokenOutroSec: Number((outroDurationSec || 0).toFixed(3)),
+					silentSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC.toFixed(1)),
+					heygenOutroSec: Number((outroHeyGenDurationSec || 0).toFixed(3)),
 				});
 			}
-		}
-		if (!outroPath) {
-			outroActualVisualType = "image_rescue";
-			outroFallbackReason = outroBaseline
-				? "outro_presenter_render_failed"
-				: "outro_presenter_motion_unavailable";
-			outroPath = await renderNonPresenterFallbackSegment({
-				segDur: outroDurationSec,
-				audioPath: outroAudioPath,
-				label: "outro_no_presenter_motion",
+			outroPath = await renderHeyGenPresenterSegment({
+				jobId,
+				tmpDir,
+				output,
+				presenterImageUrl: presenterHeyGenImageUrl,
+				segDur: outroHeyGenDurationSec,
+				audioPath: outroHeyGenAudioPath,
+				label: "outro",
 				addFades: true,
-				cameraMotion: { ...outroCameraMotion, visualType: "image" },
-				preferredImagePaths: feedImageFallbackPaths,
-				reason: outroFallbackReason,
+				cameraMotion: outroCameraMotion,
+				text: outroTextFinal,
+				expression: outroExpression,
+				mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+				pace: resolveHeyGenPace({
+					text: outroTextFinal,
+					expression: outroExpression,
+					mood: tonePlan?.mood || voiceTonePlan?.mood || "neutral",
+				}),
+				role: "outro",
+				silentSmileTailSec: OUTRO_SMILE_TAIL_SEC,
 			});
+			outroDurationSec = outroHeyGenDurationSec;
+		} catch (e) {
+			logJob(jobId, "outro heygen presenter render failed; stopping final assembly", {
+				error: e.message,
+				requireOutroPresenter: REQUIRE_OUTRO_PRESENTER,
+				outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC.toFixed(1)),
+			});
+			throw new Error(`required_outro_presenter_failed:${e.message}`);
+		}
+		if (!outroPath || !fs.existsSync(outroPath)) {
+			logJob(jobId, "outro presenter output missing; stopping final assembly", {
+				outroPath: outroPath || "",
+				requireOutroPresenter: REQUIRE_OUTRO_PRESENTER,
+			});
+			throw new Error("required_outro_presenter_failed:output_missing");
 		}
 		segmentVideos.push(outroPath);
 		segmentRenderSummary.push({
@@ -28158,8 +28931,8 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			plannedVisualType: "presenter",
 			actualVisualType: outroActualVisualType,
 			durationSec: outroDurationSec,
-			mustUsePresenter: false,
-			...(outroFallbackReason ? { fallbackReason: outroFallbackReason } : {}),
+			mustUsePresenter: true,
+			silentSmileTailSec: OUTRO_SMILE_TAIL_SEC,
 		});
 
 		const presenterCoverage = summarizePresenterCoverage(segmentRenderSummary);

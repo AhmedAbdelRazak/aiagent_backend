@@ -5,6 +5,7 @@ node_modules
 # utils/generatedFiles.js; they should not be deployed as source code.
 uploads/tmp/
 uploads/job_state/
+uploads/audio/
 uploads/videos/
 uploads/shorts/
 uploads/thumbnails/
