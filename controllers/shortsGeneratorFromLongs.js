@@ -1333,12 +1333,13 @@ exports.getShortsFromLong = async (req, res) => {
 
 exports.listShortsEligibleLongVideos = async (req, res) => {
 	try {
+		const visibleShortsStatuses = ["planned", "ready", "failed"];
 		const filter = {
 			isLongVideo: true,
 			shortsDetails: { $ne: null },
 			$or: [
 				{ "shortsDetails.status": { $exists: false } },
-				{ "shortsDetails.status": "planned" },
+				{ "shortsDetails.status": { $in: visibleShortsStatuses } },
 			],
 		};
 		if (req.user?.role !== "admin") filter.user = req.user._id;
