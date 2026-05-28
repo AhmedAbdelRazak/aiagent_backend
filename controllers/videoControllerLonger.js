@@ -624,7 +624,7 @@ const PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC = clampNumber(
 	1.8,
 );
 const HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO = clampNumber(
-	process.env.LONG_VIDEO_HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO ?? 0.7,
+	process.env.LONG_VIDEO_HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO ?? 0.78,
 	PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO,
 	0.82,
 );
@@ -29065,14 +29065,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const nextDur = Math.max(0.2, Number(next.segDur || 0));
 			const projected = introDurationSec + openingContentSec + nextDur;
 			if (
-				openingUnits.length &&
 				projected > openingMaxSec &&
 				introDurationSec + openingContentSec >= openingMinSec
 			) {
 				break;
 			}
 			if (
-				openingUnits.length &&
 				introDurationSec + openingContentSec >= openingTargetSec
 			) {
 				break;
