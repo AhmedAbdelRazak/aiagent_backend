@@ -426,7 +426,7 @@ const YT_CATEGORY_MAP = {
 	Top5: "0",
 	Gaming: "20",
 	PetsAndAnimals: "15",
-	Business: "21",
+	Business: "25",
 	Travel: "19",
 	FoodDrink: "0",
 	CelebrityNews: "25",

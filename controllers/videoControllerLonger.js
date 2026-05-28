@@ -21776,6 +21776,30 @@ function normalizeYouTubeTags(tags = []) {
 	).slice(0, 15);
 }
 
+const VALID_YOUTUBE_CATEGORY_IDS = new Set([
+	"1",
+	"2",
+	"10",
+	"15",
+	"17",
+	"19",
+	"20",
+	"22",
+	"23",
+	"24",
+	"25",
+	"26",
+	"27",
+	"28",
+	"29",
+]);
+
+function resolveYouTubeUploadCategoryId(category) {
+	const mapped = String(YT_CATEGORY_MAP[category] || "").trim();
+	if (!mapped || mapped === "0") return "22";
+	return VALID_YOUTUBE_CATEGORY_IDS.has(mapped) ? mapped : "22";
+}
+
 async function uploadToYouTube(
 	u,
 	fp,
@@ -21789,6 +21813,14 @@ async function uploadToYouTube(
 		.slice(0, 95);
 	const safeDescription = ensureClickableLinks(description);
 	const safeTags = normalizeYouTubeTags(tags);
+	const categoryId = resolveYouTubeUploadCategoryId(category);
+	if (YT_CATEGORY_MAP[category] && String(YT_CATEGORY_MAP[category]) !== categoryId) {
+		logJob(jobId, "youtube category fallback", {
+			category,
+			mappedCategoryId: String(YT_CATEGORY_MAP[category]),
+			categoryId,
+		});
+	}
 	const { data } = await yt.videos.insert(
 		{
 			part: ["snippet", "status"],
@@ -21797,10 +21829,7 @@ async function uploadToYouTube(
 					title: safeTitle || "Untitled",
 					description: safeDescription,
 					tags: safeTags,
-					categoryId:
-						YT_CATEGORY_MAP[category] === "0"
-							? "22"
-							: YT_CATEGORY_MAP[category] || "22",
+					categoryId,
 				},
 				status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
 			},
@@ -25870,11 +25899,16 @@ async function mixBackgroundMusic(
 	const makeup = MUSIC_DUCK_MAKEUP;
 
 	const args = ["-i", baseVideoPath, "-stream_loop", "-1", "-i", musicPath];
+	const durationLimit = duration ? duration.toFixed(3) : "9999";
+	const voicePrep = duration
+		? `apad,atrim=0:${durationLimit},asetpts=N/SR/TB,`
+		: "";
+	const musicPrep = `atrim=0:${durationLimit},asetpts=N/SR/TB`;
 	const filter =
-		`[0:a]aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,asplit=2[vox][vox_sc];` +
+		`[0:a]aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,${voicePrep}asplit=2[vox][vox_sc];` +
 		`[1:a]aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,volume=${vol.toFixed(
 			3,
-		)},atrim=0:${duration ? duration.toFixed(2) : "9999"}[music];` +
+		)},${musicPrep}[music];` +
 		`[music][vox_sc]sidechaincompress=threshold=${threshold.toFixed(
 			3,
 		)}:ratio=${ratio.toFixed(2)}:attack=${attack.toFixed(
@@ -25901,7 +25935,7 @@ async function mixBackgroundMusic(
 		"aac",
 		"-b:a",
 		AUDIO_BITRATE,
-		"-shortest",
+		...(duration ? ["-t", durationLimit] : []),
 		"-movflags",
 		"+faststart",
 		"-y",
