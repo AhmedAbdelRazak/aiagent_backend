@@ -1837,6 +1837,78 @@ async function probeDurationSecondsCached(filePath) {
 	return duration || 0;
 }
 
+function parseDurationValue(value) {
+	const direct = Number(value || 0);
+	if (Number.isFinite(direct) && direct > 0) return direct;
+	const raw = String(value || "").trim();
+	const m = raw.match(/^(\d+):([0-5]?\d):([0-5]?\d(?:\.\d+)?)$/);
+	if (m) {
+		const dur = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+		if (Number.isFinite(dur) && dur > 0) return dur;
+	}
+	return 0;
+}
+
+function numericStreamDuration(stream = {}) {
+	const direct = parseDurationValue(stream?.duration);
+	if (direct > 0) return direct;
+	const tagDuration = parseDurationValue(
+		stream?.tags?.DURATION || stream?.tags?.duration,
+	);
+	if (tagDuration > 0) return tagDuration;
+	return 0;
+}
+
+async function probeTrackDurations(filePath) {
+	const info = await probeMedia(filePath);
+	const streams = Array.isArray(info?.streams) ? info.streams : [];
+	const videoStream = streams.find((s) => s.codec_type === "video") || null;
+	const audioStream = streams.find((s) => s.codec_type === "audio") || null;
+	const formatDurationSec = Number(info?.duration || 0) || 0;
+	const videoDurationSec = numericStreamDuration(videoStream);
+	const audioDurationSec = numericStreamDuration(audioStream);
+	const durationReferenceSec = Math.max(
+		formatDurationSec || 0,
+		audioDurationSec || 0,
+		videoDurationSec || 0,
+	);
+	const videoShortBySec =
+		videoStream && videoDurationSec && durationReferenceSec
+			? Math.max(0, durationReferenceSec - videoDurationSec)
+			: videoStream
+				? 0
+				: durationReferenceSec || 0;
+	return {
+		formatDurationSec,
+		videoDurationSec,
+		audioDurationSec,
+		durationReferenceSec,
+		videoShortBySec,
+		hasVideo: Boolean(videoStream),
+		hasAudio: Boolean(audioStream),
+	};
+}
+
+function roundDurationForLog(value) {
+	const num = Number(value || 0);
+	return Number.isFinite(num) && num > 0 ? Number(num.toFixed(3)) : null;
+}
+
+function videoTrackDurationPass(
+	trackInfo,
+	{ referenceSec = 0, toleranceSec = 1.1 } = {},
+) {
+	const ref = Math.max(
+		Number(referenceSec || 0) || 0,
+		Number(trackInfo?.durationReferenceSec || 0) || 0,
+	);
+	if (!ref) return Boolean(trackInfo?.hasVideo);
+	if (!trackInfo?.hasVideo) return false;
+	const videoDur = Number(trackInfo?.videoDurationSec || 0) || 0;
+	if (!videoDur) return false;
+	return ref - videoDur <= Math.max(0.2, Number(toleranceSec || 0));
+}
+
 /* ---------------------------------------------------------------
  * Retry + HTTP helpers
  * ------------------------------------------------------------- */
@@ -22832,14 +22904,22 @@ async function analyzeLipsyncOutput({
 	requireMotion = false,
 }) {
 	const durationSec = await probeDurationSeconds(videoPath);
+	const trackInfo = await probeTrackDurations(videoPath);
 	const result = {
 		pass: true,
 		issues: [],
 		durationSec: Number(durationSec || 0),
+		videoDurationSec: Number(trackInfo.videoDurationSec || 0),
+		audioDurationSec: Number(trackInfo.audioDurationSec || 0),
 		durationDeltaSec: 0,
+		videoDurationShortBySec: 0,
 		maxFreezeSec: 0,
 		freezeRatio: 0,
 	};
+
+	if (!trackInfo.hasVideo) {
+		result.issues.push("presenter_video_stream_missing");
+	}
 
 	if (expectedDurSec && durationSec) {
 		const delta = Math.abs(Number(expectedDurSec) - Number(durationSec));
@@ -22851,6 +22931,18 @@ async function analyzeLipsyncOutput({
 			ratio < PRESENTER_VIDEO_MIN_DURATION_RATIO
 		) {
 			result.issues.push("presenter_video_too_short");
+		}
+	}
+	if (expectedDurSec && trackInfo.hasVideo) {
+		const videoDur = Number(trackInfo.videoDurationSec || 0);
+		const videoShortBySec = Math.max(0, Number(expectedDurSec) - videoDur);
+		const videoRatio = videoDur / Math.max(0.01, Number(expectedDurSec));
+		result.videoDurationShortBySec = videoShortBySec;
+		if (
+			videoShortBySec > PRESENTER_VIDEO_MAX_SHORTFALL_SEC ||
+			videoRatio < PRESENTER_VIDEO_MIN_DURATION_RATIO
+		) {
+			result.issues.push("presenter_video_stream_too_short");
 		}
 	}
 
@@ -22973,6 +23065,8 @@ async function evaluatePresenterVideoMotion({
 		acceptedNearPass,
 		...(acceptedNearPass ? { originalIssues } : {}),
 		durationSec: Number((qa.durationSec || 0).toFixed(3)),
+		videoDurationSec: Number((qa.videoDurationSec || 0).toFixed(3)),
+		audioDurationSec: Number((qa.audioDurationSec || 0).toFixed(3)),
 		maxFreezeSec: Number((qa.maxFreezeSec || 0).toFixed(3)),
 		freezeRatio: Number((qa.freezeRatio || 0).toFixed(3)),
 	});
@@ -22991,14 +23085,22 @@ async function analyzeHeyGenFinalPresenterMotion({
 	label,
 } = {}) {
 	const durationSec = await probeDurationSeconds(videoPath);
+	const trackInfo = await probeTrackDurations(videoPath);
 	const result = {
 		pass: true,
 		issues: [],
 		durationSec: Number(durationSec || 0),
+		videoDurationSec: Number(trackInfo.videoDurationSec || 0),
+		audioDurationSec: Number(trackInfo.audioDurationSec || 0),
 		durationDeltaSec: 0,
+		videoDurationShortBySec: 0,
 		maxFreezeSec: 0,
 		freezeRatio: 0,
 	};
+
+	if (!trackInfo.hasVideo) {
+		result.issues.push("presenter_video_stream_missing");
+	}
 
 	if (expectedDurSec && durationSec) {
 		const delta = Math.abs(Number(expectedDurSec) - Number(durationSec));
@@ -23010,6 +23112,18 @@ async function analyzeHeyGenFinalPresenterMotion({
 			ratio < PRESENTER_VIDEO_MIN_DURATION_RATIO
 		) {
 			result.issues.push("presenter_video_too_short");
+		}
+	}
+	if (expectedDurSec && trackInfo.hasVideo) {
+		const videoDur = Number(trackInfo.videoDurationSec || 0);
+		const videoShortBySec = Math.max(0, Number(expectedDurSec) - videoDur);
+		const videoRatio = videoDur / Math.max(0.01, Number(expectedDurSec));
+		result.videoDurationShortBySec = videoShortBySec;
+		if (
+			videoShortBySec > PRESENTER_VIDEO_MAX_SHORTFALL_SEC ||
+			videoRatio < PRESENTER_VIDEO_MIN_DURATION_RATIO
+		) {
+			result.issues.push("presenter_video_stream_too_short");
 		}
 	}
 
@@ -23591,6 +23705,11 @@ async function renderHeyGenPresenterSegment({
 			contentPresenterRole,
 			...(acceptedSubtleHeyGenMotion ? { originalIssues: originalQaIssues } : {}),
 			durationSec: Number((qa.durationSec || 0).toFixed(3)),
+			videoDurationSec: Number((qa.videoDurationSec || 0).toFixed(3)),
+			audioDurationSec: Number((qa.audioDurationSec || 0).toFixed(3)),
+			videoDurationShortBySec: Number(
+				(qa.videoDurationShortBySec || 0).toFixed(3),
+			),
 			durationDeltaSec: Number((qa.durationDeltaSec || 0).toFixed(3)),
 			maxFreezeSec: Number((qa.maxFreezeSec || 0).toFixed(3)),
 			freezeRatio: Number((qa.freezeRatio || 0).toFixed(3)),
@@ -23643,6 +23762,11 @@ async function renderHeyGenPresenterSegment({
 			pass: finalQa.pass,
 			issues: finalQa.issues,
 			durationSec: Number((finalQa.durationSec || 0).toFixed(3)),
+			videoDurationSec: Number((finalQa.videoDurationSec || 0).toFixed(3)),
+			audioDurationSec: Number((finalQa.audioDurationSec || 0).toFixed(3)),
+			videoDurationShortBySec: Number(
+				(finalQa.videoDurationShortBySec || 0).toFixed(3),
+			),
 			durationDeltaSec: Number((finalQa.durationDeltaSec || 0).toFixed(3)),
 			maxFreezeSec: Number((finalQa.maxFreezeSec || 0).toFixed(3)),
 			freezeRatio: Number((finalQa.freezeRatio || 0).toFixed(3)),
@@ -24909,8 +25033,45 @@ async function concatClips(clips, outPath, outCfg) {
 		0.25,
 		12,
 	);
+	const jobId = outCfg?.jobId || "";
+	const videoDurationToleranceSec = Math.max(
+		1.1,
+		requestedTransitionSec + requestedPadSec + 0.35,
+	);
+	const logConcatVideoDurationQa = (phase, trackInfo, pass, reason = "") => {
+		if (!jobId) return;
+		logJob(jobId, "concat video duration qa", {
+			phase,
+			pass,
+			...(reason ? { reason } : {}),
+			formatDurationSec: roundDurationForLog(trackInfo.formatDurationSec),
+			videoDurationSec: roundDurationForLog(trackInfo.videoDurationSec),
+			audioDurationSec: roundDurationForLog(trackInfo.audioDurationSec),
+			videoShortBySec: Number(
+				Math.max(0, Number(trackInfo.videoShortBySec || 0)).toFixed(3),
+			),
+			toleranceSec: Number(videoDurationToleranceSec.toFixed(3)),
+		});
+	};
+	const runPlainConcatWithQa = async (reason = "plain_concat") => {
+		await runPlainConcat();
+		durationCache.delete(String(outPath || ""));
+		const trackInfo = await probeTrackDurations(outPath);
+		const pass = videoTrackDurationPass(trackInfo, {
+			toleranceSec: videoDurationToleranceSec,
+		});
+		logConcatVideoDurationQa("plain", trackInfo, pass, reason);
+		if (!pass) {
+			throw new Error(
+				`concat_video_stream_short_by_${Number(
+					trackInfo.videoShortBySec || 0,
+				).toFixed(3)}s`,
+			);
+		}
+		return outPath;
+	};
 	if (requestedTransitionSec <= 0) {
-		return await runPlainConcat();
+		return await runPlainConcatWithQa("transitions_disabled");
 	}
 
 	const formatFilterNum = (value) => {
@@ -24927,7 +25088,7 @@ async function concatClips(clips, outPath, outCfg) {
 				(dur) => !Number.isFinite(dur) || dur <= Math.max(minClipSec, 0.35),
 			)
 		) {
-			return await runPlainConcat();
+			return await runPlainConcatWithQa("clip_too_short_for_soft_transition");
 		}
 
 		const args = [];
@@ -24968,7 +25129,7 @@ async function concatClips(clips, outPath, outCfg) {
 				Math.max(0, preparedDurations[i] - 0.05),
 			);
 			if (!Number.isFinite(maxTransition) || maxTransition < 0.05) {
-				return await runPlainConcat();
+				return await runPlainConcatWithQa("transition_too_short");
 			}
 
 			const nextVideo = i === clips.length - 1 ? "v" : `vx${i}`;
@@ -25021,12 +25182,39 @@ async function concatClips(clips, outPath, outCfg) {
 		);
 
 		await spawnBin(ffmpegPath, args, "concat_soft", { timeoutMs: 420000 });
+		durationCache.delete(String(outPath || ""));
+		const softTrackInfo = await probeTrackDurations(outPath);
+		const softPass = videoTrackDurationPass(softTrackInfo, {
+			toleranceSec: videoDurationToleranceSec,
+		});
+		logConcatVideoDurationQa("soft", softTrackInfo, softPass);
+		if (!softPass) {
+			if (jobId) {
+				logJob(jobId, "soft concat video stream short; retrying plain concat", {
+					formatDurationSec: roundDurationForLog(
+						softTrackInfo.formatDurationSec,
+					),
+					videoDurationSec: roundDurationForLog(
+						softTrackInfo.videoDurationSec,
+					),
+					audioDurationSec: roundDurationForLog(
+						softTrackInfo.audioDurationSec,
+					),
+					videoShortBySec: Number(
+						Math.max(0, Number(softTrackInfo.videoShortBySec || 0)).toFixed(3),
+					),
+				});
+			}
+			safeUnlink(outPath);
+			durationCache.delete(String(outPath || ""));
+			return await runPlainConcatWithQa("soft_video_stream_short");
+		}
 		return outPath;
 	} catch (err) {
 		console.warn(
 			`[LongVideo] soft concat fallback: ${err?.message || "unknown error"}`,
 		);
-		return await runPlainConcat();
+		return await runPlainConcatWithQa("soft_concat_failed");
 	}
 }
 
@@ -29862,14 +30050,23 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const concatPath = path.join(tmpDir, `concat_${jobId}.mp4`);
 		await concatClips(segmentVideos, concatPath, {
 			...output,
+			jobId,
 			softTransitions: true,
 		});
-		const concatDurationSec = await probeDurationSeconds(concatPath);
+		const concatTrackInfo = await probeTrackDurations(concatPath);
+		const concatDurationSec =
+			concatTrackInfo.formatDurationSec ||
+			(await probeDurationSeconds(concatPath));
 		logJob(jobId, "concat done", {
 			clips: segmentVideos.length,
 			durationSec: concatDurationSec
 				? Number(concatDurationSec.toFixed(3))
 				: null,
+			videoDurationSec: roundDurationForLog(concatTrackInfo.videoDurationSec),
+			audioDurationSec: roundDurationForLog(concatTrackInfo.audioDurationSec),
+			videoShortBySec: Number(
+				Math.max(0, Number(concatTrackInfo.videoShortBySec || 0)).toFixed(3),
+			),
 		});
 
 		// 14) Overlays (optional; static image segments provide visuals)
@@ -29946,7 +30143,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				jobId,
 			});
 		}
-		const mixedDurationSec = await probeDurationSeconds(mixedPath);
+		const mixedTrackInfo = await probeTrackDurations(mixedPath);
+		const mixedDurationSec =
+			mixedTrackInfo.formatDurationSec || (await probeDurationSeconds(mixedPath));
 
 		updateJob(jobId, { progressPct: 92 });
 
@@ -29967,14 +30166,22 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			fadeOutSec: FINAL_FADE_OUT_SEC,
 			outCfg: output,
 		});
-		const finalDurationSec = await probeDurationSeconds(outputPath);
+		const finalTrackInfo = await probeTrackDurations(outputPath);
+		const finalDurationSec =
+			finalTrackInfo.formatDurationSec ||
+			(await probeDurationSeconds(outputPath));
 		const durationReferenceSec = mixedDurationSec || concatDurationSec || 0;
 		const finalShortBySec =
 			durationReferenceSec && finalDurationSec
 				? durationReferenceSec - finalDurationSec
 				: 0;
+		const finalVideoDurationPass = videoTrackDurationPass(finalTrackInfo, {
+			referenceSec: Math.max(durationReferenceSec || 0, finalDurationSec || 0),
+			toleranceSec: Math.max(1.1, FINAL_FADE_OUT_SEC + 0.35),
+		});
 		const finalDurationPass = Boolean(
 			finalDurationSec &&
+				finalVideoDurationPass &&
 				(!durationReferenceSec ||
 					finalShortBySec <= Math.max(1.1, FINAL_FADE_OUT_SEC + 0.35)),
 		);
@@ -29989,13 +30196,27 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			finalDurationSec: finalDurationSec
 				? Number(finalDurationSec.toFixed(3))
 				: null,
+			finalVideoDurationSec: roundDurationForLog(
+				finalTrackInfo.videoDurationSec,
+			),
+			finalAudioDurationSec: roundDurationForLog(
+				finalTrackInfo.audioDurationSec,
+			),
 			shortBySec: Number(Math.max(0, finalShortBySec || 0).toFixed(3)),
+			videoShortBySec: Number(
+				Math.max(0, Number(finalTrackInfo.videoShortBySec || 0)).toFixed(3),
+			),
+			videoDurationPass: finalVideoDurationPass,
 			requiredOutroPresenter: REQUIRE_OUTRO_PRESENTER,
 			outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC.toFixed(1)),
 		});
 		if (!finalDurationPass) {
 			throw new Error(
-				`final_duration_short_by_${Number(finalShortBySec.toFixed(3))}s`,
+				finalVideoDurationPass
+					? `final_duration_short_by_${Number(finalShortBySec.toFixed(3))}s`
+					: `final_video_stream_short_by_${Number(
+							(finalTrackInfo.videoShortBySec || 0).toFixed(3),
+						)}s`,
 			);
 		}
 
