@@ -21834,7 +21834,11 @@ async function uploadToYouTube(
 					tags: safeTags,
 					categoryId,
 				},
-				status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
+				status: {
+					privacyStatus: "public",
+					selfDeclaredMadeForKids: false,
+					containsSyntheticMedia: true,
+				},
 			},
 			media: { body: fs.createReadStream(fp) },
 		},
