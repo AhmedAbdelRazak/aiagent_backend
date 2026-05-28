@@ -815,7 +815,13 @@ function ensureFullVideoLinkInDescription(description = "", fullVideoUrl = "") {
 	}
 	const header = `Watch the full video: ${url}`;
 	if (!current) return header;
-	return `${header}\n${current}`;
+	const withoutOldFullVideoLines = current
+		.split(/\r?\n/)
+		.filter((line) => !/^watch the full video\s*:/i.test(line.trim()))
+		.join("\n")
+		.trim();
+	if (!withoutOldFullVideoLines) return header;
+	return `${header}\n${withoutOldFullVideoLines}`;
 }
 
 function buildShortsDescription(candidate) {
