@@ -536,7 +536,7 @@ const YT_CATEGORY_MAP = {
 	Top5: "0",
 	Gaming: "20",
 	PetsAndAnimals: "15",
-	Business: "21",
+	Business: "25",
 	Travel: "19",
 	FoodDrink: "0",
 	CelebrityNews: "25",
@@ -545,6 +545,30 @@ const YT_CATEGORY_MAP = {
 	Education: "27",
 	Fashion: "22",
 };
+
+const VALID_YOUTUBE_CATEGORY_IDS = new Set([
+	"1",
+	"2",
+	"10",
+	"15",
+	"17",
+	"19",
+	"20",
+	"22",
+	"23",
+	"24",
+	"25",
+	"26",
+	"27",
+	"28",
+	"29",
+]);
+
+function resolveYouTubeUploadCategoryId(category) {
+	const mapped = String(YT_CATEGORY_MAP[category] || "").trim();
+	if (!mapped || mapped === "0") return "22";
+	return VALID_YOUTUBE_CATEGORY_IDS.has(mapped) ? mapped : "22";
+}
 
 const BRAND_TAG = "SereneJannat";
 const BRAND_CREDIT = "Powered by Serene Jannat";
@@ -10342,10 +10366,7 @@ async function uploadToYouTube(u, fp, { title, description, tags, category }) {
 					title,
 					description: safeDescription,
 					tags,
-					categoryId:
-						YT_CATEGORY_MAP[category] === "0"
-							? "22"
-							: YT_CATEGORY_MAP[category],
+					categoryId: resolveYouTubeUploadCategoryId(category),
 				},
 				status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
 			},
@@ -13645,10 +13666,7 @@ exports.createVideo = async (req, res) => {
 								title: seoTitle,
 								description: seoDescription,
 								tags,
-								categoryId:
-									YT_CATEGORY_MAP[category] === "0"
-										? "22"
-										: YT_CATEGORY_MAP[category],
+								categoryId: resolveYouTubeUploadCategoryId(category),
 							},
 							status: {
 								privacyStatus: "public",
