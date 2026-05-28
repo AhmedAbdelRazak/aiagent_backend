@@ -1115,6 +1115,10 @@ const STRICT_TOPIC_RELEVANT_FEED_IMAGES = envFlag(
 	"LONG_VIDEO_STRICT_TOPIC_RELEVANT_FEED_IMAGES",
 	true,
 );
+const STRICT_SEGMENT_MEDIA_ALIGNMENT = envFlag(
+	"LONG_VIDEO_STRICT_SEGMENT_MEDIA_ALIGNMENT",
+	true,
+);
 const IMAGE_SEGMENT_MULTI_MIN_SEC = clampNumber(4.8, 3, 12);
 const IMAGE_SEGMENT_MIN_UNIQUE_RATIO = clampNumber(0.5, 0.4, 1);
 const ENABLE_PRESENTER_RUN_MERGE = true;
@@ -1305,6 +1309,8 @@ function getLongVideoRuntimeProfile() {
 		feedVideoEnabled: FEED_VIDEO_ENABLED,
 		feedVideoMaxSegments: FEED_VIDEO_MAX_SEGMENTS,
 		feedVideoMaxAttempts: FEED_VIDEO_MAX_SEGMENT_ATTEMPTS,
+		strictSegmentMediaAlignment: STRICT_SEGMENT_MEDIA_ALIGNMENT,
+		strictTopicRelevantFeedImages: STRICT_TOPIC_RELEVANT_FEED_IMAGES,
 		heygenPollMaxSec: Number((HEYGEN_POLL_TIMEOUT_MS / 1000).toFixed(1)),
 		heygenRenderMaxAttempts: HEYGEN_RENDER_MAX_ATTEMPTS,
 		heygenFinalFreezeMaxSec: Number(
@@ -2332,6 +2338,74 @@ const TOPIC_TOKEN_ALIASES = Object.freeze({
 	"golden globes": ["golden globe"],
 });
 
+const US_STATE_NAMES = Object.freeze([
+	"alabama",
+	"alaska",
+	"arizona",
+	"arkansas",
+	"california",
+	"colorado",
+	"connecticut",
+	"delaware",
+	"florida",
+	"georgia",
+	"hawaii",
+	"idaho",
+	"illinois",
+	"indiana",
+	"iowa",
+	"kansas",
+	"kentucky",
+	"louisiana",
+	"maine",
+	"maryland",
+	"massachusetts",
+	"michigan",
+	"minnesota",
+	"mississippi",
+	"missouri",
+	"montana",
+	"nebraska",
+	"nevada",
+	"new hampshire",
+	"new jersey",
+	"new mexico",
+	"new york",
+	"north carolina",
+	"north dakota",
+	"ohio",
+	"oklahoma",
+	"oregon",
+	"pennsylvania",
+	"rhode island",
+	"south carolina",
+	"south dakota",
+	"tennessee",
+	"texas",
+	"utah",
+	"vermont",
+	"virginia",
+	"washington",
+	"west virginia",
+	"wisconsin",
+	"wyoming",
+	"district of columbia",
+]);
+
+const LOCATION_PHRASE_STATE_HINTS = Object.freeze({
+	"garden grove": "california",
+	"orange county": "california",
+	"los angeles": "california",
+	"santa ana": "california",
+	"san diego": "california",
+	"san francisco": "california",
+	"sacramento": "california",
+	"silicon valley": "california",
+	"new york city": "new york",
+	"las vegas": "nevada",
+	"washington dc": "district of columbia",
+});
+
 function normalizeWhitespace(value = "") {
 	return String(value || "")
 		.replace(/\s+/g, " ")
@@ -2419,6 +2493,103 @@ function topicMatchInfo(tokens = [], fields = []) {
 		.join(" ");
 	const matchedTokens = norm.filter((tok) => hay.includes(tok));
 	return { count: matchedTokens.length, matchedTokens, normTokens: norm };
+}
+
+function normalizedPhrasePresent(hay = "", phrase = "") {
+	const needle = normalizeQaText(phrase);
+	if (!needle) return false;
+	return new RegExp(`(?:^|\\s)${escapeRegExp(needle)}(?:\\s|$)`, "i").test(
+		normalizeQaText(hay),
+	);
+}
+
+function extractMentionedUsStates(text = "") {
+	const hay = normalizeQaText(text);
+	if (!hay) return [];
+	return US_STATE_NAMES.filter((state) => normalizedPhrasePresent(hay, state));
+}
+
+function extractCapitalizedAnchorPhrases(text = "") {
+	const raw = String(text || "");
+	const phrases = [];
+	const generic = new Set([
+		"the",
+		"this",
+		"that",
+		"video",
+		"segment",
+		"company",
+		"court",
+		"cases",
+		"supply",
+		"disruption",
+		"chemical",
+		"leak",
+		"scare",
+		"faces",
+		"behind",
+		"latest",
+		"news",
+		"update",
+		"analysis",
+	]);
+	const re =
+		/(?:^|[^A-Za-z0-9])([A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|[A-Z]{2,})){1,3})(?=$|[^A-Za-z0-9])/g;
+	let match = null;
+	while ((match = re.exec(raw))) {
+		const phrase = normalizeQaText(match[1] || "");
+		const tokens = tokenizeLabel(phrase).filter((tok) => !generic.has(tok));
+		if (tokens.length < 2) continue;
+		phrases.push(tokens.join(" "));
+	}
+	return uniqueStrings(phrases, { limit: 8 });
+}
+
+function extractExpectedLocationAnchors(text = "") {
+	const hay = normalizeQaText(text);
+	if (!hay) return { states: [], phrases: [] };
+	const phrases = [];
+	for (const phrase of Object.keys(LOCATION_PHRASE_STATE_HINTS)) {
+		if (normalizedPhrasePresent(hay, phrase)) phrases.push(phrase);
+	}
+	for (const phrase of extractCapitalizedAnchorPhrases(text)) {
+		if (topicTokensFromTitle(phrase).length >= 2) phrases.push(phrase);
+	}
+	const states = new Set(extractMentionedUsStates(hay));
+	for (const phrase of phrases) {
+		const hintedState = LOCATION_PHRASE_STATE_HINTS[phrase];
+		if (hintedState) states.add(hintedState);
+	}
+	return {
+		states: [...states],
+		phrases: uniqueStrings(phrases, { limit: 10 }),
+	};
+}
+
+function mediaLocationConflictInfo(candidateEvidenceText = "", expectedText = "") {
+	if (!STRICT_SEGMENT_MEDIA_ALIGNMENT) return { conflict: false };
+	const expected = extractExpectedLocationAnchors(expectedText);
+	if (!expected.states.length && !expected.phrases.length) {
+		return { conflict: false };
+	}
+	const candidateStates = extractMentionedUsStates(candidateEvidenceText);
+	if (!candidateStates.length) return { conflict: false };
+	const expectedStateSet = new Set(expected.states);
+	const conflictingStates = candidateStates.filter(
+		(state) => !expectedStateSet.has(state),
+	);
+	if (!conflictingStates.length) return { conflict: false };
+	const phraseMatched = expected.phrases.some((phrase) =>
+		normalizedPhrasePresent(candidateEvidenceText, phrase),
+	);
+	if (phraseMatched) return { conflict: false };
+	return {
+		conflict: true,
+		expectedStates: expected.states,
+		expectedPhrases: expected.phrases,
+		candidateStates,
+		conflictingStates,
+	};
 }
 
 function cleanTopicCandidate(title = "") {
@@ -8183,7 +8354,6 @@ function scoreFeedVideoCandidate(entry = {}, opts = {}) {
 		pageUrl,
 		entry.title || "",
 		entry.snippet || "",
-		entry.query || "",
 		entry.sourceType || "",
 	];
 	const topicTokens = filterSpecificTopicTokens(
@@ -8202,12 +8372,30 @@ function scoreFeedVideoCandidate(entry = {}, opts = {}) {
 	const topicInfo = topicMatchInfo(topicTokens, fields);
 	const segmentInfo = topicMatchInfo(segmentTokens, fields);
 	const queryInfo = topicMatchInfo(queryTokens, fields);
+	const searchQueryInfo = topicMatchInfo(
+		uniqueStrings([...queryTokens, ...segmentTokens], { limit: 24 }),
+		[entry.query || ""],
+	);
+	const locationConflict = mediaLocationConflictInfo(
+		fields.join(" "),
+		opts.expectedText || "",
+	);
 	const direct = isProbablyDirectVideoUrl(url);
 	const trust = Math.max(feedVideoSourceTrustScore(url), feedVideoSourceTrustScore(pageUrl));
+	const requiredTopicMatches = minImageTopicTokenMatches(topicTokens);
+	const queryRequired = queryTokens.length >= 3 ? 2 : queryTokens.length ? 1 : 0;
+	const accepted =
+		!locationConflict.conflict &&
+		(!combinedTokens.length ||
+			(requiredTopicMatches > 0 && topicInfo.count >= requiredTopicMatches) ||
+			(queryRequired > 0 && queryInfo.count >= queryRequired) ||
+			(topicInfo.count > 0 && segmentInfo.count > 0) ||
+			(!requiredTopicMatches && (segmentInfo.count > 0 || queryInfo.count > 0)));
 	let score =
 		topicInfo.count * 3 +
 		queryInfo.count * 2 +
 		segmentInfo.count * 1.5 +
+		searchQueryInfo.count * 0.15 +
 		trust +
 		(direct ? 2 : 0);
 	if (/trend|seed|article-og/i.test(entry.sourceType || "")) score += 2;
@@ -8215,9 +8403,17 @@ function scoreFeedVideoCandidate(entry = {}, opts = {}) {
 		score += 1;
 	if (combinedTokens.length && !topicInfo.count && !queryInfo.count)
 		score -= 4;
+	if (STRICT_SEGMENT_MEDIA_ALIGNMENT && !accepted) score -= 30;
+	if (locationConflict.conflict) score -= 100;
 	if (isDisfavoredFeedVideoSourceUrl(url)) score -= 50;
 	if (FEED_VIDEO_TRUSTED_SOURCES_ONLY && trust < 1) score -= 25;
-	return { score, trust, direct };
+	return {
+		score,
+		trust,
+		direct,
+		accepted: !STRICT_SEGMENT_MEDIA_ALIGNMENT || accepted,
+		locationConflict,
+	};
 }
 
 async function collectFeedVideoCandidateEntriesForSegment({
@@ -8348,9 +8544,18 @@ async function collectFeedVideoCandidateEntriesForSegment({
 				topicTokens,
 				segmentTokens,
 				queryTokens,
+				expectedText: [
+					topicLabel,
+					query,
+					meta?.segmentText,
+					...(Array.isArray(meta?.articleTitles) ? meta.articleTitles : []),
+				]
+					.filter(Boolean)
+					.join(" "),
 			}),
 		};
 		if (FEED_VIDEO_TRUSTED_SOURCES_ONLY && scoredEntry.trust < 1) continue;
+		if (STRICT_SEGMENT_MEDIA_ALIGNMENT && !scoredEntry.accepted) continue;
 		if (scoredEntry.score < -10) continue;
 		scored.push(scoredEntry);
 	}
@@ -9406,6 +9611,17 @@ async function groundScriptInValidatedVisuals({
 				topicTokens,
 				segmentTokens,
 				queryTokens,
+				expectedText: [
+					effectiveTopicLabel,
+					currentQuery,
+					seg.text || "",
+					...(Array.isArray(meta.articleTitles) ? meta.articleTitles : []),
+				]
+					.filter(Boolean)
+					.join(" "),
+				topicLabel: effectiveTopicLabel,
+				segmentText: seg.text || "",
+				searchQuery: q,
 				trustedUrlKeys: new Set(),
 				imageMetaByKey: meta.imageMetaByKey,
 			});
@@ -9708,11 +9924,30 @@ function getImageRelevanceMeta(url = "", opts = {}) {
 		meta.title,
 		meta.alt,
 		meta.caption,
-		meta.query,
 		meta.source,
 		meta.sourcePage,
 		meta.pageUrl,
 		meta.provider,
+	]
+		.filter(Boolean)
+		.join(" ");
+}
+
+function getImageSearchQueryMeta(url = "", opts = {}) {
+	const key = normalizeImageUrlKey(url);
+	const byKey =
+		opts?.imageMetaByKey instanceof Map ? opts.imageMetaByKey : new Map();
+	const meta = byKey.get(key);
+	if (!meta || typeof meta !== "object") return "";
+	return [meta.query, opts?.searchQuery].filter(Boolean).join(" ");
+}
+
+function getImageExpectedText(opts = {}) {
+	return [
+		opts?.expectedText,
+		opts?.topicLabel,
+		opts?.segmentText,
+		opts?.searchQuery,
 	]
 		.filter(Boolean)
 		.join(" ");
@@ -9746,13 +9981,23 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 	const { topicTokens, segmentTokens, queryTokens } =
 		getImageUrlRelevanceTokens(opts);
 	const metaText = getImageRelevanceMeta(url, opts);
+	const searchQueryText = getImageSearchQueryMeta(url, opts);
 	const scoreAnyTokenMatch = (tokens) =>
 		Math.max(scoreUrlTokenMatch(url, tokens), scoreTextTokenMatch(metaText, tokens));
 	const topicScore = scoreAnyTokenMatch(topicTokens);
 	const segmentScore = scoreAnyTokenMatch(segmentTokens);
 	const queryScore = scoreAnyTokenMatch(queryTokens);
+	const searchQueryScore = Math.max(
+		scoreTextTokenMatch(searchQueryText, queryTokens),
+		scoreTextTokenMatch(searchQueryText, topicTokens),
+		scoreTextTokenMatch(searchQueryText, segmentTokens),
+	);
 	const hasRelevanceTokens =
 		topicTokens.length || segmentTokens.length || queryTokens.length;
+	const locationConflict = mediaLocationConflictInfo(
+		[url, metaText].filter(Boolean).join(" "),
+		getImageExpectedText(opts),
+	);
 	if (
 		isDisfavoredImageSourceUrl(url) &&
 		!opts?.allowDisfavoredStockImages
@@ -9765,33 +10010,8 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 			topicScore: 0,
 			segmentScore: 0,
 			queryScore: 0,
-		};
-	}
-	if (validatedUrlKeys.has(key)) {
-		return {
-			trusted: true,
-			validated: true,
-			accepted: true,
-			score: 1200 + qualityScore,
-			qualityScore,
-			topicScore,
-			segmentScore,
-			queryScore,
-		};
-	}
-	if (
-		trustedUrlKeys.has(key) &&
-		(!STRICT_TOPIC_RELEVANT_FEED_IMAGES || !hasRelevanceTokens)
-	) {
-		return {
-			trusted: true,
-			validated: false,
-			accepted: true,
-			score: 1000,
-			qualityScore,
-			topicScore: 0,
-			segmentScore: 0,
-			queryScore: 0,
+			searchQueryScore: 0,
+			locationConflict,
 		};
 	}
 
@@ -9806,15 +10026,62 @@ function scoreImageUrlRelevance(url = "", opts = {}) {
 		queryMatched ||
 		(topicScore > 0 && segmentMatched) ||
 		(!requiredTopicMatches && (segmentMatched || queryMatched));
+	const strictEvidence =
+		STRICT_SEGMENT_MEDIA_ALIGNMENT || STRICT_TOPIC_RELEVANT_FEED_IMAGES;
+	const acceptedByEvidence =
+		!locationConflict.conflict &&
+		(!hasRelevanceTokens || accepted || (trustedUrlKeys.has(key) && !strictEvidence));
+	const validatedAccepted =
+		validatedUrlKeys.has(key) &&
+		(!strictEvidence || !hasRelevanceTokens || acceptedByEvidence);
+	const trustedAccepted =
+		trustedUrlKeys.has(key) &&
+		(!strictEvidence || !hasRelevanceTokens || acceptedByEvidence);
+	if (validatedAccepted) {
+		return {
+			trusted: true,
+			validated: true,
+			accepted: true,
+			score: 1200 + qualityScore + searchQueryScore * 0.1,
+			qualityScore,
+			topicScore,
+			segmentScore,
+			queryScore,
+			searchQueryScore,
+			locationConflict,
+		};
+	}
+	if (trustedAccepted) {
+		return {
+			trusted: true,
+			validated: false,
+			accepted: true,
+			score: 1000 + qualityScore + searchQueryScore * 0.1,
+			qualityScore,
+			topicScore,
+			segmentScore,
+			queryScore,
+			searchQueryScore,
+			locationConflict,
+		};
+	}
 	return {
 		trusted: trustedUrlKeys.has(key),
 		validated: validatedUrlKeys.has(key),
-		accepted,
-		score: topicScore * 3 + queryScore * 2 + segmentScore + qualityScore * 0.25,
+		accepted: acceptedByEvidence,
+		score:
+			topicScore * 3 +
+			queryScore * 2 +
+			segmentScore +
+			searchQueryScore * 0.15 +
+			qualityScore * 0.25 -
+			(locationConflict.conflict ? 100 : 0),
 		qualityScore,
 		topicScore,
 		segmentScore,
 		queryScore,
+		searchQueryScore,
+		locationConflict,
 	};
 }
 
@@ -11456,6 +11723,7 @@ async function prepareImageSegments({
 			{ limit: 18 },
 		).filter((u) => isHttpUrl(u));
 		let promptFreeImageUrls = [];
+		let promptFreeImageItems = [];
 		const isPromptTopic = isUserPromptTopicPick(t);
 		if (
 			isPromptTopic &&
@@ -11477,7 +11745,7 @@ async function prepareImageSegments({
 				{ limit: PROMPT_TOPIC_FREE_IMAGE_PREFETCH_QUERY_LIMIT },
 			);
 			for (const imageQuery of promptImageQueries) {
-				const urls = await fetchGoogleImagesFromService(imageQuery, {
+				const items = await fetchGoogleImageMetadataFromService(imageQuery, {
 					limit: Math.max(
 						8,
 						Math.min(
@@ -11488,6 +11756,10 @@ async function prepareImageSegments({
 					baseUrl,
 					jobId,
 				});
+				promptFreeImageItems.push(...(items || []));
+				const urls = (items || [])
+					.map((item) => (typeof item === "string" ? item : item?.url))
+					.filter((url) => isHttpUrl(url) && !isLikelyThumbnailUrl(url));
 				promptFreeImageUrls.push(...urls);
 				if (
 					uniqueStrings(promptFreeImageUrls, {
@@ -11499,6 +11771,9 @@ async function prepareImageSegments({
 			promptFreeImageUrls = uniqueStrings(promptFreeImageUrls, {
 				limit: Math.max(24, PROMPT_TOPIC_FREE_IMAGE_PREFETCH_TARGET),
 			});
+			promptFreeImageItems = promptFreeImageItems.filter((item) =>
+				promptFreeImageUrls.includes(typeof item === "string" ? item : item?.url),
+			);
 			if (promptFreeImageUrls.length) {
 				logJob(jobId, "prompt topic free image pool ready", {
 					topic: label,
@@ -11532,6 +11807,9 @@ async function prepareImageSegments({
 		for (const item of Array.isArray(story.potentialImages)
 			? story.potentialImages
 			: []) {
+			addImageMeta(item, item?.query || label);
+		}
+		for (const item of promptFreeImageItems) {
 			addImageMeta(item, item?.query || label);
 		}
 		for (const article of Array.isArray(story.articles) ? story.articles : []) {
@@ -11659,6 +11937,27 @@ async function prepareImageSegments({
 		const queryTokens = filterSpecificTopicTokens(
 			queryVariants.flatMap((q) => tokenizeLabel(q)),
 		).slice(0, 16);
+		const segmentExpectedText = [
+			effectiveTopicLabel,
+			query,
+			seg.text || "",
+			...(Array.isArray(meta.articleTitles) ? meta.articleTitles : []),
+		]
+			.filter(Boolean)
+			.join(" ");
+		const addSegmentImageMeta = (items = [], queryHint = "") => {
+			if (!(meta.imageMetaByKey instanceof Map)) return;
+			for (const item of Array.isArray(items) ? items : [items]) {
+				const normalized = normalizeFreeImageMetadataItem(item, queryHint);
+				if (!normalized?.url) continue;
+				const key = normalizeImageUrlKey(normalized.url);
+				if (!key) continue;
+				meta.imageMetaByKey.set(key, {
+					...(meta.imageMetaByKey.get(key) || {}),
+					...normalized,
+				});
+			}
+		};
 
 		logJob(jobId, "segment image search", {
 			segment: seg.index,
@@ -11805,6 +12104,10 @@ async function prepareImageSegments({
 			topicTokens,
 			segmentTokens,
 			queryTokens,
+			expectedText: segmentExpectedText,
+			topicLabel: effectiveTopicLabel,
+			segmentText: seg.text || "",
+			searchQuery: query,
 			trustedUrlKeys: new Set([...plannedUrlKeys, ...trustedSeedUrlKeys]),
 			validatedUrlKeys: plannedUrlKeys,
 			imageMetaByKey: meta.imageMetaByKey,
@@ -11867,6 +12170,10 @@ async function prepareImageSegments({
 				topicTokens,
 				segmentTokens,
 				queryTokens,
+				expectedText: segmentExpectedText,
+				topicLabel: effectiveTopicLabel,
+				segmentText: seg.text || "",
+				searchQuery: query,
 				trustedUrlKeys: trustedBeforeGoogleKeys,
 				validatedUrlKeys: plannedUrlKeys,
 				imageMetaByKey: meta.imageMetaByKey,
@@ -11888,9 +12195,9 @@ async function prepareImageSegments({
 			const googleUrls = [];
 			for (const gQuery of googleVariants) {
 				const cacheKey = `gimg::${gQuery}`;
-				let urls = googleImageCache.get(cacheKey);
-				if (!urls) {
-					urls = await fetchGoogleImagesFromService(gQuery, {
+				let items = googleImageCache.get(cacheKey);
+				if (!items) {
+					items = await fetchGoogleImageMetadataFromService(gQuery, {
 						limit: Math.max(
 							12,
 							renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
@@ -11899,8 +12206,12 @@ async function prepareImageSegments({
 						baseUrl,
 						jobId,
 					});
-					googleImageCache.set(cacheKey, urls);
+					googleImageCache.set(cacheKey, items);
 				}
+				addSegmentImageMeta(items || [], gQuery);
+				const urls = (items || [])
+					.map((item) => (typeof item === "string" ? item : item?.url))
+					.filter((url) => isHttpUrl(url) && !isLikelyThumbnailUrl(url));
 				googleUrls.push(...(urls || []));
 				const trialRelevant = filterRelevantImageCandidatePool(
 					dedupeUrlsPreserveOrder([...candidates, ...googleUrls]).filter(
@@ -11913,6 +12224,10 @@ async function prepareImageSegments({
 						topicTokens,
 						segmentTokens,
 						queryTokens,
+						expectedText: segmentExpectedText,
+						topicLabel: effectiveTopicLabel,
+						segmentText: seg.text || "",
+						searchQuery: gQuery,
 						trustedUrlKeys: trustedBeforeGoogleKeys,
 						validatedUrlKeys: plannedUrlKeys,
 						imageMetaByKey: meta.imageMetaByKey,
@@ -11948,6 +12263,10 @@ async function prepareImageSegments({
 				topicTokens,
 				segmentTokens,
 				queryTokens,
+				expectedText: segmentExpectedText,
+				topicLabel: effectiveTopicLabel,
+				segmentText: seg.text || "",
+				searchQuery: query,
 				trustedUrlKeys: trustedBeforeCseKeys,
 				validatedUrlKeys: plannedUrlKeys,
 				imageMetaByKey: meta.imageMetaByKey,
@@ -12067,6 +12386,10 @@ async function prepareImageSegments({
 				queryTokens,
 				topicTokens,
 				segmentTokens,
+				expectedText: segmentExpectedText,
+				topicLabel: effectiveTopicLabel,
+				segmentText: seg.text || "",
+				searchQuery: query,
 				trustedUrlKeys,
 				validatedUrlKeys: plannedUrlKeys,
 				imageMetaByKey: meta.imageMetaByKey,
@@ -12140,6 +12463,10 @@ async function prepareImageSegments({
 					queryTokens,
 					topicTokens,
 					segmentTokens,
+					expectedText: segmentExpectedText,
+					topicLabel: effectiveTopicLabel,
+					segmentText: seg.text || "",
+					searchQuery: query,
 					trustedUrlKeys,
 					validatedUrlKeys: plannedUrlKeys,
 					imageMetaByKey: meta.imageMetaByKey,
@@ -12195,9 +12522,9 @@ async function prepareImageSegments({
 			const rescueUrls = [];
 			for (const rescueQuery of rescueQueries) {
 				const cacheKey = `rescue::${rescueQuery}`;
-				let urls = googleImageCache.get(cacheKey);
-				if (!urls) {
-					urls = await fetchGoogleImagesFromService(rescueQuery, {
+				let items = googleImageCache.get(cacheKey);
+				if (!items) {
+					items = await fetchGoogleImageMetadataFromService(rescueQuery, {
 						limit: Math.max(
 							GOOGLE_IMAGES_RESULTS_PER_QUERY,
 							renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
@@ -12205,8 +12532,12 @@ async function prepareImageSegments({
 						baseUrl,
 						jobId,
 					});
-					googleImageCache.set(cacheKey, urls);
+					googleImageCache.set(cacheKey, items);
 				}
+				addSegmentImageMeta(items || [], rescueQuery);
+				const urls = (items || [])
+					.map((item) => (typeof item === "string" ? item : item?.url))
+					.filter((url) => isHttpUrl(url) && !isLikelyThumbnailUrl(url));
 				rescueUrls.push(...(urls || []));
 			}
 			const rescuePicks = pickSegmentImageUrls(
@@ -12223,6 +12554,10 @@ async function prepareImageSegments({
 					queryTokens,
 					topicTokens,
 					segmentTokens,
+					expectedText: segmentExpectedText,
+					topicLabel: effectiveTopicLabel,
+					segmentText: seg.text || "",
+					searchQuery: query,
 					trustedUrlKeys,
 					validatedUrlKeys: plannedUrlKeys,
 					imageMetaByKey: meta.imageMetaByKey,
@@ -12311,7 +12646,17 @@ async function prepareImageSegments({
 						renderTargetCount,
 						renderTargetCount * IMAGE_SEARCH_CANDIDATE_MULTIPLIER,
 					),
-					enforceRelevance: false,
+					enforceRelevance: STRICT_SEGMENT_MEDIA_ALIGNMENT ? true : false,
+					topicTokens,
+					segmentTokens,
+					queryTokens,
+					expectedText: segmentExpectedText,
+					topicLabel: effectiveTopicLabel,
+					segmentText: seg.text || "",
+					searchQuery: query,
+					trustedUrlKeys,
+					validatedUrlKeys: plannedUrlKeys,
+					imageMetaByKey: meta.imageMetaByKey,
 					usedUrlsGlobal,
 				},
 			);
@@ -29286,9 +29631,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			const offset = hash % clean.length;
 			return clean.slice(offset).concat(clean.slice(0, offset));
 		};
-		const feedImageFallbackPaths = collectGlobalVisualFallbackPaths({
-			limit: 14,
-		});
+		const feedImageFallbackPaths = STRICT_SEGMENT_MEDIA_ALIGNMENT
+			? []
+			: collectGlobalVisualFallbackPaths({
+					limit: 14,
+				});
 		const renderNonPresenterFallbackSegment = async ({
 			segDur,
 			audioPath,
@@ -29312,10 +29659,12 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				? preferredImagePaths
 				: [preferredImagePaths]
 			).forEach(addImagePath);
-			collectGlobalVisualFallbackPaths({
-				exclude: imagePaths,
-				limit: 10,
-			}).forEach(addImagePath);
+			if (!STRICT_SEGMENT_MEDIA_ALIGNMENT) {
+				collectGlobalVisualFallbackPaths({
+					exclude: imagePaths,
+					limit: 10,
+				}).forEach(addImagePath);
+			}
 			if (!imagePaths.length) {
 				try {
 					const fallbackCard = await createTopicDetailCardImage({
@@ -29706,7 +30055,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 					}
 				}
 
-				if (!norm) {
+				if (!norm && !STRICT_SEGMENT_MEDIA_ALIGNMENT) {
 					const rescuePaths = [];
 					const rescuePathSet = new Set();
 					const addRescuePath = (p) => {
@@ -29957,6 +30306,28 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				requireOutroPresenter: REQUIRE_OUTRO_PRESENTER,
 			});
 			throw new Error("required_outro_presenter_failed:output_missing");
+		}
+		const outroTrackInfo = await probeTrackDurations(outroPath);
+		const outroVideoDurationPass = videoTrackDurationPass(outroTrackInfo, {
+			referenceSec: outroDurationSec,
+			toleranceSec: 0.85,
+		});
+		logJob(jobId, "outro presenter track qa", {
+			pass: outroVideoDurationPass,
+			expectedDurationSec: Number((outroDurationSec || 0).toFixed(3)),
+			videoDurationSec: roundDurationForLog(outroTrackInfo.videoDurationSec),
+			audioDurationSec: roundDurationForLog(outroTrackInfo.audioDurationSec),
+			videoShortBySec: Number(
+				Math.max(0, Number(outroTrackInfo.videoShortBySec || 0)).toFixed(3),
+			),
+			requireOutroPresenter: REQUIRE_OUTRO_PRESENTER,
+		});
+		if (!outroVideoDurationPass) {
+			throw new Error(
+				`required_outro_presenter_failed:video_stream_short_by_${Number(
+					outroTrackInfo.videoShortBySec || 0,
+				).toFixed(3)}s`,
+			);
 		}
 		segmentVideos.push(outroPath);
 		segmentRenderSummary.push({
