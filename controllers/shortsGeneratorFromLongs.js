@@ -129,6 +129,43 @@ function isHttpUrl(u) {
 	return typeof u === "string" && /^https?:\/\//i.test(u);
 }
 
+function extractYouTubeVideoId(value = "") {
+	const raw = String(value || "").trim();
+	if (!raw) return "";
+	if (/^[A-Za-z0-9_-]{11}$/.test(raw)) return raw;
+
+	try {
+		const url = new URL(raw);
+		const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+		if (host === "youtu.be") {
+			const id = url.pathname.split("/").filter(Boolean)[0] || "";
+			return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : "";
+		}
+		if (host === "youtube.com" || host.endsWith(".youtube.com")) {
+			const watchId = url.searchParams.get("v") || "";
+			if (/^[A-Za-z0-9_-]{11}$/.test(watchId)) return watchId;
+			const pathMatch = url.pathname.match(
+				/\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{11})/i,
+			);
+			if (pathMatch) return pathMatch[1];
+		}
+	} catch {}
+
+	const match = raw.match(
+		/(?:v=|youtu\.be\/|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/i,
+	);
+	return match ? match[1] : "";
+}
+
+function normalizeYouTubeWatchUrl(value = "") {
+	const id = extractYouTubeVideoId(value);
+	return id ? `https://www.youtube.com/watch?v=${id}` : "";
+}
+
+function resolveOriginalLongYouTubeUrl(video) {
+	return normalizeYouTubeWatchUrl(video?.youtubeLink || "");
+}
+
 function buildPublicBaseUrl(req) {
 	const envBase = String(process.env.PUBLIC_BASE_URL || "").trim();
 	if (envBase) return envBase.replace(/\/+$/, "");
@@ -477,6 +514,15 @@ function normalizeClipCandidates(shortsDetails, segments = []) {
 				localPath: c?.localPath || "",
 				publicUrl: c?.publicUrl || "",
 				youtubeLink: c?.youtubeLink || "",
+				fullVideoUrl: normalizeYouTubeWatchUrl(
+					c?.fullVideoUrl || c?.full_video_url || "",
+				),
+				relatedLongVideoUrl: normalizeYouTubeWatchUrl(
+					c?.relatedLongVideoUrl || c?.related_long_video_url || "",
+				),
+				relatedLongYoutubeId: extractYouTubeVideoId(
+					c?.relatedLongYoutubeId || c?.related_long_youtube_id || "",
+				),
 				lastError: c?.lastError || "",
 				uploadedAt: c?.uploadedAt || "",
 			};
@@ -518,6 +564,16 @@ function stripClipCandidateForPlan(candidate) {
 		thumbnailTextCandidates: Array.isArray(candidate.thumbnailTextCandidates)
 			? candidate.thumbnailTextCandidates
 			: [],
+		fullVideoUrl: normalizeYouTubeWatchUrl(candidate.fullVideoUrl || ""),
+		relatedLongVideoUrl: normalizeYouTubeWatchUrl(
+			candidate.relatedLongVideoUrl || candidate.fullVideoUrl || "",
+		),
+		relatedLongYoutubeId: extractYouTubeVideoId(
+			candidate.relatedLongYoutubeId ||
+				candidate.relatedLongVideoUrl ||
+				candidate.fullVideoUrl ||
+				"",
+		),
 	};
 }
 
@@ -550,6 +606,25 @@ function mergeShortRecordsIntoCandidates(
 			localPath: record.localPath || clip.localPath,
 			publicUrl: record.publicUrl || clip.publicUrl,
 			youtubeLink: record.youtubeLink || clip.youtubeLink,
+			fullVideoUrl:
+				normalizeYouTubeWatchUrl(record.fullVideoUrl || "") ||
+				clip.fullVideoUrl ||
+				"",
+			relatedLongVideoUrl:
+				normalizeYouTubeWatchUrl(
+					record.relatedLongVideoUrl || record.fullVideoUrl || "",
+				) ||
+				clip.relatedLongVideoUrl ||
+				"",
+			relatedLongYoutubeId:
+				extractYouTubeVideoId(
+					record.relatedLongYoutubeId ||
+						record.relatedLongVideoUrl ||
+						record.fullVideoUrl ||
+						"",
+				) ||
+				clip.relatedLongYoutubeId ||
+				"",
 			lastError: record.lastError || clip.lastError,
 			uploadedAt: record.uploadedAt || clip.uploadedAt || "",
 		};
@@ -582,6 +657,9 @@ function fallbackShortsDetails(video) {
 		localPath: "",
 		publicUrl: "",
 		youtubeLink: "",
+		fullVideoUrl: "",
+		relatedLongVideoUrl: "",
+		relatedLongYoutubeId: "",
 		lastError: "",
 		uploadedAt: "",
 	}));
@@ -725,10 +803,16 @@ function buildShortsTitle({
 }
 
 function ensureFullVideoLinkInDescription(description = "", fullVideoUrl = "") {
-	const url = String(fullVideoUrl || "").trim();
+	const url = normalizeYouTubeWatchUrl(fullVideoUrl);
 	if (!url) return String(description || "").trim();
 	const current = String(description || "").trim();
-	if (current && current.includes(url)) return current;
+	const videoId = extractYouTubeVideoId(url);
+	if (
+		current &&
+		(current.includes(url) || (videoId && current.includes(videoId)))
+	) {
+		return current;
+	}
 	const header = `Watch the full video: ${url}`;
 	if (!current) return header;
 	return `${header}\n${current}`;
@@ -737,7 +821,9 @@ function ensureFullVideoLinkInDescription(description = "", fullVideoUrl = "") {
 function buildShortsDescription(candidate) {
 	const line = String(candidate?.line || "").trim();
 	const cta = String(candidate?.ctaLine || SHORTS_DEFAULT_CTA_LINE).trim();
-	const fullVideoUrl = String(candidate?.fullVideoUrl || "").trim();
+	const fullVideoUrl = normalizeYouTubeWatchUrl(
+		candidate?.relatedLongVideoUrl || candidate?.fullVideoUrl || "",
+	);
 	const fullVideoLine = fullVideoUrl
 		? `Watch the full video: ${fullVideoUrl}`
 		: "";
@@ -750,6 +836,11 @@ async function uploadShortClip({ video, shortDoc, clipIndex }) {
 	if (!userId) throw new Error("Short upload missing user");
 	const user = await User.findById(userId);
 	if (!user) throw new Error("Short upload user not found");
+	const relatedLongVideoUrl =
+		normalizeYouTubeWatchUrl(shortDoc?.relatedLongVideoUrl || "") ||
+		normalizeYouTubeWatchUrl(shortDoc?.fullVideoUrl || "") ||
+		resolveOriginalLongYouTubeUrl(video);
+	if (!relatedLongVideoUrl) throw new Error("missing_original_long_youtube_link");
 	const reqMock = {
 		body: {
 			youtubeAccessToken: video.youtubeAccessToken || "",
@@ -770,12 +861,26 @@ async function uploadShortClip({ video, shortDoc, clipIndex }) {
 			usedTitles: new Set(),
 		});
 	const description =
-		String(shortDoc?.description || "").trim() ||
-		buildShortsDescription(shortDoc);
+		ensureFullVideoLinkInDescription(
+			String(shortDoc?.description || "").trim() ||
+				buildShortsDescription({
+					...shortDoc.toObject?.(),
+					line: shortDoc?.line,
+					ctaLine: shortDoc?.ctaLine,
+					relatedLongVideoUrl,
+					fullVideoUrl: relatedLongVideoUrl,
+				}),
+			relatedLongVideoUrl,
+		);
 	const tags = ["shorts", "short", "clip"];
 	const category = YT_CATEGORY_MAP[video?.category]
 		? video.category
 		: "Entertainment";
+	console.log("[ShortsFromLong] uploading short", {
+		longVideoId: String(video?._id || ""),
+		clipId: String(shortDoc?.clipId || ""),
+		relatedLongVideoUrl,
+	});
 	return await uploadToYouTube(youtubeTokens, shortDoc.localPath, {
 		title,
 		description,
@@ -813,16 +918,35 @@ async function uploadNextReadyShortForVideo({
 		};
 	}
 
-	if (!shortDoc.fullVideoUrl && fullVideoUrl) {
-		shortDoc.fullVideoUrl = fullVideoUrl;
+	const resolvedFullUrl =
+		normalizeYouTubeWatchUrl(fullVideoUrl) ||
+		normalizeYouTubeWatchUrl(shortDoc.relatedLongVideoUrl || "") ||
+		normalizeYouTubeWatchUrl(shortDoc.fullVideoUrl || "") ||
+		resolveOriginalLongYouTubeUrl(video);
+	if (!resolvedFullUrl) {
+		const error = "missing_original_long_youtube_link";
+		shortDoc.status = "ready";
+		shortDoc.lastError = error;
+		await shortDoc.save();
+		return {
+			attempted: false,
+			uploaded: false,
+			clipId: String(shortDoc.clipId || ""),
+			orderIndex: Number(shortDoc.orderIndex || 0),
+			reason: error,
+			error,
+		};
 	}
 
-	const resolvedFullUrl = shortDoc.fullVideoUrl || fullVideoUrl;
+	shortDoc.fullVideoUrl = resolvedFullUrl;
+	shortDoc.relatedLongVideoUrl = resolvedFullUrl;
+	shortDoc.relatedLongYoutubeId = extractYouTubeVideoId(resolvedFullUrl);
 	if (!shortDoc.description) {
 		shortDoc.description = buildShortsDescription({
 			line: shortDoc.line,
 			ctaLine: shortDoc.ctaLine,
 			fullVideoUrl: resolvedFullUrl,
+			relatedLongVideoUrl: resolvedFullUrl,
 		});
 	} else if (resolvedFullUrl) {
 		const updatedDescription = ensureFullVideoLinkInDescription(
@@ -927,11 +1051,8 @@ exports.createShortsFromLong = async (req, res) => {
 		const clipCandidates = shortsDetails.clipCandidates;
 		const candidatesToProcess = clipCandidates.slice(0, limit);
 		const baseUrl = buildPublicBaseUrl(req);
-		const fullVideoUrl = isHttpUrl(video.youtubeLink)
-			? video.youtubeLink
-			: isHttpUrl(video.outputUrl)
-				? video.outputUrl
-				: "";
+		const fullVideoUrl = resolveOriginalLongYouTubeUrl(video);
+		const relatedLongYoutubeId = extractYouTubeVideoId(fullVideoUrl);
 
 		const existingShorts = await ShortVideo.find({
 			longVideo: video._id,
@@ -957,8 +1078,11 @@ exports.createShortsFromLong = async (req, res) => {
 		let generatedCount = 0;
 		for (let i = 0; i < candidatesToProcess.length; i++) {
 			const candidate = candidatesToProcess[i];
-			if (!candidate.fullVideoUrl && fullVideoUrl)
+			if (fullVideoUrl) {
 				candidate.fullVideoUrl = fullVideoUrl;
+				candidate.relatedLongVideoUrl = fullVideoUrl;
+				candidate.relatedLongYoutubeId = relatedLongYoutubeId;
+			}
 
 			const fallbackBase =
 				String(shortsDetails.angle || "").trim() ||
@@ -1015,13 +1139,19 @@ exports.createShortsFromLong = async (req, res) => {
 							fallbackTitle: String(video?.seoTitle || "Short update").trim(),
 							usedTitles,
 						});
-			const description =
+			const rawDescription =
 				!forceRegenerate && existing?.description
 					? existing.description
 					: buildShortsDescription({
 							...candidate,
 							fullVideoUrl: candidate.fullVideoUrl || fullVideoUrl,
+							relatedLongVideoUrl:
+								candidate.relatedLongVideoUrl || fullVideoUrl,
 						});
+			const description = ensureFullVideoLinkInDescription(
+				rawDescription,
+				fullVideoUrl,
+			);
 			const status =
 				!forceRegenerate && existing?.status === "uploaded"
 					? "uploaded"
@@ -1047,7 +1177,11 @@ exports.createShortsFromLong = async (req, res) => {
 					description,
 					localPath: shouldReuse ? existing?.localPath : outPath,
 					publicUrl,
-					fullVideoUrl: candidate.fullVideoUrl || fullVideoUrl,
+					fullVideoUrl: fullVideoUrl || existing?.fullVideoUrl || "",
+					relatedLongVideoUrl:
+						fullVideoUrl || existing?.relatedLongVideoUrl || "",
+					relatedLongYoutubeId:
+						relatedLongYoutubeId || existing?.relatedLongYoutubeId || "",
 					status,
 					lastError,
 					generatedAt: shouldReuse
@@ -1243,11 +1377,7 @@ exports.processPendingShortUploads = async ({ limit = 3 } = {}) => {
 			: 0;
 		if (nextUploadAtTs && nowTs < nextUploadAtTs) continue;
 
-		const fullVideoUrl = isHttpUrl(video.youtubeLink)
-			? video.youtubeLink
-			: isHttpUrl(video.outputUrl)
-				? video.outputUrl
-				: "";
+		const fullVideoUrl = resolveOriginalLongYouTubeUrl(video);
 		const uploadResult = await uploadNextReadyShortForVideo({
 			video,
 			fullVideoUrl,

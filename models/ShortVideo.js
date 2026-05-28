@@ -107,6 +107,14 @@ const shortVideoSchema = new mongoose.Schema(
 			type: String,
 			trim: true,
 		},
+		relatedLongVideoUrl: {
+			type: String,
+			trim: true,
+		},
+		relatedLongYoutubeId: {
+			type: String,
+			trim: true,
+		},
 	},
 	{ timestamps: true }
 );
