@@ -437,24 +437,24 @@ const DEFAULT_INTRO_SEC = clampNumber(
 );
 // Outro (seconds)
 const OUTRO_MIN_SEC = clampNumber(
-	process.env.LONG_VIDEO_OUTRO_MIN_SEC ?? 4.2,
-	3,
-	7,
-);
-const OUTRO_MAX_SEC = clampNumber(
-	process.env.LONG_VIDEO_OUTRO_MAX_SEC ?? 7.2,
-	OUTRO_MIN_SEC,
+	process.env.LONG_VIDEO_OUTRO_MIN_SEC ?? 5.8,
+	4.5,
 	9,
 );
+const OUTRO_MAX_SEC = clampNumber(
+	process.env.LONG_VIDEO_OUTRO_MAX_SEC ?? 8.8,
+	OUTRO_MIN_SEC,
+	12,
+);
 const DEFAULT_OUTRO_SEC = clampNumber(
-	process.env.LONG_VIDEO_DEFAULT_OUTRO_SEC ?? 6.0,
+	process.env.LONG_VIDEO_DEFAULT_OUTRO_SEC ?? 7.2,
 	OUTRO_MIN_SEC,
 	OUTRO_MAX_SEC,
 );
 const OUTRO_SMILE_TAIL_SEC = clampNumber(
-	process.env.LONG_VIDEO_OUTRO_SMILE_TAIL_SEC ?? 2,
+	process.env.LONG_VIDEO_OUTRO_SMILE_TAIL_SEC ?? 2.2,
 	1.8,
-	2.4,
+	2.8,
 );
 const REQUIRE_OUTRO_PRESENTER = true;
 const INTRO_VIDEO_BLUR_SIGMA = clampNumber(2.6, 0, 8);
@@ -17713,12 +17713,15 @@ function buildOutroLine({
 	);
 	if (requestedOutro) return sanitizeIntroOutroLine(requestedOutro);
 	const question = buildOutroEngagementQuestion({ topics, shortTitle, mood });
-	let line = `If this helped, please like and subscribe, and tell me: ${question}`;
-	if (countWords(line) > 20) {
-		line = `Please like and subscribe, and tell me: ${question}`;
+	let line =
+		mood === "serious"
+			? `That is the part worth watching next. Subscribe for the next update, and tell me: ${question}`
+			: `That is the part I will keep watching. Subscribe for the next breakdown, and tell me: ${question}`;
+	if (countWords(line) > 24) {
+		line = `Subscribe for the next update, and tell me: ${question}`;
 	}
-	if (countWords(line) > 18) {
-		line = `Please like, subscribe, and tell me: ${question}`;
+	if (countWords(line) > 22) {
+		line = `Subscribe for the next breakdown, and tell me: ${question}`;
 	}
 	return sanitizeIntroOutroLine(line);
 }
@@ -29857,7 +29860,13 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			...output,
 			softTransitions: true,
 		});
-		logJob(jobId, "concat done", { clips: segmentVideos.length });
+		const concatDurationSec = await probeDurationSeconds(concatPath);
+		logJob(jobId, "concat done", {
+			clips: segmentVideos.length,
+			durationSec: concatDurationSec
+				? Number(concatDurationSec.toFixed(3))
+				: null,
+		});
 
 		// 14) Overlays (optional; static image segments provide visuals)
 		let overlayedPath = concatPath;
@@ -29933,6 +29942,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 				jobId,
 			});
 		}
+		const mixedDurationSec = await probeDurationSeconds(mixedPath);
 
 		updateJob(jobId, { progressPct: 92 });
 
@@ -29953,6 +29963,37 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			fadeOutSec: FINAL_FADE_OUT_SEC,
 			outCfg: output,
 		});
+		const finalDurationSec = await probeDurationSeconds(outputPath);
+		const durationReferenceSec = mixedDurationSec || concatDurationSec || 0;
+		const finalShortBySec =
+			durationReferenceSec && finalDurationSec
+				? durationReferenceSec - finalDurationSec
+				: 0;
+		const finalDurationPass = Boolean(
+			finalDurationSec &&
+				(!durationReferenceSec ||
+					finalShortBySec <= Math.max(1.1, FINAL_FADE_OUT_SEC + 0.35)),
+		);
+		logJob(jobId, "final duration qa", {
+			pass: finalDurationPass,
+			concatDurationSec: concatDurationSec
+				? Number(concatDurationSec.toFixed(3))
+				: null,
+			mixedDurationSec: mixedDurationSec
+				? Number(mixedDurationSec.toFixed(3))
+				: null,
+			finalDurationSec: finalDurationSec
+				? Number(finalDurationSec.toFixed(3))
+				: null,
+			shortBySec: Number(Math.max(0, finalShortBySec || 0).toFixed(3)),
+			requiredOutroPresenter: REQUIRE_OUTRO_PRESENTER,
+			outroSmileTailSec: Number(OUTRO_SMILE_TAIL_SEC.toFixed(1)),
+		});
+		if (!finalDurationPass) {
+			throw new Error(
+				`final_duration_short_by_${Number(finalShortBySec.toFixed(3))}s`,
+			);
+		}
 
 		// 16.5) YouTube upload (optional)
 		let youtubeLink = "";
