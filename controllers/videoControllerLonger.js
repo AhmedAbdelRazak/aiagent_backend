@@ -173,16 +173,23 @@ const HEYGEN_POLL_TIMEOUT_MS = clampNumber(
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || null;
 
 const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY || null;
+const ALLOW_PAID_FEED_MEDIA_SEARCH = envFlag(
+	"LONG_VIDEO_ALLOW_PAID_FEED_MEDIA_SEARCH",
+	false,
+);
 function looksLikeGoogleOAuthClientId(value = "") {
 	return /\.apps\.googleusercontent\.com$/i.test(String(value || "").trim());
 }
 const GOOGLE_CSE_CONFIG_READY = Boolean(
-	GOOGLE_CSE_ID &&
+	ALLOW_PAID_FEED_MEDIA_SEARCH &&
+		GOOGLE_CSE_ID &&
 		GOOGLE_CSE_KEY &&
 		!looksLikeGoogleOAuthClientId(GOOGLE_CSE_ID),
 );
 const GOOGLE_CSE_CONFIG_ISSUE =
-	GOOGLE_CSE_ID && GOOGLE_CSE_KEY && !GOOGLE_CSE_CONFIG_READY
+	GOOGLE_CSE_ID && GOOGLE_CSE_KEY && !ALLOW_PAID_FEED_MEDIA_SEARCH
+		? "paid Google CSE feed media search disabled"
+		: GOOGLE_CSE_ID && GOOGLE_CSE_KEY && !GOOGLE_CSE_CONFIG_READY
 		? "GOOGLE_CSE_ID looks like an OAuth client id, not a Custom Search cx"
 		: "";
 
@@ -1339,6 +1346,7 @@ function getLongVideoRuntimeProfile() {
 		heygenFinalFreezeMaxRatio: Number(
 			HEYGEN_FINAL_MOTION_MAX_FREEZE_RATIO.toFixed(2),
 		),
+		allowPaidFeedMediaSearch: ALLOW_PAID_FEED_MEDIA_SEARCH,
 		googleCseReady: GOOGLE_CSE_CONFIG_READY,
 		googleCseIssue: GOOGLE_CSE_CONFIG_ISSUE || "",
 	};
