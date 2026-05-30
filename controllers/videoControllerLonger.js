@@ -150,6 +150,10 @@ const HEYGEN_DEFAULT_ASPECT_RATIO =
 const HEYGEN_DEFAULT_EXPRESSIVENESS =
 	String(process.env.LONG_VIDEO_HEYGEN_EXPRESSIVENESS || "medium").trim() ||
 	"medium";
+const HEYGEN_CONTENT_EXPRESSIVENESS =
+	String(
+		process.env.LONG_VIDEO_HEYGEN_CONTENT_EXPRESSIVENESS || "high",
+	).trim() || "high";
 const HEYGEN_DEFAULT_FIT =
 	String(process.env.LONG_VIDEO_HEYGEN_FIT || "cover").trim() || "cover";
 const HEYGEN_RETRY_EXPRESSIVENESS =
@@ -648,19 +652,33 @@ const HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_SEC = clampNumber(
 );
 const HEYGEN_CONTENT_MOTION_MAX_FREEZE_RATIO = clampNumber(
 	process.env.LONG_VIDEO_HEYGEN_CONTENT_MOTION_MAX_FREEZE_RATIO ??
-		HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO,
+		PRESENTER_RENDER_MOTION_MAX_FREEZE_RATIO,
+	PRESENTER_MOTION_MAX_FREEZE_RATIO,
 	HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO,
-	HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO,
 );
 const HEYGEN_CONTENT_MOTION_MAX_FREEZE_SEC = clampNumber(
 	process.env.LONG_VIDEO_HEYGEN_CONTENT_MOTION_MAX_FREEZE_SEC ??
-		HEYGEN_REQUIRED_MOTION_MAX_FREEZE_SEC,
+		PRESENTER_RENDER_MOTION_MAX_FREEZE_SEC,
+	PRESENTER_MOTION_MAX_FREEZE_SEC,
 	HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_SEC,
-	HEYGEN_REQUIRED_MOTION_MAX_FREEZE_SEC,
 );
-const HEYGEN_RENDER_MAX_ATTEMPTS = Math.floor(
-	clampNumber(process.env.LONG_VIDEO_HEYGEN_RENDER_MAX_ATTEMPTS ?? 2, 1, 3),
+const HEYGEN_REQUIRED_ALLOW_FREEZE_NEAR_PASS = envFlag(
+	"LONG_VIDEO_HEYGEN_REQUIRED_FREEZE_NEAR_PASS",
+	true,
 );
+const HEYGEN_CONTENT_ALLOW_FREEZE_NEAR_PASS = envFlag(
+	"LONG_VIDEO_HEYGEN_CONTENT_FREEZE_NEAR_PASS",
+	false,
+);
+const HEYGEN_OPTIONAL_ALLOW_FREEZE_NEAR_PASS = envFlag(
+	"LONG_VIDEO_HEYGEN_OPTIONAL_FREEZE_NEAR_PASS",
+	false,
+);
+const HEYGEN_MOTION_QA_HARD_FAIL = envFlag(
+	"LONG_VIDEO_HEYGEN_MOTION_QA_HARD_FAIL",
+	false,
+);
+const HEYGEN_RENDER_MAX_ATTEMPTS = 1;
 const HEYGEN_FINAL_MOTION_FREEZE_NOISE = clampNumber(
 	process.env.LONG_VIDEO_HEYGEN_FINAL_MOTION_FREEZE_NOISE ?? 0.001,
 	0.0001,
@@ -1284,6 +1302,7 @@ function getLongVideoRuntimeProfile() {
 		presenterVideoEngine: "heygen",
 		heygenResolution: HEYGEN_DEFAULT_RESOLUTION,
 		heygenExpressiveness: HEYGEN_DEFAULT_EXPRESSIVENESS,
+		heygenContentExpressiveness: HEYGEN_CONTENT_EXPRESSIVENESS,
 		heygenAspectRatio: HEYGEN_DEFAULT_ASPECT_RATIO,
 		heygenFit: HEYGEN_DEFAULT_FIT,
 		requirePresenterVideo: REQUIRE_HEYGEN_PRESENTER_VIDEO,
@@ -1313,6 +1332,7 @@ function getLongVideoRuntimeProfile() {
 		strictTopicRelevantFeedImages: STRICT_TOPIC_RELEVANT_FEED_IMAGES,
 		heygenPollMaxSec: Number((HEYGEN_POLL_TIMEOUT_MS / 1000).toFixed(1)),
 		heygenRenderMaxAttempts: HEYGEN_RENDER_MAX_ATTEMPTS,
+		heygenMotionQaHardFail: HEYGEN_MOTION_QA_HARD_FAIL,
 		heygenFinalFreezeMaxSec: Number(
 			HEYGEN_FINAL_MOTION_MAX_FREEZE_SEC.toFixed(2),
 		),
@@ -9891,6 +9911,15 @@ function scoreTextTokenMatch(text = "", tokens = []) {
 	return count;
 }
 
+function scoreImageVisibleTokenEvidence(url = "", tokens = [], opts = {}) {
+	const normTokens = normalizeTopicTokens(tokens);
+	if (!normTokens.length) return 0;
+	return Math.max(
+		scoreUrlTokenMatch(url, normTokens),
+		scoreTextTokenMatch(getImageRelevanceMeta(url, opts), normTokens),
+	);
+}
+
 function getImageUrlRelevanceTokens(opts = {}) {
 	const topicTokens = filterSpecificTopicTokens(
 		normalizeTopicTokens(opts.topicTokens || opts.preferTokens || []),
@@ -10158,15 +10187,40 @@ function pickSegmentImageUrls(
 	const preferTokens = Array.isArray(opts.preferTokens)
 		? normalizeTopicTokens(opts.preferTokens)
 		: [];
-	pool = filterRelevantImageCandidatePool(pool, {
+	const relevanceOpts = {
 		...opts,
 		topicTokens: opts.topicTokens || preferTokens,
 		segmentTokens: opts.segmentTokens || requireTokens,
-	});
+	};
+	const rankPool = (items = []) =>
+		(Array.isArray(items) ? items : [])
+			.map((url, idx) => ({
+				url,
+				idx,
+				...scoreImageUrlRelevance(url, relevanceOpts),
+			}))
+			.sort((a, b) => {
+				if (Number(Boolean(b.validated)) !== Number(Boolean(a.validated)))
+					return Number(Boolean(b.validated)) - Number(Boolean(a.validated));
+				if (Number(Boolean(b.trusted)) !== Number(Boolean(a.trusted)))
+					return Number(Boolean(b.trusted)) - Number(Boolean(a.trusted));
+				if (b.segmentScore !== a.segmentScore)
+					return b.segmentScore - a.segmentScore;
+				if (b.queryScore !== a.queryScore) return b.queryScore - a.queryScore;
+				if (b.topicScore !== a.topicScore) return b.topicScore - a.topicScore;
+				if (b.qualityScore !== a.qualityScore)
+					return b.qualityScore - a.qualityScore;
+				if (b.score !== a.score) return b.score - a.score;
+				return a.idx - b.idx;
+			})
+			.map((entry) => entry.url);
+	pool = filterRelevantImageCandidatePool(pool, relevanceOpts);
 	if (!pool.length) return [];
+	pool = rankPool(pool);
 	if (requireTokens.length) {
 		const matched = pool.filter(
-			(url) => scoreUrlTokenMatch(url, requireTokens) > 0,
+			(url) =>
+				scoreImageVisibleTokenEvidence(url, requireTokens, relevanceOpts) > 0,
 		);
 		if (matched.length) {
 			const matchedKeys = new Set(
@@ -10182,12 +10236,15 @@ function pickSegmentImageUrls(
 	if (preferTokens.length && pool.length > 1) {
 		const scored = pool.map((url) => ({
 			url,
-			score: scoreUrlTokenMatch(url, preferTokens),
+			score: scoreImageVisibleTokenEvidence(url, preferTokens, relevanceOpts),
 		}));
 		const withScore = scored.filter((c) => c.score > 0);
 		const withoutScore = scored.filter((c) => c.score === 0);
 		withScore.sort((a, b) => b.score - a.score);
-		pool = [...withScore, ...withoutScore].map((c) => c.url);
+		pool = [
+			...rankPool(withScore.map((c) => c.url)),
+			...withoutScore.map((c) => c.url),
+		];
 	}
 	const picks = [];
 	const picked = new Set();
@@ -23761,11 +23818,11 @@ function buildHeyGenMotionPrompt({
 		roleLabel === "content_mid" || roleLabel === "content_required";
 	const middleDirection =
 		middlePresenterRole
-			? "Middle presenter direction: this is a paid mid-video presenter beat, so it must stay visibly alive while still calm. Add small natural speech emphasis at phrase transitions: soft blinks, slight eye refocus, tiny bounded chin dips, subtle cheek and jaw motion, and quiet shoulder breathing. Keep the mouth and jaw visibly responding to every spoken phrase. Never hold the face like a photo."
+			? "Middle presenter direction: this is a paid mid-video presenter beat, so it must stay visibly alive while still calm. Add small natural speech emphasis at phrase transitions: soft blinks, slight eye refocus, tiny bounded chin dips, subtle cheek and jaw motion, and quiet shoulder breathing. Keep the mouth and jaw visibly responding to every spoken phrase. Camera or background movement does not count; the face itself must stay alive. Never hold the face like a photo."
 			: "";
 	const retryDirection =
 		motionAttempt > 1
-			? "Retry direction: the previous take was too still. Keep the same calm professional personality, but increase visible lip sync, blinks, eye refocus, tiny nods, cheek movement, and shoulder breathing throughout the entire clip. No second of the clip should look like a still photo."
+			? "Retry direction: the previous take was too still. Keep the same calm professional personality, but increase visible lip sync, blinks, eye refocus, tiny nods, cheek movement, and shoulder breathing throughout the entire clip. Do not rely on camera movement to create life; the face, lips, eyes, and shoulders must keep subtle human motion. No second of the clip should look like a still photo."
 			: "";
 	const motionContinuity =
 		roleLabel === "intro_first" || dur >= 18
@@ -23775,6 +23832,13 @@ function buildHeyGenMotionPrompt({
 				: middlePresenterRole
 					? "For this mid-video take, avoid stillness between sentences: keep a natural low-energy rhythm of blinks, micro nods, tiny posture settling, and restrained lip-sync movement across the full clip."
 					: "For this short presenter beat, include at least one tiny natural emphasis cue while keeping the overall delivery calm.";
+
+	if (middlePresenterRole) {
+		return [
+			"Look at the camera calmly while speaking.",
+			"Use gentle blinks, small nods, subtle lip-sync expression, and relaxed shoulder breathing.",
+		].join(" ");
+	}
 
 	return [
 		`Photorealistic talking-head presenter delivery for a ${roleLabel} video segment.`,
@@ -23807,6 +23871,30 @@ function resolveHeyGenPace({ text = "", expression = "neutral", mood = "neutral"
 		return "urgent";
 	}
 	return "steady";
+}
+
+function normalizeHeyGenExpressiveness(value, fallback = HEYGEN_DEFAULT_EXPRESSIVENESS) {
+	const clean = String(value || "").trim().toLowerCase();
+	return ["low", "medium", "high"].includes(clean)
+		? clean
+		: normalizeHeyGenExpressiveness(fallback, "medium");
+}
+
+function resolveHeyGenExpressiveness({ role = "", attempt = 1 } = {}) {
+	const roleKey = String(role || "").toLowerCase();
+	if (attempt > 1) {
+		return normalizeHeyGenExpressiveness(
+			HEYGEN_RETRY_EXPRESSIVENESS,
+			HEYGEN_CONTENT_EXPRESSIVENESS,
+		);
+	}
+	if (roleKey === "content_mid" || roleKey === "content_required") {
+		return normalizeHeyGenExpressiveness(
+			HEYGEN_CONTENT_EXPRESSIVENESS,
+			HEYGEN_DEFAULT_EXPRESSIVENESS,
+		);
+	}
+	return normalizeHeyGenExpressiveness(HEYGEN_DEFAULT_EXPRESSIVENESS, "medium");
 }
 
 function buildHeyGenVideoPayload({
@@ -23974,6 +24062,11 @@ async function renderHeyGenPresenterSegment({
 		: contentPresenterRole
 			? HEYGEN_CONTENT_MOTION_MAX_FREEZE_RATIO
 			: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO;
+	const allowFreezeNearPass = requiredPresenterRole
+		? HEYGEN_REQUIRED_ALLOW_FREEZE_NEAR_PASS
+		: contentPresenterRole
+			? HEYGEN_CONTENT_ALLOW_FREEZE_NEAR_PASS
+			: HEYGEN_OPTIONAL_ALLOW_FREEZE_NEAR_PASS;
 	let lastQaError = null;
 
 	for (let attempt = 1; attempt <= HEYGEN_RENDER_MAX_ATTEMPTS; attempt++) {
@@ -23993,8 +24086,7 @@ async function renderHeyGenPresenterSegment({
 			imageUrl: presenterImageUrl,
 			audioUrl: uploadedAudio.url,
 			motionPrompt,
-			expressiveness:
-				attempt > 1 ? HEYGEN_RETRY_EXPRESSIVENESS : HEYGEN_DEFAULT_EXPRESSIVENESS,
+			expressiveness: resolveHeyGenExpressiveness({ role, attempt }),
 		});
 		logJob(jobId, "heygen presenter request", {
 			label: safeLabel,
@@ -24027,10 +24119,14 @@ async function renderHeyGenPresenterSegment({
 		});
 		const originalQaIssues = Array.isArray(qa.issues) ? [...qa.issues] : [];
 		let acceptedSubtleHeyGenMotion = false;
-		if (
-			!qa.pass &&
+		let motionQaAdvisory = false;
+		const freezeOnlyQa =
 			originalQaIssues.length > 0 &&
-			originalQaIssues.every((issue) => issue === "presenter_video_frozen") &&
+			originalQaIssues.every((issue) => issue === "presenter_video_frozen");
+		if (
+			allowFreezeNearPass &&
+			!qa.pass &&
+			freezeOnlyQa &&
 			Number(qa.durationDeltaSec || 0) <= PRESENTER_VIDEO_MAX_SHORTFALL_SEC &&
 			Number(qa.maxFreezeSec || 0) <= maxAllowedFreezeSec &&
 			Number(qa.freezeRatio || 0) <= maxAllowedFreezeRatio
@@ -24038,6 +24134,34 @@ async function renderHeyGenPresenterSegment({
 			qa.pass = true;
 			qa.issues = [];
 			acceptedSubtleHeyGenMotion = true;
+		}
+		if (!qa.pass && freezeOnlyQa && !HEYGEN_MOTION_QA_HARD_FAIL) {
+			qa.pass = true;
+			qa.issues = [];
+			motionQaAdvisory = true;
+			logJob(jobId, "heygen presenter motion qa advisory", {
+				label: safeLabel,
+				attempt,
+				heygenLabel: attemptLabel,
+				role,
+				originalIssues: originalQaIssues,
+				maxFreezeSec: Number((qa.maxFreezeSec || 0).toFixed(3)),
+				freezeRatio: Number((qa.freezeRatio || 0).toFixed(3)),
+			});
+		}
+		if (!qa.pass && originalQaIssues.includes("presenter_video_frozen")) {
+			logJob(jobId, "heygen presenter frozen take rejected", {
+				label: safeLabel,
+				attempt,
+				heygenLabel: attemptLabel,
+				role,
+				contentPresenterRole,
+				allowFreezeNearPass,
+				maxFreezeSec: Number((qa.maxFreezeSec || 0).toFixed(3)),
+				freezeRatio: Number((qa.freezeRatio || 0).toFixed(3)),
+				maxAllowedFreezeSec: Number(maxAllowedFreezeSec.toFixed(3)),
+				maxAllowedFreezeRatio: Number(maxAllowedFreezeRatio.toFixed(3)),
+			});
 		}
 		logJob(jobId, "heygen presenter qa", {
 			label: safeLabel,
@@ -24048,7 +24172,12 @@ async function renderHeyGenPresenterSegment({
 			acceptedSubtleHeyGenMotion,
 			requiredPresenterRole,
 			contentPresenterRole,
-			...(acceptedSubtleHeyGenMotion ? { originalIssues: originalQaIssues } : {}),
+			allowFreezeNearPass,
+			motionQaHardFail: HEYGEN_MOTION_QA_HARD_FAIL,
+			motionQaAdvisory,
+			...(acceptedSubtleHeyGenMotion || motionQaAdvisory
+				? { originalIssues: originalQaIssues }
+				: {}),
 			durationSec: Number((qa.durationSec || 0).toFixed(3)),
 			videoDurationSec: Number((qa.videoDurationSec || 0).toFixed(3)),
 			audioDurationSec: Number((qa.audioDurationSec || 0).toFixed(3)),
@@ -24100,12 +24229,42 @@ async function renderHeyGenPresenterSegment({
 			jobId,
 			label: attemptLabel,
 		});
+		const originalFinalQaIssues = Array.isArray(finalQa.issues)
+			? [...finalQa.issues]
+			: [];
+		let finalMotionQaAdvisory = false;
+		if (
+			!finalQa.pass &&
+			!HEYGEN_MOTION_QA_HARD_FAIL &&
+			originalFinalQaIssues.length > 0 &&
+			originalFinalQaIssues.every(
+				(issue) => issue === "presenter_video_final_frozen",
+			)
+		) {
+			finalQa.pass = true;
+			finalQa.issues = [];
+			finalMotionQaAdvisory = true;
+			logJob(jobId, "heygen presenter final motion qa advisory", {
+				label: safeLabel,
+				attempt,
+				heygenLabel: attemptLabel,
+				role,
+				originalIssues: originalFinalQaIssues,
+				maxFreezeSec: Number((finalQa.maxFreezeSec || 0).toFixed(3)),
+				freezeRatio: Number((finalQa.freezeRatio || 0).toFixed(3)),
+			});
+		}
 		logJob(jobId, "heygen presenter final qa", {
 			label: safeLabel,
 			attempt,
 			heygenLabel: attemptLabel,
 			pass: finalQa.pass,
 			issues: finalQa.issues,
+			motionQaHardFail: HEYGEN_MOTION_QA_HARD_FAIL,
+			finalMotionQaAdvisory,
+			...(finalMotionQaAdvisory
+				? { originalIssues: originalFinalQaIssues }
+				: {}),
 			durationSec: Number((finalQa.durationSec || 0).toFixed(3)),
 			videoDurationSec: Number((finalQa.videoDurationSec || 0).toFixed(3)),
 			audioDurationSec: Number((finalQa.audioDurationSec || 0).toFixed(3)),
@@ -29553,6 +29712,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		logJob(jobId, "heygen presenter strategy", {
 			resolution: HEYGEN_DEFAULT_RESOLUTION,
 			expressiveness: HEYGEN_DEFAULT_EXPRESSIVENESS,
+			contentExpressiveness: HEYGEN_CONTENT_EXPRESSIVENESS,
 			fit: HEYGEN_DEFAULT_FIT,
 			targetHeyGenCalls: contentVisualPlan.targetHeyGenCalls,
 			openingPresenterCount: contentVisualPlan.openingPresenterCount,
@@ -29572,6 +29732,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 			requiredMotionMaxFreezeRatio: HEYGEN_REQUIRED_MOTION_MAX_FREEZE_RATIO,
 			contentMotionMaxFreezeRatio: HEYGEN_CONTENT_MOTION_MAX_FREEZE_RATIO,
 			optionalMotionMaxFreezeRatio: HEYGEN_OPTIONAL_MOTION_MAX_FREEZE_RATIO,
+			requiredAllowFreezeNearPass: HEYGEN_REQUIRED_ALLOW_FREEZE_NEAR_PASS,
+			contentAllowFreezeNearPass: HEYGEN_CONTENT_ALLOW_FREEZE_NEAR_PASS,
+			optionalAllowFreezeNearPass: HEYGEN_OPTIONAL_ALLOW_FREEZE_NEAR_PASS,
+			heygenRenderMaxAttempts: HEYGEN_RENDER_MAX_ATTEMPTS,
+			motionQaHardFail: HEYGEN_MOTION_QA_HARD_FAIL,
 			fallbackPolicy: "no paid presenter fallbacks",
 		});
 		if (!imageDiversity.ok) {
