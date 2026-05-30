@@ -2321,6 +2321,18 @@ function validateCreateBody(body = {}, controllerConfig = {}) {
 					body.planOnly ||
 					body.scriptOnly,
 			),
+			disableYouTubeUpload: Boolean(
+				body.disableYouTubeUpload ||
+					body.skipYouTubeUpload ||
+					body.noYouTubeUpload ||
+					body.noYoutubeUpload,
+			),
+			skipVideoDocSave: Boolean(
+				body.skipVideoDocSave ||
+					body.disableDocumentSave ||
+					body.noDocumentSave ||
+					body.noDbSave,
+			),
 			stopAfterThumbnail,
 			enableHeyGenPresenterMotion,
 			enableWardrobeEdit,
@@ -4325,6 +4337,7 @@ const DEFAULT_LONG_VIDEO_CONTROLLER_CONFIG = Object.freeze({
 	enableHeyGenPresenterMotion: true,
 	enableWardrobeEdit: ENABLE_WARDROBE_EDIT,
 	disableYouTubeUpload: false,
+	disableVideoDocSave: false,
 });
 
 function normalizeLongVideoControllerConfig(config = {}) {
@@ -26849,6 +26862,8 @@ async function runLongVideoJob(
 			disableMusic,
 			dryRun,
 			orchestratorDryRun,
+			disableYouTubeUpload,
+			skipVideoDocSave,
 			stopAfterThumbnail,
 			skipPresenterAdjustments,
 			overlayAssets,
@@ -26889,7 +26904,10 @@ async function runLongVideoJob(
 		);
 		const totalTargetSec =
 			introDurationSec + contentTargetSec + outroDurationSec;
-		const youtubeUploadEnabled = !controllerOptions.disableYouTubeUpload;
+		const youtubeUploadEnabled =
+			!controllerOptions.disableYouTubeUpload && !disableYouTubeUpload;
+		const videoDocSaveEnabled =
+			!controllerOptions.disableVideoDocSave && !skipVideoDocSave;
 		const hasYouTubeTokens =
 			youtubeUploadEnabled &&
 			Boolean(
@@ -26922,7 +26940,8 @@ async function runLongVideoJob(
 			enableHeyGenPresenterMotion: Boolean(enableHeyGenPresenterMotion),
 			enableWardrobeEdit: Boolean(enableWardrobeEdit),
 			skipPresenterAdjustments: Boolean(skipPresenterAdjustments),
-			disableYouTubeUpload: Boolean(controllerOptions.disableYouTubeUpload),
+			disableYouTubeUpload: !youtubeUploadEnabled,
+			skipVideoDocSave: !videoDocSaveEnabled,
 			stopAfterThumbnail: Boolean(stopAfterThumbnail),
 			voiceIdLocked: effectiveVoiceId,
 			hasYouTubeTokens,
@@ -30801,7 +30820,9 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 		const localFilePath = SHOULD_PERSIST_LONG_VIDEO ? outputPath : "";
 		let videoDocId = null;
 		try {
-			if (user?._id) {
+			if (!videoDocSaveEnabled) {
+				logJob(jobId, "video doc save skipped (disabled for request)");
+			} else if (user?._id) {
 				const contentScriptLines = (script.segments || [])
 					.map((s) => String(s.text || "").trim())
 					.filter(Boolean);
