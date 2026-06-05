@@ -22446,6 +22446,7 @@ async function uploadToYouTube(
 				status: {
 					privacyStatus: "public",
 					selfDeclaredMadeForKids: false,
+					containsSyntheticMedia: true,
 				},
 			},
 			media: { body: fs.createReadStream(fp) },
