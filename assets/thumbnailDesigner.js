@@ -1156,6 +1156,7 @@ function isBareGerundAtEnd(words = []) {
 }
 
 function isLikelyIncompleteThumbnailHeadline(text = "") {
+	if (/^at\s+\d{1,3}$/i.test(normalizeWhitespace(text))) return false;
 	const words = normalizeDisplayWords(text);
 	if (!words.length) return true;
 	const first = headlineWordKey(words[0]);
@@ -1323,6 +1324,67 @@ function buildSignificantPhrase(text = "", maxWords = 4) {
 	return normalizeHeadlineCandidate(words.join(" "), maxWords, 30);
 }
 
+const DEATH_HEADLINE_VERBS_RE =
+	/\b(dies|died|dead|passes away|passed away)\b/i;
+
+const DEATH_HEADLINE_ROLE_WORDS = new Set([
+	"actor",
+	"actress",
+	"comedian",
+	"host",
+	"icon",
+	"legend",
+	"performer",
+	"singer",
+	"star",
+	"voice",
+]);
+
+function extractDeathAgeBadge(text = "") {
+	const match = normalizeWhitespace(text).match(/\bat\s+(\d{1,3})\b/i);
+	if (!match) return "";
+	return `AT ${match[1]}`;
+}
+
+function extractTrailingPersonName(words = []) {
+	const cleanWords = (Array.isArray(words) ? words : [])
+		.map((word) => String(word || "").replace(/[^A-Za-z'.-]/g, ""))
+		.filter(Boolean);
+	const nameWords = [];
+	for (let i = cleanWords.length - 1; i >= 0; i--) {
+		const word = cleanWords[i];
+		const lower = word.toLowerCase();
+		if (DEATH_HEADLINE_ROLE_WORDS.has(lower)) {
+			if (nameWords.length) break;
+			continue;
+		}
+		const looksNameWord =
+			/^[A-Z][A-Za-z'.-]{1,}$/.test(word) || /^[A-Z]{2,}$/.test(word);
+		if (!looksNameWord || PERSON_NAME_STOPWORDS.has(lower)) {
+			if (nameWords.length) break;
+			continue;
+		}
+		nameWords.unshift(word);
+		if (nameWords.length >= 3) break;
+	}
+	if (nameWords.length >= 2 && looksLikeLikelyPersonName(nameWords.join(" "))) {
+		return nameWords.join(" ");
+	}
+	return "";
+}
+
+function extractDeathHeadlineFromText(text = "") {
+	const normalized = normalizeWhitespace(text);
+	if (!DEATH_HEADLINE_VERBS_RE.test(normalized)) return "";
+	const match = DEATH_HEADLINE_VERBS_RE.exec(normalized);
+	if (!match) return "";
+	const beforeVerb = normalized.slice(0, match.index);
+	const personName = extractTrailingPersonName(normalizeDisplayWords(beforeVerb));
+	if (!personName) return "";
+	const verb = /^dead$/i.test(match[1]) ? "DEAD" : "DIES";
+	return normalizeHeadlineCandidate(`${personName} ${verb}`, 5, 30);
+}
+
 function deriveHeadlineFromTitle({
 	title,
 	shortTitle,
@@ -1332,6 +1394,12 @@ function deriveHeadlineFromTitle({
 }) {
 	const primaryTopic = formatTopicDisplay(primaryTopicLabel(topics));
 	const context = buildContextText({ title, shortTitle, seoTitle, topics });
+	const deathHeadline =
+		extractDeathHeadlineFromText(title) ||
+		extractDeathHeadlineFromText(shortTitle) ||
+		extractDeathHeadlineFromText(seoTitle) ||
+		extractDeathHeadlineFromText(primaryTopic);
+	if (deathHeadline) return deathHeadline;
 
 	if (
 		primaryTopic &&
@@ -1425,6 +1493,9 @@ function deriveBadgeTextFromContext({
 	const context = buildContextText({ title, shortTitle, seoTitle, topics });
 	const topCount = Number(primary?.topList?.count || 0);
 	if (Number.isFinite(topCount) && topCount >= 2) return `TOP ${topCount}`;
+	if (DEATH_HEADLINE_VERBS_RE.test(context)) {
+		return extractDeathAgeBadge(context) || "REMEMBERED";
+	}
 	if (/\b(controversy|controversial|debate|backlash|divided|critics|supporters)\b/.test(context))
 		return "THE DEBATE";
 	if (/\b(ranking|ranked|top\s+\d|best|worst|most|least)\b/.test(context))
@@ -1959,6 +2030,7 @@ function renderLockedThumbnailTextOverlay({
 	sublineText,
 	accent = ACCENT_PALETTE.default,
 	styleProfile = {},
+	method = "openai_edit_text_locked",
 	log,
 }) {
 	ensureImageFile(basePath, 5000);
@@ -2124,7 +2196,7 @@ function renderLockedThumbnailTextOverlay({
 	}
 	return {
 		path: outputPath,
-		method: "openai_edit_text_locked",
+		method,
 	};
 }
 
@@ -2133,6 +2205,11 @@ function renderSeedCompositeFallback({
 	tmpDir,
 	presenterLocalPath,
 	topicReferencePaths = [],
+	headline = "",
+	badgeText = "",
+	sublineText = "",
+	accent = ACCENT_PALETTE.default,
+	styleProfile = {},
 	log,
 }) {
 	const seedBasePath = composeThumbnailSeedBase({
@@ -2141,24 +2218,37 @@ function renderSeedCompositeFallback({
 		presenterLocalPath,
 		topicReferencePaths,
 	});
-	const outputPath = path.join(tmpDir, `thumb_seed_fallback_${jobId}.jpg`);
+	const normalizedPath = path.join(tmpDir, `thumb_seed_fallback_base_${jobId}.jpg`);
 	try {
 		normalizeThumbnailOutput({
 			candidatePath: seedBasePath,
-			outPath: outputPath,
+			outPath: normalizedPath,
 		});
-		ensureThumbnailFile(outputPath, THUMBNAIL_MIN_BYTES);
+		ensureThumbnailFile(normalizedPath, THUMBNAIL_MIN_BYTES);
+		const locked = renderLockedThumbnailTextOverlay({
+			jobId,
+			tmpDir,
+			basePath: normalizedPath,
+			headline: headline || "BIG UPDATE",
+			badgeText: badgeText || "SPOTLIGHT",
+			sublineText,
+			accent,
+			styleProfile,
+			method: "seed_composite_text_fallback",
+			log,
+		});
 		if (typeof log === "function") {
 			log("thumbnail seed fallback ready", {
-				path: path.basename(outputPath),
+				path: path.basename(locked.path || ""),
+				textLocked: true,
+				headline: normalizeWhitespace(headline || "BIG UPDATE"),
+				badgeText: normalizeWhitespace(badgeText || "SPOTLIGHT"),
 			});
 		}
-		return {
-			path: outputPath,
-			method: "seed_composite_fallback",
-		};
+		return locked;
 	} finally {
 		safeUnlink(seedBasePath);
+		safeUnlink(normalizedPath);
 	}
 }
 
@@ -2682,6 +2772,11 @@ async function generateThumbnailPackage({
 			tmpDir,
 			presenterLocalPath,
 			topicReferencePaths,
+			headline: textPlan.primaryHeadline,
+			badgeText: textPlan.badgeText,
+			sublineText: textPlan.sublineText,
+			accent,
+			styleProfile,
 			log,
 		});
 
@@ -2775,6 +2870,7 @@ module.exports = {
 		normalizeWhitespace,
 		primaryTopicLabel,
 		renderLockedThumbnailTextOverlay,
+		renderSeedCompositeFallback,
 		renderTopicLeadVisualSeed,
 		safeUnlink,
 		uploadThumbnailToCloudinary,
