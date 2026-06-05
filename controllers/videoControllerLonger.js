@@ -1129,12 +1129,38 @@ const FEED_VIDEO_FREEZE_NOISE = clampNumber(0.0025, 0.0001, 0.02);
 const FEED_VIDEO_FREEZE_MIN_SEC = clampNumber(1.2, 0.4, 5);
 const FEED_VIDEO_MAX_FREEZE_RATIO = clampNumber(0.82, 0.35, 0.98);
 const FEED_VIDEO_MAX_FREEZE_SEC = clampNumber(5.5, 1.5, 12);
+const FEED_VIDEO_FULL_SEGMENT_RENDER = envFlag(
+	"LONG_VIDEO_FEED_VIDEO_FULL_SEGMENT",
+	true,
+);
 const IMAGE_SEGMENT_TARGET_SEC = clampNumber(3.8, 2.5, 8);
 const IMAGE_SEGMENT_MIN_IMAGES = clampNumber(2, 1, 6);
 const IMAGE_SEGMENT_MAX_IMAGES = clampNumber(
 	process.env.LONG_VIDEO_IMAGE_SEGMENT_MAX_IMAGES ?? 3,
 	2,
 	6,
+);
+const IMAGE_SEGMENT_MIN_READABLE_HOLD_SEC = clampNumber(
+	process.env.LONG_VIDEO_IMAGE_MIN_READABLE_HOLD_SEC ?? 5.8,
+	3.5,
+	20,
+);
+const IMAGE_SEGMENT_DENSE_VISUAL_MIN_HOLD_SEC = clampNumber(
+	process.env.LONG_VIDEO_DENSE_VISUAL_MIN_HOLD_SEC ?? 10,
+	5,
+	35,
+);
+const IMAGE_SEGMENT_MAX_RENDER_IMAGES = Math.floor(
+	clampNumber(
+		process.env.LONG_VIDEO_IMAGE_SEGMENT_MAX_RENDER_IMAGES ??
+			IMAGE_MONTAGE_MAX_IMAGES,
+		1,
+		IMAGE_MONTAGE_MAX_IMAGES,
+	),
+);
+const VISUAL_FOCUS_CALLOUTS_ENABLED = envFlag(
+	"LONG_VIDEO_VISUAL_FOCUS_CALLOUTS",
+	true,
 );
 const STRICT_TOPIC_RELEVANT_FEED_IMAGES = envFlag(
 	"LONG_VIDEO_STRICT_TOPIC_RELEVANT_FEED_IMAGES",
@@ -9307,26 +9333,87 @@ function computeContentVisualPlan(totalSegments, options = {}) {
 
 function isHoldSingleVisualSegment(seg = {}) {
 	const text = String(seg?.text || "");
+	if (isDenseReadableVisualSegment(seg)) return true;
+	if (hasExplicitLongVisualHoldCue(seg)) return true;
+	return countWords(text) >= 48;
+}
+
+function isDenseReadableVisualSegment(seg = {}) {
+	const text = String(seg?.text || "");
 	const cue = Array.isArray(seg?.overlayCues)
 		? String(seg.overlayCues[0]?.query || "")
 		: "";
-	const hay = `${text} ${cue}`.toLowerCase();
+	const grounding = seg?.visualGrounding && typeof seg.visualGrounding === "object"
+		? `${seg.visualGrounding.query || ""}`
+		: "";
+	const hay = `${text} ${cue} ${grounding}`.toLowerCase();
 	if (
-		/\b(chart|graph|data|stat|statistics|census|bls|federal reserve|report|study|survey|paperwork|documents?|debt papers?|application|table|map|timeline|infographic|receipt|bill|invoice|budget sheet)\b/i.test(
+		/\b(chart|graph|data|stat|stats|statistics|census|bls|federal reserve|report|study|survey|paperwork|documents?|debt papers?|application|table|map|timeline|infographic|receipt|bill|invoice|budget sheet|spreadsheet|statement|filing|screenshot|screen capture|dashboard|analytics|heatmap|ledger|contract|form|notice|warning label|official data)\b/i.test(
 			hay,
 		)
 	) {
 		return true;
 	}
-	return countWords(text) >= 60;
+	return false;
+}
+
+function hasExplicitLongVisualHoldCue(seg = {}) {
+	const cue = Array.isArray(seg?.overlayCues) ? seg.overlayCues[0] || null : null;
+	if (!cue || typeof cue !== "object") return false;
+	const startPct = Number(cue.startPct);
+	const endPct = Number(cue.endPct);
+	return (
+		Number.isFinite(startPct) &&
+		Number.isFinite(endPct) &&
+		startPct <= 0.1 &&
+		endPct >= 0.9
+	);
+}
+
+function readableHoldSecondsForSegment(seg = {}) {
+	if (isDenseReadableVisualSegment(seg) || hasExplicitLongVisualHoldCue(seg)) {
+		return IMAGE_SEGMENT_DENSE_VISUAL_MIN_HOLD_SEC;
+	}
+	return IMAGE_SEGMENT_MIN_READABLE_HOLD_SEC;
 }
 
 function computeSegmentImageCount(segDur, seg = null) {
 	const dur = Math.max(0, Number(segDur) || 0);
 	if (seg && isHoldSingleVisualSegment(seg)) return 1;
-	if (dur < IMAGE_SEGMENT_MULTI_MIN_SEC) return 1;
-	const ideal = Math.round(dur / IMAGE_SEGMENT_TARGET_SEC);
-	return clampNumber(ideal, IMAGE_SEGMENT_MIN_IMAGES, IMAGE_SEGMENT_MAX_IMAGES);
+	const minHoldSec = readableHoldSecondsForSegment(seg || {});
+	if (dur < Math.max(IMAGE_SEGMENT_MULTI_MIN_SEC, minHoldSec * 1.8)) return 1;
+	const maxReadableImages = Math.max(1, Math.floor(dur / minHoldSec));
+	if (maxReadableImages <= 1) return 1;
+	const ideal = Math.max(1, Math.round(dur / IMAGE_SEGMENT_TARGET_SEC));
+	return Math.min(
+		IMAGE_SEGMENT_MAX_RENDER_IMAGES,
+		clampNumber(
+			Math.min(ideal, maxReadableImages),
+			IMAGE_SEGMENT_MIN_IMAGES,
+			IMAGE_SEGMENT_MAX_IMAGES,
+		),
+	);
+}
+
+function selectRenderableImagePathsForSegment({
+	imagePaths = [],
+	segDur = 0,
+	seg = null,
+	desiredCount = 1,
+} = {}) {
+	const sources = Array.isArray(imagePaths) ? imagePaths.filter(Boolean) : [];
+	if (!sources.length) return [];
+	const dur = Math.max(0, Number(segDur) || 0);
+	const strictCount = computeSegmentImageCount(dur, seg);
+	const target = Math.max(
+		1,
+		Math.min(
+			Number(desiredCount) || strictCount || 1,
+			strictCount || 1,
+			IMAGE_SEGMENT_MAX_RENDER_IMAGES,
+		),
+	);
+	return sources.slice(0, target);
 }
 
 function resolveSegmentImageQuery(seg, topics = []) {
@@ -11979,11 +12066,15 @@ async function prepareImageSegments({
 		const segDur = Math.max(0.2, Number(seg.endSec) - Number(seg.startSec));
 		const desiredCount = computeSegmentImageCount(segDur, seg);
 		const holdSingleVisual = isHoldSingleVisualSegment(seg);
+		const renderImageCount = Math.max(
+			1,
+			Math.min(desiredCount, IMAGE_SEGMENT_MAX_RENDER_IMAGES),
+		);
 		const renderTargetCount = Math.max(
-			desiredCount,
+			renderImageCount,
 			holdSingleVisual
-				? desiredCount
-				: Math.min(desiredCount + IMAGE_SEGMENT_RENDER_RESERVE, 5),
+				? renderImageCount
+				: Math.min(renderImageCount + IMAGE_SEGMENT_RENDER_RESERVE, 5),
 		);
 		const topicIndex = Number(seg.topicIndex) || 0;
 		const { query, topicLabel } = resolveSegmentImageQuery(seg, topics);
@@ -12042,6 +12133,7 @@ async function prepareImageSegments({
 			query,
 			topicLabel: effectiveTopicLabel,
 			desiredCount,
+			renderImageCount,
 			variantCount: queryVariants.length,
 			holdSingleVisual,
 			segmentTokens,
@@ -12853,7 +12945,8 @@ async function prepareImageSegments({
 
 		const detailCardPlan = meta.detailCard || null;
 		const detailCardsUsed = detailCardCountByTopic.get(topicIndex) || 0;
-		const detailCardEligibleByTime = Number(seg.startSec || 0) >= 35;
+		const detailCardEligibleByTime =
+			Number(seg.startSec || 0) >= 35 || isDenseReadableVisualSegment(seg);
 		let detailCardPath = "";
 		if (
 			detailCardPlan &&
@@ -12871,7 +12964,7 @@ async function prepareImageSegments({
 					output: outputCfg,
 				});
 				detailCardCountByTopic.set(topicIndex, detailCardsUsed + 1);
-				const keepImageCount = Math.max(0, renderTargetCount - 1);
+				const keepImageCount = Math.max(0, renderImageCount - 1);
 				localPaths = [detailCardPath, ...localPaths.slice(0, keepImageCount)];
 				logJob(jobId, "topic detail card added", {
 					segment: seg.index,
@@ -12947,8 +13040,14 @@ async function prepareImageSegments({
 
 		let cloudinaryUrls = [];
 		if (localPaths.length) {
+			const cloudinaryImagePaths = selectRenderableImagePathsForSegment({
+				imagePaths: localPaths,
+				segDur,
+				seg,
+				desiredCount: renderImageCount,
+			});
 			cloudinaryUrls = await uploadSegmentImagesToCloudinary({
-				localPaths: localPaths.slice(0, desiredCount),
+				localPaths: cloudinaryImagePaths,
 				jobId,
 				segIndex: seg.index,
 				topicLabel: effectiveTopicLabel,
@@ -12971,6 +13070,7 @@ async function prepareImageSegments({
 					detailCard: false,
 					cloudinaryCount: 0,
 					desiredCount,
+					renderImageCount,
 					fallback: "local_visual",
 				});
 				updated.push({
@@ -12978,6 +13078,7 @@ async function prepareImageSegments({
 					visualType: "image",
 					imageUnavailable: true,
 					imageFallbackReason: "no_image_assets",
+					renderImageCount,
 				});
 				continue;
 			}
@@ -12994,16 +13095,25 @@ async function prepareImageSegments({
 			continue;
 		}
 
-		if (localPaths.length) segmentImagePaths.set(seg.index, localPaths);
+		const renderLocalPaths = selectRenderableImagePathsForSegment({
+			imagePaths: localPaths,
+			segDur,
+			seg,
+			desiredCount: renderImageCount,
+		});
+		if (renderLocalPaths.length) segmentImagePaths.set(seg.index, renderLocalPaths);
 		imagePlanSummary.push({
 			segment: seg.index,
-			imageCount: localPaths.length,
+			imageCount: renderLocalPaths.length,
+			downloadedImageCount: localPaths.length,
 			feedVideoCount: feedVideoDownload.localPaths?.length || 0,
 			detailCard: Boolean(detailCardPath),
 			cloudinaryCount: cloudinaryUrls.length,
 			desiredCount,
+			renderImageCount,
 			renderTargetCount,
 			holdSingleVisual,
+			denseReadableVisual: isDenseReadableVisualSegment(seg),
 			query,
 			topicLabel: effectiveTopicLabel,
 		});
@@ -13012,6 +13122,7 @@ async function prepareImageSegments({
 			imageUrls: pickedUrls,
 			imageCloudinaryUrls: cloudinaryUrls,
 			feedVideoUrls: feedVideoDownload.usedUrls || [],
+			renderImageCount,
 		});
 	}
 
@@ -19980,6 +20091,9 @@ ${categoryGuide.lines.join("\n")}
 - Treat overlayCues.query as the downstream feed-search contract for images and possible B-roll video. It must stay within the topic and name a visible subject, place, action, object, institution, or scene from the segment/source context.
 - Shape the story around the strongest available feed visuals above where possible. The image/video research comes before the script: use the validated visual-first beat plan to choose concrete beats, examples, and overlayCues.query values, but do not say "image title", "search result", "visual beat", or "visual research" in the spoken script.
 - For visual-heavy segments, prefer overlayCues.query values from the validated visual-first beat plan exactly when they fit the segment. If you need a new query, keep it just as concrete and directly tied to the topic.
+- Chart/data/report/document rule: only choose a chart, graph, table, report, paperwork, map, timeline, or infographic visual when the spoken segment actually explains that visual in plain language. Give the viewer time to read it; do not treat it as background decoration.
+- If a chart/data/report segment includes a month, year, dollar amount, percent, spike, drop, or ranking from the provided context, name that marker naturally in the narration and explain why it matters. Do not invent chart details that are not supported by the context.
+- For readable feed visuals, write one steady explanation instead of rapid visual hopping. The visual may stay on screen for the entire segment while the presenter walks through the point.
 - Do not let visuals make the script generic. The writing still needs a strong, coherent editorial arc: clear hook, escalating tension, credible context, useful payoff, and strict topic focus.
 - Never choose or imply an unrelated feed visual just because it is dramatic. If the available visual does not clearly belong to the topic, broaden to a directly adjacent topic visual or use a neutral explanatory visual; do not use unrelated people, unrelated events, or generic scenery.
 - If a beat depends on a chart, graph, official data table, report, debt paperwork, application screen, map, timeline, or infographic, write that segment so one visual can stay on screen long enough to be understood. Explain what the viewer is looking at instead of rotating away too fast.
@@ -22332,7 +22446,6 @@ async function uploadToYouTube(
 				status: {
 					privacyStatus: "public",
 					selfDeclaredMadeForKids: false,
-					containsSyntheticMedia: true,
 				},
 			},
 			media: { body: fs.createReadStream(fp) },
@@ -24427,6 +24540,7 @@ async function normalizeClip(
 		addFades = false,
 		fadeOutOnly = false,
 		cameraMotion = null,
+		visualFocus = null,
 	} = {},
 ) {
 	const w = makeEven(outCfg.w);
@@ -24437,7 +24551,12 @@ async function normalizeClip(
 	const needsDuration =
 		Boolean(cameraMotion && cameraMotion.mode !== "steady") ||
 		Boolean(addFades) ||
-		Boolean(fadeOutOnly);
+		Boolean(fadeOutOnly) ||
+		Boolean(
+			visualFocus &&
+				VISUAL_FOCUS_CALLOUTS_ENABLED &&
+				isDenseReadableVisualSegment(visualFocus),
+		);
 	if (needsDuration) {
 		try {
 			durSec = await probeDurationSeconds(inPath);
@@ -24492,6 +24611,14 @@ async function normalizeClip(
 		visualType: cameraMotion?.visualType || "presenter",
 	});
 	if (cameraFilter) vf += `,${cameraFilter}`;
+
+	const visualCalloutFilter = buildReadableVisualCalloutFilter({
+		visualFocus,
+		w,
+		h,
+		durationSec: durSec,
+	});
+	if (visualCalloutFilter) vf += `,${visualCalloutFilter}`;
 
 	// Stable resample without async drift correction (keeps lipsync timing tight)
 	let af = `aresample=${AUDIO_SR},aformat=channel_layouts=stereo:sample_fmts=fltp,volume=1.0`;
@@ -24818,7 +24945,13 @@ async function createImageMontageClip({
 		.filter(Boolean)
 		.slice(
 			0,
-			Math.max(1, Math.floor(Number(IMAGE_MONTAGE_MAX_IMAGES) || 3)),
+			Math.max(
+				1,
+				Math.min(
+					Math.floor(Number(IMAGE_MONTAGE_MAX_IMAGES) || 3),
+					Math.floor(Number(IMAGE_SEGMENT_MAX_RENDER_IMAGES) || 3),
+				),
+			),
 		);
 	if (!workingImagePaths.length) throw new Error("No usable images for segment");
 	let cleanupImagePaths = [];
@@ -24980,6 +25113,7 @@ async function renderImageSegment({
 	label,
 	addFades = false,
 	cameraMotion = null,
+	visualFocus = null,
 }) {
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	let montage;
@@ -25016,6 +25150,9 @@ async function renderImageSegment({
 		zoomOut: CAMERA_ZOOM_OUT,
 		addFades,
 		cameraMotion: cameraMotion ? { ...cameraMotion, visualType: "image" } : null,
+		visualFocus: visualFocus
+			? { ...visualFocus, visualType: "image", durationSec: segDur }
+			: null,
 	});
 	safeUnlink(withAudio);
 	return norm;
@@ -25035,8 +25172,9 @@ async function renderFeedVideoSegment({
 	if (!sources.length) throw new Error("No feed videos for segment");
 	const safeLabel = String(label || "seg").replace(/[^a-z0-9_-]/gi, "");
 	const dur = Math.max(0.2, Number(segDur) || 0.2);
-	const targetDur =
-		dur <= FEED_VIDEO_MAX_CLIP_SEC + 0.5
+	const targetDur = FEED_VIDEO_FULL_SEGMENT_RENDER
+		? dur
+		: dur <= FEED_VIDEO_MAX_CLIP_SEC + 0.5
 			? dur
 			: Math.max(0.2, FEED_VIDEO_MAX_CLIP_SEC);
 	const w = makeEven(output.w);
@@ -25774,6 +25912,114 @@ function escapeDrawtext(s = "") {
 		.replace(/\]/g, "\\]")
 		.replace(new RegExp(placeholder, "g"), "\\n")
 		.trim();
+}
+
+function normalizeVisualFocusLabel(raw = "", maxChars = 34) {
+	const cleaned = normalizeWhitespace(String(raw || ""))
+		.replace(/^[,.:;!?-]+|[,.:;!?-]+$/g, "")
+		.replace(/[{}[\]<>`]/g, "")
+		.trim();
+	if (!cleaned) return "";
+	return formatHumanTitle(cleaned, maxChars) || cleaned.slice(0, maxChars).trim();
+}
+
+function extractVisualFocusLabels(visualFocus = {}) {
+	const labels = [];
+	const seen = new Set();
+	const push = (raw) => {
+		const label = normalizeVisualFocusLabel(raw);
+		const key = normalizeQaText(label);
+		if (!label || !key || seen.has(key)) return;
+		seen.add(key);
+		labels.push(label);
+	};
+	const cue = Array.isArray(visualFocus?.overlayCues)
+		? visualFocus.overlayCues[0] || {}
+		: {};
+	const text = normalizeWhitespace(
+		[
+			visualFocus?.text,
+			visualFocus?.topicLabel,
+			cue?.query,
+			visualFocus?.visualGrounding?.query,
+		]
+			.filter(Boolean)
+			.join(" "),
+	);
+
+	const monthRe =
+		/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/gi;
+	let match = null;
+	while ((match = monthRe.exec(text)) && labels.length < 2) {
+		push(match[1]);
+	}
+
+	const statRe =
+		/(\$\s?\d[\d,.]*(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|million|billion|trillion|people|workers|households|americans|viewers|views|dollars|points|months|years)\b)/gi;
+	while ((match = statRe.exec(text)) && labels.length < 2) {
+		push(match[1].replace(/\s+/g, " "));
+	}
+
+	const yearRe = /\b(20\d{2}|19\d{2})\b/g;
+	while ((match = yearRe.exec(text)) && labels.length < 2) {
+		push(match[1]);
+	}
+
+	if (!labels.length && cue?.query) push(cue.query);
+	if (!labels.length && visualFocus?.topicLabel) push(visualFocus.topicLabel);
+	if (!labels.length) push("Key visual");
+	return labels.slice(0, 2);
+}
+
+function buildReadableVisualCalloutFilter({
+	visualFocus = null,
+	w = 1280,
+	h = 720,
+	durationSec = 0,
+} = {}) {
+	if (!VISUAL_FOCUS_CALLOUTS_ENABLED || !visualFocus) return "";
+	if (!isDenseReadableVisualSegment(visualFocus)) return "";
+	const labels = extractVisualFocusLabels(visualFocus);
+	if (!labels.length) return "";
+	const W = makeEven(w);
+	const H = makeEven(h);
+	const dur = Math.max(0.5, Number(durationSec || visualFocus.durationSec || 0) || 0);
+	const margin = Math.max(18, Math.round(Math.min(W, H) * 0.035));
+	const panelH = Math.max(76, Math.round(H * 0.15));
+	const panelY = Math.max(margin, H - panelH - margin);
+	const fontFile = resolveFontFile();
+	const fontOpt = fontFile ? `:fontfile='${escapeDrawtext(fontFile)}'` : "";
+	const headingSize = Math.max(18, Math.round(H * 0.026));
+	const labelSize = Math.max(24, Math.round(H * 0.038));
+	const markerX = Math.round(W * 0.55);
+	const markerY = Math.round(H * 0.18);
+	const markerH = Math.round(H * 0.5);
+	const markerW = Math.max(5, Math.round(W * 0.005));
+	const filters = [
+		`drawbox=x=${margin}:y=${panelY}:w=${W - margin * 2}:h=${panelH}:color=0x111827@0.64:t=fill`,
+		`drawbox=x=${markerX}:y=${markerY}:w=${markerW}:h=${markerH}:color=0xfacc15@0.62:t=fill`,
+		`drawbox=x=${markerX - Math.round(W * 0.035)}:y=${markerY}:w=${Math.round(
+			W * 0.07,
+		)}:h=${markerW}:color=0xfacc15@0.62:t=fill`,
+		`drawtext=text='${escapeDrawtext("VISUAL FOCUS")}'${fontOpt}:fontsize=${headingSize}:fontcolor=0xfacc15:x=${
+			margin + Math.round(W * 0.018)
+		}:y=${panelY + Math.round(panelH * 0.18)}`,
+	];
+	labels.forEach((label, idx) => {
+		const hasTiming = dur > 1.2 && labels.length > 1;
+		const start = hasTiming ? idx * (dur / labels.length) : 0;
+		const end = hasTiming ? Math.min(dur, (idx + 1) * (dur / labels.length) + 0.35) : dur;
+		const enable = hasTiming
+			? `:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'`
+			: "";
+		const y = panelY + Math.round(panelH * (labels.length > 1 ? 0.48 + idx * 0.29 : 0.5));
+		filters.push(
+			`drawtext=text='${escapeDrawtext(label)}'${fontOpt}:fontsize=${labelSize}:fontcolor=white:x=${
+				margin + Math.round(W * 0.018)
+			}:y=${y}${enable}`,
+		);
+	});
+	return filters.join(",");
 }
 
 function escapeFilterExpr(expr = "") {
@@ -29903,6 +30149,11 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 						label,
 						addFades,
 						cameraMotion,
+						visualFocus: {
+							text: fallbackText || "",
+							overlayCues: [],
+							topicLabel: script.shortTitle || script.title || topicSummary || "",
+						},
 					});
 				} catch (e) {
 					logJob(jobId, "non-presenter image fallback failed; using local visual", {
@@ -30203,6 +30454,7 @@ ${segments.map((s) => `#${s.index}: ${s.text}`).join("\n")}
 							: String(seg.index),
 						addFades: ENABLE_SEGMENT_FADES,
 						cameraMotion: seg.cameraMotion,
+						visualFocus: seg,
 					});
 				if (feedVideoPaths.length) {
 					try {
